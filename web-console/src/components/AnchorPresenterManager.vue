@@ -7,6 +7,7 @@ const emit = defineEmits<{
   create: []; select: [id: number]; rename: [style: LiveAnchorStyle]; saveName: [style: LiveAnchorStyle]; cancelName: [];
   'update:nameDraft': [value: string]; avatar: [style: LiveAnchorStyle, kind: AnchorAvatarType]; description: [style: LiveAnchorStyle, text: string]; remove: [style: LiveAnchorStyle]; bind: []; plugins: []
   uploadAvatar: [style: LiveAnchorStyle, file: File]; recommendations: []; unbind: [style: LiveAnchorStyle]
+  sourceMode: [style: LiveAnchorStyle, mode: 'card' | 'sample']
 }>()
 const orderedStyles = computed(() => [...props.styles].sort((a, b) => Number(b.id === props.currentId) - Number(a.id === props.currentId)))
 const nameInput = ref<HTMLInputElement[]>([])
@@ -34,6 +35,10 @@ function uploadAvatar(style: LiveAnchorStyle, event: Event) {
   if (file) emit('uploadAvatar', style, file)
   input.value = ''
 }
+function changeSourceMode(style: LiveAnchorStyle, event: Event) {
+  const mode = (event.target as HTMLSelectElement).value === 'card' ? 'card' : 'sample'
+  emit('sourceMode', style, mode)
+}
 </script>
 <template>
   <aside class="presenter-manager">
@@ -43,7 +48,7 @@ function uploadAvatar(style: LiveAnchorStyle, event: Event) {
       <button type="button" class="manager-create" :disabled="busy" @click="emit('create')">＋新建主播</button>
     </header>
     <button type="button" class="manager-recommendations" @click="emit('recommendations')">✦ 系统推荐主播 <span>查看并添加 ›</span></button>
-    <div v-if="!styles.length" class="manager-empty">还没有保存主播。先新建主播，再导入真实话术。</div>
+    <div v-if="!styles.length" class="manager-empty">还没有保存主播。</div>
     <article v-for="style in orderedStyles" :key="style.id" :data-presenter-id="style.id" class="presenter-card" :class="{ selected: selectedId === style.id, 'is-current': currentId === style.id }">
       <div class="presenter-avatar-column">
       <button type="button" class="presenter-select" :aria-label="`选择主播“${style.name}”`" :aria-pressed="selectedId === style.id" @click="emit('select', style.id)">
@@ -64,12 +69,13 @@ function uploadAvatar(style: LiveAnchorStyle, event: Event) {
           <button v-if="editingId !== style.id" type="button" class="presenter-rename" :aria-label="`修改主播“${style.name}”的名称`" @click="emit('rename', style)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 11-11 5 5-11 11-6 1Z"/><path d="m13 6 5 5" fill="none" stroke="white" stroke-width="1.5"/></svg></button>
         </div>
         <div class="presenter-meta"><span>{{ style.sample_count }} 份样本 · {{ style.training_count }} 次训练</span></div>
+        <label class="presenter-source-mode"><span>风格</span><select :value="style.style_source_mode || 'sample'" :disabled="busy" :aria-label="`主播“${style.name}”的风格来源`" @change="changeSourceMode(style, $event)"><option value="card">风格卡</option><option value="sample">风格样本</option></select></label>
         <button v-if="currentId === style.id" type="button" class="presenter-unbind" :aria-label="`取消使用主播“${style.name}”`" :disabled="!hasPlan || busy || bindingBusy" @click.stop="emit('unbind', style)">{{ bindingBusy ? '处理中…' : '取消使用' }}</button><small v-else-if="style.source_recommendation_id" class="presenter-origin">来自系统推荐</small>
       </div>
       <button type="button" class="presenter-remove" :aria-label="`删除主播“${style.name}”`" @click="emit('remove', style)">删除</button>
       <div class="presenter-description">
         <input v-if="descriptionEditId === style.id" :value="descriptionDraft" aria-label="修改主播特征介绍，最多50字" @input="descriptionInput" @blur="saveDescription(style)" @keydown.enter.prevent="saveDescription(style)" @keydown.esc.prevent="descriptionEditId = null" />
-        <template v-else><p :title="style.description">{{ style.description || '还没有填写风格介绍' }}</p><button type="button" class="presenter-rename" aria-label="修改主播特征介绍" :disabled="descriptionSavingIds?.includes(style.id)" @click="editDescription(style)">✎</button></template>
+        <template v-else><p :title="style.description">{{ style.description || '未设置' }}</p><button type="button" class="presenter-rename" aria-label="修改主播特征介绍" :disabled="descriptionSavingIds?.includes(style.id)" @click="editDescription(style)">✎</button></template>
       </div>
     </article>
     <button v-if="hasSelection && selectedId !== currentId" type="button" class="manager-bind" :disabled="!hasPlan || busy || bindingBusy" @click="emit('bind')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 18 11-11 3 3L8 21Zm12-16 1 3 3 1-3 1-1 3-1-3-3-1 3-1ZM6 2l1 3 3 1-3 1-1 3-1-3-3-1 3-1Z"/></svg>{{ bindingBusy ? '处理中…' : hasPlan ? '设为当前智能体主播' : '先选择智能体方案' }}</button>
@@ -91,5 +97,9 @@ function uploadAvatar(style: LiveAnchorStyle, event: Event) {
 .presenter-card.is-current .presenter-check.checked{background:#20a67d}
 .presenter-unbind{justify-self:start;padding:6px 14px;min-height:36px;border:1px solid #a4dec9;border-radius:999px;background:#e3f7ee;color:#15825f;font:inherit;font-size:16px;font-weight:700;cursor:pointer}
 .presenter-unbind:hover:not(:disabled){background:#cff0e2;border-color:#20a67d}
+.presenter-source-mode{display:flex;align-items:center;gap:8px;min-width:0;font-size:16px;color:#5f6882}
+.presenter-source-mode span{flex:none;font-weight:800}
+.presenter-source-mode select{min-width:0;max-width:150px;min-height:34px;padding:5px 8px;border:1px solid #dce1f7;border-radius:8px;background:#fff;color:#5f5e99;font:inherit;font-size:16px;cursor:pointer}
+.presenter-card,.presenter-card p,.presenter-card small,.presenter-card span,.presenter-card button,.presenter-card label,.presenter-card input,.presenter-card select{font-size:16px}
 @container(max-width:310px){.manager-recommendations{flex-wrap:wrap}.manager-recommendations span{margin-left:auto}.presenter-meta{line-height:1.6}}
 </style>

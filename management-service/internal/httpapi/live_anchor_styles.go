@@ -136,6 +136,11 @@ func (s *Server) liveAnchorStyleUpdate(w http.ResponseWriter, r *http.Request) {
 		input.Profile.Delivery.MetaPromptMD = stylecontract.RenderMetaPrompt(*input.Profile)
 		input.Profile.Delivery.Rulebook = stylecontract.Render(*input.Profile)
 	}
+	if input.StyleCard != nil && input.StyleCard.Delivery != nil {
+		input.StyleCard.Delivery.AddressingOverride = stylecontract.NormalizeAddressingOverride(input.StyleCard.Delivery.AddressingOverride)
+		input.StyleCard.Delivery.MetaPromptMD = stylecontract.RenderMetaPrompt(*input.StyleCard)
+		input.StyleCard.Delivery.Rulebook = stylecontract.Render(*input.StyleCard)
+	}
 	item, err := s.store.UpdateLiveAnchorStyle(r.Context(), tenantID, styleID, actor.UserID, input)
 	if errors.Is(err, appdb.ErrLiveAnchorStyleNotFound) {
 		writeError(w, http.StatusNotFound, "主播风格不存在")

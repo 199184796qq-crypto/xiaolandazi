@@ -1693,7 +1693,9 @@ export interface LiveAnchorStyle {
   avatar_url?: string
   source_recommendation_id?: number
   status: string
+  style_source_mode: 'card' | 'sample' | string
   profile: LiveAgentPlanAnchorStyleProfile
+  style_card?: LiveAgentPlanAnchorStyleProfile
   plugin_settings: LiveAnchorStylePluginSetting[]
   sample_count: number
   training_count: number

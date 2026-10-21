@@ -1090,29 +1090,27 @@ function loadAnchorStyleProfileDraft(style: LiveAnchorStyle) {
   }
 }
 
-function anchorStyleProfileInstructions(draft: AnchorStyleProfileDraft) {
-  const pace = draft.pace === 'long' ? '长句、完整展开' : draft.pace === 'medium' ? '中短句、自然停顿' : '短句、口语、少绕弯'
-  return [
-    `语气：${draft.tone.trim() || '自然、口语、像在跟一个人说话'}`,
-    `句子节奏：${pace}`,
-    `热情度：${draft.warmth}/100`,
-    `专业度：${draft.expertise}/100`,
-    `促单强度：${draft.promotion}/100`,
-    draft.dialect.trim() ? `地域口音：${draft.dialect.trim()}` : '',
-    draft.avoid_terms.trim() ? `避免词：${draft.avoid_terms.trim()}` : '',
-    draft.extra.trim() ? `补充：${draft.extra.trim()}` : '',
-    '只回答当前问题，不主动扩展无关信息；事实没有的不补、不猜。',
-  ].filter(Boolean)
+function styleSourceMode(style: LiveAnchorStyle | null | undefined) {
+  return style?.style_source_mode === 'card' ? 'card' : 'sample'
 }
 
-async function saveAnchorStyleProfile() {
-  const style = selectedReusableAnchorStyle.value
-  if (!style || anchorStyleProfileSaving.value) return
-  if (style.sample_count > 0) {
-    reusableAnchorStyleError.value = '这个主播已经有样本分析结果，手动参数不能覆盖；请新建一个无样本主播再设定。'
-    return
+function defaultAnchorStyleDraft(): AnchorStyleProfileDraft {
+  return {
+    tone: '自然、口语、像在跟一个人说话',
+    audience_terms: '朋友们、老乡们',
+    self_terms: '',
+    catchphrases: '',
+    avoid_terms: '家人们、宝子、亲爱的',
+    pace: 'short',
+    warmth: 60,
+    expertise: 55,
+    promotion: 40,
+    dialect: '',
+    extra: '不主动推荐链接；事实没有的不补、不猜。',
   }
-  const draft = anchorStyleProfileDraft.value
+}
+
+function buildAnchorStyleCardProfile(style: LiveAnchorStyle, draft: AnchorStyleProfileDraft): LiveAgentPlanAnchorStyleProfile {
   const audienceTerms = splitAnchorAddressingTerms(draft.audience_terms)
   const selfTerms = splitAnchorAddressingTerms(draft.self_terms)
   const catchphrases = splitAnchorAddressingTerms(draft.catchphrases)
@@ -1126,10 +1124,9 @@ async function saveAnchorStyleProfile() {
   selfTerms.forEach((term) => addHabit('self_address', term, '自指位', '主播自指时'))
   catchphrases.forEach((term) => addHabit('catchphrase', term, '句尾/承接位', '自然承接时少量使用'))
   dialectTerms.forEach((term) => addHabit('dialect_marker', term, '句尾点缀', '需要地域感时少量使用'))
-
   const instructions = anchorStyleProfileInstructions(draft)
-  const profile: LiveAgentPlanAnchorStyleProfile = {
-    ...style.profile,
+  return {
+    ...(style.style_card || style.profile),
     summary: draft.tone.trim() || '手动设定的主播风格',
     dimensions: [],
     reusable_rules: instructions,
@@ -1154,23 +1151,68 @@ async function saveAnchorStyleProfile() {
       source_sha256: '',
     },
   }
+}
+
+function anchorStyleProfileInstructions(draft: AnchorStyleProfileDraft) {
+  const pace = draft.pace === 'long' ? '长句、完整展开' : draft.pace === 'medium' ? '中短句、自然停顿' : '短句、口语、少绕弯'
+  return [
+    `语气：${draft.tone.trim() || '自然、口语、像在跟一个人说话'}`,
+    `句子节奏：${pace}`,
+    `热情度：${draft.warmth}/100`,
+    `专业度：${draft.expertise}/100`,
+    `促单强度：${draft.promotion}/100`,
+    draft.dialect.trim() ? `地域口音：${draft.dialect.trim()}` : '',
+    draft.avoid_terms.trim() ? `避免词：${draft.avoid_terms.trim()}` : '',
+    draft.extra.trim() ? `补充：${draft.extra.trim()}` : '',
+    '只回答当前问题，不主动扩展无关信息；事实没有的不补、不猜。',
+  ].filter(Boolean)
+}
+
+async function saveAnchorStyleProfile() {
+  const style = selectedReusableAnchorStyle.value
+  if (!style || anchorStyleProfileSaving.value) return
+  const profile = buildAnchorStyleCardProfile(style, anchorStyleProfileDraft.value)
   anchorStyleProfileSaving.value = true
   reusableAnchorStyleError.value = ''
   try {
     const updated = await updateLiveAnchorStyle(style.id, {
       name: style.name,
       description: style.description || '',
-      profile,
+      style_source_mode: 'card',
+      style_card: profile,
     }, activeRoom.value?.tenant_id)
     selectedReusableAnchorStyle.value = updated
     reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
     loadAnchorStyleProfileDraft(updated)
-    reusableAnchorStyleNotice.value = '主播风格参数已保存；可以直接用这套风格测试或绑定方案。'
+    reusableAnchorStyleNotice.value = '主播风格卡已保存，并切换为风格卡来源；可以直接测试或绑定方案。'
   } catch (err) {
     reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播风格失败'
   } finally {
     anchorStyleProfileSaving.value = false
   }
+}
+
+async function saveAnchorSourceMode(style: LiveAnchorStyle, mode: 'card' | 'sample') {
+  if (!style || reusableAnchorStyleBusy.value) return
+  const tenant = activeRoom.value?.tenant_id, room = activeRoomId.value
+  reusableAnchorStyleBusy.value = true
+  reusableAnchorStyleError.value = ''
+  try {
+    const updated = await updateLiveAnchorStyle(style.id, {
+      name: style.name,
+      description: style.description || '',
+      style_source_mode: mode,
+    }, tenant)
+    if (tenant !== activeRoom.value?.tenant_id || room !== activeRoomId.value) return
+    selectedReusableAnchorStyle.value = updated
+    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
+    loadAnchorAddressingDraft(updated)
+    loadAnchorStyleProfileDraft(updated)
+    reusableAnchorStyleTab.value = mode === 'card' ? 'style' : 'samples'
+    reusableAnchorStyleNotice.value = mode === 'card' ? '已切换为风格卡。' : '已切换为风格样本。'
+  } catch (err) {
+    if (tenant === activeRoom.value?.tenant_id && room === activeRoomId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '切换风格来源失败'
+  } finally { reusableAnchorStyleBusy.value = false }
 }
 
 async function saveAnchorAddressingOverride() {
@@ -1333,7 +1375,8 @@ async function selectReusableAnchorStyle(styleID: number, showNotice = true) {
     reusableAnchorAnalysisPreviewId.value = versions.active_version_id
     loadAnchorAddressingDraft(style)
     loadAnchorStyleProfileDraft(style)
-    reusableAnchorStyleTab.value = reusableAnchorStyleTab.value || 'samples'
+    if (styleSourceMode(style) === 'card') reusableAnchorStyleTab.value = 'style'
+    else if (!reusableAnchorStyleTab.value || reusableAnchorStyleTab.value === 'style') reusableAnchorStyleTab.value = 'samples'
     if (showNotice) reusableAnchorStyleNotice.value = `已切换到主播“${style.name}”，后续测试和方案绑定都会使用这套风格。`
   } catch (err) {
     if (epoch === reusableAnchorSelectionEpoch) reusableAnchorStyleError.value = err instanceof Error ? err.message : '读取主播风格详情失败'
@@ -1346,10 +1389,22 @@ async function createReusableAnchorStyle() {
   reusableAnchorStyleBusy.value = true
   reusableAnchorStyleError.value = ''
   try {
-    const style = await createLiveAnchorStyle({ name: '新主播', description: '', tenant_id: activeRoom.value?.tenant_id })
-    reusableAnchorStyles.value = [style, ...reusableAnchorStyles.value]
+    const style = await createLiveAnchorStyle({
+      name: '新主播',
+      description: '自然口语，像跟一个人说话',
+      style_source_mode: 'card',
+      tenant_id: activeRoom.value?.tenant_id,
+    })
+    const defaultProfile = buildAnchorStyleCardProfile(style, defaultAnchorStyleDraft())
+    const updated = await updateLiveAnchorStyle(style.id, {
+      name: style.name,
+      description: style.description || '自然口语，像跟一个人说话',
+      style_source_mode: 'card',
+      style_card: defaultProfile,
+    }, activeRoom.value?.tenant_id)
+    reusableAnchorStyles.value = [updated, ...reusableAnchorStyles.value]
     await selectReusableAnchorStyle(style.id)
-    reusableAnchorStyleTab.value = 'samples'
+    reusableAnchorStyleTab.value = 'style'
   } catch (err) {
     reusableAnchorStyleError.value = err instanceof Error ? err.message : '新建主播失败'
   } finally { reusableAnchorStyleBusy.value = false }
@@ -7533,21 +7588,21 @@ onBeforeUnmount(() => {
             </template>
           </div>
           <div class="reusable-anchor-style-workspace">
-            <AnchorPresenterManager :styles="reusableAnchorStyles" :selected-id="selectedReusableAnchorStyleId" :current-id="currentBoundAnchorId" :binding-busy="anchorBindingBusy" :busy="reusableAnchorStyleBusy" :editing-id="editingReusableAnchorStyleNameId" :saving-name-id="savingReusableAnchorStyleNameId" :avatar-saving-ids="savingReusableAnchorAvatarIds" :description-saving-ids="savingReusableAnchorDescriptionIds" v-model:name-draft="reusableAnchorStyleNameDraft" :has-selection="!!selectedReusableAnchorStyle" :has-plan="!!currentRoomPlanId" @create="createReusableAnchorStyle" @select="selectReusableAnchorStyle" @rename="beginReusableAnchorStyleNameEdit" @save-name="saveReusableAnchorStyleName" @cancel-name="cancelReusableAnchorStyleNameEdit" @avatar="saveReusableAnchorAvatar" @upload-avatar="saveUploadedAnchorAvatar" @recommendations="anchorRecommendationsOpen = true" @description="saveReusableAnchorDescription" @remove="deleteReusableAnchorStyle" @bind="bindReusableAnchorStyle" @unbind="unbindReusableAnchorStyle" @plugins="reusableAnchorStyleTab = 'personalization'" />
+            <AnchorPresenterManager :styles="reusableAnchorStyles" :selected-id="selectedReusableAnchorStyleId" :current-id="currentBoundAnchorId" :binding-busy="anchorBindingBusy" :busy="reusableAnchorStyleBusy" :editing-id="editingReusableAnchorStyleNameId" :saving-name-id="savingReusableAnchorStyleNameId" :avatar-saving-ids="savingReusableAnchorAvatarIds" :description-saving-ids="savingReusableAnchorDescriptionIds" v-model:name-draft="reusableAnchorStyleNameDraft" :has-selection="!!selectedReusableAnchorStyle" :has-plan="!!currentRoomPlanId" @create="createReusableAnchorStyle" @select="selectReusableAnchorStyle" @rename="beginReusableAnchorStyleNameEdit" @save-name="saveReusableAnchorStyleName" @cancel-name="cancelReusableAnchorStyleNameEdit" @avatar="saveReusableAnchorAvatar" @upload-avatar="saveUploadedAnchorAvatar" @recommendations="anchorRecommendationsOpen = true" @description="saveReusableAnchorDescription" @remove="deleteReusableAnchorStyle" @bind="bindReusableAnchorStyle" @unbind="unbindReusableAnchorStyle" @plugins="reusableAnchorStyleTab = 'personalization'" @source-mode="saveAnchorSourceMode" />
 
             <div class="reusable-anchor-style-main">
               <div v-if="reusableAnchorStyleError" class="anchor-presenter-error" role="alert">{{ reusableAnchorStyleError }}</div>
               <div v-if="reusableAnchorStyleNotice" class="notice-banner">{{ reusableAnchorStyleNotice }}</div>
-              <nav class="reusable-anchor-style-tabs" v-if="selectedReusableAnchorStyle">
-                <button type="button" class="anchor-style-tab-card anchor-style-tab-profile" :class="{ active: reusableAnchorStyleTab === 'style' }" @click="reusableAnchorStyleTab = 'style'">
+              <nav class="reusable-anchor-style-tabs" v-if="selectedReusableAnchorStyle" :class="{ 'is-card-mode': styleSourceMode(selectedReusableAnchorStyle) === 'card' }">
+                <button v-if="styleSourceMode(selectedReusableAnchorStyle) === 'card'" type="button" class="anchor-style-tab-card anchor-style-tab-profile" :class="{ active: reusableAnchorStyleTab === 'style' }" @click="reusableAnchorStyleTab = 'style'">
                   <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="9" r="5"/><path d="M6 27c0-5 4.5-9 10-9s10 4 10 9"/><path d="M5 4h4M23 4h4M7 4v4M25 4v4"/></svg></span>
                   <span class="anchor-style-tab-copy"><strong>主播风格</strong><small>不导入文本也能设定</small></span>
                 </button>
-                <button type="button" class="anchor-style-tab-card anchor-style-tab-samples" :class="{ active: reusableAnchorStyleTab === 'samples' }" @click="reusableAnchorStyleTab = 'samples'">
+                <button v-if="styleSourceMode(selectedReusableAnchorStyle) === 'sample'" type="button" class="anchor-style-tab-card anchor-style-tab-samples" :class="{ active: reusableAnchorStyleTab === 'samples' }" @click="reusableAnchorStyleTab = 'samples'">
                   <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="11" y="4" width="10" height="17" rx="5"/><path d="M7 15v1a9 9 0 0 0 18 0v-1M16 25v4M11 29h10"/></svg></span>
                   <span class="anchor-style-tab-copy"><strong>风格样本</strong><small>导入主播话术</small></span>
                 </button>
-                <button type="button" class="anchor-style-tab-card anchor-style-tab-analysis" :class="{ active: reusableAnchorStyleTab === 'analysis' }" @click="reusableAnchorStyleTab = 'analysis'">
+                <button v-if="styleSourceMode(selectedReusableAnchorStyle) === 'sample'" type="button" class="anchor-style-tab-card anchor-style-tab-analysis" :class="{ active: reusableAnchorStyleTab === 'analysis' }" @click="reusableAnchorStyleTab = 'analysis'">
                   <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="18" width="5" height="10" rx="1"/><rect x="13.5" y="11" width="5" height="17" rx="1"/><rect x="23" y="4" width="5" height="24" rx="1"/></svg></span>
                   <span class="anchor-style-tab-copy"><strong>风格分析结果</strong><small>提取语言特征</small></span>
                 </button>
@@ -7560,25 +7615,24 @@ onBeforeUnmount(() => {
               <div v-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'style'" class="reusable-anchor-style-tab-panel anchor-style-profile-panel" aria-label="主播风格参数">
                 <div class="anchor-style-profile-head">
                   <div><strong>主播风格</strong><small>不用导入话术，直接设定这个主播怎么说话；保存后参与测试和方案生成，事实、价格、链接仍由方案决定。</small></div>
-                  <span v-if="selectedReusableAnchorStyle.sample_count > 0" class="anchor-style-profile-lock">已有 {{ selectedReusableAnchorStyle.sample_count }} 份样本，手动参数不可覆盖</span>
                 </div>
                 <div class="anchor-style-profile-grid">
-                  <label class="wide"><span>一句话人设</span><input v-model="anchorStyleProfileDraft.tone" maxlength="120" placeholder="例：南充本地、直爽、熟客感，不端着" /></label>
-                  <label><span>观众称呼</span><input v-model="anchorStyleProfileDraft.audience_terms" maxlength="180" placeholder="朋友们、老乡们、哥姐们（顿号分隔）" /></label>
-                  <label><span>主播自称</span><input v-model="anchorStyleProfileDraft.self_terms" maxlength="180" placeholder="我、咱们、小店（顿号分隔）" /></label>
-                  <label><span>口头禅 / 常用词</span><input v-model="anchorStyleProfileDraft.catchphrases" maxlength="180" placeholder="我给你说嘛、这个你放心（顿号分隔）" /></label>
-                  <label><span>避免词</span><input v-model="anchorStyleProfileDraft.avoid_terms" maxlength="180" placeholder="家人们、宝子、亲爱的（顿号分隔）" /></label>
+                  <label class="wide"><span>一句话人设</span><input v-model="anchorStyleProfileDraft.tone" maxlength="120" /></label>
+                  <label><span>观众称呼</span><input v-model="anchorStyleProfileDraft.audience_terms" maxlength="180" /></label>
+                  <label><span>主播自称</span><input v-model="anchorStyleProfileDraft.self_terms" maxlength="180" /></label>
+                  <label><span>口头禅 / 常用词</span><input v-model="anchorStyleProfileDraft.catchphrases" maxlength="180" /></label>
+                  <label><span>避免词</span><input v-model="anchorStyleProfileDraft.avoid_terms" maxlength="180" /></label>
                   <label><span>句子节奏</span><select v-model="anchorStyleProfileDraft.pace"><option value="short">短句、口语、少绕弯</option><option value="medium">中短句、自然停顿</option><option value="long">长句、完整展开</option></select></label>
-                  <label><span>地域 / 口音</span><input v-model="anchorStyleProfileDraft.dialect" maxlength="60" placeholder="例：南充话、川普、普通话" /></label>
+                  <label><span>地域 / 口音</span><input v-model="anchorStyleProfileDraft.dialect" maxlength="60" /></label>
                 </div>
                 <div class="anchor-style-profile-ranges">
                   <label><span>热情度 <b>{{ anchorStyleProfileDraft.warmth }}</b></span><input v-model.number="anchorStyleProfileDraft.warmth" type="range" min="0" max="100" step="5" /></label>
                   <label><span>专业度 <b>{{ anchorStyleProfileDraft.expertise }}</b></span><input v-model.number="anchorStyleProfileDraft.expertise" type="range" min="0" max="100" step="5" /></label>
                   <label><span>促单强度 <b>{{ anchorStyleProfileDraft.promotion }}</b></span><input v-model.number="anchorStyleProfileDraft.promotion" type="range" min="0" max="100" step="5" /></label>
                 </div>
-                <label class="anchor-style-profile-extra"><span>补充说明</span><textarea v-model="anchorStyleProfileDraft.extra" rows="3" maxlength="600" placeholder="例：不主动推荐链接；遇到没写的事实直接说页面没写；适合家庭聚餐场景。"></textarea></label>
+                <label class="anchor-style-profile-extra"><span>补充说明</span><textarea v-model="anchorStyleProfileDraft.extra" rows="3" maxlength="600"></textarea></label>
                 <div class="anchor-style-profile-actions">
-                  <button type="button" class="primary-button" :disabled="anchorStyleProfileSaving || selectedReusableAnchorStyle.sample_count > 0" @click="saveAnchorStyleProfile">{{ anchorStyleProfileSaving ? '保存中…' : '保存主播风格参数' }}</button>
+                  <button type="button" class="primary-button" :disabled="anchorStyleProfileSaving" @click="saveAnchorStyleProfile">{{ anchorStyleProfileSaving ? '保存中…' : '保存主播风格参数' }}</button>
                   <small>保存后不会改事实、价格、库存、链接或互动策略；只影响“怎么说”。</small>
                 </div>
               </div>
@@ -11528,6 +11582,7 @@ onBeforeUnmount(() => {
 .reusable-anchor-style-stream-window>footer{font-size:14px}
 @media(max-width:720px){.reusable-anchor-style-stream-output{font-size:17px}}
 .reusable-anchor-style-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:0 0 10px;border:0}
+.reusable-anchor-style-tabs.is-card-mode{grid-template-columns:repeat(2,minmax(0,1fr))}
 .reusable-anchor-style-tabs .anchor-style-tab-card{position:relative;display:grid;grid-template-columns:46px minmax(0,1fr);align-items:center;gap:10px;min-height:76px;padding:10px 12px;border:1px solid rgba(109,126,197,.08);border-radius:16px;text-align:left;box-shadow:0 8px 20px rgba(76,94,167,.08);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
 .reusable-anchor-style-tabs .anchor-style-tab-card:hover{transform:translateY(-2px);box-shadow:0 16px 34px rgba(76,94,167,.13)}
 .reusable-anchor-style-tabs .anchor-style-tab-card::after{content:"";position:absolute;left:44%;right:44%;bottom:-9px;height:4px;border-radius:999px;background:transparent;transition:.18s ease}
@@ -11552,29 +11607,29 @@ onBeforeUnmount(() => {
 .anchor-style-tab-personalization .anchor-style-tab-icon svg path{fill:currentColor;stroke:none}
 .anchor-style-tab-copy{display:grid;gap:3px;min-width:0}
 .reusable-anchor-style-tabs .anchor-style-tab-copy strong{overflow:hidden;color:#172447;font-size:16px;font-weight:950;line-height:1.25;text-overflow:ellipsis;white-space:nowrap}
-.reusable-anchor-style-tabs .anchor-style-tab-copy small{overflow:hidden;color:#71809e;font-size:12px;font-weight:650;line-height:1.3;text-overflow:ellipsis;white-space:nowrap}
+.reusable-anchor-style-tabs .anchor-style-tab-copy small{overflow:hidden;color:#71809e;font-size:16px;font-weight:650;line-height:1.3;text-overflow:ellipsis;white-space:nowrap}
 .reusable-anchor-style-tabs .anchor-style-tab-card.active .anchor-style-tab-copy strong,.reusable-anchor-style-tabs .anchor-style-tab-card.active .anchor-style-tab-copy small{color:#fff}
 .reusable-anchor-style-reserved-empty{min-height:420px;padding:0;border-color:#e4e9f3;background:linear-gradient(135deg,#fff,#fbfcff);box-shadow:none}
 .anchor-style-profile-panel{display:grid;gap:20px;padding:30px 34px;border-color:rgba(103,123,202,.14);border-radius:26px;background:rgba(255,255,255,.96);box-shadow:0 18px 46px rgba(72,92,169,.10)}
 .anchor-style-profile-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-wrap:wrap}
 .anchor-style-profile-head>div{display:grid;gap:5px}
 .anchor-style-profile-head strong{color:#172447;font-size:22px;font-weight:950}
-.anchor-style-profile-head small{color:#71809e;font-size:14px;line-height:1.6}
-.anchor-style-profile-lock{padding:7px 12px;border:1px solid #f3d6a4;border-radius:999px;background:#fff9ed;color:#9a6a18;font-size:12px;font-weight:800;white-space:nowrap}
+.anchor-style-profile-head small{color:#71809e;font-size:16px;line-height:1.6}
+.anchor-style-profile-lock{padding:7px 12px;border:1px solid #f3d6a4;border-radius:999px;background:#fff9ed;color:#9a6a18;font-size:16px;font-weight:800;white-space:nowrap}
 .anchor-style-profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px}
 .anchor-style-profile-grid label,.anchor-style-profile-extra{display:grid;gap:7px;min-width:0}
 .anchor-style-profile-grid label.wide{grid-column:1/-1}
-.anchor-style-profile-grid span,.anchor-style-profile-extra span{color:#596684;font-size:13px;font-weight:800}
+.anchor-style-profile-grid span,.anchor-style-profile-extra span{color:#596684;font-size:16px;font-weight:800}
 .anchor-style-profile-grid input,.anchor-style-profile-grid select,.anchor-style-profile-extra textarea{width:100%;min-height:42px;padding:10px 12px;border:1px solid #dfe4f2;border-radius:12px;background:#fbfcff;color:#1c2948;font-size:14px;outline:none}
 .anchor-style-profile-grid input:focus,.anchor-style-profile-grid select:focus,.anchor-style-profile-extra textarea:focus{border-color:#9e91ee;box-shadow:0 0 0 3px rgba(123,107,232,.12);background:#fff}
 .anchor-style-profile-extra textarea{resize:vertical;min-height:78px}
 .anchor-style-profile-ranges{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;padding:16px 18px;border:1px solid #ece9fb;border-radius:16px;background:#faf9ff}
 .anchor-style-profile-ranges label{display:grid;gap:8px;min-width:0}
-.anchor-style-profile-ranges span{display:flex;justify-content:space-between;color:#596684;font-size:13px;font-weight:800}
+.anchor-style-profile-ranges span{display:flex;justify-content:space-between;color:#596684;font-size:16px;font-weight:800}
 .anchor-style-profile-ranges b{color:#6657d8}
 .anchor-style-profile-ranges input{width:100%;accent-color:#7b6be8}
 .anchor-style-profile-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding-top:2px}
-.anchor-style-profile-actions small{color:#7b87a1;font-size:12px;line-height:1.5}
+.anchor-style-profile-actions small{color:#7b87a1;font-size:16px;line-height:1.5}
 @media(max-width:980px){.anchor-style-profile-grid{grid-template-columns:1fr}.anchor-style-profile-grid label.wide{grid-column:auto}.anchor-style-profile-ranges{grid-template-columns:1fr}.reusable-anchor-style-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .reusable-anchor-style-samples-panel{gap:26px;padding:38px;border-color:rgba(103,123,202,.14);border-radius:26px;background:rgba(255,255,255,.94);box-shadow:0 18px 46px rgba(72,92,169,.10)}
 .reusable-anchor-style-samples-hero{display:flex;align-items:center;gap:22px;flex-wrap:wrap}

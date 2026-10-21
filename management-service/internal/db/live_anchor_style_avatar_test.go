@@ -34,9 +34,9 @@ func (c *avatarConn) QueryContext(_ context.Context, q string, args []driver.Nam
 	if !strings.Contains(q, "s.id=? AND s.tenant_id=? AND s.status='active'") || len(args) != 2 {
 		return nil, errors.New("unscoped avatar read")
 	}
-	rows := &contentPolicyTestRows{columns: strings.Fields("id tenant name description status profile samples trainings plans creator updater created updated avatar avatar_data source")}
+	rows := &contentPolicyTestRows{columns: strings.Fields("id tenant name description status profile mode card samples trainings plans creator updater created updated avatar avatar_data source")}
 	if args[0].Value == int64(7) && args[1].Value == int64(14) {
-		rows.values = [][]driver.Value{{int64(7), int64(14), "原主播", "原介绍", "active", `{"summary":"原风格"}`, int64(1), int64(3), int64(2), int64(8), int64(8), time.Now(), time.Now(), c.kind, "", int64(0)}}
+		rows.values = [][]driver.Value{{int64(7), int64(14), "原主播", "原介绍", "active", `{"summary":"原风格"}`, "sample", "", int64(1), int64(3), int64(2), int64(8), int64(8), time.Now(), time.Now(), c.kind, "", int64(0)}}
 	}
 	return rows, nil
 }

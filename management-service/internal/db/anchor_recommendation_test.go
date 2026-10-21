@@ -95,7 +95,7 @@ func (c *recommendationConn) QueryContext(_ context.Context, q string, a []drive
 			return nil, errors.New("unscoped copied style")
 		}
 		s := c.copied
-		return &contentPolicyTestRows{columns: strings.Fields("id tenant name description status profile samples trainings plans creator updater created updated avatar data source"), values: [][]driver.Value{{s.ID, s.TenantID, s.Name, s.Description, "active", encodeJSON(s.Profile), int64(0), int64(0), int64(0), int64(9), int64(9), time.Now(), time.Now(), s.AvatarType, s.AvatarURL, int64(1)}}}, nil
+		return &contentPolicyTestRows{columns: strings.Fields("id tenant name description status profile mode card samples trainings plans creator updater created updated avatar data source"), values: [][]driver.Value{{s.ID, s.TenantID, s.Name, s.Description, "active", encodeJSON(s.Profile), "sample", "", int64(0), int64(0), int64(0), int64(9), int64(9), time.Now(), time.Now(), s.AvatarType, s.AvatarURL, int64(1)}}}, nil
 	}
 	return nil, fmt.Errorf("unexpected query: %s", q)
 }

@@ -1470,6 +1470,8 @@ CREATE TABLE IF NOT EXISTS live_anchor_styles (
     active_analysis_version_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
     status VARCHAR(24) NOT NULL DEFAULT 'active',
     profile_json MEDIUMTEXT NOT NULL,
+    style_source_mode VARCHAR(16) NOT NULL DEFAULT 'sample',
+    style_card_json MEDIUMTEXT NULL,
     created_by_user_id BIGINT UNSIGNED NULL,
     updated_by_user_id BIGINT UNSIGNED NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

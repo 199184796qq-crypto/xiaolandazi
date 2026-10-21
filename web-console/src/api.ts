@@ -1800,7 +1800,7 @@ export function listLiveAnchorStyles(tenantId?: number) {
   return request<{ items: LiveAnchorStyle[] }>('/api/v1/live-anchor-styles' + query, { cache: 'no-store' })
 }
 
-export function createLiveAnchorStyle(input: { name: string; description?: string; tenant_id?: number }) {
+export function createLiveAnchorStyle(input: { name: string; description?: string; style_source_mode?: 'card' | 'sample'; tenant_id?: number }) {
   return request<LiveAnchorStyle>('/api/v1/live-anchor-styles', { method: 'POST', body: JSON.stringify(input) })
 }
 
@@ -1809,7 +1809,7 @@ export function getLiveAnchorStyle(styleId: number, tenantId?: number) {
   return request<LiveAnchorStyle>('/api/v1/live-anchor-styles/' + styleId + query, { cache: 'no-store' })
 }
 
-export function updateLiveAnchorStyle(styleId: number, input: { name: string; description?: string; profile?: LiveAgentPlanScriptAnalysis['anchor_style'] }, tenantId?: number) {
+export function updateLiveAnchorStyle(styleId: number, input: { name: string; description?: string; style_source_mode?: 'card' | 'sample'; profile?: LiveAgentPlanScriptAnalysis['anchor_style']; style_card?: LiveAgentPlanScriptAnalysis['anchor_style'] }, tenantId?: number) {
   const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
   return request<LiveAnchorStyle>('/api/v1/live-anchor-styles/' + styleId + query, { method: 'PUT', body: JSON.stringify(input) })
 }

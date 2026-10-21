@@ -45,6 +45,14 @@ func decodeLiveAnchorStyleProfile(raw string) model.LiveAgentPlanAnchorStyleProf
 	return profile
 }
 
+func decodeLiveAnchorStyleCard(raw string) *model.LiveAgentPlanAnchorStyleProfile {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	profile := decodeLiveAnchorStyleProfile(raw)
+	return &profile
+}
+
 func encodeJSON(value any) string {
 	raw, _ := json.Marshal(value)
 	return string(raw)
@@ -52,12 +60,17 @@ func encodeJSON(value any) string {
 
 func scanLiveAnchorStyle(row interface{ Scan(...any) error }) (model.LiveAnchorStyle, error) {
 	var item model.LiveAnchorStyle
-	var profileRaw string
+	var profileRaw, styleCardRaw string
 	var createdBy, updatedBy sql.NullInt64
-	if err := row.Scan(&item.ID, &item.TenantID, &item.Name, &item.Description, &item.Status, &profileRaw, &item.SampleCount, &item.TrainingCount, &item.BoundPlanCount, &createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt, &item.AvatarType, &item.AvatarURL, &item.SourceRecommendationID); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Name, &item.Description, &item.Status, &profileRaw, &item.StyleSourceMode, &styleCardRaw, &item.SampleCount, &item.TrainingCount, &item.BoundPlanCount, &createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt, &item.AvatarType, &item.AvatarURL, &item.SourceRecommendationID); err != nil {
 		return item, err
 	}
+	item.StyleSourceMode = model.NormalizeLiveAnchorStyleSourceMode(item.StyleSourceMode)
 	item.Profile = decodeLiveAnchorStyleProfile(profileRaw)
+	item.StyleCard = decodeLiveAnchorStyleCard(styleCardRaw)
+	if item.StyleSourceMode == "card" && item.StyleCard != nil {
+		item.Profile = *item.StyleCard
+	}
 	if createdBy.Valid {
 		v := createdBy.Int64
 		item.CreatedByUserID = &v
@@ -71,6 +84,7 @@ func scanLiveAnchorStyle(row interface{ Scan(...any) error }) (model.LiveAnchorS
 
 const liveAnchorStyleSelect = `
 	SELECT s.id, s.tenant_id, s.name, s.description, s.status, s.profile_json,
+		s.style_source_mode, COALESCE(s.style_card_json,''),
 		(SELECT COUNT(*) FROM live_anchor_style_samples sm WHERE sm.style_id=s.id) AS sample_count,
 		(SELECT COUNT(*) FROM live_anchor_style_trainings tr WHERE tr.style_id=s.id) AS training_count,
 		(SELECT COUNT(*) FROM live_anchor_style_plan_bindings b WHERE b.style_id=s.id) AS bound_plan_count,
@@ -84,9 +98,9 @@ func (s *Store) CreateLiveAnchorStyle(ctx context.Context, tenantID, actorID int
 		name = "未命名主播"
 	}
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO live_anchor_styles (tenant_id, name, description, profile_json, created_by_user_id, updated_by_user_id)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, tenantID, name, strings.TrimSpace(input.Description), encodeJSON(emptyLiveAnchorStyleProfile()), actorID, actorID)
+		INSERT INTO live_anchor_styles (tenant_id, name, description, profile_json, style_source_mode, created_by_user_id, updated_by_user_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, tenantID, name, strings.TrimSpace(input.Description), encodeJSON(emptyLiveAnchorStyleProfile()), model.NormalizeLiveAnchorStyleSourceMode(input.StyleSourceMode), actorID, actorID)
 	if err != nil {
 		return model.LiveAnchorStyle{}, err
 	}
@@ -135,8 +149,23 @@ func (s *Store) UpdateLiveAnchorStyle(ctx context.Context, tenantID, styleID, ac
 	if name == "" {
 		return model.LiveAnchorStyle{}, errors.New("主播名称不能为空")
 	}
-	args := []any{name, strings.TrimSpace(input.Description), actorID, styleID, tenantID}
+	mode := ""
+	if strings.TrimSpace(input.StyleSourceMode) != "" {
+		mode = model.NormalizeLiveAnchorStyleSourceMode(input.StyleSourceMode)
+	}
 	query := `UPDATE live_anchor_styles SET name=?, description=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP(3)`
+	args := []any{name, strings.TrimSpace(input.Description), actorID}
+	if mode != "" {
+		query += `, style_source_mode=?`
+		args = append(args, mode)
+	}
+	if input.StyleCard != nil {
+		query += `, style_card_json=?`
+		args = append(args, encodeJSON(*input.StyleCard))
+		if mode == "" {
+			query += `, style_source_mode='card'`
+		}
+	}
 	if input.Profile != nil {
 		// The versioned overall result is authoritative. Metadata saves must not
 		// overwrite it with a stale browser profile or a single sample result.
@@ -148,9 +177,10 @@ func (s *Store) UpdateLiveAnchorStyle(ctx context.Context, tenantID, styleID, ac
 			return model.LiveAnchorStyle{}, errors.New("请通过综合风格版本编辑或切换风格，不可直接覆盖")
 		}
 		query += `, profile_json=?`
-		args = []any{name, strings.TrimSpace(input.Description), actorID, encodeJSON(*input.Profile), styleID, tenantID}
+		args = append(args, encodeJSON(*input.Profile))
 	}
 	query += ` WHERE id=? AND tenant_id=? AND status='active'`
+	args = append(args, styleID, tenantID)
 	if input.Profile != nil {
 		query += ` AND active_analysis_version_id=0`
 	}
