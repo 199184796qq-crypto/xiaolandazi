@@ -4515,6 +4515,18 @@ function cancelFormalFactEdit() {
   editingFormalFactId.value = null
 }
 
+// 内联编辑改成显式保存：右侧按钮在编辑态就是「保存」，
+// 编辑器只负责收集草稿，不再停止输入就自动提交（那样会拿半句话去触发事实审核）。
+const inlineFactEditors = new Map<number, { submit: () => Promise<void> }>()
+function setInlineFactEditor(id: number, el: unknown) {
+  if (el) inlineFactEditors.set(id, el as { submit: () => Promise<void> })
+  else inlineFactEditors.delete(id)
+}
+function submitInlineFact(item: LiveAgentPlanFact) {
+  const editor = inlineFactEditors.get(item.id)
+  if (editor) void editor.submit()
+}
+
 async function editRiskSource(payload: { sourceKey: string; text: string }) {
 	if (payload.sourceKey.startsWith('wheel/')) {
 		activeMode.value = 'fullshow'
@@ -7008,7 +7020,7 @@ onBeforeUnmount(() => {
                     <td class="strategy-formal-fact-type-cell"><FormalFactTypeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factCategorySavingId !== null || item.plan_id !== currentRoomPlanId" :suggestion="factTypeSuggestionMap[item.id] || null" :save="saveFormalFactCategory" /></td>
                     <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
                       <td class="strategy-formal-fact-value" @contextmenu="openFactTypeMenu($event, item)">
-                        <InlineFormalFactEditor v-if="editingFormalFactId === item.id" :key="currentRoomPlanId + ':' + item.id" :fact="item" :save="saveInlineFormalFactValue" @done="cancelFormalFactEdit" />
+                        <InlineFormalFactEditor v-if="editingFormalFactId === item.id" :key="currentRoomPlanId + ':' + item.id" :ref="el => setInlineFactEditor(item.id, el)" :fact="item" :save="saveInlineFormalFactValue" @done="cancelFormalFactEdit" />
                         <div v-else class="strategy-formal-fact-value-body">
                           <span class="strategy-formal-fact-value-text">{{ item.value }}</span>
                           <div v-if="item.conflict_warning?.detected" class="strategy-fact-conflict-warning" role="alert">
@@ -7032,10 +7044,12 @@ onBeforeUnmount(() => {
                           <button type="button" class="is-preview" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || !activeRoomId || !currentRoomPlanId" @click="previewFormalFact(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v13H8l-5 4V4Z"/><path d="m10 7 5 3-5 3Z"/></svg>话术预览</button>
                           <button
                             type="button"
-                            :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null"
-                            @click="startFormalFactEdit(item)"
+                            :class="{ 'is-inline-save': editingFormalFactId === item.id }"
+                            :disabled="creatingFormalFact || (editingFormalFactId !== null && editingFormalFactId !== item.id) || !!mutatingFormalFactId || factScopeSavingId !== null"
+                            @click="editingFormalFactId === item.id ? submitInlineFact(item) : startFormalFactEdit(item)"
                           >
-                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg>{{ editingFormalFactId === item.id ? '编辑中' : '修改' }}
+                            <svg v-if="editingFormalFactId === item.id" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7" /></svg>
+                            <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg>{{ editingFormalFactId === item.id ? '保存' : '修改' }}
                           </button>
                           <button
                             class="is-danger"
