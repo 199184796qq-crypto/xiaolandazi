@@ -72,7 +72,12 @@ func (s *Server) captureRealtimeScheme(ctx context.Context, tenant, plan int64, 
 	if err != nil {
 		return err
 	}
-	if meta.ID != 0 && card.ID == 0 {
+	// 风格卡只有元提示词、没有样本评分基准；它仍然可以开播，只是本场不打分。
+	cardStyle := false
+	if bound, bindErr := s.store.GetLiveAnchorStyleForPlan(ctx, tenant, plan); bindErr == nil && bound.StyleSourceMode == "card" {
+		cardStyle = true
+	}
+	if meta.ID != 0 && card.ID == 0 && !cardStyle {
 		return errors.New("请先初始化当前主播评分基准")
 	}
 	config := applyRealtimeOptions(settings.Cycle, options)
