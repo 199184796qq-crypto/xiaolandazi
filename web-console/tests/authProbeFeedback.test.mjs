@@ -36,7 +36,8 @@ test('wrong credentials and captcha failures still show their actual error', asy
     assert.equal(f.calls.length, 1)
     assert.deepEqual(f.calls[0].slice(0, 2), ['/api/v1/auth/login', 'POST'])
     assert.ok(f.calls[0][2].includes(message))
-    assert.ok(f.calls[0][2].includes(`HTTP状态：${status}`))
+    assert.match(f.calls[0][2], /发生操作：账号登录/)
+    assert.doesNotMatch(f.calls[0][2], /[A-Za-z]|HTTP|状态码|\/api|401|400/)
   }
 })
 

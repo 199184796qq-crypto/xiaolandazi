@@ -73,7 +73,7 @@ export function userFacingErrorText(value: unknown, fallback = unknownReason): s
     // Translate recognized failures; otherwise state the information gap.
     if (/\p{L}/u.test(text.replace(/\p{Script=Han}/gu, ''))) text = knownErrorReason(line)
     if (!/\p{Script=Han}/u.test(text) || /^[\s，。；：:、]+$/.test(text)) return []
-    return [text.replace(/:/g, '：')]
+    return [text.replace(/:/g, '：').replace(/,/g, '，').replace(/;/g, '；')]
   })
   return [...new Set(lines)].join('\n') || knownErrorReason(raw) || fallback
 }
