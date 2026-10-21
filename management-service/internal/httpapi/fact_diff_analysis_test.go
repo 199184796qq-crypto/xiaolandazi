@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"strings"
 	"testing"
 
 	"livecompanion/management/internal/model"
@@ -74,4 +75,46 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// 保存前就要拦住算错的差额：资料 22 与 15，写「多10道」必须报错，并列出 7。
+func TestSourceDifferencesExposeUsableGaps(t *testing.T) {
+	source := "1号链接：规格=含22道荤素菜；团购价=337\n2号链接：规格=含15道荤素菜；团购价=187"
+	gaps := sourceDifferences(source)
+	joined := strings.Join(gaps, ",")
+	if !strings.Contains(","+joined+",", ",7,") {
+		t.Fatalf("22-15=7 必须出现在可用差值里：%v", gaps)
+	}
+	if !strings.Contains(","+joined+",", ",150,") {
+		t.Fatalf("337-187=150 必须出现在可用差值里：%v", gaps)
+	}
+	if strings.Contains(","+joined+",", ",10,") {
+		t.Fatalf("10 不是任何两数之差，不该出现：%v", gaps)
+	}
+	if len(gaps) > 8 {
+		t.Fatalf("最多列 8 个，避免刷屏：%v", gaps)
+	}
+}
+
+// 「多了10道菜」这种写法，10 在「10人餐」「10道凉菜」里都出现过，
+// 单看「数字是否出现」拦不住，必须靠差额语境核对。
+func TestDifferenceClaimMustMatchRealGap(t *testing.T) {
+	source := "1号链接：规格=含22道荤素菜，10道凉菜小吃，10种冰淇淋；团购价=337；适用人数=10人\n" +
+		"2号链接：规格=含15道荤素菜，10道凉菜小吃，10种冰淇淋；团购价=187；适用人数=6人以内"
+	// 22-15=7 是真的，放行。
+	if claimed, _, bad := checkDifferenceClaims("1号链接比2号链接多7道菜", source); bad {
+		t.Fatalf("7 是真实差额，不该拦：%s", claimed)
+	}
+	// 10 虽然出现过，但差额对不上，必须拦。
+	claimed, gaps, bad := checkDifferenceClaims("1号链接比2号链接多了10道菜", source)
+	if !bad || claimed != "10" {
+		t.Fatalf("差额写成 10 必须被拦：bad=%v claimed=%s", bad, claimed)
+	}
+	if strings.Join(gaps, ",") == "" {
+		t.Fatal("报错时要给出可用差值，方便用户核对")
+	}
+	// 普通陈述没有差额语境，不参与这项检查。
+	if _, _, bad := checkDifferenceClaims("1号链接团购价337元", source); bad {
+		t.Fatal("没有差额语境的描述不该被拦")
+	}
 }

@@ -260,9 +260,11 @@ func (s *Server) liveAgentPlanFactUpdate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	currentFound := false
+	var current model.LiveAgentPlanFact
 	for _, item := range items {
 		if item.ID == factID {
 			currentFound = true
+			current = item
 			if input.ExpectedVersionNo > 0 && item.VersionNo != input.ExpectedVersionNo {
 				writeError(w, 409, "事实已被修改，请刷新后重试")
 				return
@@ -272,6 +274,12 @@ func (s *Server) liveAgentPlanFactUpdate(w http.ResponseWriter, r *http.Request)
 	}
 	if !currentFound {
 		writeError(w, 404, "正式事实不存在")
+		return
+	}
+	// 多链接「对比」事实上，数字必须先跟商品资料对上：算错的差额（22-15 写成 10）
+	// 光靠人看材料发现不了，保存前直接拦。
+	if err = s.validateFactNumbers(r.Context(), tenantID, planID, current, candidate.Value, items); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	normalized, normalizationSource, err := s.normalizeFactForSave(r.Context(), tenantID, planID, actor.UserID, factID, input.ExpectedVersionNo, candidate, "manual:fact-editor")

@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -152,6 +155,117 @@ func (s *Server) liveAgentPlanFactDiffAnalysis(w http.ResponseWriter, r *http.Re
 		}
 	}
 	writeJSON(w, http.StatusOK, analysis)
+}
+
+// validateFactNumbers 在「挂在多个链接上」的事实保存前核对数字。
+//
+// 起因：商品资料是 22 道对 15 道，事实里却写成「多了10道菜」。10 在「10人餐」「10道凉菜」
+// 里出现过，纯看材料发现不了，只能靠算。这里把差异分析用的那套数字核对前移到保存前：
+// 数字必须能直接从资料/事实里读到，或者是两个来源数字的差（差额本身是合法结论）。
+func (s *Server) validateFactNumbers(ctx context.Context, tenant, plan int64, fact model.LiveAgentPlanFact, value string, items []model.LiveAgentPlanFact) error {
+	if fact.Scope == nil || fact.Scope.Kind != "product" {
+		return nil
+	}
+	ids := fact.Scope.ProductScopeLinkIDs()
+	if len(ids) < 2 {
+		return nil
+	}
+	links, err := s.store.ListLiveAgentPlanProductLinks(ctx, tenant, plan)
+	if err != nil {
+		// 读不到资料就不拦，宁可放过也不要因为基础设施问题挡住正常保存。
+		return nil
+	}
+	nameByID := map[int64]string{}
+	for _, link := range links {
+		if link.Status == "active" {
+			nameByID[link.ID] = link.LinkKey
+		}
+	}
+	perLink, source := s.groupFactsByLink(items, ids, nameByID, fact.ID)
+	source += appendProductSpecs(perLink, links, wantedLinkKeys(ids, nameByID))
+	if strings.TrimSpace(source) == "" {
+		return nil
+	}
+	missing := unknownDigits(value, source)
+	if len(missing) > 0 {
+		usable := sourceDifferences(source)
+		hint := "资料里没有出现" + strings.Join(missing, "、") + "，也没法从资料里的数字算出这些数"
+		if len(usable) > 0 {
+			hint += "。资料里能算出的差值是：" + strings.Join(usable, "、")
+		}
+		return fmt.Errorf("这条事实的数字对不上：%s。请按这几个链接的商品资料核对后再保存", hint)
+	}
+	// 光看「数字有没有出现过」不够：写成「多了10道菜」时，10 在「10人餐」「10道凉菜」里都出现过，
+	// 但差额结论只能是两个来源数字相减，所以差额语境要单独核对。
+	if claimed, gaps, bad := checkDifferenceClaims(value, source); bad {
+		return fmt.Errorf("这条事实写的差额「%s」算不出来：资料里两两相减得到的差值是 %s，请按商品资料核对后再保存",
+			claimed, strings.Join(gaps, "、"))
+	}
+	return nil
+}
+
+// differenceClaimPattern 抓「多了N」「少了N」「相差N」「省N」「贵N」这类差额结论里的数字。
+var differenceClaimPattern = regexp.MustCompile(`(?:多出|多了|少出|少了|多|少|相差|相差约|省下|省|贵|便宜|高出|低于)[^0-9，。；、]{0,4}([0-9]+(?:\.[0-9]+)?)`)
+
+// checkDifferenceClaims 核对差额语境里的数字是不是两个来源数字的差。
+func checkDifferenceClaims(value, source string) (string, []string, bool) {
+	gapsText := sourceDifferences(source)
+	gaps := map[float64]bool{}
+	for _, g := range gapsText {
+		if f, err := strconv.ParseFloat(g, 64); err == nil {
+			gaps[f] = true
+		}
+	}
+	for _, match := range differenceClaimPattern.FindAllStringSubmatch(value, -1) {
+		f, err := strconv.ParseFloat(match[1], 64)
+		if err != nil {
+			continue
+		}
+		if !gaps[f] {
+			return match[1], gapsText, true
+		}
+	}
+	return "", nil, false
+}
+
+// sourceDifferences 列出资料里能算出的两两差值（去重、按从小到大、最多 8 个），
+// 让用户一眼看到「7」在里面、「10」不在，从而自己发现算错。
+func sourceDifferences(source string) []string {
+	source = strings.ReplaceAll(source, "，", ",")
+	seen := map[float64]bool{}
+	values := []float64{}
+	for _, d := range factNumberPattern.FindAllString(source, -1) {
+		f, err := strconv.ParseFloat(d, 64)
+		if err != nil || seen[f] || f == 0 {
+			continue
+		}
+		seen[f] = true
+		values = append(values, f)
+	}
+	diffs := map[float64]bool{}
+	out := []float64{}
+	for i := 0; i < len(values); i++ {
+		for j := i + 1; j < len(values); j++ {
+			d := values[i] - values[j]
+			if d < 0 {
+				d = -d
+			}
+			if d == 0 || diffs[d] {
+				continue
+			}
+			diffs[d] = true
+			out = append(out, d)
+		}
+	}
+	sort.Float64s(out)
+	if len(out) > 8 {
+		out = out[:8]
+	}
+	texts := make([]string, 0, len(out))
+	for _, d := range out {
+		texts = append(texts, strconv.FormatFloat(d, 'f', -1, 64))
+	}
+	return texts
 }
 
 // wantedLinkKeys 把方案里选中的链接 id 换成 link_key 集合。
