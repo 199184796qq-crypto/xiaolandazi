@@ -90,6 +90,10 @@ type Config struct {
 	// 二次复核（上下文/事实边界/终审/表达约束）。生成正文直接采纳并送 TTS，
 	// 零审核 token、零审核延迟。默认 false（保留完整审核）。
 	SkipReview bool `json:"skip_review,omitempty"`
+	// SelfReference 是主播对自家门店/商品的称呼（默认「咱们家、咱们店」）。
+	// 代播场景可以改成「他们家」，避免主播卖自家东西却说「这家」这种立场错位。
+	// 空值按默认处理，老方案快照不需要迁移。
+	SelfReference string `json:"self_reference,omitempty"`
 }
 type VoiceConfig struct {
 	Source          string  `json:"source"`

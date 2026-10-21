@@ -49,8 +49,8 @@ func TestRealtimeOptionsIsolatedCopiesAndInternalSettingsStayServerOwned(t *test
 	settings := anchorgeneration.Default()
 	settings.Cycle.CredentialID, settings.Cycle.WorkspaceID = "credential", "workspace"
 	settings.Cycle.TTS = &anchorcycle.VoiceConfig{VoiceID: "saved-voice", BufferSeconds: 120}
-	a := applyRealtimeOptions(settings.Cycle, realtimeGenerationOptions{30, 2, 4, 200})
-	b := applyRealtimeOptions(settings.Cycle, realtimeGenerationOptions{90, 3, 6, 500})
+	a := applyRealtimeOptions(settings.Cycle, realtimeGenerationOptions{30, 2, 4, 200, ""})
+	b := applyRealtimeOptions(settings.Cycle, realtimeGenerationOptions{90, 3, 6, 500, "他们家"})
 	if a.TTS == b.TTS || a.TTS == settings.Cycle.TTS {
 		t.Fatal("shared voice config mutated")
 	}

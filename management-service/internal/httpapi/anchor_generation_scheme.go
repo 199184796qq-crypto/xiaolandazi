@@ -110,7 +110,7 @@ func (s *Server) validateRealtimeScheme(ctx context.Context, tenant, plan int64,
 			return err
 		}
 	}
-	if err = (realtimeGenerationOptions{scheme.BufferSeconds, scheme.Config.BodyMin, scheme.Config.BodyMax, scheme.Config.MaxChars}).validate(); err != nil {
+	if err = (realtimeGenerationOptions{scheme.BufferSeconds, scheme.Config.BodyMin, scheme.Config.BodyMax, scheme.Config.MaxChars, scheme.Config.SelfReference}).validate(); err != nil {
 		return err
 	}
 	// StyleID / ScorecardID 为 0 表示本方案未绑主播风格：允许，按自由发挥模式校验。

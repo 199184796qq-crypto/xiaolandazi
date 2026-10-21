@@ -178,6 +178,30 @@ func alignFactsToLink(facts []anchorcycle.HookFact, linkKey string) []anchorcycl
 	return out
 }
 
+// 默认自家称呼：主播播自家门店和商品时的立场口吻。
+const defaultRoomSelfReference = "咱们家、咱们店"
+
+// roomSelfReferenceRule 把「自家称呼」渲染成一条表达铁律。
+//
+// 起因：主播卖自家门店的东西，却写成「这家店」「这家」，观众听来像在点评别人家。
+// 有主播风格时靠表达标尺的自指词带着走，取消风格后没有任何约束，模型就按通用带货习惯写。
+// 代播场景反过来：主播本来就不是这家人，说「他们家」才对，也不能冒充「咱们家」。
+func roomSelfReferenceRule(self string) string {
+	self = strings.TrimSpace(self)
+	if self == "" {
+		self = defaultRoomSelfReference
+	}
+	ownerTone := strings.Contains(self, "咱们") || strings.Contains(self, "我们") || strings.Contains(self, "本店")
+	if !ownerTone {
+		return "本场是代播口吻：讲这家店和它的商品，一律用「" + self + "」；" +
+			"不要混用「咱们家」「我们店」这类自家人口吻，也不要一会儿说「" + self + "」一会儿说「这家」，前后要一致。" +
+			"对比两个链接时用「1号链接」「2号链接」说清是哪一个。"
+	}
+	return "本场是自家门店自播：讲自己的门店和商品，一律用「" + self + "」；" +
+		"不用「这家店」「该店」「这家」「它家」「商家」这类旁观或第三方口吻。" +
+		"对比自家两个链接时用「1号链接」「2号链接」或「咱们这个10人餐」，也不用「这家」。"
+}
+
 // appendBrandingFacts 把公共「品牌背书」事实（地址/门店/停车/环境等）补进事实卡。
 // 用于开场选材轮换到「公共卖点」（Common=true，如门店地址与停车）时：这类事实在商品段
 // 被 ProductFacts 挡掉（只进公共段），导致公共卖点开场没有对应事实可讲（实测 25669）。
@@ -285,6 +309,9 @@ func renderCycleTextMessages(state *anchorcycle.State) ([]agentgateway.Message, 
 		"可说": facts,
 		// 主播腔调卡（表达层）：风格、量化基准、禁用表达，整场不变的人设语气。
 		"主播腔调": voiceSlot,
+		// 直播间规范：主播卖自家东西却写「这家」，等于把自己当外人；
+		// 代播又反过来不能冒充店家。称呼由方案配置，默认自家人播。
+		"直播间规范": roomSelfReferenceRule(state.Config.SelfReference),
 		// 四层「不提」统一文案：未知项正反都不说。
 		"不提": fourLayerNotMentionText,
 		// 红线词表合并进「不提」层：主动规避高频极限词/功效词/逼单词。

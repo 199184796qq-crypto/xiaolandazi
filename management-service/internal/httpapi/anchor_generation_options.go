@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/anchorgeneration"
@@ -14,14 +15,15 @@ import (
 // Only these customer-owned scheduling values may override platform settings.
 // Credentials, model roles, style assets, risk rules and retry limits stay server-owned.
 type realtimeGenerationOptions struct {
-	BufferSeconds int `json:"buffer_seconds"`
-	BodyMin       int `json:"body_min"`
-	BodyMax       int `json:"body_max"`
-	MaxChars      int `json:"max_chars"`
+	BufferSeconds int    `json:"buffer_seconds"`
+	BodyMin       int    `json:"body_min"`
+	BodyMax       int    `json:"body_max"`
+	MaxChars      int    `json:"max_chars"`
+	SelfReference string `json:"self_reference"`
 }
 
 func realtimeOptionsDefaults(settings anchorgeneration.Settings) realtimeGenerationOptions {
-	return realtimeGenerationOptions{settings.MainlineBufferSeconds, settings.Cycle.BodyMin, settings.Cycle.BodyMax, settings.Cycle.MaxChars}
+	return realtimeGenerationOptions{settings.MainlineBufferSeconds, settings.Cycle.BodyMin, settings.Cycle.BodyMax, settings.Cycle.MaxChars, ""}
 }
 
 func (o realtimeGenerationOptions) validate() error {
@@ -33,6 +35,10 @@ func (o realtimeGenerationOptions) validate() error {
 	}
 	if o.MaxChars < 80 || o.MaxChars > 1000 {
 		return errors.New("单段最大字数须为80～1000")
+	}
+	// 自家称呼会整段念给观众听，限长防止有人把整句写进来。
+	if len([]rune(strings.TrimSpace(o.SelfReference))) > 20 {
+		return errors.New("自家称呼须在20字以内")
 	}
 	return nil
 }
@@ -68,6 +74,7 @@ func realtimeOptionsFromContext(context map[string]any, defaults realtimeGenerat
 
 func applyRealtimeOptions(config anchorcycle.Config, options realtimeGenerationOptions) anchorcycle.Config {
 	config.BodyMin, config.BodyMax, config.MaxChars = options.BodyMin, options.BodyMax, options.MaxChars
+	config.SelfReference = strings.TrimSpace(options.SelfReference)
 	if config.TTS != nil {
 		voice := *config.TTS
 		voice.BufferSeconds = options.BufferSeconds
