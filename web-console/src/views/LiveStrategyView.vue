@@ -3661,7 +3661,8 @@ async function generateFullShowVariantVoice(variant: LiveAgentFullShowVariant, r
 }
 
 function adoptFullShowVoiceCandidate(key: string) {
-  if (!contentModeReady.value || isUserAudioContentMode.value) return
+  // 录音主线也允许采用“录音原文生成的克隆 TTS”作为 CUSTOM 音频。
+  if (!contentModeReady.value) return
   const state = fullShowVoiceState(key)
   if (!state.candidate_url) return
   updateFullShowVoiceState(key, {
