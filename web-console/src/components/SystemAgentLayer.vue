@@ -5,6 +5,9 @@ import AgentEnterSendOption from './AgentEnterSendOption.vue'
 import StyleDisplayText from './StyleDisplayText.vue'
 import { useAgentEnterSend } from '../useAgentEnterSend'
 import { useFloatingAgentDrawer, type DrawerResizeEdge } from '../useFloatingAgentDrawer'
+import { isTenantMaintenanceWriteIntent } from '../tenantAgentWriteIntent'
+import { tenantActionContextMatches } from '../tenantAgentActionGuard'
+import { boundRoomIdForPlan } from '../tenantAgentContext'
 import TodoBadge from './TodoBadge.vue'
 import { isInboxIntent, refreshInbox, canUseWorkInbox } from '../workInbox'
 import {
@@ -735,6 +738,8 @@ const liveStrategyMode = ref<LiveStrategyMode>(
     : 'strategy',
 )
 const liveStrategyPlanId = ref(Number(window.localStorage.getItem('system-agent-live-plan-id') || 0))
+const tenantPlanName = ref('')
+const tenantPlans = ref<Array<{ id: number; name: string }>>([])
 const liveStrategyRoomId = ref(Number(window.localStorage.getItem('system-agent-live-room-id') || 0))
 const liveStrategyTenantId = ref(0)
 const planSpeechActive = ref(false)
@@ -2073,13 +2078,13 @@ function latestPendingLiveBenefit() {
   return latestCurrentPendingLiveStrategyAction(new Set(['add_live_benefit']))
 }
 
-function latestCurrentPendingLiveStrategyAction(types: Set<string>) {
+function latestCurrentPendingLiveStrategyAction(types: Set<string>, domain: AgentDomain = 'live-strategy') {
   const roomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
   const planId = liveStrategyPlanId.value
-  const scope = conversationScopeForDomain('live-strategy')
   for (let index = messages.value.length - 1; index >= 0; index -= 1) {
     const message = messages.value[index]
-    if (message.domain !== 'live-strategy' || message.conversationScope !== scope) continue
+    if (message.domain !== domain) continue
+    if (message.conversationScope !== conversationScopeForDomain(message.domain)) continue
     if (message.role === 'user') return null
     const action = message.action
     if (!action || !types.has(action.type)) continue
@@ -2090,7 +2095,7 @@ function latestCurrentPendingLiveStrategyAction(types: Set<string>) {
   return null
 }
 
-function latestPendingLiveStrategyAction() {
+function latestPendingLiveStrategyAction(domain: AgentDomain = 'live-strategy') {
   const supported = new Set([
     'add_live_fact_category',
     'confirm_live_product_link_correction',
@@ -2118,7 +2123,7 @@ function latestPendingLiveStrategyAction() {
     'confirm_live_plan_switch',
     'clarify_live_strategy_intent',
   ])
-  return latestCurrentPendingLiveStrategyAction(supported)
+  return latestCurrentPendingLiveStrategyAction(supported, domain)
 }
 
 function readAdminPolicyContext() {
@@ -3542,6 +3547,83 @@ async function handleUnifiedLiveStrategyIntent(
   return false
 }
 
+async function resolveTenantWriteRoomID(planId: number) {
+  const stored = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+  if (stored > 0) return stored
+  try {
+    const plans = await getLiveAgentPlans()
+    const boundRoomId = boundRoomIdForPlan(plans.items || [], planId)
+    if (boundRoomId > 0) {
+      window.localStorage.setItem('system-agent-live-room-id', String(boundRoomId))
+      return boundRoomId
+    }
+  } catch {
+    // fall through to first accessible room
+  }
+  return resolveLiveStrategyRoomID()
+}
+
+async function tryTenantMaintenanceWrite(
+  domain: AgentDomain,
+  value: string,
+  history: Array<{ role: 'user' | 'agent'; text: string }>,
+) {
+  if (isInternalAgentProfile.value || domain !== 'system') return false
+  if (!isTenantMaintenanceWriteIntent(value)) return false
+
+  let planId = liveStrategyPlanId.value
+  if (!planId) {
+    try {
+      const plans = await getLiveAgentPlans()
+      if ((plans.items || []).length === 1) {
+        planId = plans.items[0].id
+        liveStrategyPlanId.value = planId
+        window.localStorage.setItem('system-agent-live-plan-id', String(planId))
+      }
+    } catch {
+      planId = 0
+    }
+  }
+  if (!planId) {
+    pushAgentMessage(domain, '我识别到你要改方案，但还没有选中方案。请先在直播策略页选中方案，再回来告诉我。')
+    return true
+  }
+
+  const roomId = await resolveTenantWriteRoomID(planId)
+  if (!roomId) {
+    pushAgentMessage(domain, '当前还没有可用直播间，不能执行写入。请先创建或选择直播间。')
+    return true
+  }
+  liveStrategyRoomId.value = roomId
+  window.localStorage.setItem('system-agent-live-room-id', String(roomId))
+
+  try {
+    const interpreted = await interpretLiveStrategyIntent(roomId, {
+      message: value,
+      plan_id: planId,
+      current_mode: liveStrategyMode.value,
+      history,
+    })
+    if (interpreted.kind === 'clarify') {
+      const clarification = buildLiveStrategyIntentClarification(
+        value,
+        roomId,
+        planId,
+        liveStrategyMode.value,
+        [],
+      )
+      if (clarification) {
+        pushAgentMessage(domain, interpreted.reply || '我还不能唯一确定你要改什么，请先选一个方向。', clarification)
+        return true
+      }
+    }
+    return await handleUnifiedLiveStrategyIntent(domain, roomId, planId, value, interpreted)
+  } catch {
+    pushAgentMessage(domain, '没有执行写入，请稍后重试；如果反复失败，请把问题提交给平台。')
+    return true
+  }
+}
+
 async function executeLiveProductLinkCommand(
   planId: number,
   value: string,
@@ -4119,6 +4201,36 @@ async function loadSystemAgentContext() {
   }
 }
 
+async function loadTenantPlanName() {
+  if (isInternalAgentProfile.value) {
+    tenantPlans.value = []
+    tenantPlanName.value = ''
+    return
+  }
+  try {
+    const result = await getLiveAgentPlans()
+    tenantPlans.value = (result.items || [])
+      .filter((item) => item.status === 'active')
+      .map((item) => ({ id: item.id, name: item.name }))
+    if (!liveStrategyPlanId.value && tenantPlans.value.length === 1) {
+      liveStrategyPlanId.value = tenantPlans.value[0].id
+      window.localStorage.setItem('system-agent-live-plan-id', String(liveStrategyPlanId.value))
+    }
+    const matched = tenantPlans.value.find((item) => item.id === liveStrategyPlanId.value)
+    tenantPlanName.value = matched?.name || ''
+  } catch {
+    tenantPlans.value = []
+    tenantPlanName.value = ''
+  }
+}
+
+function selectTenantPlan(event: Event) {
+  const planId = Number((event.target as HTMLSelectElement).value || 0)
+  liveStrategyPlanId.value = planId
+  window.localStorage.setItem('system-agent-live-plan-id', String(planId))
+  tenantPlanName.value = tenantPlans.value.find((item) => item.id === planId)?.name || ''
+}
+
 onMounted(() => {
   window.addEventListener('system-agent:prefill', handleExternalPrefill)
   window.addEventListener('system-config-updated', loadAgentBranding)
@@ -4131,7 +4243,13 @@ onMounted(() => {
   window.addEventListener('resize', handleDockViewportResize)
   void loadAgentBranding()
   void loadSystemAgentContext()
+  void loadTenantPlanName()
 })
+
+watch(
+  () => [liveStrategyPlanId.value, isInternalAgentProfile.value] as const,
+  () => { void loadTenantPlanName() },
+)
 
 watch(
   () => actor.value?.user_id || 0,
@@ -4141,6 +4259,7 @@ watch(
     imagePreview.value = null
     imageAttachmentError.value = ''
     restoreAgentChatHistory(userId)
+    void loadTenantPlanName()
   },
   { immediate: true },
 )
@@ -5062,6 +5181,40 @@ async function send() {
   if (!rawValue || busy.value) return
 
   const domain = currentDomain.value
+  if (domain === 'system') {
+    const pendingAction = latestPendingLiveStrategyAction('system')
+    if (
+      pendingAction?.action &&
+      !pendingAction.action.type.startsWith('clarify_') &&
+      isLiveStrategyConfirmIntent(rawValue)
+    ) {
+      messages.value.push({
+        role: 'user',
+        domain,
+        text: rawValue,
+        conversationScope: conversationScopeForDomain(domain),
+      })
+      input.value = ''
+      dismissedSuggestionInput.value = ''
+      drawerOpen.value = true
+      await executeAction(pendingAction)
+      return
+    }
+    if (pendingAction?.action && isLiveStrategyCancelIntent(rawValue)) {
+      messages.value.push({
+        role: 'user',
+        domain,
+        text: rawValue,
+        conversationScope: conversationScopeForDomain(domain),
+      })
+      pendingAction.action = undefined
+      input.value = ''
+      dismissedSuggestionInput.value = ''
+      drawerOpen.value = true
+      pushAgentMessage(domain, '已取消，本次操作没有写入数据库。')
+      return
+    }
+  }
   if (domain === 'live-strategy') {
     if (isLiveStrategyCancelIntent(rawValue)) {
       const pendingAction = latestPendingLiveStrategyAction()
@@ -5344,6 +5497,7 @@ async function send() {
   busyDomain.value = domain
 
   try {
+    if (domain === 'system' && await tryTenantMaintenanceWrite(domain, value, history)) return
     if (
       isPolicyLearningAbsorbIntent(value) &&
       (domain === 'live-policy-admin' ||
@@ -5421,6 +5575,7 @@ async function send() {
         history: systemHistory,
         current_path: route.fullPath,
         image_urls: imageURLs,
+        plan_id: liveStrategyPlanId.value || 0,
         navigation: navigationTargets.value.map((item) => ({
           title: item.title,
           to: item.to,
@@ -5985,11 +6140,12 @@ async function chooseLiveStrategyIntent(
   }
 
   message.action = undefined
+  const selectionDomain = message.domain
   messages.value.push({
     role: 'user',
-    domain: 'live-strategy',
+    domain: selectionDomain,
     text: '我选择：' + option.label,
-    conversationScope: conversationScopeForDomain('live-strategy'),
+    conversationScope: conversationScopeForDomain(selectionDomain),
   })
   liveStrategyMode.value = selectedMode
   window.localStorage.setItem('system-agent-live-mode', selectedMode)
@@ -6001,7 +6157,7 @@ async function chooseLiveStrategyIntent(
       originalMessage +
       '\n\n【已确认意图】' + option.label +
       '\n请只按这个功能继续理解，不要执行其他模块的写入；需要写数据库时仍先让我确认。'
-    const history = historyPayload('live-strategy')
+    const history = historyPayload(selectionDomain)
     const recognizedImages = selectedImages.length
       ? await recognizeLiveStrategyImages(planId, roomId, selectedImages)
       : []
@@ -6038,12 +6194,36 @@ async function chooseLiveStrategyIntent(
       return
     }
 
-    const response = await chatLiveAgent(roomId, {
-      message: recognizedMessage,
-      history,
-    })
+    if (selectionDomain === 'system') {
+      const confirmed = await interpretLiveStrategyIntent(roomId, {
+        message: recognizedMessage,
+        plan_id: planId,
+        current_mode: selectedMode,
+        history,
+      })
+      const handled = await handleUnifiedLiveStrategyIntent(
+        selectionDomain,
+        roomId,
+        planId,
+        originalMessage,
+        confirmed,
+      )
+      if (handled) return
+    }
+
+    const response = selectionDomain === 'system'
+      ? await chatClientAgent({
+          message: recognizedMessage,
+          history,
+          current_path: route.fullPath,
+          plan_id: planId,
+        })
+      : await chatLiveAgent(roomId, {
+          message: recognizedMessage,
+          history,
+        })
     pushAgentMessage(
-      message.domain,
+      selectionDomain,
       response.reply + '\n\n已按“' + option.label + '”理解这句话；本次没有自动写入其它模块。',
     )
   } catch (error) {
@@ -6101,6 +6281,15 @@ function chooseLiveBenefitUpdateField(
 async function executeAction(message: ChatMessage) {
   const action = message.action
   if (!action || executing.value) return
+
+  if (message.domain === 'system') {
+    const currentRoomId = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
+    if (!tenantActionContextMatches(action, liveStrategyPlanId.value, currentRoomId)) {
+      message.action = undefined
+      pushAgentMessage(message.domain, '你已经切换了方案或直播间，这条旧确认已失效，没有执行。请在当前方案重新发起。')
+      return
+    }
+  }
 
   if (unifiedLiveStrategyActionTypes.has(action.type)) {
     const roomId = Number(action.payload.room_id || 0)
@@ -7157,6 +7346,14 @@ async function copyCredential(credential?: InitialCredential) {
             <span v-if="!isTerminalCustomer" class="section-kicker">AI COPILOT · {{ contextLabel }}</span>
             <h3>{{ assistantName }}</h3>
             <small v-if="isTerminalCustomer" class="terminal-agent-subtitle" lang="en">XIAOLAN LIVE COMPANION</small>
+            <label v-if="isTerminalCustomer && tenantPlans.length > 1" class="tenant-plan-picker">
+              <span>当前方案</span>
+              <select :value="liveStrategyPlanId" @change="selectTenantPlan">
+                <option :value="0">选择方案</option>
+                <option v-for="plan in tenantPlans" :key="plan.id" :value="plan.id">{{ plan.name }}</option>
+              </select>
+            </label>
+            <small v-else-if="isTerminalCustomer && tenantPlanName" class="tenant-agent-context">当前方案：{{ tenantPlanName }}</small>
             <div v-if="canUsePlanSpeech" class="plan-agent-mode-switch" aria-label="智能体模式">
               <button type="button" :aria-pressed="!planSpeechActive" :disabled="busy || executing || planSpeechBusy" @click="switchPlanSpeech(false)">方案配置</button>
               <button type="button" :aria-pressed="planSpeechActive" :disabled="busy || executing || planSpeechBusy" @click="switchPlanSpeech(true)">{{ planSpeechActive ? '话术智能体 · 互动测试' : '切换到话术智能体' }}</button>
@@ -7891,6 +8088,10 @@ async function copyCredential(credential?: InitialCredential) {
 .terminal-agent-drawer > header h3{font-size:18px!important;line-height:1.5;margin:0}
 .terminal-agent-drawer > header > div{min-width:0}
 .terminal-agent-drawer .terminal-agent-subtitle{display:block;margin-top:4px;color:#65748e;font-size:14px;line-height:1.4;font-weight:500;letter-spacing:.06em;overflow-wrap:anywhere}
+.terminal-agent-drawer .tenant-agent-context{display:block;margin-top:4px;color:#4a5570;font-size:14px;line-height:1.4;font-weight:500;overflow-wrap:anywhere}
+.terminal-agent-drawer .tenant-plan-picker{display:flex;align-items:center;gap:6px;margin-top:4px;color:#4a5570;font-size:14px;line-height:1.4;font-weight:500;min-width:0}
+.terminal-agent-drawer .tenant-plan-picker>span{flex:none}
+.terminal-agent-drawer .tenant-plan-picker>select{min-width:0;max-width:100%;height:28px;padding:0 22px 0 8px;border:1px solid rgba(120,134,180,.28);border-radius:7px;background:#fff;color:#3f4b63;font:inherit;font-weight:600;text-overflow:ellipsis}
 .terminal-agent-drawer > footer{grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px}
 .terminal-agent-drawer > footer .system-agent-composer-field > textarea{display:block;margin:0}
 .terminal-agent-drawer > footer > .primary-button{align-self:center;justify-self:end;min-width:76px;height:48px;min-height:48px;margin:0;padding:0 18px;border-radius:12px;white-space:nowrap;transform:none}

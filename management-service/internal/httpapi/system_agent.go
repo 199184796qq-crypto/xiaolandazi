@@ -30,6 +30,7 @@ type systemAgentChatInput struct {
 	CurrentPath string                         `json:"current_path,omitempty"`
 	Navigation  []systemAgentNavigationContext `json:"navigation,omitempty"`
 	ImageURLs   []string                       `json:"image_urls,omitempty"`
+	PlanID      int64                          `json:"plan_id,omitempty"`
 }
 
 type systemAgentEmployeeDraft struct {
@@ -236,6 +237,353 @@ func clientAgentCapabilities(actor model.Actor) []string {
 	return []string{"终端业务咨询", "打开终端功能", "我的直播间与策略"}
 }
 
+func normalizeClientAgentQuery(message string) string {
+	return strings.ToLower(strings.NewReplacer(
+		" ", "", "\t", "", "\r", "", "\n", "",
+		"：", "", ":", "", "，", "", ",", "", "。", "", "？", "", "?", "", "！", "", "!", "",
+	).Replace(strings.TrimSpace(message)))
+}
+
+func containsAnyAgentQuery(value string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(value, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func clientAgentRegionInMessage(message string) string {
+	for _, region := range []string{
+		"西藏", "新疆", "内蒙古", "青海", "宁夏", "甘肃", "海南", "港澳", "台湾", "偏远",
+		"安徽", "北京", "上海", "天津", "重庆", "河北", "山西", "辽宁", "吉林", "黑龙江",
+		"江苏", "浙江", "福建", "江西", "山东", "河南", "湖北", "湖南", "广东", "广西",
+		"四川", "贵州", "云南", "陕西",
+	} {
+		if strings.Contains(message, region) {
+			return region
+		}
+	}
+	return ""
+}
+
+func clientAgentMaintenanceQueryKind(message string) string {
+	normalized := normalizeClientAgentQuery(message)
+	if normalized == "" {
+		return ""
+	}
+	if containsAnyAgentQuery(normalized, "打开", "进入", "前往", "跳到", "页面") {
+		return ""
+	}
+	switch {
+	case containsAnyAgentQuery(normalized, "新增", "添加", "加一条", "修改", "改成", "删除", "删掉", "停用", "保存", "设置", "换方案", "切换方案"):
+		return "write"
+	case containsAnyAgentQuery(normalized, "缺什么", "缺哪些", "还缺", "缺失", "缺事实"):
+		return "missing"
+	case containsAnyAgentQuery(normalized, "事实", "依据", "知识", "卖点"):
+		return "facts"
+	case containsAnyAgentQuery(normalized, "包邮", "邮费", "运费", "快递"):
+		return "shipping"
+	case containsAnyAgentQuery(normalized, "福利", "活动", "优惠", "券", "赠品"):
+		return "benefits"
+	case containsAnyAgentQuery(normalized, "商品", "链接", "产品", "规格", "价格"):
+		return "products"
+	case containsAnyAgentQuery(normalized, "我的方案", "方案", "介绍", "概况", "有什么"):
+		return "summary"
+	default:
+		return ""
+	}
+}
+
+func formatClientAgentFactList(facts []model.LiveAgentPlanFact) string {
+	active := make([]model.LiveAgentPlanFact, 0, len(facts))
+	for _, fact := range facts {
+		if fact.Status == "active" || fact.Status == "" {
+			active = append(active, fact)
+		}
+	}
+	if len(active) == 0 {
+		return "当前方案还没有可用事实。"
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("当前方案共 %d 条可用事实：\n", len(active)))
+	limit := len(active)
+	if limit > 20 {
+		limit = 20
+	}
+	for _, fact := range active[:limit] {
+		key := strings.TrimSpace(fact.Key)
+		if key == "" {
+			key = "未命名事实"
+		}
+		b.WriteString(fmt.Sprintf("- [%s] %s：%s\n", strings.TrimSpace(fact.Category), key, strings.TrimSpace(fact.Value)))
+	}
+	if len(active) > limit {
+		b.WriteString(fmt.Sprintf("……还有 %d 条未列出。", len(active)-limit))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatClientAgentBenefitList(benefits []model.LiveAgentPlanBenefit) string {
+	active := make([]model.LiveAgentPlanBenefit, 0, len(benefits))
+	for _, benefit := range benefits {
+		if benefit.Status == "active" || benefit.Status == "" {
+			active = append(active, benefit)
+		}
+	}
+	if len(active) == 0 {
+		return "当前方案还没有生效中的活动福利。"
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("当前方案有 %d 条生效中的活动福利：\n", len(active)))
+	for _, benefit := range active {
+		link := strings.TrimSpace(benefit.LinkKey)
+		if link != "" {
+			link += "号链接"
+		}
+		parts := make([]string, 0, 3)
+		if benefit.ActivityPrice != "" {
+			parts = append(parts, "活动价 "+benefit.ActivityPrice)
+		}
+		if benefit.Gift != "" {
+			parts = append(parts, "赠 "+benefit.Gift)
+		}
+		if benefit.Activity != "" {
+			parts = append(parts, benefit.Activity)
+		}
+		if len(parts) == 0 {
+			parts = append(parts, "已生效")
+		}
+		if link == "" {
+			link = "公共福利"
+		}
+		b.WriteString(fmt.Sprintf("- %s：%s\n", link, strings.Join(parts, "；")))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatClientAgentProductList(products []model.LiveAgentPlanProductLink) string {
+	active := make([]model.LiveAgentPlanProductLink, 0, len(products))
+	for _, product := range products {
+		if product.Status == "active" || product.Status == "" {
+			active = append(active, product)
+		}
+	}
+	if len(active) == 0 {
+		return "当前方案还没有可用商品链接。"
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("当前方案有 %d 个商品链接：\n", len(active)))
+	for _, product := range active {
+		name := strings.TrimSpace(product.ProductName)
+		if name == "" {
+			name = "未命名商品"
+		}
+		parts := []string{name}
+		if product.Spec != "" {
+			parts = append(parts, "规格 "+product.Spec)
+		}
+		if product.DailyPrice != "" {
+			parts = append(parts, "日常价 "+product.DailyPrice)
+		}
+		b.WriteString(fmt.Sprintf("- %s号链接：%s\n", product.LinkKey, strings.Join(parts, "；")))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+type clientAgentPublishedContext struct {
+	AnchorGeneration struct {
+		ProductFocus struct {
+			Facts []struct {
+				Text string `json:"text"`
+			} `json:"facts"`
+			Products []struct {
+				Facts []struct {
+					Text string `json:"text"`
+				} `json:"facts"`
+			} `json:"products"`
+		} `json:"product_focus"`
+	} `json:"anchor_generation"`
+}
+
+func (s *Server) publishedShippingBenefits(ctx context.Context, tenantID int64, plan model.LiveAgentPlan) []string {
+	if len(plan.RoomIDs) == 0 {
+		return nil
+	}
+	published, err := s.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, tenantID, plan.RoomIDs[0])
+	if err != nil || published.GenerationContext == nil {
+		return nil
+	}
+	raw, err := json.Marshal(published.GenerationContext)
+	if err != nil {
+		return nil
+	}
+	var parsed clientAgentPublishedContext
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	result := make([]string, 0, 4)
+	add := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" || seen[text] || (!strings.Contains(text, "有效福利") && !strings.Contains(text, "包邮")) {
+			return
+		}
+		seen[text] = true
+		result = append(result, text)
+	}
+	for _, fact := range parsed.AnchorGeneration.ProductFocus.Facts {
+		add(fact.Text)
+	}
+	for _, product := range parsed.AnchorGeneration.ProductFocus.Products {
+		for _, fact := range product.Facts {
+			add(fact.Text)
+		}
+	}
+	if len(result) > 10 {
+		result = result[:10]
+	}
+	return result
+}
+
+func formatPublishedShippingBenefits(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("当前方案发布快照里的包邮福利：\n")
+	for _, item := range items {
+		b.WriteString("- " + item + "\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func (s *Server) clientAgentPlanContext(ctx context.Context, tenantID, planID int64) string {
+	if planID <= 0 {
+		return ""
+	}
+	plan, err := s.store.GetLiveAgentPlan(ctx, tenantID, planID)
+	if err != nil {
+		return ""
+	}
+	facts, _ := s.store.ListLiveAgentPlanFacts(ctx, tenantID, planID)
+	benefits, _ := s.store.ListLiveAgentPlanBenefits(ctx, tenantID, planID)
+	products, _ := s.store.ListLiveAgentPlanProductLinks(ctx, tenantID, planID)
+	var b strings.Builder
+	b.WriteString("当前方案：" + plan.Name + "\n")
+	b.WriteString(formatClientAgentProductList(products) + "\n")
+	b.WriteString(formatClientAgentBenefitList(benefits) + "\n")
+	if published := s.publishedShippingBenefits(ctx, tenantID, plan); len(published) > 0 {
+		b.WriteString("【包邮以发布快照为准】\n")
+		b.WriteString(formatPublishedShippingBenefits(published) + "\n")
+	}
+	b.WriteString(formatClientAgentFactList(facts))
+	return strings.TrimSpace(b.String())
+}
+
+func (s *Server) clientAgentMaintenanceReply(ctx context.Context, tenantID, planID int64, message string) (string, bool) {
+	kind := clientAgentMaintenanceQueryKind(message)
+	if kind == "" {
+		return "", false
+	}
+	if kind == "write" {
+		return "我识别到这是修改请求。请把要改的对象和字段说清楚，例如“新增一条事实：安徽包邮”或“把2号链接包邮改成不包邮”；我会先生成确认卡，确认后才写入。", true
+	}
+	if planID <= 0 {
+		if kind == "summary" || kind == "facts" || kind == "benefits" || kind == "products" || kind == "missing" {
+			plans, err := s.store.ListLiveAgentPlans(ctx, tenantID)
+			if err != nil {
+				return "读取方案列表失败，请稍后再试。", true
+			}
+			if len(plans) == 0 {
+				return "当前账号还没有直播方案，请先在直播策略页创建一个方案。", true
+			}
+			var b strings.Builder
+			b.WriteString("我还没有拿到当前方案。你可以先在直播策略页选中方案，再回来问我；当前账号有这些方案：\n")
+			for index, plan := range plans {
+				if index >= 10 {
+					break
+				}
+				b.WriteString(fmt.Sprintf("- %s\n", plan.Name))
+			}
+			return strings.TrimSpace(b.String()), true
+		}
+		return "", false
+	}
+	plan, err := s.store.GetLiveAgentPlan(ctx, tenantID, planID)
+	if err != nil {
+		return "当前方案不存在，或不属于当前账号。请重新选择方案后再问。", true
+	}
+	switch kind {
+	case "facts":
+		facts, err := s.store.ListLiveAgentPlanFacts(ctx, tenantID, planID)
+		if err != nil {
+			return "读取方案事实失败，请稍后再试。", true
+		}
+		return "当前方案：" + plan.Name + "\n" + formatClientAgentFactList(facts), true
+	case "benefits":
+		benefits, err := s.store.ListLiveAgentPlanBenefits(ctx, tenantID, planID)
+		if err != nil {
+			return "读取活动福利失败，请稍后再试。", true
+		}
+		return "当前方案：" + plan.Name + "\n" + formatClientAgentBenefitList(benefits), true
+	case "shipping":
+		region := clientAgentRegionInMessage(message)
+		if published := formatPublishedShippingBenefits(s.publishedShippingBenefits(ctx, tenantID, plan)); published != "" {
+			if region != "" {
+				return fmt.Sprintf("关于%s，当前方案没有单独的地区包邮/运费规则，不能确认；以下是发布快照里的包邮福利，具体以页面或客服为准：\n%s",
+					region, published), true
+			}
+			return published + "\n具体地区/链接范围以页面或客服为准。", true
+		}
+		benefits, err := s.store.ListLiveAgentPlanBenefits(ctx, tenantID, planID)
+		if err != nil {
+			return "读取活动福利失败，请稍后再试。", true
+		}
+		if region != "" {
+			return fmt.Sprintf("关于%s，当前方案没有单独的地区包邮/运费规则，不能确认；以下是方案福利记录，具体以页面或客服为准：\n%s",
+				region, formatClientAgentBenefitList(benefits)), true
+		}
+		return "当前方案福利记录如下，具体地区/链接范围以页面或客服为准：\n" + formatClientAgentBenefitList(benefits), true
+	case "products":
+		products, err := s.store.ListLiveAgentPlanProductLinks(ctx, tenantID, planID)
+		if err != nil {
+			return "读取商品链接失败，请稍后再试。", true
+		}
+		return "当前方案：" + plan.Name + "\n" + formatClientAgentProductList(products), true
+	case "missing":
+		facts, err := s.store.ListLiveAgentPlanFacts(ctx, tenantID, planID)
+		if err != nil {
+			return "读取方案事实失败，请稍后再试。", true
+		}
+		return "当前方案：" + plan.Name + "。暂时没有配置行业必填字段清单，我还不能判断“缺什么”；现有事实如下：\n" + formatClientAgentFactList(facts), true
+	case "summary":
+		facts, _ := s.store.ListLiveAgentPlanFacts(ctx, tenantID, planID)
+		benefits, _ := s.store.ListLiveAgentPlanBenefits(ctx, tenantID, planID)
+		products, _ := s.store.ListLiveAgentPlanProductLinks(ctx, tenantID, planID)
+		activeFacts, activeBenefits, activeProducts := 0, 0, 0
+		for _, item := range facts {
+			if item.Status == "active" || item.Status == "" {
+				activeFacts++
+			}
+		}
+		for _, item := range benefits {
+			if item.Status == "active" || item.Status == "" {
+				activeBenefits++
+			}
+		}
+		for _, item := range products {
+			if item.Status == "active" || item.Status == "" {
+				activeProducts++
+			}
+		}
+		return fmt.Sprintf("当前方案：%s\n- 可用事实：%d 条\n- 生效福利：%d 条\n- 商品链接：%d 个\n\n%s",
+			plan.Name, activeFacts, activeBenefits, activeProducts, formatClientAgentFactList(facts)), true
+	default:
+		return "", false
+	}
+}
+
 func clientAgentNavigationAllowed(actor model.Actor, target systemAgentNavigationContext) bool {
 	path := strings.TrimSpace(target.To)
 	if index := strings.Index(path, "?"); index >= 0 {
@@ -432,6 +780,14 @@ func (s *Server) clientAgentChat(w http.ResponseWriter, r *http.Request) {
 	if actor.TenantID != nil {
 		tenantID = *actor.TenantID
 	}
+	if reply, handled := s.clientAgentMaintenanceReply(r.Context(), tenantID, input.PlanID, input.Message); handled {
+		writeAgentChatOutput(w, http.StatusOK, systemAgentChatOutput{
+			State:        agentStateResponded,
+			Reply:        reply,
+			Capabilities: capabilities,
+		})
+		return
+	}
 	understandingPolicy, err := s.store.ResolveAgentUnderstandingPolicy(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取智能体理解策略失败")
@@ -450,6 +806,9 @@ func (s *Server) clientAgentChat(w http.ResponseWriter, r *http.Request) {
 	if agentunderstanding.UseModel(understandingPolicy.AgentUnderstandingPolicy, programResolved, programIntent.Confidence) {
 		assistantName := s.configuredAgentName(r.Context(), false)
 		clientInstruction := s.store.AgentPromptValue(r.Context(), "client.agent.system", "只处理当前外部用户自己的业务并严格返回 JSON。")
+		if planContext := s.clientAgentPlanContext(r.Context(), tenantID, input.PlanID); planContext != "" {
+			clientInstruction = strings.TrimSpace(clientInstruction + "\n\n【当前方案事实】\n" + planContext)
+		}
 		prompt, promptErr := buildClientAgentPrompt(clientInstruction, actor, input.Navigation, input.CurrentPath, assistantName)
 		if promptErr != nil {
 			writeError(w, http.StatusInternalServerError, "准备终端智能体上下文失败")

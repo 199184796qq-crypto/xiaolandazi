@@ -3350,6 +3350,7 @@ export interface AgentChatPayload {
   current_path?: string
   navigation?: Array<{ title: string; to: string; section?: string }>
   image_urls?: string[]
+  plan_id?: number
 }
 
 export function getClientAgentContext() {
