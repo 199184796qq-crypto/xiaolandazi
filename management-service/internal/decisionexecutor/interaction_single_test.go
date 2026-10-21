@@ -111,6 +111,7 @@ func TestDirectQuestionWithFactsUsesOneCallAndNoGreeting(t *testing.T) {
 	worker := &Worker{agent: agent}
 	item := decisionItem{
 		MissionKind:     "reply_question",
+		SampleQuestions: []string{"3号和6号有什么区别"},
 		resolvedAddress: "小陈",
 		SelectedContentPlan: &contentstrategy.Selection{
 			Facts: []contentstrategy.Fact{{ID: "F1", Text: "3号和6号主要差在份量和配菜"}},
@@ -119,6 +120,9 @@ func TestDirectQuestionWithFactsUsesOneCallAndNoGreeting(t *testing.T) {
 	got := worker.generateSingleInteractionText(context.Background(), model.LiveRuntimeSession{}, item)
 	if agent.calls != 1 {
 		t.Fatalf("fact question should call model once, calls=%d", agent.calls)
+	}
+	if len(agent.requests) != 1 || !strings.Contains(agent.requests[0].Messages[1].Content, "观众问题：3号和6号有什么区别") {
+		t.Fatalf("direct answer prompt missing question: %#v", agent.requests)
 	}
 	if !strings.HasPrefix(got, "小陈，") || !strings.Contains(got, "份量和配菜") {
 		t.Fatalf("got %q", got)

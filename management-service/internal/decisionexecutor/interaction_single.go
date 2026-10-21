@@ -148,12 +148,14 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	if voiceCard != "" {
 		system += "\n\n【主播腔调】按下面的说话风格、语气词、口头禅自然表达，让人一听就是这位主播：\n" + voiceCard
 	}
-	system += "\n\n【必说】开头用称呼“" + address + "”，随后直接给答案；不要重复称呼。" +
+	system += "\n\n【必说】开头用称呼“" + address + "”，随后直接回答观众问题；不要重复称呼。" +
+		"\n只选与问题直接相关的事实，不要罗列无关事实，不要输出事实编号。" +
 		"\n禁止出现“问得好、问得特别好、问得特别关键、问得真细致、问到点子上了、我这就、马上、稍等”等评价问题或让观众等待的说法。" +
 		"\n【可说】只使用下方答案事实，不编造事实里没有的信息。" +
 		"\n【不提】不要输出内部标题、策略名称、字段名或分析过程。" +
 		"\n【改写】答案用口语自然表达，事实里的价格、规格、时效不得改动。"
-	user := "【当前答案事实】\n" + answerText +
+	question := strings.TrimSpace(primaryQuestion(item))
+	user := "观众问题：" + question + "\n【当前答案事实】\n" + answerText +
 		"\n\n请直接输出一句自然、简短、可播出的回答（称呼 + 答案，不要再称呼第二次）。"
 	text := w.completeWelcome(ctx, session, "interaction_single_direct_answer", system, user, 100)
 	text = stripAwkwardAnswerLead(strings.TrimSpace(text))
