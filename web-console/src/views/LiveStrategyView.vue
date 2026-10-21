@@ -1067,6 +1067,12 @@ function instructionValue(style: LiveAnchorStyle, prefix: string) {
 }
 
 function loadAnchorStyleProfileDraft(style: LiveAnchorStyle) {
+  const card = style.style_card
+  const hasCard = !!card?.delivery_spec?.instructions?.length
+  if (styleSourceMode(style) === 'card' && !hasCard) {
+    anchorStyleProfileDraft.value = defaultAnchorStyleDraft()
+    return
+  }
   const spec = style.profile?.delivery_spec
   const habits = spec?.literal_habits || []
   const valuesOf = (kind: string) => habits.filter((item) => item.kind === kind).map((item) => item.text).filter(Boolean)
@@ -1098,14 +1104,14 @@ function defaultAnchorStyleDraft(): AnchorStyleProfileDraft {
   return {
     tone: '自然、口语、像在跟一个人说话',
     audience_terms: '朋友们、老乡们',
-    self_terms: '',
-    catchphrases: '',
+    self_terms: '我、咱们',
+    catchphrases: '我给你说嘛',
     avoid_terms: '家人们、宝子、亲爱的',
     pace: 'short',
     warmth: 60,
     expertise: 55,
     promotion: 40,
-    dialect: '',
+    dialect: '普通话',
     extra: '不主动推荐链接；事实没有的不补、不猜。',
   }
 }
@@ -1198,11 +1204,19 @@ async function saveAnchorSourceMode(style: LiveAnchorStyle, mode: 'card' | 'samp
   reusableAnchorStyleBusy.value = true
   reusableAnchorStyleError.value = ''
   try {
-    const updated = await updateLiveAnchorStyle(style.id, {
-      name: style.name,
-      description: style.description || '',
-      style_source_mode: mode,
-    }, tenant)
+    const hasCard = !!style.style_card?.delivery_spec?.instructions?.length
+    const updated = await updateLiveAnchorStyle(style.id, mode === 'card' && !hasCard
+      ? {
+          name: style.name,
+          description: style.description || '',
+          style_source_mode: 'card',
+          style_card: buildAnchorStyleCardProfile(style, defaultAnchorStyleDraft()),
+        }
+      : {
+          name: style.name,
+          description: style.description || '',
+          style_source_mode: mode,
+        }, tenant)
     if (tenant !== activeRoom.value?.tenant_id || room !== activeRoomId.value) return
     selectedReusableAnchorStyle.value = updated
     reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
@@ -7614,7 +7628,7 @@ onBeforeUnmount(() => {
 
               <div v-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'style'" class="reusable-anchor-style-tab-panel anchor-style-profile-panel" aria-label="主播风格参数">
                 <div class="anchor-style-profile-head">
-                  <div><strong>主播风格</strong><small>不用导入话术，直接设定这个主播怎么说话；保存后参与测试和方案生成，事实、价格、链接仍由方案决定。</small></div>
+                  <div><strong>主播风格</strong></div>
                 </div>
                 <div class="anchor-style-profile-grid">
                   <label class="wide"><span>一句话人设</span><input v-model="anchorStyleProfileDraft.tone" maxlength="120" /></label>
@@ -7633,7 +7647,6 @@ onBeforeUnmount(() => {
                 <label class="anchor-style-profile-extra"><span>补充说明</span><textarea v-model="anchorStyleProfileDraft.extra" rows="3" maxlength="600"></textarea></label>
                 <div class="anchor-style-profile-actions">
                   <button type="button" class="primary-button" :disabled="anchorStyleProfileSaving" @click="saveAnchorStyleProfile">{{ anchorStyleProfileSaving ? '保存中…' : '保存主播风格参数' }}</button>
-                  <small>保存后不会改事实、价格、库存、链接或互动策略；只影响“怎么说”。</small>
                 </div>
               </div>
 
