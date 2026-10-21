@@ -85,8 +85,14 @@ func TestSavedTaskPreparationKeepsLegacySharedScopes(t *testing.T) {
 func TestUnknownRuntimeFailureCannotClaimTTSError(t *testing.T) {
 	for _, cause := range []error{nil, context.DeadlineExceeded} {
 		failure := publicLiveFailure(10, cause)
-		if strings.Contains(failure.Message, "声音生成失败") || !strings.Contains(failure.Message, "程序运行异常") {
+		if strings.Contains(failure.Message, "声音生成失败") || failure.Stage == "声音合成" {
 			t.Fatal(failure)
+		}
+		if cause == nil && !strings.Contains(failure.Message, "未提供具体错误详情") {
+			t.Fatal("unknown failure must explicitly say details are missing", failure)
+		}
+		if cause != nil && (!strings.Contains(failure.Message, cause.Error()) || failure.Code != "request_timeout") {
+			t.Fatal("actual cause must survive without inventing a TTS origin", failure)
 		}
 	}
 }
