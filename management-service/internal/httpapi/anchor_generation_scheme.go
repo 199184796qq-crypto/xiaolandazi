@@ -6,6 +6,7 @@ import (
 	"errors"
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/anchorstylescore"
+	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
 
@@ -22,6 +23,7 @@ type liveAnchorScheme struct {
 	BufferSeconds         int                        `json:"buffer_seconds"`
 	Version               int                        `json:"version"`
 	StyleID               int64                      `json:"style_id"`
+	BoundStyleID          int64                      `json:"bound_style_id,omitempty"`
 	ScorecardID           int64                      `json:"scorecard_id"`
 	WheelID               int64                      `json:"wheel_id"`
 	Config                anchorcycle.Config         `json:"config"`
@@ -84,7 +86,13 @@ func (s *Server) captureRealtimeScheme(ctx context.Context, tenant, plan int64, 
 	config.MaxCycles = 0
 	config.Rolling = true
 	input.GenerationContext["anchor_generation_options"] = options
-	scheme := liveAnchorScheme{Version: 1, WheelID: wheel.ID, Config: config, BufferSeconds: options.BufferSeconds}
+	boundStyleID := int64(0)
+	if bound, bindErr := s.store.GetLiveAnchorStyleForPlan(ctx, tenant, plan); bindErr == nil {
+		boundStyleID = bound.ID
+	} else if !errors.Is(bindErr, appdb.ErrLiveAnchorStyleNotFound) {
+		return bindErr
+	}
+	scheme := liveAnchorScheme{Version: 1, WheelID: wheel.ID, Config: config, BufferSeconds: options.BufferSeconds, BoundStyleID: boundStyleID}
 	if meta.ID != 0 {
 		scheme.StyleID = meta.ID
 		scheme.StyleMD = meta.EffectiveMetaPromptMD()

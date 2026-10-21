@@ -125,7 +125,7 @@ func (s *Server) createLiveAnchorRun(ctx context.Context, tenant, room, runtimeI
 	// 否则即使绑定已解除，本场仍会按旧主播的语气生成（表现为取消了还满口「哥哥姐姐」）。
 	// 这里以当前绑定关系为准做一次兜底：绑定不在了就丢掉快照里的风格，按自由发挥跑。
 	if scheme.StyleID != 0 {
-		if bound, bindErr := s.store.GetLiveAnchorStyleForPlan(ctx, tenant, version.PlanID); errors.Is(bindErr, appdb.ErrLiveAnchorStyleNotFound) || (bindErr == nil && bound.ID != scheme.StyleID) {
+		if bound, bindErr := s.store.GetLiveAnchorStyleForPlan(ctx, tenant, version.PlanID); errors.Is(bindErr, appdb.ErrLiveAnchorStyleNotFound) || (bindErr == nil && scheme.BoundStyleID != 0 && bound.ID != scheme.BoundStyleID) {
 			scheme.StyleID, scheme.ScorecardID = 0, 0
 			scheme.StyleMD, scheme.BaselineJSON = "", ""
 		} else if bindErr != nil && !errors.Is(bindErr, appdb.ErrLiveAnchorStyleNotFound) {
