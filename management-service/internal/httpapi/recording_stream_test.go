@@ -86,3 +86,15 @@ func TestRecordingStreamBlockTargetStartsWithShortBlocks(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordingInstructionHonorsEmotionFlag(t *testing.T) {
+	version := model.LiveAgentPlanVersion{}
+	if got := recordingInstructionForVersion(version, "这个多少钱？"); got != "" {
+		t.Fatalf("default emotion must be off, got %q", got)
+	}
+	enabled := true
+	version.VoiceIdentity.EmotionEnabled = &enabled
+	if got := recordingInstructionForVersion(version, "这个多少钱？"); !strings.Contains(got, "随口一问") {
+		t.Fatalf("enabled emotion missing instruction: %q", got)
+	}
+}

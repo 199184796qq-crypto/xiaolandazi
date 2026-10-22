@@ -1179,3 +1179,17 @@ func TestMergedNamedWelcomeCoversGroupInsteadOfSingleViewer(t *testing.T) {
 		t.Fatal("single viewer changed unnecessarily", plan)
 	}
 }
+
+func TestEmotionEnabledReadsPublishedVersionFlag(t *testing.T) {
+	store := readyVoiceStore()
+	worker := New(store, &fakeCore{}, &fakeAgent{}, &fakeTTS{})
+	enabled := true
+	store.publishedVersion = &model.LiveAgentPlanVersion{ID: 44, TenantID: 7, PlanID: 3, RoomID: 11, LifecycleStatus: "published", VoiceIdentity: model.LiveAgentVoiceIdentity{EmotionEnabled: &enabled}}
+	if got, err := worker.emotionEnabledForRoom(context.Background(), 7, 11); err != nil || !got {
+		t.Fatalf("enabled=%v err=%v", got, err)
+	}
+	store.publishedVersion.VoiceIdentity.EmotionEnabled = nil
+	if got, err := worker.emotionEnabledForRoom(context.Background(), 7, 11); err != nil || got {
+		t.Fatalf("default must be off: got=%v err=%v", got, err)
+	}
+}
