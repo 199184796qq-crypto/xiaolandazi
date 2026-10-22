@@ -3207,7 +3207,7 @@ async function rebuildCustomMainline() {
   const room = activeRoom.value
   const draft = customMainlineDraft.value
   if (!planId || !room || !draft) return
-  const transcript = customMainlineTranscript.value.trim()
+  const transcript = (activeRecordingTabText.value.trim() || customMainlineTranscript.value).trim()
   if (!transcript) {
     customMainlineError.value = '原始话术不能为空。'
     customMainlineSaveNotice.value = ''
@@ -3238,7 +3238,7 @@ async function rebuildCustomMainline() {
         ...fullShowResult.value,
         variants: fullShowResult.value.variants.map((variant) =>
           variant.variant_key === 'CUSTOM'
-            ? { ...variant, text: customMainlineTranscript.value }
+            ? { ...variant, text: activeRecordingTabText.value.trim() || customMainlineTranscript.value }
             : variant,
         ),
       }
