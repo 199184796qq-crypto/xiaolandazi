@@ -4140,6 +4140,14 @@ async function loadFullShowWorkspace() {
     const restoredOptions = realtimeOptionsFromVersion(workspace.version?.generation_context)
     if (restoredOptions) realtimeGenerationOptions.value = restoredOptions
     else await loadRealtimeOptionsDefaults()
+    // 进入方案时的恢复入口：标签与声音模式都必须回显，否则保存会把 AI 声音写回原声。
+    restoreRecordingScript(workspace.version?.generation_context)
+    const restoredEntryVoiceMode = String(
+      (workspace.version?.generation_context as { recording_voice_mode?: string } | undefined)?.recording_voice_mode || '',
+    )
+    if (restoredEntryVoiceMode === 'stream_clone' || restoredEntryVoiceMode === 'original') {
+      recordingVoiceMode.value = restoredEntryVoiceMode
+    }
     if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
     if (!workspace.version || !workspace.source) {
       fullShowNotice.value = '当前方案还没有保存过智能体版本，可以从现有方案依据开始生成第一版。'
