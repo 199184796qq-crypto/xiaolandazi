@@ -1,6 +1,13 @@
 # 项目协作约定
 
-## 当前生产（2026-10-22 08:55）
+## 当前生产（2026-10-22 09:02）
+
+- 当前 `/opt/xiaolan/releases/20261022-recording-stream-safe-a6e887b`，源码 `a6e887b`；前驱 `20261022-recording-stream-owner-ad9cfbd`。Management PID1472966/SHA256 `b70ee771f88f593baec2d31145f24455cc552d88944af5898a0f6552852526e8`；只重启Management，Core/网关/Nginx/前端保持。
+- 场次422实测：08:56:29—09:01:20，9段；第0轮全部合成/追加，第1-2轮润色正常，无tts失败。流式分段与循环已验证。
+- 互动失败根因：track没带timeline/safe_points，Core找不到35秒内安全切点，互动TTS排队不播。已给流式track补timeline/safe_points；润色>80字回退原文。
+- 五包测试、8080/8081/8083健康通过；等重启后验证互动插入。说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/recording-stream-safe-release-20261022`，部署记录 `/opt/xiaolan/deployments/20261022-recording-stream-safe-a6e887b.json`；回滚ad9cfbd。
+
+## 历史生产（2026-10-22 08:55）
 
 - 当前 `/opt/xiaolan/releases/20261022-recording-stream-owner-ad9cfbd`，源码 `ad9cfbd`；前驱 `20261022-recording-stream-logs-80b4e11`。Management PID1471464/SHA256 `b4a536f2d2410fef40f376f68fed57497dc851c220aac7421928be70dacfd65f`；只重启Management，Core/网关/Nginx/前端保持。
 - 场次421启动2秒报“声音合成失败/context canceled”：owner检查只允许`ai_dynamic`，录音流式是`user_audio`，2秒检查取消TTS。已允许`user_audio + recording_voice_mode=stream_clone`。
