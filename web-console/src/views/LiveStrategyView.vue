@@ -3233,17 +3233,13 @@ async function rebuildCustomMainline() {
       clone_error: response.clone_error || draft.clone_error,
     }
     customMainlineTimeline.value = response.timeline.map((item) => ({ ...item }))
-    if (activeRecordingTab.value) {
-      activeRecordingTab.value.text = String(
-        response.transcript || response.timeline.map((item) => item.text).filter(Boolean).join('\n'),
-      ).trim()
-    }
+    // 保存原始话术只重建 SRT，不回写任何标签正文：唯一写入口是上传录音。
     if (fullShowResult.value) {
       fullShowResult.value = {
         ...fullShowResult.value,
         variants: fullShowResult.value.variants.map((variant) =>
           variant.variant_key === 'CUSTOM'
-            ? { ...variant, text: activeRecordingTabText.value.trim() || customMainlineTranscript.value }
+            ? { ...variant, text: activeRecordingTabText.value.trim() }
             : variant,
         ),
       }
@@ -4108,11 +4104,7 @@ async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, so
           : { ...version.voice_identity },
       }
       customMainlineTimeline.value = originalTimeline
-      if (activeRecordingTab.value) {
-        activeRecordingTab.value.text = String(
-          original.transcript || originalOwner?.text || originalTimeline.map((item) => item.text).filter(Boolean).join('\n'),
-        ).trim()
-      }
+      // 切回原始音频只恢复草稿与时间轴，不改标签正文。
       customMainlineStage.value = 'ready'
     }
     fullShowWorkspaceBaseVersion.value = version
@@ -8541,7 +8533,8 @@ onBeforeUnmount(() => {
                 </div>
               </header>
               <section v-if="isUserAudioContentMode" class="strategy-custom-mainline-inline">
-                <div class="strategy-custom-mainline-upload">
+                <!-- 只有「原声」才需要上传录音；AI 声音下纯文本即可，隐藏上传入口。 -->
+                <div v-if="recordingVoiceMode === 'original'" class="strategy-custom-mainline-upload">
                   <label>
                     <input
                       type="file"
