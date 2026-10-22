@@ -795,6 +795,17 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 	if publishedPlanVersion != nil && !isRealtimeScheme(publishedPlanVersion.GenerationContext) {
 		s.reportLiveStartup(r.Context(), tenantID, roomID, session.ID, "connecting_service")
 	}
+	if prefs, prefErr := s.store.GetRoomInteractionPreferences(r.Context(), tenantID, roomID); prefErr == nil && s.core != nil {
+		// The room preference row may not exist yet. Push the effective defaults
+		// at every start so Core never keeps an all-zero/off interaction config.
+		if resp, pushErr := s.core.PutRoomInteractionPreferences(r.Context(), prefs); pushErr != nil {
+			log.Printf("live interaction preferences sync failed tenant=%d room=%d: %v", tenantID, roomID, pushErr)
+		} else if resp != nil {
+			resp.Body.Close()
+		}
+	} else {
+		log.Printf("live interaction preferences read failed tenant=%d room=%d: %v", tenantID, roomID, prefErr)
+	}
 	if err := s.requestCoreAgentStart(r.Context(), tenantID, roomID, session.TotalBilledSeconds); err != nil {
 		_, _ = s.store.AbortLiveRuntimeSession(r.Context(), session.ID, "core_start_failed", time.Now().UTC())
 		writeError(w, http.StatusBadGateway, "智能体启动失败，请稍后重试")
