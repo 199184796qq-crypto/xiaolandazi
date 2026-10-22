@@ -8625,8 +8625,8 @@ onBeforeUnmount(() => {
                   <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
                 </section>
 
-                <template v-if="customMainlineDraft">
-                  <div class="strategy-custom-mainline-summary">
+                <template>
+                  <div v-if="customMainlineDraft" class="strategy-custom-mainline-summary">
                     <div>
                       <strong>原始声音</strong>
                       <span>{{ formatFullShowTimelineMS(customMainlineDraft.duration_ms) }}</span>
@@ -8648,7 +8648,7 @@ onBeforeUnmount(() => {
                     </div>
                   </div>
 
-                  <audio controls preload="metadata" :src="liveSupportMediaPlaybackURL(customMainlineDraft.audio_url)"></audio>
+                  <audio v-if="customMainlineDraft" controls preload="metadata" :src="liveSupportMediaPlaybackURL(customMainlineDraft.audio_url)"></audio>
 
                   <footer class="strategy-custom-mainline-footer">
                     <div>
