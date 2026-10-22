@@ -317,14 +317,10 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 }
 
 func recordingStreamBlockTarget(blockStart int) int {
-	switch blockStart {
-	case 0:
-		return 1
-	case 1:
-		return 2
-	default:
-		return recordingStreamBlockSegments
-	}
+	// 一句一条 track：分段已经按语义切好，合块只会把句界变成 track 内部
+	// 位置，而 Core 不认内部切点，互动就插不进来。
+	// 互动返回位置由返回桥负责，不依赖“track 里还剩多少音频”。
+	return 1
 }
 
 func (s *Server) combineRecordingStreamBlock(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, entries []recordingStreamCacheEntry, round, block int) (coreclient.ProgramRefreshTrack, error) {

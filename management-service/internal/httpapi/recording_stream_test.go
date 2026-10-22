@@ -79,7 +79,8 @@ func TestRecordingStreamInstructionBranches(t *testing.T) {
 }
 
 func TestRecordingStreamBlockTargetStartsWithShortBlocks(t *testing.T) {
-	want := map[int]int{0: 1, 1: 2, 3: recordingStreamBlockSegments, 6: recordingStreamBlockSegments}
+	// 一句一条 track：分段已按语义切好，合块会让 Core 认不出句界。
+	want := map[int]int{0: 1, 1: 1, 3: 1, 6: 1}
 	for start, size := range want {
 		if got := recordingStreamBlockTarget(start); got != size {
 			t.Fatalf("start=%d got=%d want=%d", start, got, size)

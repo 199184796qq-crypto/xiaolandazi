@@ -106,6 +106,19 @@ func TestDirectQuestionWithoutFactsUsesBoundaryNotGreeting(t *testing.T) {
 	}
 }
 
+func TestUnknownFactBoundaryExamples(t *testing.T) {
+	cases := map[string]string{
+		"鸭子是当天现杀的吗": "当天现杀这个，我这边还没核实。你要是特别在意这一点，先别急着拍，确认清楚再决定。",
+		"这是南充第一中餐吗": "第一我就不替大家排了，每个人口味不一样嘛。你吃中餐更看重味道，还是分量？",
+		"能保证明天到吗":   "明天能不能到，现在还确定不了。你要是赶着明天用，先别按这个时间安排，免得耽误事。",
+	}
+	for question, want := range cases {
+		if got := unknownFactBoundary(question); got != want {
+			t.Fatalf("question=%q\ngot:  %q\nwant: %q", question, got, want)
+		}
+	}
+}
+
 func TestUnknownFactBoundaryIsSpecificAndNotDisclaimer(t *testing.T) {
 	cases := []struct {
 		question string
