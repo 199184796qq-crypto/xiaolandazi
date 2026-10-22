@@ -466,6 +466,12 @@ func (s *Server) recordingPolishState(ctx context.Context, tenant, plan, room in
 }
 
 func polishRecordingText(ctx context.Context, server *Server, state *anchorcycle.State, text string) string {
+	return polishRecordingTextLimit(ctx, server, state, text, 110)
+}
+
+// polishRecordingTextLimit 与 polishRecordingText 相同，但可指定长度上限。
+// 批量润色传入的是 5 句合并的整段，本身上限就该更大；单句才用 110 字。
+func polishRecordingTextLimit(ctx context.Context, server *Server, state *anchorcycle.State, text string, maxRunes int) string {
 	if state == nil || server == nil || strings.TrimSpace(text) == "" {
 		return text
 	}
@@ -477,10 +483,10 @@ func polishRecordingText(ctx context.Context, server *Server, state *anchorcycle
 		candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: strings.TrimSpace(rewritten)}
 		candidate.OutputText = candidate.Text
 		if state.CheckP0Candidate(&candidate) == nil {
-			// 润色会把句子写长；超过 110 字就回退原文，否则整条 track 可能
+			// 润色会把句子写长；超过上限就回退原文，否则整条 track 可能
 			// 就没有可用的安全切点，Core 会以「没有可用语义安全切点」启动失败。
-			if len([]rune(candidate.OutputText)) > 110 {
-				log.Printf("recording stream polish expanded beyond 110 runes; fallback original")
+			if maxRunes > 0 && len([]rune(candidate.OutputText)) > maxRunes {
+				log.Printf("recording stream polish expanded beyond %d runes; fallback original", maxRunes)
 				return text
 			}
 			return candidate.OutputText

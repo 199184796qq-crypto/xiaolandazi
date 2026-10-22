@@ -66,7 +66,8 @@ func (s *Server) polishByMarker(ctx context.Context, state *anchorcycle.State, s
 		input.WriteString(sentence)
 		input.WriteString("\n")
 	}
-	rewritten := polishRecordingText(ctx, s, state, input.String())
+	// 批量输入是 5 句合并，长度上限按每句 4 倍放行；每句还会再单独校验。
+	rewritten := polishRecordingTextLimit(ctx, s, state, input.String(), 0)
 	if strings.TrimSpace(rewritten) == "" {
 		return nil, false
 	}
