@@ -167,31 +167,54 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 
 				blockTarget := recordingStreamBlockTarget(blockStart)
 				if len(current)-blockStart >= blockTarget || index == len(tab.segments)-1 {
-					block, err := s.combineRecordingStreamBlock(ctx, tenant, version, current[blockStart:], seq, blockSeq)
-					blockSeq++
+					// 每块必须带安全切点：整块没有就缩小重试，单段仍没有就跳过这一段。
+					// 绝不让一块拿不到切点就把整场启动判死。
+					track, consumed, err := s.combineRecordingStreamBlockSafe(ctx, tenant, version, current[blockStart:], seq, blockSeq)
 					if err != nil {
 						return err
 					}
-					if programID == "" {
-						snapshot, err := s.startRecordingStreamProgram(ctx, tenant, room, runtimeID, version, block)
-						if err != nil {
-							return err
+					blockSeq++
+					if track.AudioURL != "" {
+						if programID == "" {
+							snapshot, err := s.startRecordingStreamProgram(ctx, tenant, room, runtimeID, version, track)
+							if err != nil {
+								return err
+							}
+							programID, generation = snapshot.ProgramID, snapshot.Generation
+							log.Printf("recording stream program started tenant=%d room=%d program=%s", tenant, room, programID)
+							s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
+						} else {
+							nextGeneration, err := s.appendRecordingStreamTrack(ctx, tenant, room, version, programID, track)
+							if err != nil {
+								return err
+							}
+							generation = nextGeneration
 						}
-						programID, generation = snapshot.ProgramID, snapshot.Generation
-						log.Printf("recording stream program started tenant=%d room=%d program=%s", tenant, room, programID)
-						s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
-					} else {
-						nextGeneration, err := s.appendRecordingStreamTrack(ctx, tenant, room, version, programID, block)
-						if err != nil {
-							return err
-						}
-						generation = nextGeneration
+						log.Printf("recording stream block appended tenant=%d room=%d tab=%d round=%d chunks=%d safe_points=%d generation=%d", tenant, room, tabIndex, round, consumed, len(track.SafePoints), generation)
 					}
-					log.Printf("recording stream block appended tenant=%d room=%d tab=%d round=%d chunks=%d generation=%d", tenant, room, tabIndex, round, len(current)-blockStart, generation)
-					blockStart = len(current)
+					blockStart += consumed
 				}
 			}
 		}
 		previousLast = order[len(order)-1]
 	}
+}
+
+// combineRecordingStreamBlockSafe 保证返回的 track 一定带安全切点：
+// 整块拿不到就把块二分缩小重试；单段仍拿不到就跳过这一段（返回空 track, 消耗 1 段）。
+func (s *Server) combineRecordingStreamBlockSafe(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, entries []recordingStreamCacheEntry, round, block int) (coreclient.ProgramRefreshTrack, int, error) {
+	size := len(entries)
+	for size >= 1 {
+		track, err := s.combineRecordingStreamBlock(ctx, tenant, version, entries[:size], round, block)
+		if err != nil {
+			return coreclient.ProgramRefreshTrack{}, 0, err
+		}
+		if len(track.SafePoints) > 0 {
+			return track, size, nil
+		}
+		log.Printf("recording stream block without safe points tenant=%d room=%d entries=%d, shrinking", tenant, version.RoomID, size)
+		size /= 2
+	}
+	log.Printf("recording stream block skipped tenant=%d room=%d entries=%d (single segment has no safe point)", tenant, version.RoomID, len(entries))
+	return coreclient.ProgramRefreshTrack{}, 1, nil
 }
