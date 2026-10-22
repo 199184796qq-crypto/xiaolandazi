@@ -126,7 +126,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 	voiceKey := recordingcache.VoiceKey(version.VoiceIdentity.VoiceID, version.VoiceIdentity.Model, fmt.Sprint(version.VoiceIdentity.Rate))
 	scriptHash := recordingcache.ScriptHash(texts)
 	var cacheManifest *recordingcache.Manifest
-	hit := map[string]recordingcache.Entry{}
+	hit := map[string][]recordingcache.Entry{}
 	if cacheOK {
 		loaded, err := cacheScope.Load(voiceKey, scriptHash)
 		if err != nil {
@@ -184,10 +184,21 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				}
 				state := &tabs[tabIndex][index]
 				if refresh[index] || len(state.Versions) == 0 {
-					if units, ok := s.rebuildRecordingUnitsFromCache(ctx, tenant, hit[state.Source]); ok && len(units) > 0 {
-						log.Printf("recording stream cache hit tenant=%d room=%d tab=%d index=%d units=%d", tenant, room, tabIndex, index, len(units))
-						pending = append(pending, units...)
-						continue
+					if versions := hit[state.Source]; shouldReuseCachedVersion(len(versions), rng) {
+						pick := versions[rng.Intn(len(versions))]
+						if units, ok := s.rebuildRecordingUnitsFromCache(ctx, tenant, pick); ok && len(units) > 0 {
+							if cacheManifest != nil {
+								for i := range cacheManifest.Entries {
+									if cacheManifest.Entries[i].Sentence == pick.Sentence && cacheManifest.Entries[i].AssetID == pick.AssetID {
+										cacheManifest.Entries[i].Hits++
+										break
+									}
+								}
+							}
+							log.Printf("recording stream cache hit tenant=%d room=%d tab=%d index=%d versions=%d hits=%d", tenant, room, tabIndex, index, len(versions), pick.Hits+1)
+							pending = append(pending, units...)
+							continue
+						}
 					}
 					var units []recordingReadyUnit
 					var err error
@@ -218,7 +229,8 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 									cacheManifest = &recordingcache.Manifest{Version: 2, VoiceKey: voiceKey, ScriptHash: scriptHash}
 								}
 								cacheManifest.Entries = append(cacheManifest.Entries, entry)
-								hit[state.Source] = entry
+								cacheManifest.Entries = pruneRecordingCacheEntries(cacheManifest.Entries)
+								hit = recordingCacheLookup(cacheManifest)
 								if err := cacheScope.Save(cacheManifest); err != nil {
 									log.Printf("recording stream cache save failed tenant=%d room=%d: %v", tenant, room, err)
 								}

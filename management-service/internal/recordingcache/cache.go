@@ -49,6 +49,7 @@ type Entry struct {
 	Duration  int64     `json:"duration_ms"`
 	Segments  []Segment `json:"segments"`
 	Polished  bool      `json:"polished"`
+	Hits      int       `json:"hits"`
 	UpdatedAt string    `json:"updated_at"`
 }
 

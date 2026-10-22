@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 
 	"livecompanion/management/internal/coreclient"
 	"livecompanion/management/internal/model"
@@ -68,11 +69,55 @@ func (s *Server) rebuildRecordingUnitsFromCache(ctx context.Context, tenant int6
 }
 
 // recordingCacheLookup 把清单转成“源句 → 记录”的索引，一次开播只读一次盘。
-func recordingCacheLookup(manifest *recordingcache.Manifest) map[string]recordingcache.Entry {
-	hit := make(map[string]recordingcache.Entry, len(manifest.Entries))
+// 缓存策略：每句最多保留 4 个版本；池未满时 40% 命中 / 60% 新生，
+// 池满后 70% 命中 / 30% 替换；一个版本被命中 6 次即淘汰，让新版本补位。
+const (
+	recordingCacheMaxVersions = 4
+	recordingCacheVersionHits = 6
+	recordingCacheReuseWarm   = 40 // 池未满时的命中百分比
+	recordingCacheReuseSteady = 70 // 池满后的命中百分比
+)
+
+// shouldReuseCachedVersion 按池内版本数决定本轮是复用还是新生。
+func shouldReuseCachedVersion(versions int, rng *rand.Rand) bool {
+	if versions <= 0 {
+		return false
+	}
+	percent := recordingCacheReuseWarm
+	if versions >= recordingCacheMaxVersions {
+		percent = recordingCacheReuseSteady
+	}
+	return rng.Intn(100) < percent
+}
+
+// pruneRecordingCacheEntries 淘汰命中到期的版本，并把每句限制在 4 个版本内。
+func pruneRecordingCacheEntries(entries []recordingcache.Entry) []recordingcache.Entry {
+	perSentence := map[string]int{}
+	out := make([]recordingcache.Entry, 0, len(entries))
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if entry.Hits >= recordingCacheVersionHits {
+			continue
+		}
+		if perSentence[entry.Sentence] >= recordingCacheMaxVersions {
+			continue
+		}
+		perSentence[entry.Sentence]++
+		out = append(out, entry)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+// recordingCacheLookup 把清单转成「源句 → 全部版本」的索引。
+// 同一句可以有多份润色版本，用来支撑四轮不重复。
+func recordingCacheLookup(manifest *recordingcache.Manifest) map[string][]recordingcache.Entry {
+	hit := make(map[string][]recordingcache.Entry, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
-		if entry.AssetID > 0 && len(entry.Segments) > 0 && entry.Polished {
-			hit[entry.Sentence] = entry
+		if entry.AssetID > 0 && len(entry.Segments) > 0 && entry.Polished && entry.Hits < recordingCacheVersionHits {
+			hit[entry.Sentence] = append(hit[entry.Sentence], entry)
 		}
 	}
 	return hit
