@@ -48,6 +48,25 @@ function tabName(tab: Tab): string {
   return tab.title || '未命名'
 }
 
+function onDeleteModeClick(event: MouseEvent): void {
+  if (!deleteMode.value) return
+  const removeButton = event.target instanceof Element
+    ? event.target.closest('.recording-script-tab-remove')
+    : null
+  if (removeButton && root.value?.contains(removeButton)) return
+  deleteMode.value = false
+  // Dismissing delete mode must not also activate the control beneath this click.
+  event.preventDefault()
+  event.stopImmediatePropagation()
+}
+
+function onDeleteModePointerDown(event: PointerEvent): void {
+  // Native disabled controls do not dispatch click, but still dismiss this mode.
+  if (event.target instanceof Element && event.target.closest('button:disabled,input:disabled,select:disabled,textarea:disabled')) {
+    onDeleteModeClick(event)
+  }
+}
+
 function selectTab(id: string): void {
   if (props.disabled || performance.now() < suppressClickUntil) return
   emit('select', id)
@@ -97,7 +116,7 @@ function onTabKeydown(event: KeyboardEvent, id: string): void {
 }
 
 function onPointerDown(event: PointerEvent, id: string): void {
-  if (props.disabled || props.tabs.length < 2 || event.button !== 0 || !event.isPrimary) return
+  if (deleteMode.value || props.disabled || props.tabs.length < 2 || event.button !== 0 || !event.isPrimary) return
   const button = (event.currentTarget as HTMLElement).closest<HTMLButtonElement>('.recording-script-tab-select')
   if (!button) return
   finishDrag(false)
@@ -179,17 +198,31 @@ function finishDrag(commit: boolean): void {
 }
 
 watch(() => props.tabs.map(tab => tab.id).join('\0'), () => finishDrag(false))
+watch(deleteMode, active => {
+  if (active) {
+    finishDrag(false)
+    document.addEventListener('click', onDeleteModeClick, true)
+    document.addEventListener('pointerdown', onDeleteModePointerDown, true)
+  } else {
+    document.removeEventListener('click', onDeleteModeClick, true)
+    document.removeEventListener('pointerdown', onDeleteModePointerDown, true)
+  }
+})
 watch(() => props.disabled, disabled => {
   if (disabled) {
     finishDrag(false)
     deleteMode.value = false
   }
 })
-onBeforeUnmount(() => finishDrag(false))
+onBeforeUnmount(() => {
+  finishDrag(false)
+  document.removeEventListener('click', onDeleteModeClick, true)
+  document.removeEventListener('pointerdown', onDeleteModePointerDown, true)
+})
 </script>
 
 <template>
-  <div ref="root" class="recording-script-tabs" @keydown.esc="deleteMode = false">
+  <div ref="root" class="recording-script-tabs" :class="{ 'is-deleting': deleteMode }" @keydown.esc="deleteMode = false">
     <TransitionGroup name="recording-tab" tag="div" class="recording-script-tab-list" role="tablist" aria-label="话术标签" :aria-describedby="instructionsId">
       <div v-for="tab in orderedTabs" :key="tab.id" class="recording-script-tab-item" :class="{ 'is-dragging': drag?.started && drag.id === tab.id }" :data-recording-tab-id="tab.id" role="presentation">
         <button type="button" role="tab" class="recording-script-tab-select" :class="{ active: tab.id === activeId }" :data-tab-id="tab.id" :aria-selected="tab.id === activeId" :tabindex="tab.id === activeId ? 0 : -1" :disabled="disabled" :draggable="false" @click="selectTab(tab.id)" @keydown="onTabKeydown($event, tab.id)">
@@ -226,6 +259,7 @@ onBeforeUnmount(() => finishDrag(false))
 .recording-script-tab-name{overflow:hidden;max-width:240px;color:inherit;text-overflow:ellipsis;white-space:nowrap}
 .recording-script-tab-grip{display:flex;flex:0 0 12px;align-items:center;justify-content:center;width:12px;min-height:24px;opacity:.5;cursor:grab;touch-action:none}
 .recording-script-tab-grip svg{width:10px;height:16px;fill:currentColor;pointer-events:none}
+.recording-script-tabs.is-deleting .recording-script-tab-grip{cursor:pointer}
 .recording-script-tab-select:disabled .recording-script-tab-grip{cursor:not-allowed}
 .recording-script-tab-item.is-dragging .recording-script-tab-select{opacity:.35;border-style:dashed;box-shadow:none}
 .recording-script-tab-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
