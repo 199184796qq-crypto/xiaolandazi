@@ -8532,10 +8532,17 @@ onBeforeUnmount(() => {
                       <legend>直播间主线声音</legend>
                       <label>
                         <input v-model="recordingVoiceMode" type="radio" value="original" name="recording-voice-mode" />
+                        <svg class="strategy-recording-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+                          <path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" />
+                        </svg>
                         <span>原声</span>
                       </label>
                       <label>
                         <input v-model="recordingVoiceMode" type="radio" value="stream_clone" name="recording-voice-mode" />
+                        <svg class="strategy-recording-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                          <path d="M4 10v4m4-7v10m4-13v16m4-13v10m4-7v4" />
+                        </svg>
                         <span>AI 声音</span>
                       </label>
                     </fieldset>
@@ -10941,8 +10948,8 @@ onBeforeUnmount(() => {
   max-height:300px; margin:10px 0 0; overflow:auto; padding:10px; border-radius:9px;
   background:#f6f8fc; color:#536078; font:11px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace; white-space:pre-wrap;
 }
-.strategy-custom-mainline-footer { display:flex; align-items:center; justify-content:flex-end; gap:9px; padding-top:2px; }
-.strategy-custom-mainline-footer>div { margin-right:auto; min-width:0; }
+.strategy-custom-mainline-footer { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:12px 16px; padding-top:4px; }
+.strategy-custom-mainline-footer>div { flex:1 1 260px; margin-right:auto; min-width:0; }
 .strategy-custom-mainline-footer span { color:#758098; font-size:12px; line-height:1.5; }
 .strategy-custom-mainline-footer button {
   min-height:40px;
@@ -10957,13 +10964,17 @@ onBeforeUnmount(() => {
 }
 .strategy-custom-mainline-footer button.primary { border-color:#6574df; background:#6574df; color:#fff; }
 .strategy-custom-mainline-footer button:disabled { cursor:not-allowed; opacity:.5; }
-.strategy-recording-voice-choice { display:flex; align-items:center; flex:0 0 auto; gap:12px; min-width:0; margin:0 0 0 auto; padding:0; border:0; }
+.strategy-recording-voice-choice { display:inline-grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:center; flex:0 0 auto; gap:4px; width:268px; max-width:100%; min-width:0; box-sizing:border-box; margin:0 0 0 auto; padding:4px; border:1px solid #e3e6f2; border-radius:14px; background:#f2f4fa; }
 .strategy-recording-voice-choice legend { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
-.strategy-recording-voice-choice label { display:flex; align-items:center; flex:0 0 auto; gap:6px; min-height:38px; padding:0 12px; border:1px solid #d6ddeb; border-radius:10px; background:#fff; color:#536079; font-size:14px; font-weight:850; white-space:nowrap; cursor:pointer; }
-.strategy-recording-voice-choice label span { white-space:nowrap; }
-.strategy-recording-voice-choice label:has(input:checked) { border-color:#6574df; background:#eef1ff; color:#4d5bd2; box-shadow:0 0 0 3px rgba(101,116,223,.09); }
-.strategy-recording-voice-choice input { flex:0 0 auto; margin:0; accent-color:#6574df; }
-@media(max-width:900px){.strategy-recording-voice-choice{width:100%;flex-wrap:wrap;margin:0}.strategy-recording-voice-choice label{flex:1;justify-content:center}}
+.strategy-recording-voice-choice label { position:relative; display:flex; align-items:center; justify-content:center; gap:8px; min-width:0; min-height:42px; box-sizing:border-box; padding:0 14px; border:1px solid transparent; border-radius:10px; background:transparent; color:#66718a; font-size:16px; font-weight:650; white-space:nowrap; cursor:pointer; transition:background .16s ease,color .16s ease,box-shadow .16s ease; }
+.strategy-recording-voice-choice label span { color:inherit; font-size:inherit; line-height:1.25; white-space:nowrap; }
+.strategy-recording-voice-choice label:hover { background:#e7eafa; color:#4f46d4; }
+.strategy-recording-voice-choice label:has(input:checked) { border-color:#6258e6; background:linear-gradient(135deg,#7268ed,#5b50db); color:#fff; box-shadow:0 3px 8px rgba(88,76,195,.2),inset 0 1px 0 rgba(255,255,255,.16); }
+.strategy-recording-voice-choice label:has(input:focus-visible) { outline:2px solid #6258e6; outline-offset:3px; }
+.strategy-recording-voice-choice input[type="radio"] { position:absolute; width:1px; height:1px; min-width:0; min-height:0; margin:0; padding:0; overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); border:0; white-space:nowrap; }
+.strategy-recording-voice-icon { flex:0 0 18px; width:18px; height:18px; }
+@media(max-width:600px){.strategy-custom-mainline-footer>div{flex-basis:100%}.strategy-recording-voice-choice{width:100%;margin:0}}
+@media(prefers-reduced-motion:reduce){.strategy-recording-voice-choice label{transition:none}}
 .strategy-fullshow-voice { display:grid; gap:12px; padding:15px; border:1px solid #d9e0f2; border-radius:14px; background:linear-gradient(180deg,#fbfcff 0%,#f7f9ff 100%); }
 .strategy-fullshow-voice>header { display:flex; align-items:center; justify-content:space-between; gap:14px; }
 .strategy-fullshow-voice>header>div { display:grid; gap:2px; }
