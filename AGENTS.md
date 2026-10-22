@@ -1,6 +1,14 @@
 # 项目协作约定
 
-## 当前生产（2026-10-22 00:49）
+## 当前生产（2026-10-22 00:53）
+
+- 当前 `/opt/xiaolan/releases/20261022-recording-stream-logs-80b4e11`，源码 `80b4e11`；前驱 `20261022-recording-stream-throttle-3aa0b04`。Management PID1470209/SHA256 `6b5c2780d5157c101055a841720a2e735787fd2345c948fa3e9068aabe313985`；只重启Management，Core/网关/Nginx/前端保持。
+- 只加流式录音日志：开场分段数、每段合成/缓存命中、追加Core、润色P0拒绝，不改业务。用于验证 `stream_clone` 分段/缓存/前4轮润色/30-70轮换。
+- 线上仍无 `stream_clone` 场次；最新版本191仍ai_dynamic，需用户重新选AI声音保存新版本后开播。
+- 8080/8081/8083健康通过；未真实开播验证。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/recording-stream-logs-release-20261022`，部署记录 `/opt/xiaolan/deployments/20261022-recording-stream-logs-80b4e11.json`；回滚目标3aa0b04。
+
+## 历史生产（2026-10-22 00:49）
 
 - 当前 `/opt/xiaolan/releases/20261022-recording-stream-throttle-3aa0b04`，源码 `3aa0b04`；前驱 `20261022-recording-clone-adopt-f651f4e`。Management PID1468800/SHA256 `2e0f3e8bf1d660dd92a0c11e18f5d9d819d75975c9bc5ccc6e854e61673501bc`；前端同步，Core/网关/Nginx保持。
 - 录音主线新增“原声 / AI声音”单选；选AI声音保存`recording_voice_mode=stream_clone`。开播按录音原文40–80字切段，首段TTS后启动，后续逐段追加Core并缓存；前4轮逐段润色+P0，之后30%新/70%最近4轮缓存。
