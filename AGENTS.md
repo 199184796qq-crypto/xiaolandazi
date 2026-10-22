@@ -1,6 +1,13 @@
 # 项目协作约定
 
-## 当前生产（2026-10-22 09:31）
+## 当前生产（2026-10-22 09:33）
+
+- 当前 `/opt/xiaolan/releases/20261022-recording-append-db2d799`，源码 `db2d799`；前驱 `20261022-recording-buffer-cbb64ac`。Management PID1480893/SHA256 `3cf6deaccb8f2206e7c61d3cecf56974f18b26c240fc0ed476cce619cb64f650`；只重启Management，Core/网关/Nginx/前端保持。
+- 按交接文档改用Core `program/append`，不再用`RefreshRoomProgram`替换；下一段立即进未来窗口，自动互动可准备/领取。45s缓冲保留。
+- 五包测试、8080/8081/8083健康通过；待重开验证自动claim=true并播放。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`、`docs/2026-10-22-给DeepSeek-场次424自动互动未播原因.md`，证据 `E:/直播伴播-local/recording-append-release-20261022`，部署记录 `/opt/xiaolan/deployments/20261022-recording-append-db2d799.json`；回滚cbb64ac。
+
+## 历史生产（2026-10-22 09:31）
 
 - 当前 `/opt/xiaolan/releases/20261022-recording-buffer-cbb64ac`，源码 `cbb64ac`；前驱 `20261022-recording-direct-670cd78`。Management PID1480243/SHA256 `4cd20b9e273b68ff568c044224b0bbdaa937707d6c695ded10ec5b550996ce90`；只重启Management，Core/网关/Nginx/前端保持。
 - 425实测Core队列有3条PENDING/READY_TO_INTERRUPT，但claim `claimed:false`、`buffered_mainline_ms=8983`；系统互动因未来主线不足不领取。录音流式缓冲目标20s→45s。
