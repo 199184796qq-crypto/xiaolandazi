@@ -261,7 +261,6 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 	if rate == 0 {
 		rate = 1
 	}
-	rate *= 0.98
 	generated, err := gateway.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{
 		Model: modelName, VoiceID: voiceID, Text: text, Rate: rate,
 		Instruction: recordingInstructionForVersion(version, text),
@@ -300,18 +299,6 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 	}, nil
 }
 
-func recordingPauseMS(text string) int {
-	trimmed := strings.TrimSpace(text)
-	switch {
-	case strings.HasSuffix(trimmed, "。") || strings.HasSuffix(trimmed, "！") || strings.HasSuffix(trimmed, "？") || strings.HasSuffix(trimmed, "!") || strings.HasSuffix(trimmed, "?") || strings.HasSuffix(trimmed, "……"):
-		return 320
-	case strings.HasSuffix(trimmed, "，") || strings.HasSuffix(trimmed, ",") || strings.HasSuffix(trimmed, "；") || strings.HasSuffix(trimmed, ";") || strings.HasSuffix(trimmed, "、") || strings.HasSuffix(trimmed, "："):
-		return 180
-	default:
-		return 120
-	}
-}
-
 func recordingStreamBlockTarget(blockStart int) int {
 	switch blockStart {
 	case 0:
@@ -334,7 +321,7 @@ func (s *Server) combineRecordingStreamBlock(ctx context.Context, tenant int64, 
 	}
 	pieces := make([]generatedVoiceWAVPiece, 0, len(entries))
 	texts := make([]string, 0, len(entries))
-	for index, entry := range entries {
+	for _, entry := range entries {
 		raw, err := downloadGeneratedVoiceWAV(ctx, entry.Track.AudioURL)
 		if err != nil {
 			return coreclient.ProgramRefreshTrack{}, err
@@ -345,15 +332,6 @@ func (s *Server) combineRecordingStreamBlock(ctx context.Context, tenant int64, 
 		}
 		pieces = append(pieces, generatedVoiceWAVPiece{text: entry.Text, fmtData: format, pcmData: pcm, byteRate: byteRate})
 		texts = append(texts, entry.Text)
-		if index < len(entries)-1 {
-			pauseMS := recordingPauseMS(entry.Text)
-			if pauseBytes := int(byteRate) * pauseMS / 1000; pauseBytes > 0 {
-				if pauseBytes%2 != 0 {
-					pauseBytes++
-				}
-				pieces = append(pieces, generatedVoiceWAVPiece{text: "", fmtData: format, pcmData: make([]byte, pauseBytes), byteRate: byteRate})
-			}
-		}
 	}
 	variantKey := fmt.Sprintf("recording-%d-block-%d", round, block)
 	combined, timeline, durationMS, err := combineGeneratedVoiceWAV(variantKey, pieces)
