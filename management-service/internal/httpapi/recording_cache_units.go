@@ -44,6 +44,29 @@ func (s *Server) rebuildRecordingUnitFromCache(ctx context.Context, tenant int64
 	return recordingReadyUnit{Text: entry.Spoken, Track: track}, true
 }
 
+// rebuildRecordingUnitsFromCache 还原一句源文本对应的全部音频（可能被拆成多句）。
+func (s *Server) rebuildRecordingUnitsFromCache(ctx context.Context, tenant int64, entry recordingcache.Entry) ([]recordingReadyUnit, bool) {
+	if len(entry.Parts) > 0 {
+		units := make([]recordingReadyUnit, 0, len(entry.Parts))
+		for _, part := range entry.Parts {
+			unit, ok := s.rebuildRecordingUnitFromCache(ctx, tenant, recordingcache.Entry{
+				Sentence: entry.Sentence, Spoken: part.Spoken, AssetID: part.AssetID,
+				Duration: part.Duration, Segments: part.Segments, Polished: true,
+			})
+			if !ok {
+				return nil, false
+			}
+			units = append(units, unit)
+		}
+		return units, true
+	}
+	unit, ok := s.rebuildRecordingUnitFromCache(ctx, tenant, entry)
+	if !ok {
+		return nil, false
+	}
+	return []recordingReadyUnit{unit}, true
+}
+
 // recordingCacheLookup 把清单转成“源句 → 记录”的索引，一次开播只读一次盘。
 func recordingCacheLookup(manifest *recordingcache.Manifest) map[string]recordingcache.Entry {
 	hit := make(map[string]recordingcache.Entry, len(manifest.Entries))

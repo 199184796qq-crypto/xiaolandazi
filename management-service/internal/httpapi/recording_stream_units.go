@@ -184,9 +184,9 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				}
 				state := &tabs[tabIndex][index]
 				if refresh[index] || len(state.Versions) == 0 {
-					if unit, ok := s.rebuildRecordingUnitFromCache(ctx, tenant, hit[state.Source]); ok {
-						log.Printf("recording stream cache hit tenant=%d room=%d tab=%d index=%d", tenant, room, tabIndex, index)
-						pending = append(pending, unit)
+					if units, ok := s.rebuildRecordingUnitsFromCache(ctx, tenant, hit[state.Source]); ok && len(units) > 0 {
+						log.Printf("recording stream cache hit tenant=%d room=%d tab=%d index=%d units=%d", tenant, room, tabIndex, index, len(units))
+						pending = append(pending, units...)
 						continue
 					}
 					var units []recordingReadyUnit
@@ -211,8 +211,8 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 						state.Refreshed = round
 						// 只有真正被改写过的句子才进缓存；回退原文的条目进了缓存
 						// 会把“没润色”固化成永久结果。
-						if cacheOK && len(units) == 1 && strings.TrimSpace(units[0].Text) != strings.TrimSpace(state.Source) {
-							if entry, ok := recordingCacheEntryFromUnit(state.Source, units[0]); ok {
+						if cacheOK && len(units) > 0 && strings.TrimSpace(units[0].Text) != strings.TrimSpace(state.Source) {
+							if entry, ok := recordingCacheEntryFromUnits(state.Source, units); ok {
 								entry.Polished = true
 								if cacheManifest == nil {
 									cacheManifest = &recordingcache.Manifest{Version: 2, VoiceKey: voiceKey, ScriptHash: scriptHash}

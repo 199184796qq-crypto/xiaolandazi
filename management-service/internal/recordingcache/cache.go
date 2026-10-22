@@ -33,8 +33,17 @@ type Segment struct {
 
 // Entry is one synthesized sentence unit. Only the asset id is stored, never a
 // URL: playback URLs are re-signed right before they are handed to Core.
+// Part 是一句源文本被润色拆成多句时的一段音频。
+type Part struct {
+	Spoken   string    `json:"spoken"`
+	AssetID  int64     `json:"asset_id"`
+	Duration int64     `json:"duration_ms"`
+	Segments []Segment `json:"segments"`
+}
+
 type Entry struct {
 	Sentence  string    `json:"sentence"`
+	Parts     []Part    `json:"parts,omitempty"`
 	Spoken    string    `json:"spoken"`
 	AssetID   int64     `json:"asset_id"`
 	Duration  int64     `json:"duration_ms"`
