@@ -161,9 +161,10 @@ func waitRecordingStreamBuffer(ctx context.Context, s *Server, tenant, room int6
 		}
 		// Keep at least one upcoming segment buffered. This is a small queue,
 		// not the old full-script audio: generation continues while playback runs.
-		// Keep roughly two short segments queued; generating the entire script
-		// up front would spend TTS quota before playback catches up.
-		if snapshot.BufferedMainlineMS < 20000 || snapshot.WaitingForContent {
+		// System interactions need enough future mainline to find a cut and
+		// return. Keep roughly 45s queued; 20s was too tight once TTS latency
+		// consumed the buffer and Core answered claim with claimed=false.
+		if snapshot.BufferedMainlineMS < 45000 || snapshot.WaitingForContent {
 			return nil
 		}
 		if err := waitLiveProducer(ctx); err != nil {
