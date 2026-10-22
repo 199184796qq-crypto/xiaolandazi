@@ -231,18 +231,33 @@ func (s *Server) appendRecordingStreamTrack(ctx context.Context, tenant, room in
 		return 0, err
 	}
 	defer resp.Body.Close()
-	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 32<<10))
 	var snapshot coreclient.ProgramRefreshSnapshot
+	var decodeErr error
 	if readErr == nil {
-		_ = json.Unmarshal(raw, &snapshot)
+		decodeErr = json.Unmarshal(raw, &snapshot)
 	}
-	if resp.StatusCode != http.StatusOK || snapshot.ProgramID != programID || snapshot.VersionID != version.ID || !snapshot.Sequential {
+	if resp.StatusCode != http.StatusOK {
 		body := strings.TrimSpace(string(raw))
-		if len([]rune(body)) > 300 {
-			body = string([]rune(body)[:300])
+		if len([]rune(body)) > 500 {
+			body = string([]rune(body)[:500])
 		}
-		log.Printf("recording stream append rejected tenant=%d room=%d program=%s status=%d response_program=%s response_version=%d sequential=%t body=%s", tenant, room, programID, resp.StatusCode, snapshot.ProgramID, snapshot.VersionID, snapshot.Sequential, body)
+		log.Printf("recording stream append rejected tenant=%d room=%d program=%s status=%d body=%s", tenant, room, programID, resp.StatusCode, body)
 		return 0, anchorcycle.ErrStale
+	}
+	// Core returns 200 only after it accepts the ready unit. Some append
+	// snapshots omit program/version fields (or contain newer receipt shapes),
+	// so a 200 must not be turned into a false "late result" failure.
+	if snapshot.ProgramID != "" && snapshot.ProgramID != programID {
+		log.Printf("recording stream append stale program tenant=%d room=%d expected=%s got=%s", tenant, room, programID, snapshot.ProgramID)
+		return 0, anchorcycle.ErrStale
+	}
+	if snapshot.VersionID != 0 && snapshot.VersionID != version.ID {
+		log.Printf("recording stream append stale version tenant=%d room=%d expected=%d got=%d", tenant, room, version.ID, snapshot.VersionID)
+		return 0, anchorcycle.ErrStale
+	}
+	if decodeErr != nil {
+		log.Printf("recording stream append accepted with partial snapshot tenant=%d room=%d decode_error=%v", tenant, room, decodeErr)
 	}
 	return snapshot.Generation, nil
 }
