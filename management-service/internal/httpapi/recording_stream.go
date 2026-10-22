@@ -333,6 +333,10 @@ func polishRecordingText(ctx context.Context, server *Server, state *anchorcycle
 		candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: strings.TrimSpace(rewritten)}
 		candidate.OutputText = candidate.Text
 		if state.CheckP0Candidate(&candidate) == nil {
+			if len([]rune(candidate.OutputText)) > 80 {
+				log.Printf("recording stream polish expanded beyond 80 runes; fallback original")
+				return text
+			}
 			return candidate.OutputText
 		}
 		log.Printf("recording stream polish p0 rejected attempt=%d", attempt+1)
