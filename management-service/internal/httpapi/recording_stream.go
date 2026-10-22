@@ -488,7 +488,8 @@ func polishRecordingTextLimit(ctx context.Context, server *Server, state *anchor
 		skeleton = skeletons[rand.Intn(len(skeletons))]
 	}
 	promptText := "改写要求：不要只替换同义词，请改变这句话的句式骨架。这一次按「" + skeleton + "」来组织。" +
-		"可以自然加入语气词（啊、呢、嘛、哈、哎）和适当的逗号停顿，让话更像人说的；" +
+		"可以在句尾自然加入语气词（啊、呢、嘛、哈、啦、吧），语气词只放在句尾，不要插在句子中间；" +
+		"可以用逗号做适当停顿，让话更像人说的；" +
 		"对象、动作、条件、数字、商品名必须保持完全不变，数字仍用阿拉伯数字写，不能改成中文写法，" +
 		"不能增删信息，不能改变说话对象。\n原文：" + text
 	for attempt := 0; attempt < 3; attempt++ {
