@@ -347,12 +347,9 @@ func main() {
 	}
 	var blockedHitLogMu sync.Mutex
 	blockedHitLogs := make(map[int64]map[string]blockedHitLogState)
-	collectorManager.SetEventFilter(func(event model.RoomEvent) bool {
-		if !userBlocks.IsBlocked(event.RoomID, event.UserID, event.Nickname) {
-			return false
-		}
-
-		subject := userblock.SubjectKey(event.UserID, event.Nickname)
+	// 被屏蔽的用户与内容在采集入口就丢弃：不入库、不推送 SSE、不进互动与聚类。
+	// 读取侧过滤仍然保留，用于历史里已经存下来的事件。
+	logBlockedHit := func(event model.RoomEvent, key, code string) {
 		now := time.Now()
 		blockedHitLogMu.Lock()
 		roomLogs := blockedHitLogs[event.RoomID]
@@ -360,28 +357,43 @@ func main() {
 			roomLogs = make(map[string]blockedHitLogState)
 			blockedHitLogs[event.RoomID] = roomLogs
 		}
-		state := roomLogs[subject]
+		state := roomLogs[key]
 		shouldLog := state.last.IsZero() || now.Sub(state.last) >= 5*time.Second
 		suppressed := state.suppressed
 		if shouldLog {
-			roomLogs[subject] = blockedHitLogState{last: now}
+			roomLogs[key] = blockedHitLogState{last: now}
 		} else {
 			state.suppressed++
-			roomLogs[subject] = state
+			roomLogs[key] = state
 		}
 		blockedHitLogMu.Unlock()
 
 		if shouldLog {
 			log.Printf(
-				"[BLOCKED_HIT] room=%d event=%s subject=%q nickname=%q suppressed_since_last=%d",
+				"%s room=%d event=%s subject=%q nickname=%q suppressed_since_last=%d",
+				code,
 				event.RoomID,
 				event.EventType,
-				subject,
+				key,
 				event.Nickname,
 				suppressed,
 			)
 		}
-		return true
+	}
+	collectorManager.SetEventFilter(func(event model.RoomEvent) bool {
+		if userBlocks.IsBlocked(event.RoomID, event.UserID, event.Nickname) {
+			logBlockedHit(event, userblock.SubjectKey(event.UserID, event.Nickname), "[BLOCKED_HIT]")
+			return true
+		}
+		if contentBlocks.IsBlocked(event.RoomID, event.Content) {
+			key := contentblock.ContentKey(event.Content)
+			if len(key) > 12 {
+				key = key[:12]
+			}
+			logBlockedHit(event, "content:"+key, "[BLOCKED_CONTENT_HIT]")
+			return true
+		}
+		return false
 	})
 	defer collectorManager.Close()
 
