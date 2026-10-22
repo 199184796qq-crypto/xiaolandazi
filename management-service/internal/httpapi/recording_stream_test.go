@@ -77,3 +77,12 @@ func TestRecordingStreamInstructionBranches(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordingStreamBlockTargetStartsWithShortBlocks(t *testing.T) {
+	want := map[int]int{0: 1, 1: 2, 3: recordingStreamBlockSegments, 6: recordingStreamBlockSegments}
+	for start, size := range want {
+		if got := recordingStreamBlockTarget(start); got != size {
+			t.Fatalf("start=%d got=%d want=%d", start, got, size)
+		}
+	}
+}

@@ -130,7 +130,8 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				log.Printf("recording stream segment cached tenant=%d room=%d round=%d index=%d chars=%d", tenant, room, round, index, len([]rune(text)))
 			}
 			current = append(current, entry)
-			if len(current)-blockStart >= recordingStreamBlockSegments || index == len(segments)-1 {
+			blockTarget := recordingStreamBlockTarget(blockStart)
+			if len(current)-blockStart >= blockTarget || index == len(segments)-1 {
 				block, err := s.combineRecordingStreamBlock(ctx, tenant, version, current[blockStart:], round, blockStart/recordingStreamBlockSegments)
 				if err != nil {
 					return err
@@ -301,6 +302,17 @@ func recordingPauseMS(text string) int {
 		return 180
 	default:
 		return 120
+	}
+}
+
+func recordingStreamBlockTarget(blockStart int) int {
+	switch blockStart {
+	case 0:
+		return 1
+	case 1:
+		return 2
+	default:
+		return recordingStreamBlockSegments
 	}
 }
 

@@ -595,9 +595,16 @@ func combineGeneratedVoiceWAV(
 		if piece.byteRate != byteRate || !bytes.Equal(piece.fmtData, fmtData) {
 			return nil, nil, 0, errors.New("声音分段 WAV 参数不一致")
 		}
-		normalizedPCM, err := normalizeGeneratedVoicePiecePCM(piece.fmtData, piece.pcmData, piece.byteRate)
-		if err != nil {
-			return nil, nil, 0, fmt.Errorf("第%d段声音检查失败：%w", index+1, err)
+		// Empty-text pieces are deliberate silence inserted between TTS
+		// chunks. They must contribute duration but are not speech, so they
+		// skip the "contains playable voice" check.
+		normalizedPCM := piece.pcmData
+		if strings.TrimSpace(piece.text) != "" {
+			var err error
+			normalizedPCM, err = normalizeGeneratedVoicePiecePCM(piece.fmtData, piece.pcmData, piece.byteRate)
+			if err != nil {
+				return nil, nil, 0, fmt.Errorf("第%d段声音检查失败：%w", index+1, err)
+			}
 		}
 		startBytes := consumed
 		if _, err := pcm.Write(normalizedPCM); err != nil {

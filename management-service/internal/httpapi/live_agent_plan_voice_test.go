@@ -188,3 +188,15 @@ func TestRebuildFormalVoiceSubtitleTimelineRejectsTimeChange(t *testing.T) {
 		t.Fatal("expected time change to be rejected")
 	}
 }
+
+func TestCombineGeneratedVoiceWAVAllowsDeliberateSilence(t *testing.T) {
+	format := testPCMFormat(1000)
+	raw, timeline, duration, err := combineGeneratedVoiceWAV("pause", []generatedVoiceWAVPiece{
+		{text: "第一句。", fmtData: format, pcmData: make([]byte, 1000), byteRate: 1000},
+		{text: "", fmtData: format, pcmData: make([]byte, 320), byteRate: 1000},
+		{text: "第二句。", fmtData: format, pcmData: make([]byte, 1000), byteRate: 1000},
+	})
+	if err != nil || len(raw) == 0 || len(timeline) != 2 || duration <= 2000 {
+		t.Fatalf("silence piece rejected: duration=%d timeline=%d err=%v", duration, len(timeline), err)
+	}
+}
