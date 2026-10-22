@@ -44,3 +44,17 @@ func TestRecordingVoiceModeOnlyReadsExplicitStreamMode(t *testing.T) {
 		t.Fatalf("non-recording mode must ignore stream flag, got %q", mode)
 	}
 }
+
+func TestRecordingStreamOwnerAllowsUserAudioOnlyForStreamMode(t *testing.T) {
+	original := model.LiveAgentPlanVersion{GenerationContext: map[string]any{"content_mode": "user_audio"}}
+	if liveAnchorOwnerModeAllowed("user_audio", original) {
+		t.Fatal("original recording must not enter the stream owner")
+	}
+	stream := model.LiveAgentPlanVersion{GenerationContext: map[string]any{"content_mode": "user_audio", "recording_voice_mode": recordingStreamMode}}
+	if !liveAnchorOwnerModeAllowed("user_audio", stream) {
+		t.Fatal("recording stream must be accepted by the owner check")
+	}
+	if !liveAnchorOwnerModeAllowed("ai_dynamic", original) {
+		t.Fatal("realtime dynamic must remain accepted")
+	}
+}

@@ -251,13 +251,6 @@ func (s *Server) checkLiveAnchorOwner(ctx context.Context, tenant, room, runtime
 	if session.ID != runtimeID || !session.BelongsToExecutionRealm(s.executionRealm) || (session.Status != "running" && session.Status != "paused") {
 		return false, anchorcycle.ErrStale
 	}
-	mode, err := s.store.GetLiveContentMode(ctx, tenant, room)
-	if err != nil {
-		return false, err
-	}
-	if mode.ContentMode != model.LiveContentAIDynamic {
-		return false, errors.New("实时生成内容模式已变化")
-	}
 	// Saving a new snapshot must not cancel this session's startup snapshot.
 	selected, err := s.store.GetLiveAgentPlanForRoom(ctx, tenant, room)
 	if err != nil {
@@ -267,7 +260,21 @@ func (s *Server) checkLiveAnchorOwner(ctx context.Context, tenant, room, runtime
 	if err != nil || pinned.PlanID != selected.ID {
 		return false, errors.New("本场方案关联已变化，请重新开播")
 	}
+	mode, err := s.store.GetLiveContentMode(ctx, tenant, room)
+	if err != nil {
+		return false, err
+	}
+	if !liveAnchorOwnerModeAllowed(mode.ContentMode, pinned) {
+		return false, errors.New("实时生成内容模式已变化")
+	}
 	return session.Status == "paused", nil
+}
+
+func liveAnchorOwnerModeAllowed(mode string, version model.LiveAgentPlanVersion) bool {
+	if mode == model.LiveContentAIDynamic {
+		return true
+	}
+	return mode == model.LiveContentUserAudio && recordingVoiceMode(version) == recordingStreamMode
 }
 
 // Cold start hands the first accepted and voiced segment to Core immediately.
