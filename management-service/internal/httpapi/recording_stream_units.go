@@ -333,7 +333,10 @@ func (s *Server) compileRecordingSpoken(ctx context.Context, tenant int64, versi
 	// 句界，互动插不进去。拆出来的每一段仍是完整小句，各自成一条 track。
 	parts := make([]string, 0, len(sentences))
 	for _, sentence := range sentences {
-		parts = append(parts, splitRecordingLongSentence(sentence, recordingSentenceMaxRunes)...)
+		for _, chunk := range splitRecordingLongSentence(sentence, recordingSentenceMaxRunes) {
+			// 拆一次仍超长（逗号太稀疏）就再拆一层，保证每条 track 够短。
+			parts = append(parts, splitRecordingLongSentence(chunk, recordingSentenceMaxRunes*3/4)...)
+		}
 	}
 	units := make([]recordingReadyUnit, 0, len(parts))
 	for _, part := range parts {
@@ -392,6 +395,15 @@ func splitRecordingLongSentence(text string, maxRunes int) []string {
 			if strings.ContainsRune(softMarks, runes[i]) {
 				cut = i
 				break
+			}
+		}
+		if cut < 0 {
+			// 前半段没有标点就继续往前找，宁可短一点也不要硬切。
+			for i := start + maxRunes - 1; i > start; i-- {
+				if strings.ContainsRune(softMarks, runes[i]) {
+					cut = i
+					break
+				}
 			}
 		}
 		if cut < 0 {

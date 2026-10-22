@@ -131,6 +131,34 @@ func (w *Worker) generateSingleInteractionText(ctx context.Context, session mode
 
 // generateSingleInteractionDirectAnswer 是事实问答的一步式回答：
 // 称呼 + 答案；没有事实时直接给边界，不再先生成“问得好/我这就讲”的接住句。
+const interactionNoFactBoundary = "这个我还没确认，先不跟你说死。"
+
+// unknownFactBoundary 按问题类型说“具体哪一点没确认”，不再统一用“没有依据/不能乱说/页面为准”。
+// 事实仍然不编；但观众听到的是针对这句话的边界，不是客服免责声明。
+func unknownFactBoundary(question string) string {
+	q := strings.TrimSpace(question)
+	switch {
+	case strings.Contains(q, "第一"), strings.Contains(q, "最好"), strings.Contains(q, "排名"), strings.Contains(q, "最正宗"):
+		return "第一我就不替大家排了，每个人口味不一样嘛。你吃中餐更看重味道，还是分量？"
+	case strings.Contains(q, "现杀"), strings.Contains(q, "活杀"), strings.Contains(q, "当天杀"):
+		return "当天现杀这个，我这边还没核实。你要是特别在意这一点，先别急着拍，确认清楚再决定。"
+	case strings.Contains(q, "多少钱"), strings.Contains(q, "价格"), strings.Contains(q, "什么价"), strings.Contains(q, "贵不贵"):
+		return "价格我还没核实，先不给你报错。你要是急着定，确认清楚再拍。"
+	case strings.Contains(q, "券"), strings.Contains(q, "领"), strings.Contains(q, "核销"):
+		return "券的事我还没确认，先别按我说的算。你要是冲券来的，确认清楚再下单。"
+	case strings.Contains(q, "明天"), strings.Contains(q, "到货"), strings.Contains(q, "能到"), strings.Contains(q, "到吗"), strings.Contains(q, "保证"):
+		return "明天能不能到，现在还确定不了。你要是赶着明天用，先别按这个时间安排，免得耽误事。"
+	case strings.Contains(q, "包邮"), strings.Contains(q, "发货"), strings.Contains(q, "快递"), strings.Contains(q, "物流"):
+		return "发货这块我还没核实，先不跟你说死。你要是赶时间，先确认清楚再安排。"
+	case strings.Contains(q, "库存"), strings.Contains(q, "还有吗"), strings.Contains(q, "卖完"):
+		return "库存我还没核实，先不给你打包票。你要是怕白跑一趟，先确认清楚再决定。"
+	case strings.Contains(q, "几个"), strings.Contains(q, "规格"), strings.Contains(q, "多人"), strings.Contains(q, "大小"):
+		return "具体规格我还没确认，先不给你说死。你要是按人数选，确认清楚再拍。"
+	default:
+		return "这个我还没核实，先不给你说死。你要是特别在意，确认清楚再决定。"
+	}
+}
+
 func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
 	if w == nil || w.agent == nil {
 		return ""
@@ -141,26 +169,27 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	}
 	answerText := w.singleAnswerFacts(item)
 	if strings.TrimSpace(answerText) == "" {
-		return address + "，这个我这边没有依据，不能乱说，咱们以页面为准。"
+		return address + "，" + unknownFactBoundary(primaryQuestion(item))
 	}
 	voiceCard, _ := w.welcomeVoiceCard(ctx, session)
 	system := "你是直播口播合成器。根据答案事实直接回答观众，第一句必须给出答案，不要先评价问题，也不要宣布“我这就讲/确认”。"
 	if voiceCard != "" {
 		system += "\n\n【主播腔调】按下面的说话风格、语气词、口头禅自然表达，让人一听就是这位主播：\n" + voiceCard
 	}
-	system += "\n\n【必说】开头用称呼“" + address + "”，随后直接回答观众问题；不要重复称呼。" +
+	system += "\n\n【必说】开头用称呼“" + address + "”，随后直接回应用户实际问的点；不要重复称呼，不要先评价问题。" +
 		"\n只选与问题直接相关的事实，不要罗列无关事实，不要输出事实编号。" +
+		"\n如果给出的答案事实只覆盖一部分，必须明确说出哪一点还没核实，不能把相关事实说成已经确认。" +
 		"\n禁止出现“问得好、问得特别好、问得特别关键、问得真细致、问到点子上了、我这就、马上、稍等”等评价问题或让观众等待的说法。" +
-		"\n【可说】只使用下方答案事实，不编造事实里没有的信息。" +
-		"\n【不提】不要输出内部标题、策略名称、字段名或分析过程。" +
-		"\n【改写】答案用口语自然表达，事实里的价格、规格、时效不得改动。"
+		"\n【可说】只使用下方答案事实，不编造事实里没有的信息；有直接相关且不造成确认的保存、工艺信息可以补，没有就停。" +
+		"\n【不提】不要用“新鲜、品质有保障”等话绕开未知，不暗示已经核实，不假装查过，不承诺稍后回复；不要输出内部标题、策略名称、字段名或分析过程。" +
+		"\n【改写】答案用口语自然表达，通常一两句；事实里的价格、规格、时效不得改动；回答到位就结束，不主动转商品、问需求、催下单。"
 	question := strings.TrimSpace(primaryQuestion(item))
 	user := "观众问题：" + question + "\n【当前答案事实】\n" + answerText +
 		"\n\n请直接输出一句自然、简短、可播出的回答（称呼 + 答案，不要再称呼第二次）。"
 	text := w.completeWelcome(ctx, session, "interaction_single_direct_answer", system, user, 100)
 	text = stripAwkwardAnswerLead(strings.TrimSpace(text))
 	if text == "" || text == address || text == address+"。" {
-		return address + "，这个我这边暂时没有确认好，咱们以页面为准。"
+		return address + "，" + unknownFactBoundary(primaryQuestion(item))
 	}
 	if !strings.HasPrefix(text, address) {
 		text = address + "，" + text

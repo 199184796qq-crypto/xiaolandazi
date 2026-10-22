@@ -95,7 +95,7 @@ func TestDirectQuestionWithoutFactsUsesBoundaryNotGreeting(t *testing.T) {
 	worker := &Worker{agent: agent}
 	item := decisionItem{MissionKind: "reply_question", resolvedAddress: "小陈"}
 	got := worker.generateSingleInteractionDirectAnswer(context.Background(), model.LiveRuntimeSession{}, item)
-	if !strings.Contains(got, "小陈") || !strings.Contains(got, "没有依据") {
+	if !strings.Contains(got, "小陈") || !strings.Contains(got, "还没") {
 		t.Fatalf("got %q", got)
 	}
 	if strings.Contains(got, "问得好") || strings.Contains(got, "我这就") {
@@ -103,6 +103,28 @@ func TestDirectQuestionWithoutFactsUsesBoundaryNotGreeting(t *testing.T) {
 	}
 	if agent.calls != 0 {
 		t.Fatalf("no-fact boundary should not call model, calls=%d", agent.calls)
+	}
+}
+
+func TestUnknownFactBoundaryIsSpecificAndNotDisclaimer(t *testing.T) {
+	cases := []struct {
+		question string
+		want     string
+	}{
+		{"鸭子是当天现杀的吗", "现杀"},
+		{"1号链接多少钱", "价格"},
+		{"你们是不是南充第一", "第一"},
+		{"还发券吗", "券"},
+		{"包邮吗", "发货"},
+		{"能保证明天到吗", "明天"},
+		{"几个人吃", "规格"},
+	}
+	for _, tc := range cases {
+		item := decisionItem{MissionKind: "reply_question", SampleQuestions: []string{tc.question}}
+		got := unknownFactBoundary(primaryQuestion(item))
+		if !strings.Contains(got, tc.want) || strings.Contains(got, "页面") || strings.Contains(got, "不能乱说") {
+			t.Fatalf("question=%q got=%q", tc.question, got)
+		}
 	}
 }
 

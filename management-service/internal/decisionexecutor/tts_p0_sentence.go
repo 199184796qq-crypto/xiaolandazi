@@ -263,7 +263,7 @@ func (w *Worker) rewriteTTSP0Sentences(
 	}
 	result := strings.TrimSpace(strings.Join(out, ""))
 	if result == "" {
-		fallback := "这个我这边没有依据，不能乱说，咱们以直播间页面为准。"
+		fallback := interactionNoFactBoundary
 		if len(policy.Scan(fallback, "all").Hits) == 0 {
 			return fallback, rewritten, dropped
 		}
