@@ -466,7 +466,9 @@ func (s *Server) recordingPolishState(ctx context.Context, tenant, plan, room in
 }
 
 func polishRecordingText(ctx context.Context, server *Server, state *anchorcycle.State, text string) string {
-	return polishRecordingTextLimit(ctx, server, state, text, 160)
+	// 不设字数上限：分段已经按句末标点切开，长句本身就是一个完整语义单元，
+	// 它的结尾天然是合法断点，没必要为了字数去腰斩。
+	return polishRecordingTextLimit(ctx, server, state, text, 0)
 }
 
 // polishRecordingTextLimit 与 polishRecordingText 相同，但可指定长度上限。
