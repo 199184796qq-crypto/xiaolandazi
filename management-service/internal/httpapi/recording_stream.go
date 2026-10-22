@@ -461,6 +461,8 @@ func (s *Server) recordingPolishState(ctx context.Context, tenant, plan, room in
 	return state
 }
 
+const recordingParticlePercent = 40
+
 func polishRecordingText(ctx context.Context, server *Server, state *anchorcycle.State, text string) string {
 	// 不设字数上限：分段已经按句末标点切开，长句本身就是一个完整语义单元，
 	// 它的结尾天然是合法断点，没必要为了字数去腰斩。
@@ -487,8 +489,13 @@ func polishRecordingTextLimit(ctx context.Context, server *Server, state *anchor
 	if len(skeletons) > 0 {
 		skeleton = skeletons[rand.Intn(len(skeletons))]
 	}
+	// 语气词按概率放行：每句都带语气词听起来很腻，控制在四成左右。
+	particleRule := "不要加语气词，正常收尾即可；"
+	if rand.Intn(100) < recordingParticlePercent {
+		particleRule = "可以在句尾加一个语气词（啊、呢、嘛、哈、啦、吧），只放句尾，不要插在句子中间；"
+	}
 	promptText := "改写要求：不要只替换同义词，请改变这句话的句式骨架。这一次按「" + skeleton + "」来组织。" +
-		"可以在句尾自然加入语气词（啊、呢、嘛、哈、啦、吧），语气词只放在句尾，不要插在句子中间；" +
+		particleRule +
 		"可以用逗号做适当停顿，让话更像人说的；" +
 		"对象、动作、条件、数字、商品名必须保持完全不变，数字仍用阿拉伯数字写，不能改成中文写法，" +
 		"不能增删信息，不能改变说话对象。\n原文：" + text
