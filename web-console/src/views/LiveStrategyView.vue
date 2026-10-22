@@ -3392,7 +3392,7 @@ async function generateOriginalAiVoice() {
   if (!fullShowResult.value) return
   selectFullShowOutputMode('custom')
   if (!isUserAudioContentMode.value) {
-    customMainlineError.value = '请先保留录音主线，再生成录音原文的克隆声音。'
+    customMainlineError.value = '请先保留话术优先模式，再生成录音原文的克隆声音。'
     return
   }
   const identity = roomVoiceIdentity.value
@@ -3573,7 +3573,7 @@ function startFullShowVoiceProgress(key: string) {
 
 async function generateFullShowVariantVoice(variant: LiveAgentFullShowVariant, regenerate = false) {
   if (!contentModeReady.value || isUserAudioContentMode.value) {
-    fullShowNotice.value = '原始录音主线保留上传的声音；需要更换时请重新上传录音。'
+    fullShowNotice.value = '话术优先会保留上传的原始声音；需要更换时请重新上传录音。'
     return
   }
   if (!isFullShowFormalVariant(variant.variant_key)) {
@@ -6287,7 +6287,7 @@ async function handleLiveVoiceChanged() {
     fullShowSavedVersion.value = null
     fullShowVersionError.value = ''
     fullShowNotice.value = isUserAudioContentMode.value
-      ? '互动音色已变更；原始录音主线保持不变，无需重新生成录音，可保存发布。'
+      ? '互动音色已变更；话术优先内容保持不变，无需重新生成录音，可保存发布。'
       : '直播间声音身份已变更；原有正式声音仍保留供对比，但需要按新声音身份重新生成后才能保存发布。'
   }
   await refreshAgentVersions()
@@ -8409,8 +8409,8 @@ onBeforeUnmount(() => {
                   </span>
                   <span v-else>S3</span>
                   <div class="strategy-fullshow-output-heading-copy">
-                    <strong class="strategy-fullshow-output-section-name">{{ isUserAudioContentMode ? '录音主线处理' : '固定生成话术' }}</strong>
-                    <small v-if="isUserAudioContentMode">上传一段录音，系统将自动分段、识别文字并生成高质量声音资产。</small>
+                    <strong class="strategy-fullshow-output-section-name">{{ isUserAudioContentMode ? '话术优先处理' : '固定生成话术' }}</strong>
+                    <small v-if="isUserAudioContentMode">上传录音出文本，或直接粘贴话术；每个标签是一段独立话术。</small>
                   </div>
                 </div>
                 <div
@@ -9073,7 +9073,7 @@ onBeforeUnmount(() => {
                 <strong>{{ fullShowVoiceReadyCount }}/{{ fullShowFormalSelectedCount }}</strong>
               </div>
               <div :class="{ ok: fullShowVoiceIdentityConsistent }">
-                <span>{{ isUserAudioContentMode ? '录音主线' : '声音身份' }}</span>
+                <span>{{ isUserAudioContentMode ? '话术优先' : '声音身份' }}</span>
                 <strong>{{ isUserAudioContentMode ? (fullShowVoiceIdentityConsistent ? '原声保留' : '待上传录音') : (fullShowVoiceIdentityConsistent ? '一致' : '需重新生成') }}</strong>
               </div>
               <div :class="{ ok: Boolean(currentVoiceIdentity.voice_id) }">

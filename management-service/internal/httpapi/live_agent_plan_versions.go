@@ -322,6 +322,11 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	// 话术优先模式允许多个文本框；单框是 N=1 的退化，旧快照没有该字段时不动。
+	if err := normalizeRecordingScript(input.GenerationContext); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := validateLiveAgentPlanVersionInput(&input); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
