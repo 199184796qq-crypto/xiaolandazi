@@ -622,6 +622,11 @@ func combineGeneratedVoiceWAV(
 				Index:     index + 1, StartMS: startMS, EndMS: endMS,
 				Text: strings.TrimSpace(piece.text), SafeCut: strongFullShowVoiceCut(piece.text),
 			})
+		} else if len(timeline) > 0 {
+			// A deliberate pause belongs to the sentence before it. Extending
+			// the previous segment keeps the Core timeline contiguous; a gap
+			// between segments makes Core reject the appended track.
+			timeline[len(timeline)-1].EndMS = endMS
 		}
 	}
 	data := pcm.Bytes()

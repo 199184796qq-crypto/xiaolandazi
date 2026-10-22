@@ -199,4 +199,7 @@ func TestCombineGeneratedVoiceWAVAllowsDeliberateSilence(t *testing.T) {
 	if err != nil || len(raw) == 0 || len(timeline) != 2 || duration <= 2000 {
 		t.Fatalf("silence piece rejected: duration=%d timeline=%d err=%v", duration, len(timeline), err)
 	}
+	if timeline[1].StartMS != timeline[0].EndMS {
+		t.Fatalf("pause left a timeline gap: first=%+v second=%+v", timeline[0], timeline[1])
+	}
 }

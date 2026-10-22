@@ -235,6 +235,7 @@ func (s *Server) appendRecordingStreamTrack(ctx context.Context, tenant, room in
 		return 0, err
 	}
 	if resp.StatusCode != http.StatusOK || snapshot.ProgramID != programID || snapshot.VersionID != version.ID || !snapshot.Sequential {
+		log.Printf("recording stream append rejected tenant=%d room=%d program=%s status=%d response_program=%s response_version=%d sequential=%t", tenant, room, programID, resp.StatusCode, snapshot.ProgramID, snapshot.VersionID, snapshot.Sequential)
 		return 0, anchorcycle.ErrStale
 	}
 	return snapshot.Generation, nil
