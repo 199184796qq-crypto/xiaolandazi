@@ -2183,6 +2183,8 @@ type RecordingScriptTab = { id: string; title: string; text: string; audioAssetI
 const recordingTabs = ref<RecordingScriptTab[]>([{ id: 't1', title: '开场', text: '', audioAssetIds: [] }])
 const activeRecordingTabId = ref('t1')
 let recordingTabSeq = 1
+// 原始声音跟着标签走：每个标签各自记住自己上传的那段声音。
+const recordingTabDrafts = ref<Record<string, LiveAgentCustomMainlineResponse>>({})
 const activeRecordingTab = computed<RecordingScriptTab | null>(
   () => recordingTabs.value.find((item) => item.id === activeRecordingTabId.value) || recordingTabs.value[0] || null,
 )
@@ -2219,7 +2221,15 @@ function resetRecordingTabs(): void {
   recordingTabSeq = 1
   recordingTabs.value = [{ id: 't1', title: '开场', text: '', audioAssetIds: [] }]
   activeRecordingTabId.value = 't1'
+  recordingTabDrafts.value = {}
 }
+// 切标签时把「原始声音」换成该标签自己的；没有声音的标签就不显示原始声音。
+watch(activeRecordingTabId, (tabId) => {
+  const draft = recordingTabDrafts.value[tabId] || null
+  customMainlineDraft.value = draft
+  customMainlineTimeline.value = draft ? (draft.timeline || []).map((item) => ({ ...item })) : []
+  customMainlineSaveNotice.value = ''
+})
 // 落库形态：1..20 个文本框，每框最多 1 段声音，标签唯一。
 function recordingScriptForSave() {
   return {
@@ -3120,6 +3130,7 @@ async function uploadCustomMainline() {
     customMainlineTimeline.value = (response.timeline || []).map((item) => ({ ...item }))
     // 一个声音对应一个文本框：上传结果进新标签，不覆盖已有话术。
     beginRecordingTabFromUpload()
+    recordingTabDrafts.value[activeRecordingTabId.value] = response
     if (activeRecordingTab.value) {
       activeRecordingTab.value.text = String(
         response.transcript || (response.timeline || []).map((item) => item.text).filter(Boolean).join('\n'),
