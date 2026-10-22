@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -60,6 +61,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 	if len(segments) == 0 {
 		return errors.New("录音主线分段为空")
 	}
+	log.Printf("recording stream start tenant=%d room=%d version=%d segments=%d", tenant, room, version.ID, len(segments))
 	polish := s.recordingPolishState(ctx, tenant, version.PlanID, room)
 	history := make([][]recordingStreamCacheEntry, 0, 4)
 	cache := map[string]coreclient.ProgramRefreshTrack{}
@@ -112,6 +114,9 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				}
 				entry = recordingStreamCacheEntry{Text: text, Track: track}
 				cache[text] = track
+				log.Printf("recording stream segment synthesized tenant=%d room=%d round=%d index=%d chars=%d", tenant, room, round, index, len([]rune(text)))
+			} else {
+				log.Printf("recording stream segment cached tenant=%d room=%d round=%d index=%d chars=%d", tenant, room, round, index, len([]rune(text)))
 			}
 			if programID == "" {
 				snapshot, err := s.startRecordingStreamProgram(ctx, tenant, room, runtimeID, version, entry.Track)
@@ -119,6 +124,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 					return err
 				}
 				programID, generation, versionNo = snapshot.ProgramID, snapshot.Generation, snapshot.VersionNo
+				log.Printf("recording stream program started tenant=%d room=%d program=%s", tenant, room, programID)
 				s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
 			} else {
 				nextGeneration, err := s.appendRecordingStreamTrack(ctx, tenant, room, version, programID, generation, versionNo, entry.Track)
@@ -126,6 +132,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 					return err
 				}
 				generation = nextGeneration
+				log.Printf("recording stream segment appended tenant=%d room=%d round=%d index=%d generation=%d", tenant, room, round, index, generation)
 			}
 			current = append(current, entry)
 		}
@@ -328,6 +335,7 @@ func polishRecordingText(ctx context.Context, server *Server, state *anchorcycle
 		if state.CheckP0Candidate(&candidate) == nil {
 			return candidate.OutputText
 		}
+		log.Printf("recording stream polish p0 rejected attempt=%d", attempt+1)
 	}
 	return text
 }
