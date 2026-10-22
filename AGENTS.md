@@ -1,6 +1,13 @@
 # 项目协作约定
 
-## 当前生产（2026-10-22 00:53）
+## 当前生产（2026-10-22 08:55）
+
+- 当前 `/opt/xiaolan/releases/20261022-recording-stream-owner-ad9cfbd`，源码 `ad9cfbd`；前驱 `20261022-recording-stream-logs-80b4e11`。Management PID1471464/SHA256 `b4a536f2d2410fef40f376f68fed57497dc851c220aac7421928be70dacfd65f`；只重启Management，Core/网关/Nginx/前端保持。
+- 场次421启动2秒报“声音合成失败/context canceled”：owner检查只允许`ai_dynamic`，录音流式是`user_audio`，2秒检查取消TTS。已允许`user_audio + recording_voice_mode=stream_clone`。
+- 版本192无需重存，直接重新开播；日志应出现`recording stream start/segment synthesized/appended`。五包测试、8080/8081/8083健康通过。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/recording-stream-owner-release-20261022`，部署记录 `/opt/xiaolan/deployments/20261022-recording-stream-owner-ad9cfbd.json`；回滚目标80b4e11。
+
+## 历史生产（2026-10-22 00:53）
 
 - 当前 `/opt/xiaolan/releases/20261022-recording-stream-logs-80b4e11`，源码 `80b4e11`；前驱 `20261022-recording-stream-throttle-3aa0b04`。Management PID1470209/SHA256 `6b5c2780d5157c101055a841720a2e735787fd2345c948fa3e9068aabe313985`；只重启Management，Core/网关/Nginx/前端保持。
 - 只加流式录音日志：开场分段数、每段合成/缓存命中、追加Core、润色P0拒绝，不改业务。用于验证 `stream_clone` 分段/缓存/前4轮润色/30-70轮换。
