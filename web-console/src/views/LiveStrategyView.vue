@@ -2198,6 +2198,11 @@ const activeRecordingTabText = computed<string>({
 const customMainlineTranscript = computed<string>(() =>
   recordingTabs.value.map((tab) => tab.text.trim()).filter(Boolean).join('\n'),
 )
+// 显式按「当前标签」写入：切标签时不会把上一个标签的文本带进新标签。
+function onRecordingTabInput(event: Event): void {
+  const value = (event.target as HTMLTextAreaElement | null)?.value ?? ''
+  if (activeRecordingTab.value) activeRecordingTab.value.text = value
+}
 function addRecordingTab(): void {
   recordingTabSeq += 1
   const tab: RecordingScriptTab = { id: `t${recordingTabSeq}`, title: `话术${recordingTabs.value.length + 1}`, text: '', audioAssetIds: [] }
@@ -8652,10 +8657,11 @@ onBeforeUnmount(() => {
                   </label>
                   <textarea
                     class="strategy-original-transcript-editor"
-                    v-model="activeRecordingTabText"
+                    :value="activeRecordingTab?.text || ''"
                     rows="16"
                     spellcheck="false"
                     placeholder="粘贴或输入这一段话术…"
+                    @input="onRecordingTabInput"
                   ></textarea>
                   <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
                 </section>
