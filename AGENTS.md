@@ -1,6 +1,13 @@
 # 项目协作约定
 
-## 当前生产（2026-10-22 09:22）
+## 当前生产（2026-10-22 09:31）
+
+- 当前 `/opt/xiaolan/releases/20261022-recording-buffer-cbb64ac`，源码 `cbb64ac`；前驱 `20261022-recording-direct-670cd78`。Management PID1480243/SHA256 `4cd20b9e273b68ff568c044224b0bbdaa937707d6c695ded10ec5b550996ce90`；只重启Management，Core/网关/Nginx/前端保持。
+- 425实测Core队列有3条PENDING/READY_TO_INTERRUPT，但claim `claimed:false`、`buffered_mainline_ms=8983`；系统互动因未来主线不足不领取。录音流式缓冲目标20s→45s。
+- 五包测试、8080/8081/8083健康通过；待重开验证系统互动claim=true并播出。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/recording-buffer-release-20261022`，部署记录 `/opt/xiaolan/deployments/20261022-recording-buffer-cbb64ac.json`；回滚670cd78。
+
+## 历史生产（2026-10-22 09:22）
 
 - 当前 `/opt/xiaolan/releases/20261022-recording-direct-670cd78`，源码 `670cd78`；前驱 `20261022-interaction-pref-c8546f0`。Management PID1478229/SHA256 `b25c1170eedad452a0c3a87251d476dd4f642e9e9a7f6aca4e9ffd34d3c7a584`；只重启Management，Core/网关/Nginx/前端保持。
 - 424实测互动决策/TTS正常、Core选A级切点，但`interaction-return` 409 no longer active，BRIDGE返回桥失效；抢答DIRECT可播。录音流式版本下BRIDGE强制改DIRECT，绕开返回桥。
