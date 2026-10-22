@@ -36,8 +36,8 @@ type factVariantsResponse struct {
 
 // factVariantSource 是传给口播模型的单条事实（4层中的「改写」层靠 forbidden/safe_rewrite 生效）。
 type factVariantSource struct {
-	Value      string `json:"value"`
-	Forbidden  string `json:"forbidden,omitempty"`
+	Value       string `json:"value"`
+	Forbidden   string `json:"forbidden,omitempty"`
 	SafeRewrite string `json:"safe_rewrite,omitempty"`
 }
 
@@ -245,14 +245,9 @@ func (s *Server) rewriteCycleText(ctx context.Context, state *anchorcycle.State,
 	p := *state.TextModel
 	p.APIKey = current.APIKey
 	msgs := []agentgateway.Message{{Role: "system", Content: prompt}, {Role: "user", Content: text}}
-	// 改写也必须带完整 P0 合规规则，否则改写模型会引入绝对化用语/禁说词等违规。
-	if p0 := generationP0View(state.P0PolicyMD, state.Config.ComplianceScope); p0 != nil {
-		if s, ok := p0.(string); ok && s != "" {
-			msgs = append([]agentgateway.Message{{Role: "system", Content: "有效P0（必须遵守的合规规则）：\n" + s}}, msgs...)
-		} else if b, e := json.Marshal(p0); e == nil {
-			msgs = append([]agentgateway.Message{{Role: "system", Content: "有效P0（必须遵守的合规规则）：\n" + string(b)}}, msgs...)
-		}
-	}
+	// 改写链路不再注入 P0 提示词：P0 是按“生成正文”的语境写的，混进改写
+	// 会让模型误判任务、反过来索要“必说/可说”，实测会返回套话而非改写结果。
+	// 合规仍由下方的 CheckP0Candidate 在结果侧把关。
 	req := agentgateway.Request{
 		Stage:          "mainline_text_rewrite",
 		Model:          p.Model,
@@ -285,4 +280,3 @@ func (s *Server) rewriteCycleText(ctx context.Context, state *anchorcycle.State,
 	}
 	return response.Text, nil
 }
-
