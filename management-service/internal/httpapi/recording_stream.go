@@ -80,6 +80,11 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if programID != "" {
+				if err := waitRecordingStreamBuffer(ctx, s, tenant, room, programID, version.ID); err != nil {
+					return err
+				}
+			}
 			text := segment.Text
 			if round > 0 {
 				switch {
@@ -149,7 +154,9 @@ func waitRecordingStreamBuffer(ctx context.Context, s *Server, tenant, room int6
 		}
 		// Keep at least one upcoming segment buffered. This is a small queue,
 		// not the old full-script audio: generation continues while playback runs.
-		if snapshot.BufferedMainlineMS > 0 || snapshot.WaitingForContent {
+		// Keep roughly two short segments queued; generating the entire script
+		// up front would spend TTS quota before playback catches up.
+		if snapshot.BufferedMainlineMS < 20000 || snapshot.WaitingForContent {
 			return nil
 		}
 		if err := waitLiveProducer(ctx); err != nil {
