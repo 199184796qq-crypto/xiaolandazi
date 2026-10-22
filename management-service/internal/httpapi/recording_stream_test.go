@@ -58,3 +58,22 @@ func TestRecordingStreamOwnerAllowsUserAudioOnlyForStreamMode(t *testing.T) {
 		t.Fatal("realtime dynamic must remain accepted")
 	}
 }
+
+func TestRecordingStreamInstructionBranches(t *testing.T) {
+	cases := []struct {
+		text string
+		want string
+	}{
+		{"这个套餐多少钱？", "随口一问"},
+		{"赶紧抢，最后两单！", "提醒"},
+		{"十人餐团购价337元", "报价"},
+		{"欢迎新朋友进来", "打招呼"},
+		{"咱们慢慢说，这个菜挺实在", "聊天"},
+	}
+	for _, tc := range cases {
+		got := recordingStreamInstruction(tc.text)
+		if !strings.Contains(got, tc.want) || len([]rune(got)) > 50 {
+			t.Fatalf("text=%q instruction=%q", tc.text, got)
+		}
+	}
+}

@@ -251,7 +251,7 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 	gateway := ttsgateway.NewFromEnv()
 	generated, err := gateway.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{
 		Model: modelName, VoiceID: voiceID, Text: text, Rate: identity.Rate,
-		Instruction: "像真人直播自然说话，允许自然停顿和拖音，不要播音腔。",
+		Instruction: recordingStreamInstruction(text),
 	})
 	if err != nil {
 		return coreclient.ProgramRefreshTrack{}, err
@@ -328,6 +328,37 @@ func (s *Server) combineRecordingStreamBlock(ctx context.Context, tenant int64, 
 		Text: strings.Join(texts, ""), AudioURL: audioURL, DurationMS: int(durationMS),
 		Timeline: recordingStreamTimeline(timeline), SafePoints: recordingStreamSafePoints(archive.SafePoints),
 	}, nil
+}
+
+// recordingStreamInstruction picks a short, deterministic delivery direction
+// for each TTS chunk. It never changes the spoken text; it only tells the
+// cloned voice how to phrase it (questions lift, prices slow down, urgency is
+// tighter, ordinary chat keeps a relaxed pause and drawl).
+func recordingStreamInstruction(text string) string {
+	trimmed := strings.TrimSpace(text)
+	switch {
+	case trimmed == "":
+		return "像真人直播自然说话，允许停顿和拖音，不要播音腔。"
+	case strings.ContainsAny(trimmed, "？?"):
+		return "像真人直播随口一问，句尾自然上扬，问完停半拍。"
+	case strings.ContainsAny(trimmed, "！!") || containsAnyText(trimmed, "赶紧", "抓紧", "最后", "抢", "限时"):
+		return "像真人直播提醒，重点词稍重，语速略快，句尾收住。"
+	case containsAnyText(trimmed, "元", "块", "价", "优惠", "券", "套餐"):
+		return "像真人直播报价，数字清楚，前后各停半拍，别像播报。"
+	case containsAnyText(trimmed, "欢迎", "来了", "进来", "朋友"):
+		return "像真人打招呼，亲切放松，尾音别太用力。"
+	default:
+		return "像真人直播聊天，逗号处停半拍，允许轻轻拖音，不要播音腔。"
+	}
+}
+
+func containsAnyText(text string, values ...string) bool {
+	for _, value := range values {
+		if strings.Contains(text, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func recordingStreamTimeline(timeline []model.LiveAgentPlanTimelineSegment) []coreclient.ProgramRefreshTimelineSegment {
