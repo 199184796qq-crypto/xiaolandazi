@@ -2177,7 +2177,83 @@ const customMainlineUploadProgress = ref(0)
 const customMainlineStage = ref<'idle' | 'uploading' | 'analyzing' | 'ready' | 'saving' | 'failed'>('idle')
 const customMainlineDraft = ref<LiveAgentCustomMainlineResponse | null>(null)
 const customMainlineTimeline = ref<LiveAgentPlanTimelineSegment[]>([])
-const customMainlineTranscript = ref('')
+type RecordingScriptTab = { id: string; title: string; text: string; audioAssetIds: number[] }
+// 话术优先可以有多段话术：一个标签 = 一个文本框；一个声音对应一个文本框，不合并。
+// 只有一段时就是原来的单文本框，保存与播放行为不变。
+const recordingTabs = ref<RecordingScriptTab[]>([{ id: 't1', title: '开场', text: '', audioAssetIds: [] }])
+const activeRecordingTabId = ref('t1')
+let recordingTabSeq = 1
+const activeRecordingTab = computed<RecordingScriptTab | null>(
+  () => recordingTabs.value.find((item) => item.id === activeRecordingTabId.value) || recordingTabs.value[0] || null,
+)
+const activeRecordingTabText = computed<string>({
+  get: () => activeRecordingTab.value?.text || '',
+  set: (value: string) => {
+    if (activeRecordingTab.value) activeRecordingTab.value.text = value
+  },
+})
+// 播放与 SRT 仍吃一份完整正文：按标签顺序拼接，空标签跳过。
+const customMainlineTranscript = computed<string>(() =>
+  recordingTabs.value.map((tab) => tab.text.trim()).filter(Boolean).join('\n'),
+)
+function addRecordingTab(): void {
+  recordingTabSeq += 1
+  const tab: RecordingScriptTab = { id: `t${recordingTabSeq}`, title: `话术${recordingTabs.value.length + 1}`, text: '', audioAssetIds: [] }
+  recordingTabs.value.push(tab)
+  activeRecordingTabId.value = tab.id
+}
+// 上传一个声音就新建一个文本框：先激活空标签，再让上传结果写进它。
+function beginRecordingTabFromUpload(): void {
+  addRecordingTab()
+}
+function removeRecordingTab(id: string): void {
+  if (recordingTabs.value.length <= 1) return
+  const index = recordingTabs.value.findIndex((item) => item.id === id)
+  if (index < 0) return
+  recordingTabs.value.splice(index, 1)
+  if (activeRecordingTabId.value === id) {
+    activeRecordingTabId.value = recordingTabs.value[Math.max(0, index - 1)].id
+  }
+}
+function resetRecordingTabs(): void {
+  recordingTabSeq = 1
+  recordingTabs.value = [{ id: 't1', title: '开场', text: '', audioAssetIds: [] }]
+  activeRecordingTabId.value = 't1'
+}
+// 落库形态：1..20 个文本框，每框最多 1 段声音，标签唯一。
+function recordingScriptForSave() {
+  return {
+    tabs: recordingTabs.value.map((tab, index) => ({
+      tab_id: tab.id,
+      title: (tab.title || '').trim(),
+      order: index,
+      text: tab.text,
+      audio_asset_ids: tab.audioAssetIds || [],
+    })),
+    active_tab_id: activeRecordingTabId.value,
+  }
+}
+// 旧版本没有 recording_script，读出来就是单框；有则原样恢复。
+function restoreRecordingScript(context: Record<string, unknown> | undefined): void {
+  const raw = (context as { recording_script?: { tabs?: unknown[]; active_tab_id?: string } } | undefined)?.recording_script
+  const tabs = Array.isArray(raw?.tabs) ? raw.tabs : []
+  const restored: RecordingScriptTab[] = []
+  tabs.forEach((item, index) => {
+    const tab = item as { tab_id?: string; title?: string; text?: string; audio_asset_ids?: unknown[] }
+    const id = String(tab?.tab_id || `t${index + 1}`)
+    restored.push({
+      id,
+      title: String(tab?.title || `话术${index + 1}`),
+      text: String(tab?.text || ''),
+      audioAssetIds: Array.isArray(tab?.audio_asset_ids) ? tab!.audio_asset_ids!.map(Number).filter((value) => value > 0) : [],
+    })
+  })
+  if (!restored.length) return
+  recordingTabs.value = restored
+  recordingTabSeq = restored.length
+  const active = String(raw?.active_tab_id || '')
+  activeRecordingTabId.value = restored.some((tab) => tab.id === active) ? active : restored[0].id
+}
 const customMainlineSaveNotice = ref('')
 const customMainlineError = useFeedbackErrorRef()
 const customMainlineCloneBusy = ref(false)
@@ -3042,9 +3118,13 @@ async function uploadCustomMainline() {
     )
     customMainlineDraft.value = response
     customMainlineTimeline.value = (response.timeline || []).map((item) => ({ ...item }))
-    customMainlineTranscript.value = String(
-      response.transcript || (response.timeline || []).map((item) => item.text).filter(Boolean).join('\n'),
-    ).trim()
+    // 一个声音对应一个文本框：上传结果进新标签，不覆盖已有话术。
+    beginRecordingTabFromUpload()
+    if (activeRecordingTab.value) {
+      activeRecordingTab.value.text = String(
+        response.transcript || (response.timeline || []).map((item) => item.text).filter(Boolean).join('\n'),
+      ).trim()
+    }
     customMainlineSaveNotice.value = ''
     customMainlineUploadProgress.value = 100
     customMainlineStage.value = 'ready'
@@ -3137,9 +3217,11 @@ async function rebuildCustomMainline() {
       clone_error: response.clone_error || draft.clone_error,
     }
     customMainlineTimeline.value = response.timeline.map((item) => ({ ...item }))
-    customMainlineTranscript.value = String(
-      response.transcript || response.timeline.map((item) => item.text).filter(Boolean).join('\n'),
-    ).trim()
+    if (activeRecordingTab.value) {
+      activeRecordingTab.value.text = String(
+        response.transcript || response.timeline.map((item) => item.text).filter(Boolean).join('\n'),
+      ).trim()
+    }
     if (fullShowResult.value) {
       fullShowResult.value = {
         ...fullShowResult.value,
@@ -3829,7 +3911,7 @@ function resetFullShowWorkspaceState() {
   customMainlineStage.value = 'idle'
   customMainlineDraft.value = null
   customMainlineTimeline.value = []
-  customMainlineTranscript.value = ''
+  resetRecordingTabs()
   customMainlineSaveNotice.value = ''
   customMainlineError.value = ''
   originalAiCandidateKey.value = ''
@@ -3865,6 +3947,7 @@ async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, so
     version = normalizeLiveAgentPlanVersion(version)
     const restoredOptions = realtimeOptionsFromVersion(version.generation_context)
     if (restoredOptions) realtimeGenerationOptions.value = restoredOptions
+    restoreRecordingScript(version.generation_context)
     realtimeOptionsChanged.value = false
     const rawContext = version.generation_context as unknown as LiveAgentFullShowGenerationContext
     const context = {
@@ -4004,9 +4087,11 @@ async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, so
           : { ...version.voice_identity },
       }
       customMainlineTimeline.value = originalTimeline
-      customMainlineTranscript.value = String(
-        original.transcript || originalOwner?.text || originalTimeline.map((item) => item.text).filter(Boolean).join('\n'),
-      ).trim()
+      if (activeRecordingTab.value) {
+        activeRecordingTab.value.text = String(
+          original.transcript || originalOwner?.text || originalTimeline.map((item) => item.text).filter(Boolean).join('\n'),
+        ).trim()
+      }
       customMainlineStage.value = 'ready'
     }
     fullShowWorkspaceBaseVersion.value = version
@@ -4201,6 +4286,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       generation_context: {
         content_mode: contentModeAtSave,
         ...(contentModeAtSave === 'user_audio' ? { recording_voice_mode: recordingVoiceMode.value } : {}),
+        ...(contentModeAtSave === 'user_audio' ? { recording_script: recordingScriptForSave() } : {}),
         ...(realtimeOptionsAtSave ? { anchor_generation_options: realtimeOptionsAtSave } : {}),
         duration_minutes: Math.round(Number(fullShowDuration.value || 0)),
         round_minutes: Math.round(Number(fullShowRoundMinutes.value || 0)),
@@ -8479,26 +8565,56 @@ onBeforeUnmount(() => {
                   {{ customMainlineError }}
                 </div>
 
-                <template v-if="customMainlineDraft">
-                  <section class="strategy-custom-mainline-segments">
-                    <header>
-                      <i class="strategy-custom-mainline-editor-icon" aria-hidden="true">↗</i>
-                      <div>
-                        <strong>原始话术</strong>
-                        <span>这里始终显示上传原音识别出的完整话术；可直接编辑，保存后同步重建原始 SRT。</span>
-                      </div>
-                      <button
-                        type="button"
-                        :disabled="customMainlineStage === 'saving' || !customMainlineTranscript.trim()"
-                        @click="rebuildCustomMainline"
-                      >
-                        {{ customMainlineStage === 'saving' ? '正在保存…' : '保存原始话术' }}
-                      </button>
-                    </header>
-                    <textarea class="strategy-original-transcript-editor" v-model="customMainlineTranscript" rows="16" spellcheck="false"></textarea>
-                    <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
-                  </section>
+                <section class="strategy-custom-mainline-segments">
+                  <header>
+                    <i class="strategy-custom-mainline-editor-icon" aria-hidden="true">↗</i>
+                    <div>
+                      <strong>原始话术</strong>
+                      <span>每段话术一个标签；上传一段声音会新建一个标签，也可直接粘贴文本。</span>
+                    </div>
+                    <button
+                      v-if="customMainlineDraft"
+                      type="button"
+                      :disabled="customMainlineStage === 'saving' || !customMainlineTranscript.trim()"
+                      @click="rebuildCustomMainline"
+                    >
+                      {{ customMainlineStage === 'saving' ? '正在保存…' : '保存原始话术' }}
+                    </button>
+                  </header>
+                  <div class="strategy-script-tabs" role="tablist">
+                    <button
+                      v-for="tab in recordingTabs"
+                      :key="tab.id"
+                      type="button"
+                      role="tab"
+                      class="strategy-script-tab"
+                      :class="{ active: tab.id === activeRecordingTabId }"
+                      :aria-selected="tab.id === activeRecordingTabId"
+                      @click="activeRecordingTabId = tab.id"
+                    >{{ tab.title || '未命名' }}</button>
+                    <button type="button" class="strategy-script-tab-add" aria-label="新增话术标签" @click="addRecordingTab">+</button>
+                  </div>
+                  <label v-if="activeRecordingTab" class="strategy-script-tab-title">
+                    <span>标签标题</span>
+                    <input v-model="activeRecordingTab.title" type="text" maxlength="30" placeholder="例如：开场、XX床介绍、XX套餐介绍" />
+                    <button
+                      v-if="recordingTabs.length > 1"
+                      type="button"
+                      class="strategy-script-tab-remove"
+                      @click="removeRecordingTab(activeRecordingTab.id)"
+                    >删除本标签</button>
+                  </label>
+                  <textarea
+                    class="strategy-original-transcript-editor"
+                    v-model="activeRecordingTabText"
+                    rows="16"
+                    spellcheck="false"
+                    placeholder="粘贴或输入这一段话术…"
+                  ></textarea>
+                  <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
+                </section>
 
+                <template v-if="customMainlineDraft">
                   <div class="strategy-custom-mainline-summary">
                     <div>
                       <strong>原始声音</strong>
@@ -10924,6 +11040,16 @@ onBeforeUnmount(() => {
 .strategy-custom-mainline-summary strong { color:#46536d; font-size:12px; }
 .strategy-custom-mainline-summary span { color:#77839a; font-size:10px; font-weight:800; }
 .strategy-custom-mainline-segments { display:grid; gap:10px; padding:13px; border:1px solid #dfe4ef; border-radius:14px; background:#fff; }
+.strategy-script-tabs { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.strategy-script-tab { border:1px solid #d6ddeb; border-radius:10px; padding:7px 14px; background:#fff; color:#536079; font:inherit; font-size:14px; font-weight:800; white-space:nowrap; cursor:pointer; }
+.strategy-script-tab:hover { border-color:#e0a2a5; color:#c0393f; }
+.strategy-script-tab.active { border-color:#d4383f; background:#d4383f; color:#fff; box-shadow:0 3px 9px rgba(212,56,63,.22); }
+.strategy-script-tab-add { width:34px; height:34px; border:1px dashed #c9d1e4; border-radius:10px; background:#fff; color:#5b6680; font-size:18px; font-weight:800; line-height:1; cursor:pointer; }
+.strategy-script-tab-add:hover { border-color:#d4383f; color:#d4383f; }
+.strategy-script-tab-title { display:flex; align-items:center; gap:10px; color:#5b6682; font-size:13px; font-weight:800; }
+.strategy-script-tab-title input { flex:1 1 auto; min-width:0; height:36px; padding:0 12px; border:1px solid #d6ddeb; border-radius:9px; color:#333c52; font:inherit; font-size:14px; font-weight:700; }
+.strategy-script-tab-remove { border:1px solid #f0d2d4; border-radius:9px; padding:7px 12px; background:#fff6f6; color:#b8404a; font:inherit; font-size:13px; font-weight:800; cursor:pointer; }
+.strategy-script-tab-remove:hover { border-color:#e3a8ad; background:#ffecec; }
 .strategy-custom-mainline-segments>header { display:flex; align-items:center; justify-content:space-between; gap:14px; }
 .strategy-custom-mainline-segments>header>div { display:grid; gap:3px; }
 .strategy-custom-mainline-segments>header strong { color:#3e4b67; font-size:14px; }
