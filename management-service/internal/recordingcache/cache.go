@@ -39,6 +39,7 @@ type Entry struct {
 	AssetID   int64     `json:"asset_id"`
 	Duration  int64     `json:"duration_ms"`
 	Segments  []Segment `json:"segments"`
+	Polished  bool      `json:"polished"`
 	UpdatedAt string    `json:"updated_at"`
 }
 
@@ -113,7 +114,7 @@ func (s Scope) Load(voiceKey, scriptHash string) (*Manifest, error) {
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		return nil, fmt.Errorf("缓存清单损坏: %w", err)
 	}
-	if manifest.VoiceKey != voiceKey || manifest.ScriptHash != scriptHash {
+	if manifest.VoiceKey != voiceKey || manifest.ScriptHash != scriptHash || manifest.Version < 2 {
 		return nil, nil
 	}
 	return &manifest, nil

@@ -209,11 +209,13 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 							state.Versions = state.Versions[len(state.Versions)-4:]
 						}
 						state.Refreshed = round
-						// 单句就绪时写回缓存，下次开播同样的话术直接复用。
-						if cacheOK && len(units) == 1 {
+						// 只有真正被改写过的句子才进缓存；回退原文的条目进了缓存
+						// 会把“没润色”固化成永久结果。
+						if cacheOK && len(units) == 1 && strings.TrimSpace(units[0].Text) != strings.TrimSpace(state.Source) {
 							if entry, ok := recordingCacheEntryFromUnit(state.Source, units[0]); ok {
+								entry.Polished = true
 								if cacheManifest == nil {
-									cacheManifest = &recordingcache.Manifest{Version: 1, VoiceKey: voiceKey, ScriptHash: scriptHash}
+									cacheManifest = &recordingcache.Manifest{Version: 2, VoiceKey: voiceKey, ScriptHash: scriptHash}
 								}
 								cacheManifest.Entries = append(cacheManifest.Entries, entry)
 								hit[state.Source] = entry

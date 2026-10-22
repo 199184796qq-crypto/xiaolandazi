@@ -48,7 +48,7 @@ func (s *Server) rebuildRecordingUnitFromCache(ctx context.Context, tenant int64
 func recordingCacheLookup(manifest *recordingcache.Manifest) map[string]recordingcache.Entry {
 	hit := make(map[string]recordingcache.Entry, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
-		if entry.AssetID > 0 && len(entry.Segments) > 0 {
+		if entry.AssetID > 0 && len(entry.Segments) > 0 && entry.Polished {
 			hit[entry.Sentence] = entry
 		}
 	}
