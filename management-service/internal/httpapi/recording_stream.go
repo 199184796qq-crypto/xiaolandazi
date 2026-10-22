@@ -65,7 +65,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 	polish := s.recordingPolishState(ctx, tenant, version.PlanID, room)
 	history := make([][]recordingStreamCacheEntry, 0, 4)
 	cache := map[string]coreclient.ProgramRefreshTrack{}
-	programID, generation, versionNo := "", uint64(0), version.VersionNo
+	programID, generation := "", uint64(0)
 	round := 0
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for {
@@ -123,11 +123,11 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				if err != nil {
 					return err
 				}
-				programID, generation, versionNo = snapshot.ProgramID, snapshot.Generation, snapshot.VersionNo
+				programID, generation = snapshot.ProgramID, snapshot.Generation
 				log.Printf("recording stream program started tenant=%d room=%d program=%s", tenant, room, programID)
 				s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
 			} else {
-				nextGeneration, err := s.appendRecordingStreamTrack(ctx, tenant, room, version, programID, generation, versionNo, entry.Track)
+				nextGeneration, err := s.appendRecordingStreamTrack(ctx, tenant, room, version, programID, entry.Track)
 				if err != nil {
 					return err
 				}
@@ -198,48 +198,27 @@ func (s *Server) startRecordingStreamProgram(ctx context.Context, tenant, room, 
 	return snapshot, nil
 }
 
-func (s *Server) appendRecordingStreamTrack(ctx context.Context, tenant, room int64, version model.LiveAgentPlanVersion, programID string, generation uint64, versionNo int64, track coreclient.ProgramRefreshTrack) (uint64, error) {
-	job := fmt.Sprintf("recording-%d-%d", version.ID, generation+1)
-	input := coreclient.ProgramRefreshInput{
-		JobID: job, ExpectedProgramID: programID, ExpectedVersionID: version.ID,
-		ExpectedGeneration: generation, Generation: generation + 1,
-		NewVersionID: version.ID, NewVersionNo: versionNo,
-		ValidUntil: time.Now().Add(30 * time.Second),
-		Tracks:     []coreclient.ProgramRefreshTrack{track},
+func (s *Server) appendRecordingStreamTrack(ctx context.Context, tenant, room int64, version model.LiveAgentPlanVersion, programID string, track coreclient.ProgramRefreshTrack) (uint64, error) {
+	query := url.Values{"tenant_id": {strconv.FormatInt(tenant, 10)}}
+	body := map[string]any{
+		"expected_program_id": programID,
+		"expected_version_id": version.ID,
+		"tracks":              []coreclient.ProgramRefreshTrack{track},
 	}
-	deadline := time.Now().Add(3 * time.Minute)
-	for time.Now().Before(deadline) {
-		if err := ctx.Err(); err != nil {
-			return generation, err
-		}
-		snapshot, err := s.core.GetRoomProgramSnapshot(ctx, tenant, room)
-		if err != nil {
-			if err := waitLiveProducer(ctx); err != nil {
-				return generation, err
-			}
-			continue
-		}
-		if !snapshot.Running || snapshot.ProgramID != programID || snapshot.VersionID != version.ID {
-			return generation, anchorcycle.ErrStale
-		}
-		if snapshot.LastAppliedJobID == job && snapshot.Generation == input.Generation {
-			return snapshot.Generation, nil
-		}
-		if snapshot.PendingJobID == job {
-			_, err = s.core.RenewRoomProgramRefresh(ctx, tenant, room, job, programID, time.Now().Add(30*time.Second))
-		} else if snapshot.PendingJobID == "" && snapshot.Generation == generation {
-			input.NewVersionNo = snapshot.VersionNo
-			input.ValidUntil = time.Now().Add(30 * time.Second)
-			_, err = s.core.RefreshRoomProgram(ctx, tenant, room, input)
-		}
-		if err != nil && !errors.Is(err, coreclient.ErrProgramRefreshConflict) {
-			return generation, err
-		}
-		if err := waitLiveProducer(ctx); err != nil {
-			return generation, err
-		}
+	resp, err := s.core.DoRoom(ctx, tenant, room, http.MethodPost,
+		fmt.Sprintf("/internal/v1/rooms/%d/audio/program/append", room), query, body)
+	if err != nil {
+		return 0, err
 	}
-	return generation, errors.New("录音AI声音追加超时")
+	defer resp.Body.Close()
+	var snapshot coreclient.ProgramRefreshSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+		return 0, err
+	}
+	if resp.StatusCode != http.StatusOK || snapshot.ProgramID != programID || snapshot.VersionID != version.ID || !snapshot.Sequential {
+		return 0, anchorcycle.ErrStale
+	}
+	return snapshot.Generation, nil
 }
 
 func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, text string, round, index int) (coreclient.ProgramRefreshTrack, error) {
