@@ -1,6 +1,21 @@
 # 项目协作约定
 
-## 当前生产（2026-10-22 00:22）
+## 当前生产（2026-10-22 00:49）
+
+- 当前 `/opt/xiaolan/releases/20261022-recording-stream-throttle-3aa0b04`，源码 `3aa0b04`；前驱 `20261022-recording-clone-adopt-f651f4e`。Management PID1468800/SHA256 `2e0f3e8bf1d660dd92a0c11e18f5d9d819d75975c9bc5ccc6e854e61673501bc`；前端同步，Core/网关/Nginx保持。
+- 录音主线新增“原声 / AI声音”单选；选AI声音保存`recording_voice_mode=stream_clone`。开播按录音原文40–80字切段，首段TTS后启动，后续逐段追加Core并缓存；前4轮逐段润色+P0，之后30%新/70%最近4轮缓存。
+- 旧“整段生成后采用”入口保留但不再作为新流程；188旧版本无标记，需要重选AI声音保存新版本。
+- 六包测试、8080/8081/8083健康通过；未真实开播验证，流式分段/润色/30-70缓存轮换仍待实际场次验收。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/recording-stream-release-20261022`、`recording-stream-throttle-release-20261022`，部署记录 `/opt/xiaolan/deployments/20261022-recording-stream-throttle-3aa0b04.json`；回滚目标 f651f4e（前端）/46801f1（后端）。
+
+## 历史生产（2026-10-22 00:26）
+
+- 当前 `/opt/xiaolan/releases/20261022-recording-clone-adopt-f651f4e`，前端源码 `f651f4e`；前驱 `20261022-recording-custom-key-46801f1`。仅前端发布，Management PID1455515/SHA256 `bc56f606...`未变；Core/网关/Nginx保持。
+- 修复版本188“标题是AI声音但audio_asset_id还是原录音139”：`adoptFullShowVoiceCandidate`对`user_audio`直接return，采用候选TTS被丢弃；现在录音主线也执行采用，CUSTOM音频切到克隆TTS。
+- 现有188不会自动变；必须刷新后重新生成/采用/保存，新版本才会指向AI音频。前端构建、8080/8081/8083健康通过；未真实点击复验。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/recording-clone-adopt-release-20261022`，部署记录 `/opt/xiaolan/deployments/20261022-recording-clone-adopt-f651f4e.json`；回滚目标前驱46801f1。
+
+## 历史生产（2026-10-22 00:22）
 
 - 当前 `/opt/xiaolan/releases/20261022-recording-custom-key-46801f1`，源码 `46801f1`；前驱 `20261021-recording-clone-58bad96`。北京时间00:22:21—00:22:29发布，Management PID1454803/SHA256 `bc56f60667231455d4869c666b4f50797c1de843529fac57af9d22e616ce55c1`；只重启Management，Core/网关/Nginx/前端保持。
 - 修复“稿件编号无效 / 声音设置”：声音生成与SRT重建接口原先只接受A–E，录音主线使用`CUSTOM`被拒；现在两个接口都接受`CUSTOM`。
