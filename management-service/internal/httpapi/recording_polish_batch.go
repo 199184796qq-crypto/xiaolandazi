@@ -50,7 +50,7 @@ func (s *Server) polishRecordingSentenceBatch(ctx context.Context, state *anchor
 			continue
 		}
 		polished := strings.TrimSpace(polishRecordingText(ctx, s, state, sentences[index]))
-		if polished == "" || !sameNumbers(sentences[index], polished) || sameSpeechText(sentences[index], polished) {
+		if polished == "" || !sameNumbers(sentences[index], polished) || sameSpeechText(sentences[index], polished) || suspiciousPolish(sentences[index], polished) {
 			continue
 		}
 		out[index] = polished
@@ -94,7 +94,7 @@ func (s *Server) polishByMarker(ctx context.Context, state *anchorcycle.State, s
 		}
 		text := strings.TrimSpace(rewritten[match[1]:end])
 		text = strings.TrimSpace(strings.Trim(text, "　 "))
-		if text == "" || !sameNumbers(sentences[number-1], text) || sameSpeechText(sentences[number-1], text) {
+		if text == "" || !sameNumbers(sentences[number-1], text) || sameSpeechText(sentences[number-1], text) || suspiciousPolish(sentences[number-1], text) {
 			continue
 		}
 		pieces[number-1] = text
@@ -153,4 +153,34 @@ func speakableKey(text string) string {
 		}
 	}
 	return b.String()
+}
+
+// polishMetaPhrases 是模型没拿到正文时会回的套话。这类输出必须拦掉，
+// 否则会被当成润色结果直接播出去。
+var polishMetaPhrases = []string{
+	"请提供", "请给出", "需要改写", "以下是改写", "抱歉", "无法完成",
+	"请把正文", "请发送", "未提供", "没有提供", "口播正文",
+}
+
+// suspiciousPolish 判断润色结果是否明显不正常：套话、过短或异常膨胀。
+func suspiciousPolish(before, after string) bool {
+	trimmed := strings.TrimSpace(after)
+	if trimmed == "" {
+		return true
+	}
+	for _, phrase := range polishMetaPhrases {
+		if strings.Contains(trimmed, phrase) {
+			return true
+		}
+	}
+	srcLen := len([]rune(speakableKey(before)))
+	outLen := len([]rune(speakableKey(trimmed)))
+	if srcLen == 0 {
+		return false
+	}
+	// 明显被截断（不到原文一半）或异常膨胀（超过两倍）都不采用。
+	if outLen*2 < srcLen || outLen > srcLen*2 {
+		return true
+	}
+	return false
 }
