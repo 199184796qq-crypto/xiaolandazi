@@ -477,23 +477,28 @@ func polishRecordingTextLimit(ctx context.Context, server *Server, state *anchor
 	if state == nil || server == nil || strings.TrimSpace(text) == "" {
 		return text
 	}
-	for attempt := 0; attempt < 2; attempt++ {
+	source := text
+	for attempt := 0; attempt < 3; attempt++ {
 		rewritten, err := server.rewriteCycleText(ctx, state, text)
 		if err != nil || strings.TrimSpace(rewritten) == "" {
-			return text
+			return source
 		}
 		candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: strings.TrimSpace(rewritten)}
 		candidate.OutputText = candidate.Text
-		if state.CheckP0Candidate(&candidate) == nil {
-			// 润色会把句子写长；超过上限就回退原文。单句 160 字是实测可用的口径：
-			// 就没有可用的安全切点，Core 会以「没有可用语义安全切点」启动失败。
+		if problem := state.CheckP0Candidate(&candidate); problem == nil {
+			// 润色会把句子写长；超过上限就回退原文。
 			if maxRunes > 0 && len([]rune(candidate.OutputText)) > maxRunes {
 				log.Printf("recording stream polish expanded beyond %d runes; fallback original", maxRunes)
-				return text
+				return source
 			}
 			return candidate.OutputText
+		} else {
+			// 踩到违规词：把违规之处告诉模型，让它就这一句重写，
+			// 而不是直接放弃、退回原文。
+			log.Printf("recording stream polish p0 rejected attempt=%d reason=%v", attempt+1, problem)
+			text = "原句：" + source + "\n上一次改写出现了违规表述：" + problem.Error() +
+				"\n请重写原句，去掉上述违规表述，其余意思、数字、商品名保持不变，只输出改写后的这一句。"
 		}
-		log.Printf("recording stream polish p0 rejected attempt=%d", attempt+1)
 	}
 	return text
 }
