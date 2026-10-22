@@ -26,6 +26,7 @@ import { usePlanBusinessMode } from '../usePlanBusinessMode'
 import { planBusinessModes } from '../planBusinessMode'
 import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
 import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
+import RecordingScriptTabs from '../components/RecordingScriptTabs.vue'
 import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
 import PlanCreateDialog from '../components/PlanCreateDialog.vue'
 import { isPlanFactMode, type PlanConfigurationMode, type PlanConfigurationSection, type PlanFactMode } from '../livePlanNavigation'
@@ -2204,7 +2205,9 @@ function onRecordingTabInput(event: Event): void {
   if (activeRecordingTab.value) activeRecordingTab.value.text = value
 }
 function addRecordingTab(): void {
-  recordingTabSeq += 1
+  do {
+    recordingTabSeq += 1
+  } while (recordingTabs.value.some(tab => tab.id === `t${recordingTabSeq}`))
   const tab: RecordingScriptTab = { id: `t${recordingTabSeq}`, title: `话术${recordingTabs.value.length + 1}`, text: '', audioAssetIds: [] }
   recordingTabs.value.push(tab)
   activeRecordingTabId.value = tab.id
@@ -2218,9 +2221,15 @@ function removeRecordingTab(id: string): void {
   const index = recordingTabs.value.findIndex((item) => item.id === id)
   if (index < 0) return
   recordingTabs.value.splice(index, 1)
+  delete recordingTabDrafts.value[id]
   if (activeRecordingTabId.value === id) {
     activeRecordingTabId.value = recordingTabs.value[Math.max(0, index - 1)].id
   }
+}
+function reorderRecordingTabs(ids: string[]): void {
+  const tabsById = new Map(recordingTabs.value.map(tab => [tab.id, tab]))
+  if (ids.length !== recordingTabs.value.length || new Set(ids).size !== ids.length || ids.some(id => !tabsById.has(id))) return
+  recordingTabs.value = ids.map(id => tabsById.get(id)!)
 }
 function resetRecordingTabs(): void {
   recordingTabSeq = 1
@@ -8517,7 +8526,6 @@ onBeforeUnmount(() => {
                   <span v-else>S3</span>
                   <div class="strategy-fullshow-output-heading-copy">
                     <strong class="strategy-fullshow-output-section-name">{{ isUserAudioContentMode ? '话术优先处理' : '固定生成话术' }}</strong>
-                    <small v-if="isUserAudioContentMode">上传录音出文本，或直接粘贴话术；每个标签是一段独立话术。</small>
                   </div>
                 </div>
                 <div
@@ -8614,7 +8622,6 @@ onBeforeUnmount(() => {
                     <i class="strategy-custom-mainline-editor-icon" aria-hidden="true">↗</i>
                     <div>
                       <strong>原始话术</strong>
-                      <span>每段话术一个标签；上传一段声音会新建一个标签，也可直接粘贴文本。</span>
                     </div>
                     <button
                       v-if="customMainlineDraft"
@@ -8625,28 +8632,19 @@ onBeforeUnmount(() => {
                       {{ customMainlineStage === 'saving' ? '正在保存…' : '保存原始话术' }}
                     </button>
                   </header>
-                  <div class="strategy-script-tabs" role="tablist">
-                    <button
-                      v-for="tab in recordingTabs"
-                      :key="tab.id"
-                      type="button"
-                      role="tab"
-                      class="strategy-script-tab"
-                      :class="{ active: tab.id === activeRecordingTabId }"
-                      :aria-selected="tab.id === activeRecordingTabId"
-                      @click="activeRecordingTabId = tab.id"
-                    >{{ tab.title || '未命名' }}</button>
-                    <button type="button" class="strategy-script-tab-add" aria-label="新增话术标签" @click="addRecordingTab">+</button>
-                  </div>
+                  <RecordingScriptTabs
+                    :key="`${activeRoom?.tenant_id || 0}:${activeRoomId || 0}:${currentRoomPlanId || 0}`"
+                    :tabs="recordingTabs"
+                    :active-id="activeRecordingTabId"
+                    :disabled="fullShowVersionSaving || customMainlineStage === 'uploading' || customMainlineStage === 'analyzing' || customMainlineStage === 'saving'"
+                    @select="activeRecordingTabId = $event"
+                    @add="addRecordingTab"
+                    @remove="removeRecordingTab"
+                    @reorder="reorderRecordingTabs"
+                  />
                   <label v-if="activeRecordingTab" class="strategy-script-tab-title">
-                    <span>标签标题</span>
+                    <span>标题</span>
                     <input v-model="activeRecordingTab.title" type="text" maxlength="30" placeholder="例如：开场、XX床介绍、XX套餐介绍" />
-                    <button
-                      v-if="recordingTabs.length > 1"
-                      type="button"
-                      class="strategy-script-tab-remove"
-                      @click="removeRecordingTab(activeRecordingTab.id)"
-                    >删除本标签</button>
                   </label>
                   <textarea
                     class="strategy-original-transcript-editor"
@@ -8690,6 +8688,11 @@ onBeforeUnmount(() => {
                       <span v-else>请先完成原始声音处理。</span>
                     </div>
                   </footer>
+
+                  <details v-if="customMainlineDraft" class="strategy-custom-mainline-srt strategy-recording-side-srt">
+                    <summary><i aria-hidden="true">▤</i> 查看 SRT</summary>
+                    <pre>{{ customMainlineDraft.srt }}</pre>
+                  </details>
 
                   <div
                     v-if="originalAiCandidateKey && fullShowVoiceState(originalAiCandidateKey).status === 'generating'"
@@ -9144,37 +9147,6 @@ onBeforeUnmount(() => {
               </template>
             </section>
 
-            <aside v-if="isUserAudioContentMode" class="strategy-recording-tips">
-              <header>
-                <i aria-hidden="true">♧</i>
-                <strong>小贴士</strong>
-              </header>
-              <div class="strategy-recording-tip-list">
-                <article>
-                  <i class="wave" aria-hidden="true">≋</i>
-                  <div><strong>录音建议</strong><span>尽量在安静环境下录制，语速清晰稳定，效果更好。</span></div>
-                </article>
-                <article>
-                  <i aria-hidden="true">✎</i>
-                  <div><strong>编辑技巧</strong><span>可以直接在文本框修改识别出的内容，系统会自动同步时间轴。</span></div>
-                </article>
-                <article>
-                  <i aria-hidden="true">▤</i>
-                  <div><strong>格式说明</strong><span>系统会自动生成分段音频与 SRT，便于直播时直接调用播放。</span></div>
-                </article>
-              </div>
-              <details v-if="customMainlineDraft" class="strategy-custom-mainline-srt strategy-recording-side-srt">
-                <summary><i aria-hidden="true">▤</i> 查看 SRT</summary>
-                <pre>{{ customMainlineDraft.srt }}</pre>
-              </details>
-              <div class="strategy-recording-mic-illustration" aria-hidden="true">
-                <span>让好声音<br />更简单！</span>
-                <div class="strategy-recording-sound-wave is-left"><i></i><i></i><i></i></div>
-                <div class="strategy-recording-mic"><i></i></div>
-                <div class="strategy-recording-sound-wave is-right"><i></i><i></i><i></i></div>
-              </div>
-            </aside>
-
             <section v-if="isFixedGeneratedContentMode" class="strategy-fullshow-panel strategy-fullshow-runtime">
               <header><div><span>✓</span><strong>生成检查</strong></div><small>{{ fullShowResult ? (fullShowAuditPassedCount + '/' + fullShowResult.variants.length + ' 通过') : '等待生成' }}</small></header>
               <div v-if="fullShowResult" class="strategy-fullshow-compile-summary">
@@ -9194,62 +9166,6 @@ onBeforeUnmount(() => {
             </section>
           </div>
 
-          <section v-if="fullShowResult && (isFixedGeneratedContentMode || (isUserAudioContentMode && hasCustomMainlineResult))" class="strategy-fullshow-panel strategy-fullshow-publish">
-            <header>
-                <div><span>状态</span><strong>方案保存状态</strong></div>
-              <small>
-                {{
-                  fullShowSavedVersion
-                    ? '方案已保存'
-                    : '尚未保存方案'
-                }}
-              </small>
-            </header>
-
-            <div class="strategy-fullshow-publish-checks">
-              <div :class="{ ok: fullShowFormalSelectedCount > 0 }">
-                <span>正式稿</span>
-                <strong>{{ fullShowFormalSelectedCount }} 套</strong>
-              </div>
-              <div :class="{ ok: fullShowAllFormalVoicesReady }">
-                <span>正式声音</span>
-                <strong>{{ fullShowVoiceReadyCount }}/{{ fullShowFormalSelectedCount }}</strong>
-              </div>
-              <div :class="{ ok: fullShowVoiceIdentityConsistent }">
-                <span>{{ isUserAudioContentMode ? '话术优先' : '声音身份' }}</span>
-                <strong>{{ isUserAudioContentMode ? (fullShowVoiceIdentityConsistent ? '原声保留' : '待上传录音') : (fullShowVoiceIdentityConsistent ? '一致' : '需重新生成') }}</strong>
-              </div>
-              <div :class="{ ok: Boolean(currentVoiceIdentity.voice_id) }">
-                <span>{{ isUserAudioContentMode ? '互动音色' : '当前身份' }}</span>
-                <strong>{{ currentVoiceIdentity.name }} {{ currentVoiceIdentity.version }}</strong>
-              </div>
-            </div>
-
-            <div class="strategy-fullshow-publish-note">
-              <strong>保存后直接用于下次开播</strong>
-              <span>无需单独发布，也不自动开播。正在直播的场次保持原配置，下一次点击“开始”使用最新保存内容。</span>
-            </div>
-
-            <div v-if="fullShowSavedVersion" class="strategy-fullshow-saved-version">
-              <div>
-                <span>当前保存版本</span>
-                <strong>V{{ fullShowSavedVersion.version_no }}</strong>
-              </div>
-              <div>
-                <span>声音身份</span>
-                <strong>{{ fullShowSavedVersion.voice_identity.name }} {{ fullShowSavedVersion.voice_identity.version }}</strong>
-              </div>
-              <div>
-                <span>正式稿</span>
-                <strong>{{ fullShowSavedVersion.variants.filter((item) => item.is_formal).map((item) => item.variant_key + '稿').join('、') }}</strong>
-              </div>
-              <div>
-                <span>状态</span>
-                <strong>已保存</strong>
-              </div>
-            </div>
-
-          </section>
           </template>
           </AgentWorkspacePages>
         </section>
@@ -11067,16 +10983,9 @@ onBeforeUnmount(() => {
 .strategy-custom-mainline-summary strong { color:#46536d; font-size:12px; }
 .strategy-custom-mainline-summary span { color:#77839a; font-size:10px; font-weight:800; }
 .strategy-custom-mainline-segments { display:grid; gap:10px; padding:13px; border:1px solid #dfe4ef; border-radius:14px; background:#fff; }
-.strategy-script-tabs { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
-.strategy-script-tab { border:1px solid #d6ddeb; border-radius:10px; padding:7px 14px; background:#fff; color:#536079; font:inherit; font-size:14px; font-weight:800; white-space:nowrap; cursor:pointer; }
-.strategy-script-tab:hover { border-color:#e0a2a5; color:#c0393f; }
-.strategy-script-tab.active { border-color:#d4383f; background:#d4383f; color:#fff; box-shadow:0 3px 9px rgba(212,56,63,.22); }
-.strategy-script-tab-add { width:34px; height:34px; border:1px dashed #c9d1e4; border-radius:10px; background:#fff; color:#5b6680; font-size:18px; font-weight:800; line-height:1; cursor:pointer; }
-.strategy-script-tab-add:hover { border-color:#d4383f; color:#d4383f; }
-.strategy-script-tab-title { display:flex; align-items:center; gap:10px; color:#5b6682; font-size:13px; font-weight:800; }
-.strategy-script-tab-title input { flex:1 1 auto; min-width:0; height:36px; padding:0 12px; border:1px solid #d6ddeb; border-radius:9px; color:#333c52; font:inherit; font-size:14px; font-weight:700; }
-.strategy-script-tab-remove { border:1px solid #f0d2d4; border-radius:9px; padding:7px 12px; background:#fff6f6; color:#b8404a; font:inherit; font-size:13px; font-weight:800; cursor:pointer; }
-.strategy-script-tab-remove:hover { border-color:#e3a8ad; background:#ffecec; }
+.strategy-script-tab-title { display:flex; align-items:center; gap:10px; color:#5b6682; font-size:16px; font-weight:800; }
+.strategy-script-tab-title>span { flex:0 0 auto; white-space:nowrap; }
+.strategy-script-tab-title input { flex:1 1 auto; min-width:0; height:42px; padding:0 12px; border:1px solid #d6ddeb; border-radius:9px; color:#333c52; font:inherit; font-size:16px; font-weight:700; }
 .strategy-custom-mainline-segments>header { display:flex; align-items:center; justify-content:space-between; gap:14px; }
 .strategy-custom-mainline-segments>header>div { display:grid; gap:3px; }
 .strategy-custom-mainline-segments>header strong { color:#3e4b67; font-size:14px; }
@@ -11211,24 +11120,6 @@ onBeforeUnmount(() => {
 .strategy-fullshow-runtime-list>div { display:grid; grid-template-columns:64px minmax(0,1fr); gap:10px; padding:11px 12px; border-radius:11px; background:#f8f9fc; }
 .strategy-fullshow-runtime-list b { color:#5b67c9; font-size:13px; }
 .strategy-fullshow-runtime-list span { color:#59657a; font-size:13px; line-height:1.55; }
-.strategy-fullshow-publish { margin-top:14px; border-color:#d9e1f7; background:linear-gradient(180deg,#fbfcff 0%,#f7f9ff 100%); }
-.strategy-fullshow-publish-checks { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; }
-.strategy-fullshow-publish-checks>div { display:grid; gap:4px; min-width:0; padding:12px 13px; border:1px solid #e2e7f0; border-radius:12px; background:#fff; }
-.strategy-fullshow-publish-checks>div.ok { border-color:#c6e4d3; background:#f5fbf7; }
-.strategy-fullshow-publish-checks span { color:#8590a4; font-size:11px; font-weight:850; }
-.strategy-fullshow-publish-checks strong { overflow:hidden; color:#45516a; font-size:13px; text-overflow:ellipsis; white-space:nowrap; }
-.strategy-fullshow-publish-checks>div.ok strong { color:#347c59; }
-.strategy-fullshow-publish-note { display:grid; gap:3px; padding:12px 14px; border:1px solid #dfe5f5; border-radius:12px; background:#f5f7fd; }
-.strategy-fullshow-publish-note strong { color:#5362c9; font-size:13px; }
-.strategy-fullshow-publish-note span { color:#7d879b; font-size:12px; line-height:1.55; }
-.strategy-fullshow-publish-actions { display:flex; justify-content:flex-end; gap:9px; }
-.strategy-fullshow-publish-actions button { min-height:44px; padding:0 18px; border:1px solid #ccd4eb; border-radius:12px; background:#fff; color:#5261c9; font-size:13px; font-weight:900; cursor:pointer; }
-.strategy-fullshow-publish-actions button.primary { border-color:#6372dc; background:linear-gradient(135deg,#7180ed,#5668da); color:#fff; box-shadow:0 10px 22px rgba(78,94,203,.20); }
-.strategy-fullshow-publish-actions button:disabled { cursor:not-allowed; opacity:.52; box-shadow:none; }
-.strategy-fullshow-saved-version { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
-.strategy-fullshow-saved-version>div { display:grid; gap:3px; padding:10px 12px; border-radius:11px; background:#fff; border:1px solid #e4e8f1; }
-.strategy-fullshow-saved-version span { color:#8a94a6; font-size:10px; font-weight:800; }
-.strategy-fullshow-saved-version strong { color:#43506a; font-size:12px; }
 .strategy-fullshow-version-history { display:grid; gap:8px; }
 .strategy-fullshow-version-history>header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .strategy-fullshow-version-history>header strong { color:#48556f; font-size:13px; }
@@ -11684,13 +11575,13 @@ onBeforeUnmount(() => {
 .strategy-content-mode-workflow>header{position:relative;z-index:1;align-items:center}.strategy-content-mode-heading strong{color:#17264a;font-size:24px;font-weight:950}.strategy-content-mode-heading small{color:#7c8ba6;font-size:13px;line-height:1.6}
 .strategy-content-mode-save-state{display:flex;align-items:center;gap:12px;min-width:310px}.strategy-content-mode-save-state>i{display:grid;width:32px;height:32px;flex:0 0 32px;place-items:center;border-radius:50%;background:linear-gradient(135deg,#45c394,#18a676);color:#fff;font-size:17px;font-style:normal;font-weight:950;box-shadow:0 8px 18px rgba(28,164,118,.22)}.strategy-content-mode-save-state>div{display:grid;gap:2px}.strategy-content-mode-save-state strong{color:#228163;font-size:13px}.strategy-content-mode-save-state small{color:#74839e!important;font-size:11px!important}.strategy-content-mode-save-state>span{position:relative;width:76px;height:48px;margin-left:auto;border-radius:38px 38px 24px 24px;background:linear-gradient(145deg,#d5e9ff,#86b4ff);opacity:.9;filter:drop-shadow(0 8px 10px rgba(87,130,212,.15))}.strategy-content-mode-save-state>span b{position:absolute;bottom:7px;width:3px;border-radius:999px;background:rgba(255,255,255,.9)}.strategy-content-mode-save-state>span b:nth-child(1){left:26px;height:16px}.strategy-content-mode-save-state>span b:nth-child(2){left:36px;height:26px}.strategy-content-mode-save-state>span b:nth-child(3){left:46px;height:13px}
 .strategy-content-mode-cards{position:relative;z-index:1;gap:14px}.strategy-content-mode-cards>button{grid-template-columns:32px 72px minmax(0,1fr);grid-template-rows:1fr auto;column-gap:12px;min-height:138px;padding:18px 20px;border-color:#e6ecf6;border-radius:16px;background:linear-gradient(135deg,#fbfcff,#f4f7fd);box-shadow:0 8px 18px rgba(58,78,130,.035);cursor:pointer;transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}.strategy-content-mode-cards>button:hover:not(:disabled){transform:translateY(-2px);border-color:#cbd6f3;box-shadow:0 14px 30px rgba(58,78,130,.1)}.strategy-content-mode-cards>button>i{grid-column:1;grid-row:1;align-self:start;color:#4f5f8d;font-size:17px}.strategy-content-mode-icon{display:grid;grid-column:2;grid-row:1;width:68px;height:68px;place-items:center;border:1px solid rgba(255,255,255,.8);border-radius:50%;background:linear-gradient(145deg,#fff,#edf3ff);color:#4b70e8;box-shadow:0 8px 22px rgba(73,101,180,.08)}.strategy-content-mode-icon svg{width:38px;height:38px}.strategy-content-mode-icon svg *{fill:none;stroke:currentColor;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}.strategy-content-mode-icon.is-ai_dynamic{color:#3971ed}.strategy-content-mode-card-copy{display:grid;grid-column:3;grid-row:1;align-content:center;gap:7px;min-width:0}.strategy-content-mode-card-copy strong{color:#182750!important;font-size:18px!important}.strategy-content-mode-card-copy span{color:#6f7f9e;font-size:12px;line-height:1.55}.strategy-content-mode-cards>button>b{grid-column:1/4;grid-row:2;justify-self:start;padding:7px 14px;border:1px solid #d4def2;border-radius:999px;background:#fff;color:#50618a;font-size:11px}.strategy-content-mode-cards>button.active{border-color:#6f7eff;background:linear-gradient(135deg,#4f80f2 0%,#646af0 70%,#7a64ee 100%);box-shadow:0 15px 34px rgba(77,91,222,.26),inset 0 1px 0 rgba(255,255,255,.26)}.strategy-content-mode-cards>button.active>i,.strategy-content-mode-cards>button.active .strategy-content-mode-card-copy strong,.strategy-content-mode-cards>button.active .strategy-content-mode-card-copy span{color:#fff!important}.strategy-content-mode-cards>button.active .strategy-content-mode-card-copy span{color:rgba(255,255,255,.88)!important}.strategy-content-mode-cards>button.active .strategy-content-mode-icon{border-color:rgba(255,255,255,.18);background:rgba(255,255,255,.12);color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.23)}.strategy-content-mode-cards>button.active>b{border-color:rgba(255,255,255,.32);background:rgba(255,255,255,.92);color:#5365d8}
-.strategy-fullshow-output-grid.is-recording-mainline{grid-template-columns:minmax(0,2.18fr) minmax(280px,.96fr);align-items:stretch;gap:16px}.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output{padding:20px;border-color:#dce7f5;border-radius:20px;background:rgba(255,255,255,.96);box-shadow:0 14px 36px rgba(54,78,135,.08)}.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output>header{align-items:flex-start;padding-bottom:16px}.strategy-fullshow-output-heading-copy{display:grid;gap:4px}.strategy-fullshow-output-heading-copy small{color:#71809d;font-size:12px;line-height:1.55;text-align:left}.strategy-fullshow-output-title .strategy-recording-title-icon{width:48px;height:48px;flex:0 0 48px;border-radius:50%;background:linear-gradient(145deg,#f1f4ff,#eeeaff);color:#5b64ef}.strategy-recording-title-icon svg{width:28px;height:28px}.strategy-recording-title-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status{padding:7px 13px;border-radius:999px;background:#effaf3;color:#20845a;font-weight:900}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status i{background:#45b971;box-shadow:0 0 0 5px rgba(69,185,113,.12)}
+.strategy-fullshow-output-grid.is-recording-mainline{grid-template-columns:minmax(0,1fr);align-items:stretch;gap:16px}.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output{padding:20px;border-color:#dce7f5;border-radius:20px;background:rgba(255,255,255,.96);box-shadow:0 14px 36px rgba(54,78,135,.08)}.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output>header{align-items:flex-start;padding-bottom:16px}.strategy-fullshow-output-heading-copy{display:grid;gap:4px}.strategy-fullshow-output-heading-copy small{color:#71809d;font-size:12px;line-height:1.55;text-align:left}.strategy-fullshow-output-title .strategy-recording-title-icon{width:48px;height:48px;flex:0 0 48px;border-radius:50%;background:linear-gradient(145deg,#f1f4ff,#eeeaff);color:#5b64ef}.strategy-recording-title-icon svg{width:28px;height:28px}.strategy-recording-title-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status{padding:7px 13px;border-radius:999px;background:#effaf3;color:#20845a;font-weight:900}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status i{background:#45b971;box-shadow:0 0 0 5px rgba(69,185,113,.12)}
 .strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-inline{gap:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload{position:relative;overflow:hidden;padding:12px;border-color:#dde8f6;border-radius:16px;background:linear-gradient(135deg,#fbfdff,#f4f8ff)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload::before,.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload::after{content:"";position:absolute;left:-8%;right:42%;bottom:24px;height:80px;border-radius:50%;background:linear-gradient(120deg,rgba(93,137,242,.06),rgba(119,93,242,.09));transform:rotate(4deg);pointer-events:none}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload::after{left:55%;right:-10%;bottom:5px;background:linear-gradient(120deg,rgba(117,93,242,.06),rgba(79,135,241,.1));transform:rotate(-7deg)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label{position:relative;z-index:1;min-height:145px;border-color:#9db4ff;border-radius:13px;background:rgba(255,255,255,.7)}.strategy-custom-mainline-upload-icon{display:grid;width:44px;height:44px;place-items:center;border-radius:50%;background:linear-gradient(145deg,#f0f4ff,#dfe8ff);color:#5676ed;font-style:normal}.strategy-custom-mainline-upload-icon svg{width:25px;height:25px}.strategy-custom-mainline-upload-icon svg *{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label strong{font-size:17px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload>label span{font-size:10px;line-height:1.45}
 .strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments{padding:12px;border-color:#dce7f4;border-radius:15px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header{display:grid;grid-template-columns:38px minmax(0,1fr) auto}.strategy-custom-mainline-editor-icon{display:grid;width:34px;height:34px;place-items:center;border-radius:10px;background:#eef2ff;color:#5369df;font-style:normal;font-weight:950}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header strong{font-size:15px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments>header button{min-height:40px;padding:0 18px;border:0;border-radius:11px;background:linear-gradient(135deg,#697cf0,#5859e8);box-shadow:0 8px 18px rgba(79,87,211,.2)}.strategy-original-transcript-editor{width:100%;min-height:340px;box-sizing:border-box;resize:vertical;padding:14px 16px;border:1px solid #dce5f1;border-radius:12px;outline:none;background:#fff;color:#33415e;font:14px/1.85 inherit}.strategy-original-transcript-editor:focus{border-color:#7d8cf0;box-shadow:0 0 0 4px rgba(93,111,223,.08)}
 .strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div{position:relative;min-height:58px;padding-left:46px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div::before{content:"≋";position:absolute;left:14px;display:grid;width:25px;height:25px;place-items:center;border-radius:8px;background:#edf1ff;color:#5969df;font-size:20px;font-weight:950}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div:nth-child(2)::before{content:"●";background:#e7faf3;color:#149370;font-size:14px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-summary>div.ready{border-color:#b6e5d3;background:linear-gradient(135deg,#f2fcf7,#edfaf4)}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-inline>audio{height:48px;border-radius:999px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-srt{padding:13px 15px;border-color:#dce6f3;border-radius:12px}.strategy-custom-mainline-srt summary i{margin-right:7px;color:#5870e5;font-style:normal}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer{padding:0 2px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer>div span::first-letter{color:#4d73ed}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer button{min-height:44px;padding:0 20px;border-radius:11px}.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-footer button.primary{border:0;background:linear-gradient(135deg,#5f76ef,#5f55ea);box-shadow:0 10px 21px rgba(79,84,211,.22)}
 .strategy-recording-tips{position:relative;display:grid;grid-template-rows:auto auto minmax(260px,1fr);align-content:start;min-width:0;overflow:hidden;padding:20px;border:1px solid #dce7f5;border-radius:20px;background:radial-gradient(circle at 50% 90%,rgba(102,123,242,.13),transparent 30%),linear-gradient(180deg,#fff 0%,#f8fbff 100%);box-shadow:0 14px 36px rgba(54,78,135,.07)}.strategy-recording-tips>header{display:flex;align-items:center;gap:10px;padding-bottom:14px}.strategy-recording-tips>header>i{display:grid;width:38px;height:38px;place-items:center;border-radius:50%;background:#f0edff;color:#6657ec;font-size:22px;font-style:normal}.strategy-recording-tips>header strong{color:#263858;font-size:19px}.strategy-recording-tip-list{display:grid;gap:12px}.strategy-recording-tip-list article{display:grid;grid-template-columns:50px minmax(0,1fr);gap:12px;align-items:start;padding:15px;border:1px solid #dfe7f3;border-radius:15px;background:rgba(255,255,255,.9);box-shadow:0 7px 17px rgba(58,82,139,.05)}.strategy-recording-tip-list article>i{display:grid;width:44px;height:44px;place-items:center;border-radius:12px;background:linear-gradient(145deg,#eef0ff,#e6eaff);color:#526aec;font-size:23px;font-style:normal;font-weight:950}.strategy-recording-tip-list article>i.wave{font-size:30px;line-height:1;transform:rotate(90deg)}.strategy-recording-tip-list article>div{display:grid;gap:6px}.strategy-recording-tip-list strong{color:#263859;font-size:14px}.strategy-recording-tip-list span{color:#74829c;font-size:11px;line-height:1.65}
 .strategy-recording-mic-illustration{position:relative;align-self:end;min-height:290px}.strategy-recording-mic-illustration>span{position:absolute;z-index:2;top:52px;right:14px;color:#7790ef;font-size:22px;font-weight:850;line-height:1.5;letter-spacing:.08em;transform:rotate(-9deg)}.strategy-recording-mic{position:absolute;left:50%;bottom:42px;width:82px;height:150px;border-radius:44px;background:linear-gradient(180deg,#7ca3ff 0%,#6962f1 56%,#5266dc 100%);box-shadow:inset 12px 10px 20px rgba(255,255,255,.35),inset -8px -12px 18px rgba(49,53,164,.18),0 22px 42px rgba(84,95,220,.28);transform:translateX(-50%)}.strategy-recording-mic::before{content:"";position:absolute;left:-17px;right:-17px;bottom:-20px;height:78px;border:6px solid #6c75e8;border-top:0;border-radius:0 0 52px 52px}.strategy-recording-mic::after{content:"";position:absolute;left:50%;bottom:-50px;width:8px;height:32px;border-radius:999px;background:#6c75e8;transform:translateX(-50%)}.strategy-recording-mic>i{position:absolute;left:50%;bottom:-66px;width:116px;height:23px;border-radius:50%;background:linear-gradient(180deg,#d9e3ff,#9db1ef);box-shadow:0 14px 24px rgba(77,96,178,.18);transform:translateX(-50%)}.strategy-recording-sound-wave{position:absolute;bottom:93px;display:flex;align-items:center;gap:5px}.strategy-recording-sound-wave.is-left{left:18px}.strategy-recording-sound-wave.is-right{right:18px}.strategy-recording-sound-wave i{display:block;width:6px;border-radius:999px;background:linear-gradient(180deg,#8c76f4,#6788ef)}.strategy-recording-sound-wave i:nth-child(1){height:28px}.strategy-recording-sound-wave i:nth-child(2){height:52px}.strategy-recording-sound-wave i:nth-child(3){height:36px}
-@media(max-width:1180px){.strategy-content-mode-cards>button{grid-template-columns:28px 58px minmax(0,1fr);padding:15px}.strategy-content-mode-icon{width:56px;height:56px}.strategy-content-mode-card-copy strong{font-size:16px!important}.strategy-fullshow-output-grid.is-recording-mainline{grid-template-columns:minmax(0,1.7fr) minmax(250px,.8fr)}.strategy-recording-mic-illustration>span{font-size:18px}}
+@media(max-width:1180px){.strategy-content-mode-cards>button{grid-template-columns:28px 58px minmax(0,1fr);padding:15px}.strategy-content-mode-icon{width:56px;height:56px}.strategy-content-mode-card-copy strong{font-size:16px!important}.strategy-fullshow-output-grid.is-recording-mainline{grid-template-columns:minmax(0,1fr)}.strategy-recording-mic-illustration>span{font-size:18px}}
 @media(max-width:900px){.strategy-content-mode-save-state{min-width:0}.strategy-content-mode-save-state>span{display:none}.strategy-fullshow-output-grid.is-recording-mainline{grid-template-columns:1fr}.strategy-recording-tips{grid-template-rows:auto auto}.strategy-recording-mic-illustration{display:none}.strategy-custom-mainline-summary{grid-template-columns:1fr}.strategy-custom-mainline-footer{align-items:stretch;flex-wrap:wrap}.strategy-custom-mainline-footer>div{width:100%}.strategy-custom-mainline-footer button{flex:1}}
 .strategy-content-mode-workflow{gap:11px;padding:18px 20px}.strategy-content-mode-cards{gap:10px}.strategy-content-mode-cards>button{grid-template-columns:24px 48px minmax(0,1fr);grid-template-rows:1fr auto;column-gap:9px;min-height:92px;padding:11px 14px;border-radius:13px}.strategy-content-mode-cards>button>i{font-size:13px}.strategy-content-mode-icon{width:46px;height:46px}.strategy-content-mode-icon svg{width:27px;height:27px}.strategy-content-mode-card-copy{gap:3px}.strategy-content-mode-card-copy strong{font-size:15px!important}.strategy-content-mode-card-copy span{font-size:10px;line-height:1.4}.strategy-content-mode-cards>button>b{padding:4px 10px;font-size:9px}
 .strategy-fullshow-panel>header .strategy-fullshow-output-title{display:flex!important;flex:1 1 auto;align-items:center;min-width:0;width:auto}.strategy-fullshow-panel>header .strategy-fullshow-output-heading-copy{display:grid!important;flex:1 1 auto;align-content:center;gap:4px;min-width:0;width:auto}.strategy-fullshow-panel>header .strategy-fullshow-output-heading-copy strong{display:block;white-space:nowrap}.strategy-fullshow-panel>header .strategy-fullshow-output-heading-copy small{display:block;max-width:680px;white-space:normal;word-break:normal;text-align:left}.strategy-fullshow-output-grid.is-recording-mainline>.strategy-fullshow-output>header{align-items:center}.strategy-fullshow-output-grid.is-recording-mainline .strategy-fullshow-status{flex:0 0 auto;white-space:nowrap}
