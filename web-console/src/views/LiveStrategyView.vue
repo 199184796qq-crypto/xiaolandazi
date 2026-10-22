@@ -8677,7 +8677,7 @@ onBeforeUnmount(() => {
 
                   <audio v-if="customMainlineDraft" controls preload="metadata" :src="liveSupportMediaPlaybackURL(customMainlineDraft.audio_url)"></audio>
 
-                  <footer class="strategy-custom-mainline-footer">
+                  <footer v-if="customMainlineDraft" class="strategy-custom-mainline-footer">
                     <div>
                       <span v-if="customMainlineCanApply">✓ 原始声音、原始话术与 SRT 已保留</span>
                       <span v-else>请先完成原始声音处理。</span>
@@ -11111,6 +11111,7 @@ onBeforeUnmount(() => {
 .strategy-custom-mainline-footer button.primary { border-color:#6574df; background:#6574df; color:#fff; }
 .strategy-custom-mainline-footer button:disabled { cursor:not-allowed; opacity:.5; }
 .strategy-custom-mainline-audio { display:grid; gap:14px; min-width:0; }
+.strategy-custom-mainline-audio>audio { width:100%; min-height:42px; }
 .strategy-recording-voice-settings { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px 16px; padding:14px 16px; border:1px solid #dfe4ef; border-radius:14px; background:#fff; }
 .strategy-recording-voice-settings>strong { color:#3e4b67; font-size:16px; }
 .strategy-recording-voice-choice { display:inline-grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:center; flex:0 0 auto; gap:4px; width:300px; max-width:100%; min-width:0; box-sizing:border-box; margin:0 0 0 auto; padding:4px; border:1px solid #e3e6f2; border-radius:14px; background:#f2f4fa; }
