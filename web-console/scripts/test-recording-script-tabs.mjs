@@ -73,7 +73,7 @@ const server = await createServer({
     }) },
   }],
 })
-const checks = [], layouts = [], errors = [], externalRequests = []
+const checks = [], layouts = [], interactionStyles = [], errors = [], externalRequests = []
 await mkdir(output, { recursive: true })
 await server.listen()
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true })
@@ -95,6 +95,7 @@ try {
   const ids = async () => (await state()).tabs.map(tab => tab.id)
   const reset = async value => { await page.evaluate(value => window.fixture.set(value), value || {});await page.getByRole('tab').first().waitFor() }
   const select = id => page.locator(`[data-recording-tab-id="${id}"] .recording-script-tab-select`)
+  const mouseGrip = id => page.locator(`[data-recording-tab-id="${id}"] .recording-script-tab-grip`)
   const remove = id => page.locator(`[data-recording-tab-id="${id}"] .recording-script-tab-remove`)
   const manage = page.getByRole('button', { name: '管理标签删除', exact: true })
   const add = page.getByRole('button', { name: '新增话术标签', exact: true })
@@ -168,7 +169,38 @@ try {
   checks.push('普通方向键切换标签；Alt+左右改变顺序，正文/当前ID保持')
 
   await reset()
-  const dragFrom = await select('t1').boundingBox(), dragTo = await select('t3').boundingBox()
+  await page.mouse.move(2, 850)
+  const normalColor = await select('t2').evaluate(element => getComputedStyle(element).color)
+  const selectedColor = await select('t1').evaluate(element => getComputedStyle(element).color)
+  assert.equal(selectedColor, 'rgb(255, 255, 255)')
+  for (const [id, color] of [['t1', selectedColor], ['t2', normalColor]]) {
+    await select(id).hover()
+    await select(id).evaluate(async element => { await Promise.all(element.getAnimations().map(animation => animation.finished)) })
+    const style = await select(id).evaluate(element => ({ color: getComputedStyle(element).color, cursor: getComputedStyle(element).cursor }))
+    assert.equal(style.color, color, `${id} hover must preserve text color`)
+    assert.equal(style.cursor, 'pointer')
+    const gripCursor = await mouseGrip(id).evaluate(element => getComputedStyle(element).cursor)
+    assert.equal(gripCursor, 'grab')
+    interactionStyles.push({ id, beforeColor: color, hoverColor: style.color, labelCursor: style.cursor, gripCursor })
+  }
+  await select('t1').hover()
+  await page.screenshot({ path: output + '/selected-hover.png', fullPage: true })
+  await select('t2').locator('.recording-script-tab-name').click()
+  assert.equal((await state()).active, 't2')
+  assert.equal(await page.getByRole('textbox', { name: '话术正文', exact: true }).inputValue(), '塑品正文，仅属于第二项')
+  checks.push('选中标签悬停保持白字，普通标签悬停颜色不变；文字区域pointer/六点把手grab，文字点击正常切换')
+  await reset()
+  const labelFrom = await select('t1').locator('.recording-script-tab-name').boundingBox(), labelTo = await select('t3').boundingBox()
+  assert.ok(labelFrom && labelTo)
+  await page.mouse.move(labelFrom.x + labelFrom.width / 2, labelFrom.y + labelFrom.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(labelTo.x + labelTo.width * .75, labelTo.y + labelTo.height / 2, { steps: 12 })
+  assert.equal(await page.locator('.recording-script-tab-ghost').count(), 0)
+  await page.mouse.up()
+  assert.deepEqual(await ids(), ['t1', 't2', 't3', 't4'])
+  checks.push('鼠标从标签文字区域移动超过阈值不产生拖拽浮层、不重排')
+  await reset()
+  const dragFrom = await mouseGrip('t1').boundingBox(), dragTo = await select('t3').boundingBox()
   assert.ok(dragFrom && dragTo)
   await page.mouse.move(dragFrom.x + dragFrom.width / 2, dragFrom.y + dragFrom.height / 2)
   await page.mouse.down()
@@ -186,17 +218,17 @@ try {
   assert.equal(pointerState.tabs.find(tab => tab.id === 't1').text, '开场正文，仅属于第一项')
   assert.deepEqual(pointerState.tabs.find(tab => tab.id === 't1').audioAssetIds, [101])
   await page.screenshot({ path: output + '/desktop.png', fullPage: true })
-  checks.push('真实鼠标Pointer拖拽产生浮层/过渡动画并提交顺序，正文和声音关联保持')
+  checks.push('真实鼠标仅从六点把手Pointer拖拽产生浮层/过渡动画并提交顺序，正文和声音关联保持')
   await reset()
-  const escapeFrom = await select('t1').boundingBox(), escapeTo = await select('t3').boundingBox()
-  await page.mouse.move(escapeFrom.x + 30, escapeFrom.y + escapeFrom.height / 2);await page.mouse.down()
+  const escapeFrom = await mouseGrip('t1').boundingBox(), escapeTo = await select('t3').boundingBox()
+  await page.mouse.move(escapeFrom.x + escapeFrom.width / 2, escapeFrom.y + escapeFrom.height / 2);await page.mouse.down()
   await page.mouse.move(escapeTo.x + escapeTo.width * .75, escapeTo.y + escapeTo.height / 2, { steps: 10 })
   await page.locator('.recording-script-tab-ghost').waitFor()
   await page.keyboard.press('Escape');await page.mouse.up()
   assert.deepEqual(await ids(), ['t1', 't2', 't3', 't4'])
   await reset()
-  const outsideFrom = await select('t1').boundingBox(), outsideTo = await select('t3').boundingBox()
-  await page.mouse.move(outsideFrom.x + 30, outsideFrom.y + outsideFrom.height / 2);await page.mouse.down()
+  const outsideFrom = await mouseGrip('t1').boundingBox(), outsideTo = await select('t3').boundingBox()
+  await page.mouse.move(outsideFrom.x + outsideFrom.width / 2, outsideFrom.y + outsideFrom.height / 2);await page.mouse.down()
   await page.mouse.move(outsideTo.x + 30, outsideTo.y + outsideTo.height / 2, { steps: 8 })
   await page.locator('.recording-script-tab-ghost').waitFor()
   await page.mouse.move(2, 850, { steps: 6 });await page.mouse.up()
@@ -233,10 +265,21 @@ try {
   await touch.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort())
   const mobile = await touch.newPage();mobile.on('pageerror', error => errors.push(error.message))
   await mobile.goto(url);await mobile.getByRole('tab').first().waitFor()
+  const session = await touch.newCDPSession(mobile)
+  const touchLabel = await mobile.locator('[data-recording-tab-id="t1"] .recording-script-tab-name').boundingBox()
+  const touchTarget = await mobile.locator('[data-recording-tab-id="t3"] .recording-script-tab-select').boundingBox()
+  assert.ok(touchLabel && touchTarget)
+  const labelStart = { x: touchLabel.x + touchLabel.width / 2, y: touchLabel.y + touchLabel.height / 2 }
+  const labelEnd = { x: touchTarget.x + touchTarget.width * .75, y: touchTarget.y + touchTarget.height / 2 }
+  await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...labelStart, id: 1 }] })
+  for (let step = 1; step <= 12; step++) await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: labelStart.x + (labelEnd.x - labelStart.x) * step / 12, y: labelStart.y + (labelEnd.y - labelStart.y) * step / 12, id: 1 }] })
+  assert.equal(await mobile.locator('.recording-script-tab-ghost').count(), 0)
+  await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  assert.deepEqual(await mobile.evaluate(() => window.fixture.state().tabs.map(tab => tab.id)), ['t1', 't2', 't3', 't4'])
+  checks.push('390px触屏从标签文字区域移动不进入拖动、不重排')
   const grip = mobile.locator('[data-recording-tab-id="t1"] .recording-script-tab-grip')
   const touchFrom = await grip.boundingBox(), touchTo = await mobile.locator('[data-recording-tab-id="t3"] .recording-script-tab-select').boundingBox()
   assert.ok(touchFrom && touchTo)
-  const session = await touch.newCDPSession(mobile)
   const start = { x: touchFrom.x + touchFrom.width / 2, y: touchFrom.y + touchFrom.height / 2 }
   const end = { x: touchTo.x + touchTo.width * .75, y: touchTo.y + touchTo.height / 2 }
   await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...start, id: 1 }] })
@@ -252,7 +295,7 @@ try {
   failure = error
   console.error(error)
 } finally {
-  await writeFile(output + '/checks.json', JSON.stringify({ passed: !failure, checks, layouts, errors, externalRequests, actualParentFunctions: functionNames, liveRequests: false, error: failure?.stack || null }, null, 2))
+  await writeFile(output + '/checks.json', JSON.stringify({ passed: !failure, checks, layouts, interactionStyles, errors, externalRequests, actualParentFunctions: functionNames, liveRequests: false, error: failure?.stack || null }, null, 2))
   await browser.close();await server.close()
 }
 if (failure) throw failure

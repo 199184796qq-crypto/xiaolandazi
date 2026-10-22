@@ -98,11 +98,10 @@ function onTabKeydown(event: KeyboardEvent, id: string): void {
 
 function onPointerDown(event: PointerEvent, id: string): void {
   if (props.disabled || props.tabs.length < 2 || event.button !== 0 || !event.isPrimary) return
-  const target = event.target as HTMLElement
-  // The grip reserves touch dragging while the rest of the pill permits page scrolling.
-  if (event.pointerType !== 'mouse' && !target.closest('.recording-script-tab-grip')) return
+  const button = (event.currentTarget as HTMLElement).closest<HTMLButtonElement>('.recording-script-tab-select')
+  if (!button) return
   finishDrag(false)
-  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const bounds = button.getBoundingClientRect()
   drag.value = {
     id, pointerId: event.pointerId,
     startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY,
@@ -193,8 +192,8 @@ onBeforeUnmount(() => finishDrag(false))
   <div ref="root" class="recording-script-tabs" @keydown.esc="deleteMode = false">
     <TransitionGroup name="recording-tab" tag="div" class="recording-script-tab-list" role="tablist" aria-label="话术标签" :aria-describedby="instructionsId">
       <div v-for="tab in orderedTabs" :key="tab.id" class="recording-script-tab-item" :class="{ 'is-dragging': drag?.started && drag.id === tab.id }" :data-recording-tab-id="tab.id" role="presentation">
-        <button type="button" role="tab" class="recording-script-tab-select" :class="{ active: tab.id === activeId }" :data-tab-id="tab.id" :aria-selected="tab.id === activeId" :tabindex="tab.id === activeId ? 0 : -1" :disabled="disabled" :draggable="false" @click="selectTab(tab.id)" @keydown="onTabKeydown($event, tab.id)" @pointerdown="onPointerDown($event, tab.id)">
-          <span class="recording-script-tab-grip" aria-hidden="true"><svg viewBox="0 0 12 18"><circle v-for="n in 6" :key="n" :cx="n % 2 ? 3 : 9" :cy="3 + Math.floor((n - 1) / 2) * 6" r="1.3" /></svg></span>
+        <button type="button" role="tab" class="recording-script-tab-select" :class="{ active: tab.id === activeId }" :data-tab-id="tab.id" :aria-selected="tab.id === activeId" :tabindex="tab.id === activeId ? 0 : -1" :disabled="disabled" :draggable="false" @click="selectTab(tab.id)" @keydown="onTabKeydown($event, tab.id)">
+          <span class="recording-script-tab-grip" aria-hidden="true" @pointerdown.stop="onPointerDown($event, tab.id)"><svg viewBox="0 0 12 18"><circle v-for="n in 6" :key="n" :cx="n % 2 ? 3 : 9" :cy="3 + Math.floor((n - 1) / 2) * 6" r="1.3" /></svg></span>
           <span class="recording-script-tab-name">{{ tabName(tab) }}</span>
         </button>
         <button v-if="deleteMode" type="button" class="recording-script-tab-remove" :aria-label="`删除话术：${tabName(tab)}`" :title="tabs.length <= 1 ? '至少保留一个话术标签' : `删除${tabName(tab)}`" :disabled="disabled || tabs.length <= 1" @click.stop="removeTab(tab)">
@@ -208,7 +207,7 @@ onBeforeUnmount(() => finishDrag(false))
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5m4-5v5" /></svg>
       </button>
     </div>
-    <span :id="instructionsId" class="recording-script-sr-only">按住标签拖动可排序；触屏使用六点手柄。按住Alt和左右方向键也可调整顺序。</span>
+    <span :id="instructionsId" class="recording-script-sr-only">按住标签左侧六点把手拖动可排序，点击文字切换标签。按住Alt和左右方向键也可调整顺序。</span>
     <span class="recording-script-sr-only" aria-live="polite">{{ announcement }}</span>
     <Teleport to="body">
       <div v-if="drag?.started" class="recording-script-tab-ghost" :style="ghostStyle" aria-hidden="true"><span>⠿</span>{{ draggedTitle }}</div>
@@ -220,12 +219,14 @@ onBeforeUnmount(() => finishDrag(false))
 .recording-script-tabs{display:flex;flex-wrap:wrap;align-items:center;gap:12px;min-width:0;padding:4px 0}
 .recording-script-tab-list{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:12px;max-width:100%;min-width:0;padding:5px 2px}
 .recording-script-tab-item{position:relative;flex:0 0 auto;max-width:100%}
-.recording-script-tab-select{display:flex;align-items:center;gap:7px;box-sizing:border-box;min-height:42px;max-width:100%;padding:8px 14px 8px 10px;border:1px solid #d5ddeb;border-radius:12px;background:#fff;color:#536079;font:inherit;font-size:16px;font-weight:800;cursor:grab;user-select:none;transition:background .18s,border-color .18s,box-shadow .18s,color .18s}
-.recording-script-tab-select:hover:not(:disabled){border-color:#e2a2a7;color:#c3343d;box-shadow:0 4px 12px #ac405210}
+.recording-script-tab-select{display:flex;align-items:center;gap:7px;box-sizing:border-box;min-height:42px;max-width:100%;padding:8px 14px 8px 10px;border:1px solid #d5ddeb;border-radius:12px;background:#fff;color:#536079;font:inherit;font-size:16px;font-weight:800;cursor:pointer;user-select:none;transition:background .18s,border-color .18s,box-shadow .18s}
+.recording-script-tab-select:hover:not(.active):not(:disabled){border-color:#bbc7dc;background:#f8faff;box-shadow:0 4px 12px #344b7810}
 .recording-script-tab-select.active{border-color:#d93842;background:linear-gradient(135deg,#df3b45,#d52d39);color:#fff;box-shadow:0 5px 13px #d4383f2e}
-.recording-script-tab-name{overflow:hidden;max-width:240px;text-overflow:ellipsis;white-space:nowrap}
-.recording-script-tab-grip{display:flex;flex:0 0 12px;align-items:center;justify-content:center;width:12px;min-height:24px;opacity:.5;touch-action:none}
+.recording-script-tab-select.active:hover:not(:disabled){color:#fff}
+.recording-script-tab-name{overflow:hidden;max-width:240px;color:inherit;text-overflow:ellipsis;white-space:nowrap}
+.recording-script-tab-grip{display:flex;flex:0 0 12px;align-items:center;justify-content:center;width:12px;min-height:24px;opacity:.5;cursor:grab;touch-action:none}
 .recording-script-tab-grip svg{width:10px;height:16px;fill:currentColor;pointer-events:none}
+.recording-script-tab-select:disabled .recording-script-tab-grip{cursor:not-allowed}
 .recording-script-tab-item.is-dragging .recording-script-tab-select{opacity:.35;border-style:dashed;box-shadow:none}
 .recording-script-tab-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
 .recording-script-tab-add,.recording-script-tab-delete-toggle{display:grid;flex:0 0 42px;box-sizing:border-box;place-items:center;width:42px;height:42px;padding:0;border:1px solid #d5ddeb;border-radius:12px;background:#fff;color:#6c7895;cursor:pointer;transition:color .18s,background .18s,border-color .18s}
