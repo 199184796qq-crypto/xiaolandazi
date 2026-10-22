@@ -22,16 +22,24 @@ import (
 	"time"
 )
 
+// Segment 对应音频时间轴里的一段。命中缓存后要靠它还原成 Core 能接受的
+// track：正文、起止、是否句界缺一不可。
+type Segment struct {
+	Text    string `json:"text"`
+	StartMS int64  `json:"start_ms"`
+	EndMS   int64  `json:"end_ms"`
+	SafeCut bool   `json:"safe_cut"`
+}
+
 // Entry is one synthesized sentence unit. Only the asset id is stored, never a
 // URL: playback URLs are re-signed right before they are handed to Core.
 type Entry struct {
-	Sentence  string     `json:"sentence"`
-	Spoken    string     `json:"spoken"`
-	AssetID   int64      `json:"asset_id"`
-	Duration  int64      `json:"duration_ms"`
-	Timeline  [][2]int64 `json:"timeline_ms"`
-	SafeCuts  []int64    `json:"safe_cuts_ms"`
-	UpdatedAt string     `json:"updated_at"`
+	Sentence  string    `json:"sentence"`
+	Spoken    string    `json:"spoken"`
+	AssetID   int64     `json:"asset_id"`
+	Duration  int64     `json:"duration_ms"`
+	Segments  []Segment `json:"segments"`
+	UpdatedAt string    `json:"updated_at"`
 }
 
 // Manifest is the cache index for one plan + voice + script version.
