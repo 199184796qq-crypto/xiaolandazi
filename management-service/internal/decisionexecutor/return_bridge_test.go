@@ -31,6 +31,9 @@ func TestBridgeProtocolKeepsFiveTypesAndNone(t *testing.T) {
 }
 
 func TestExactDuplicateBridgeDoesNotCallTTSOrDispatch(t *testing.T) {
+	restore := bridgeDiceAllow
+	bridgeDiceAllow = func() bool { return true }
+	defer func() { bridgeDiceAllow = restore }()
 	store := &bridgeProfileStore{fakeStore: readyVoiceStore()}
 	agent := &fakeAgent{responses: []string{`{"type":"topic_shift","text":"怕买整只吃不完浪费，这个半只装刚好。"}`}}
 	tts := &fakeTTS{}

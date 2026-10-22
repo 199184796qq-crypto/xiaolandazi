@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"livecompanion/management/internal/agentgateway"
@@ -217,49 +217,15 @@ func (w *Worker) startReturnBridge(session model.LiveRuntimeSession, item decisi
 	return cancel
 }
 
-// 桥接比例上限：整场插桥次数不超过回归次数的 40%。提示词只能“倾向”少插，
-// 这里用计数器兜底，保证不会变成每次都插桥。
+// 桥接比例：每次回归独立掷骰，40% 插桥、60% 不插。
+// 用累计配额会前紧后松，体感不均；独立掷骰更自然。
 const bridgeMaxRatioPercent = 40
 
-var (
-	bridgeRatioMu    sync.Mutex
-	bridgeRatioStats = map[int64]*bridgeRatioStat{}
-)
+// bridgeDiceAllow 可在测试里替换，避免随机导致用例时好时坏。
+var bridgeDiceAllow = func() bool { return rand.Intn(100) < bridgeMaxRatioPercent }
 
-type bridgeRatioStat struct {
-	returns int
-	bridges int
-}
-
-// bridgeQuotaAllow 记一次回归，并判断这次是否允许插桥。
-func bridgeQuotaAllow(runtimeID int64) bool {
-	if runtimeID <= 0 {
-		return true
-	}
-	bridgeRatioMu.Lock()
-	defer bridgeRatioMu.Unlock()
-	stat := bridgeRatioStats[runtimeID]
-	if stat == nil {
-		stat = &bridgeRatioStat{}
-		bridgeRatioStats[runtimeID] = stat
-	}
-	stat.returns++
-	if stat.returns > 2000 {
-		stat.returns = 1
-		stat.bridges = 0
-	}
-	return (stat.bridges+1)*100 <= stat.returns*bridgeMaxRatioPercent
-}
-
-func bridgeQuotaRecord(runtimeID int64) {
-	if runtimeID <= 0 {
-		return
-	}
-	bridgeRatioMu.Lock()
-	defer bridgeRatioMu.Unlock()
-	if stat := bridgeRatioStats[runtimeID]; stat != nil {
-		stat.bridges++
-	}
+func bridgeQuotaAllow(_ int64) bool {
+	return bridgeDiceAllow()
 }
 
 func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, plan returnBridgePlan, scope, memory string) error {
@@ -346,7 +312,6 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 		log.Printf("bridge omitted room=%d decision=%s reason=%s", session.RoomID, item.ID, staged.Reason)
 		return nil
 	}
-	bridgeQuotaRecord(session.ID)
 	log.Printf("bridge staged room=%d decision=%s type=%s model=%s text=%q", session.RoomID, item.ID, bridge.Type, profile.Model, bridge.Text)
 	w.recordBridgePhrase(session.RoomID, bridge.Text)
 	w.archiveSessionAudio(ctx, session, "bridge:"+item.ID, "bridge", bridge.Text, audio.AudioURL, staged.DurationMS)
