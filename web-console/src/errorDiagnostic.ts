@@ -64,7 +64,7 @@ export function userFacingErrorText(value: unknown, fallback = unknownReason): s
       .replace(/Bearer\s*\[[^\]]*\]/gi, '')
       .replace(/(?:[A-Za-z]:[\\/]|\/)[^\s，。；、]*|[\w.-]+\.(?:vue|[cm]?jsx?|tsx?|go|py)(?::\d+){0,2}/gi, '')
       .replace(/[“「『"'][A-Za-z][^“”「」『』"'\n]*[”」』"']/g, '所选项目')
-      .replace(/\bTTS\b/gi, '声音合成').replace(/\bCore\b/gi, '音频播放服务')
+      .replace(/\bTTS\b/gi, '声音合成').replace(/\bCore\b/gi, '音频播放服务').replace(/\bAI\b/gi, '智能体')
       .replace(/\bOSS\b/gi, '音频存储服务').replace(/\bJSON\b/gi, '数据格式')
       .replace(/\bHTTP\b/gi, '服务响应').replace(/\bWebSocket\b/gi, '实时连接')
       .replace(/\[(?:已脱敏|链接已脱敏|数据库连接凭据已脱敏|密钥已脱敏|请求内容已脱敏)\]/g, '')
