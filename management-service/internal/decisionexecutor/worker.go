@@ -129,6 +129,7 @@ type decisionItem struct {
 	PurposeKnowledge    json.RawMessage            `json:"purpose_knowledge,omitempty"`
 	IntentAngles        []contentstrategy.Row      `json:"-"`
 	SelectedContentPlan *contentstrategy.Selection `json:"-"`
+	FullFacts           string                     `json:"-"`
 	ExpiresAt           time.Time                  `json:"expires_at,omitempty"`
 	Scene               string                     `json:"scene,omitempty"`
 	OrderSource         string                     `json:"order_source,omitempty"`

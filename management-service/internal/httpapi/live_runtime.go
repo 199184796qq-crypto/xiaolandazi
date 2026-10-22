@@ -853,7 +853,8 @@ func (s *Server) liveRuntimePause(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionState, err := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID)
 	if err != nil {
-		writeError(w, http.StatusConflict, "当前直播间AI没有在工作")
+		// 停播要幂等：已经停了就当作成功，避免前端反复点、误报冲突。
+		writeJSON(w, http.StatusOK, alreadyStoppedRuntime(tenantID, roomID))
 		return
 	}
 	if !sessionState.BelongsToExecutionRealm(s.executionRealm) {
@@ -883,7 +884,7 @@ func (s *Server) liveRuntimePause(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		if errors.Is(err, appdb.ErrLiveRuntimeNotRunning) {
-			writeError(w, http.StatusConflict, "当前直播间AI没有在工作")
+			writeJSON(w, http.StatusOK, alreadyStoppedRuntime(tenantID, roomID))
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "暂停AI直播伴播失败")
@@ -1018,7 +1019,8 @@ func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionState, err := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID)
 	if err != nil {
-		writeError(w, http.StatusConflict, "当前直播间AI没有在工作")
+		// 停播要幂等：已经停了就当作成功，避免前端反复点、误报冲突。
+		writeJSON(w, http.StatusOK, alreadyStoppedRuntime(tenantID, roomID))
 		return
 	}
 	if !sessionState.BelongsToExecutionRealm(s.executionRealm) {
@@ -1047,7 +1049,7 @@ func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		if errors.Is(err, appdb.ErrLiveRuntimeNotRunning) {
-			writeError(w, http.StatusConflict, "当前直播间AI没有在工作")
+			writeJSON(w, http.StatusOK, alreadyStoppedRuntime(tenantID, roomID))
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "停止AI直播伴播失败")
@@ -1576,4 +1578,15 @@ func (s *Server) setCoreDeviceOnline(
 		return fmt.Errorf("core runtime status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// alreadyStoppedRuntime 返回“本来就没在播”的回执，让停止接口幂等。
+func alreadyStoppedRuntime(tenantID, roomID int64) map[string]any {
+	return map[string]any{
+		"tenant_id":       tenantID,
+		"room_id":         roomID,
+		"status":          "stopped",
+		"already_stopped": true,
+		"ended_at":        time.Now().UTC().Format(time.RFC3339),
+	}
 }

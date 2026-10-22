@@ -336,6 +336,10 @@ func (w *Worker) generateSingleInteractionAnswer(ctx context.Context, session mo
 // 无事实返回空（对应「相关但缺事实」与「夸赞闲聊无答案」两种情形，
 // 由 generateSingleInteractionAnswer 返回空 → 只出接住句）。
 func (w *Worker) singleAnswerFacts(item decisionItem) string {
+	// 规则：回答事实题时给模型当前方案全量事实，不再只给筛选后的几条。
+	if strings.TrimSpace(item.FullFacts) != "" {
+		return strings.TrimSpace(item.FullFacts)
+	}
 	if item.SelectedContentPlan == nil || len(item.SelectedContentPlan.Facts) == 0 {
 		return ""
 	}

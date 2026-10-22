@@ -47,6 +47,9 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 	if item != nil && item.BusinessCoreOnly {
 		if source, ok := w.store.(currentInteractionFactsStore); ok {
 			facts, err := source.CurrentInteractionFacts(ctx, session.TenantID, session.RoomID, planID)
+			if item != nil {
+				item.FullFacts = facts
+			}
 			if err != nil {
 				return "", err
 			}
@@ -65,6 +68,9 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 		}
 	}
 	published, facts, err := w.interactionApprovedFacts(ctx, session, planID)
+	if item != nil {
+		item.FullFacts = facts
+	}
 	if err != nil || facts == "" {
 		return "", err
 	}
