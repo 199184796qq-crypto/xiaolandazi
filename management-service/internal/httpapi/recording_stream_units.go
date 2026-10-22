@@ -146,6 +146,36 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		for _, tabIndex := range order {
 			refresh := recordingSentenceRefresh(tabs[tabIndex], round, rng)
 
+			// 每 5 句合并成一次润色调用：固定前缀只付一次，成本降到原来的 1/5。
+			// 返回按行拆回，行数或数字不一致的句子回退原文。
+			batched := map[int]string{}
+			for start := 0; start < len(tabs[tabIndex]); start += recordingPolishBatchSize {
+				end := start + recordingPolishBatchSize
+				if end > len(tabs[tabIndex]) {
+					end = len(tabs[tabIndex])
+				}
+				need := false
+				for i := start; i < end; i++ {
+					if refresh[i] || len(tabs[tabIndex][i].Versions) == 0 {
+						need = true
+						break
+					}
+				}
+				if !need {
+					continue
+				}
+				sources := make([]string, 0, end-start)
+				for i := start; i < end; i++ {
+					sources = append(sources, tabs[tabIndex][i].Source)
+				}
+				polished := s.polishRecordingSentenceBatch(ctx, polish, sources)
+				for i := start; i < end; i++ {
+					if text := strings.TrimSpace(polished[i-start]); text != "" {
+						batched[i] = text
+					}
+				}
+			}
+
 			// 本轮这个标签要播的就绪单元；游标显式记录未消费范围。
 			pending := make([]recordingReadyUnit, 0, len(tabs[tabIndex]))
 			for index := range tabs[tabIndex] {
@@ -159,7 +189,13 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 						pending = append(pending, unit)
 						continue
 					}
-					units, err := s.compileRecordingSentence(ctx, tenant, version, polish, state.Source, tabIndex, &seq)
+					var units []recordingReadyUnit
+					var err error
+					if spoken, ok := batched[index]; ok {
+						units, err = s.compileRecordingSpoken(ctx, tenant, version, spoken, tabIndex, &seq)
+					} else {
+						units, err = s.compileRecordingSentence(ctx, tenant, version, polish, state.Source, tabIndex, &seq)
+					}
 					if err != nil {
 						// 单元级失败：有旧版本就沿用，没有就跳过这一句并留痕。
 						if len(state.Versions) == 0 {
@@ -269,6 +305,12 @@ func (s *Server) compileRecordingSentence(ctx context.Context, tenant int64, ver
 	if strings.TrimSpace(spoken) == "" {
 		spoken = source
 	}
+	return s.compileRecordingSpoken(ctx, tenant, version, spoken, tabIndex, seq)
+}
+
+// compileRecordingSpoken 把已经润色好的正文切句并逐句合成。
+// 批量润色路径先拿到正文，再走这里，避免重复润色。
+func (s *Server) compileRecordingSpoken(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, spoken string, tabIndex int, seq *int) ([]recordingReadyUnit, error) {
 	parts := splitRecordingSentences(spoken)
 	if len(parts) == 0 {
 		parts = []string{strings.TrimSpace(spoken)}
