@@ -8539,15 +8539,6 @@ onBeforeUnmount(() => {
                         <span>AI 声音</span>
                       </label>
                     </fieldset>
-                    <button
-                      v-if="recordingVoiceMode === 'original'"
-                      class="primary"
-                      type="button"
-                      :disabled="!customMainlineCanApply"
-                      @click="applyCustomMainlineAsFormal"
-                    >
-                      使用原始音
-                    </button>
                   </footer>
 
                   <div
@@ -10966,12 +10957,13 @@ onBeforeUnmount(() => {
 }
 .strategy-custom-mainline-footer button.primary { border-color:#6574df; background:#6574df; color:#fff; }
 .strategy-custom-mainline-footer button:disabled { cursor:not-allowed; opacity:.5; }
-.strategy-recording-voice-choice { display:flex; align-items:center; gap:12px; min-width:0; margin:0 0 0 auto; padding:0; border:0; }
+.strategy-recording-voice-choice { display:flex; align-items:center; flex:0 0 auto; gap:12px; min-width:0; margin:0 0 0 auto; padding:0; border:0; }
 .strategy-recording-voice-choice legend { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
-.strategy-recording-voice-choice label { display:flex; align-items:center; gap:6px; min-height:38px; padding:0 12px; border:1px solid #d6ddeb; border-radius:10px; background:#fff; color:#536079; font-size:14px; font-weight:850; cursor:pointer; }
+.strategy-recording-voice-choice label { display:flex; align-items:center; flex:0 0 auto; gap:6px; min-height:38px; padding:0 12px; border:1px solid #d6ddeb; border-radius:10px; background:#fff; color:#536079; font-size:14px; font-weight:850; white-space:nowrap; cursor:pointer; }
+.strategy-recording-voice-choice label span { white-space:nowrap; }
 .strategy-recording-voice-choice label:has(input:checked) { border-color:#6574df; background:#eef1ff; color:#4d5bd2; box-shadow:0 0 0 3px rgba(101,116,223,.09); }
-.strategy-recording-voice-choice input { accent-color:#6574df; }
-@media(max-width:900px){.strategy-recording-voice-choice{width:100%;flex-wrap:wrap;margin:0}.strategy-recording-voice-choice label{flex:1}}
+.strategy-recording-voice-choice input { flex:0 0 auto; margin:0; accent-color:#6574df; }
+@media(max-width:900px){.strategy-recording-voice-choice{width:100%;flex-wrap:wrap;margin:0}.strategy-recording-voice-choice label{flex:1;justify-content:center}}
 .strategy-fullshow-voice { display:grid; gap:12px; padding:15px; border:1px solid #d9e0f2; border-radius:14px; background:linear-gradient(180deg,#fbfcff 0%,#f7f9ff 100%); }
 .strategy-fullshow-voice>header { display:flex; align-items:center; justify-content:space-between; gap:14px; }
 .strategy-fullshow-voice>header>div { display:grid; gap:2px; }
