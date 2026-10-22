@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"math/rand"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/coreclient"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/recordingcache"
 )
 
 // 话术优先的供料链路：源文本 → 完整句单元 → 逐句合成 → 就绪单元 → 合块追加。
@@ -118,6 +120,24 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	seq, blockSeq, previousLast := 0, 0, -1
 
+	// 开播前把本方案这一版话术的缓存清单读一次，之后整场走内存。
+	// 命中就不润色、不合成，直接复用已有音轨。
+	cacheScope, cacheOK := recordingCacheScopeFor(tenant, room, version.PlanID)
+	voiceKey := recordingcache.VoiceKey(version.VoiceIdentity.VoiceID, version.VoiceIdentity.Model, fmt.Sprint(version.VoiceIdentity.Rate))
+	scriptHash := recordingcache.ScriptHash(texts)
+	var cacheManifest *recordingcache.Manifest
+	hit := map[string]recordingcache.Entry{}
+	if cacheOK {
+		loaded, err := cacheScope.Load(voiceKey, scriptHash)
+		if err != nil {
+			log.Printf("recording stream cache load failed tenant=%d room=%d: %v", tenant, room, err)
+		} else if loaded != nil {
+			cacheManifest = loaded
+			hit = recordingCacheLookup(loaded)
+			log.Printf("recording stream cache loaded tenant=%d room=%d entries=%d", tenant, room, len(hit))
+		}
+	}
+
 	for round := 0; ; round++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -134,6 +154,11 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				}
 				state := &tabs[tabIndex][index]
 				if refresh[index] || len(state.Versions) == 0 {
+					if unit, ok := s.rebuildRecordingUnitFromCache(ctx, tenant, hit[state.Source]); ok {
+						log.Printf("recording stream cache hit tenant=%d room=%d tab=%d index=%d", tenant, room, tabIndex, index)
+						pending = append(pending, unit)
+						continue
+					}
 					units, err := s.compileRecordingSentence(ctx, tenant, version, polish, state.Source, tabIndex, &seq)
 					if err != nil {
 						// 单元级失败：有旧版本就沿用，没有就跳过这一句并留痕。
@@ -148,6 +173,19 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 							state.Versions = state.Versions[len(state.Versions)-4:]
 						}
 						state.Refreshed = round
+						// 单句就绪时写回缓存，下次开播同样的话术直接复用。
+						if cacheOK && len(units) == 1 {
+							if entry, ok := recordingCacheEntryFromUnit(state.Source, units[0]); ok {
+								if cacheManifest == nil {
+									cacheManifest = &recordingcache.Manifest{Version: 1, VoiceKey: voiceKey, ScriptHash: scriptHash}
+								}
+								cacheManifest.Entries = append(cacheManifest.Entries, entry)
+								hit[state.Source] = entry
+								if err := cacheScope.Save(cacheManifest); err != nil {
+									log.Printf("recording stream cache save failed tenant=%d room=%d: %v", tenant, room, err)
+								}
+							}
+						}
 					}
 				}
 				if len(state.Versions) == 0 {
