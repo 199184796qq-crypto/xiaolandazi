@@ -44,7 +44,7 @@ func (s *Server) polishRecordingSentenceBatch(ctx context.Context, state *anchor
 			continue
 		}
 		polished := strings.TrimSpace(polishRecordingText(ctx, s, state, sentences[index]))
-		if polished == "" || !sameNumbers(sentences[index], polished) {
+		if polished == "" || !sameNumbers(sentences[index], polished) || sameSpeechText(sentences[index], polished) {
 			continue
 		}
 		out[index] = polished
@@ -88,7 +88,7 @@ func (s *Server) polishByMarker(ctx context.Context, state *anchorcycle.State, s
 		}
 		text := strings.TrimSpace(rewritten[match[1]:end])
 		text = strings.TrimSpace(strings.Trim(text, "　 "))
-		if text == "" || !sameNumbers(sentences[number-1], text) {
+		if text == "" || !sameNumbers(sentences[number-1], text) || sameSpeechText(sentences[number-1], text) {
 			continue
 		}
 		pieces[number-1] = text
@@ -127,4 +127,24 @@ func numbersKey(text string) string {
 	}
 	flush()
 	return strings.Join(groups, "|")
+}
+
+// sameSpeechText 判断两段话去掉空白和标点后是否完全相同。
+// 模型有时会把原句原样回显，这种结果不能算润色成功，
+// 否则会把“没改”当成“改过”存进缓存、播给观众。
+func sameSpeechText(before, after string) bool {
+	return speakableKey(before) == speakableKey(after)
+}
+
+func speakableKey(text string) string {
+	var b strings.Builder
+	for _, r := range text {
+		switch {
+		case r >= '\u4e00' && r <= '\u9fff':
+			b.WriteRune(r)
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
