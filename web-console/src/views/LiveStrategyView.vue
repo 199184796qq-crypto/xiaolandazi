@@ -3959,6 +3959,11 @@ async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, so
     const restoredOptions = realtimeOptionsFromVersion(version.generation_context)
     if (restoredOptions) realtimeGenerationOptions.value = restoredOptions
     restoreRecordingScript(version.generation_context)
+    // 声音模式必须回显：否则刷新后单选默认回到「原声」，下次保存会把 AI 声音改回原声。
+    const restoredVoiceMode = String((version.generation_context as { recording_voice_mode?: string } | undefined)?.recording_voice_mode || '')
+    if (restoredVoiceMode === 'stream_clone' || restoredVoiceMode === 'original') {
+      recordingVoiceMode.value = restoredVoiceMode
+    }
     realtimeOptionsChanged.value = false
     const rawContext = version.generation_context as unknown as LiveAgentFullShowGenerationContext
     const context = {
@@ -8576,6 +8581,28 @@ onBeforeUnmount(() => {
                   {{ customMainlineError }}
                 </div>
 
+                <div class="strategy-recording-voice-settings">
+                  <strong>主线声音</strong>
+                  <fieldset class="strategy-recording-voice-choice">
+                    <legend>直播间主线声音</legend>
+                    <label>
+                      <input v-model="recordingVoiceMode" type="radio" value="original" name="recording-voice-mode" />
+                      <svg class="strategy-recording-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+                        <path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" />
+                      </svg>
+                      <span>原始声音</span>
+                    </label>
+                    <label>
+                      <input v-model="recordingVoiceMode" type="radio" value="stream_clone" name="recording-voice-mode" />
+                      <svg class="strategy-recording-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                        <path d="M4 10v4m4-7v10m4-13v16m4-13v10m4-7v4" />
+                      </svg>
+                      <span>AI 声音</span>
+                    </label>
+                  </fieldset>
+                </div>
+
                 <section class="strategy-custom-mainline-segments">
                   <header>
                     <i class="strategy-custom-mainline-editor-icon" aria-hidden="true">↗</i>
@@ -8625,7 +8652,7 @@ onBeforeUnmount(() => {
                   <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
                 </section>
 
-                <template>
+                <div class="strategy-custom-mainline-audio">
                   <div v-if="customMainlineDraft" class="strategy-custom-mainline-summary">
                     <div>
                       <strong>原始声音</strong>
@@ -8655,24 +8682,6 @@ onBeforeUnmount(() => {
                       <span v-if="customMainlineCanApply">✓ 原始声音、原始话术与 SRT 已保留</span>
                       <span v-else>请先完成原始声音处理。</span>
                     </div>
-                    <fieldset class="strategy-recording-voice-choice">
-                      <legend>直播间主线声音</legend>
-                      <label>
-                        <input v-model="recordingVoiceMode" type="radio" value="original" name="recording-voice-mode" />
-                        <svg class="strategy-recording-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                          <path d="M11 5 6 9H3v6h3l5 4V5Z" />
-                          <path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" />
-                        </svg>
-                        <span>原声</span>
-                      </label>
-                      <label>
-                        <input v-model="recordingVoiceMode" type="radio" value="stream_clone" name="recording-voice-mode" />
-                        <svg class="strategy-recording-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-                          <path d="M4 10v4m4-7v10m4-13v16m4-13v10m4-7v4" />
-                        </svg>
-                        <span>AI 声音</span>
-                      </label>
-                    </fieldset>
                   </footer>
 
                   <div
@@ -8728,7 +8737,7 @@ onBeforeUnmount(() => {
                       <pre>{{ fullShowVoiceState(originalAiCandidateKey).srt }}</pre>
                     </details>
                   </section>
-                </template>
+                </div>
               </section>
               <div v-else-if="!fullShowResult" class="strategy-fullshow-output-empty">
                 <strong>完整话术会在这里按轮次展示</strong>
@@ -11101,7 +11110,10 @@ onBeforeUnmount(() => {
 }
 .strategy-custom-mainline-footer button.primary { border-color:#6574df; background:#6574df; color:#fff; }
 .strategy-custom-mainline-footer button:disabled { cursor:not-allowed; opacity:.5; }
-.strategy-recording-voice-choice { display:inline-grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:center; flex:0 0 auto; gap:4px; width:268px; max-width:100%; min-width:0; box-sizing:border-box; margin:0 0 0 auto; padding:4px; border:1px solid #e3e6f2; border-radius:14px; background:#f2f4fa; }
+.strategy-custom-mainline-audio { display:grid; gap:14px; min-width:0; }
+.strategy-recording-voice-settings { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px 16px; padding:14px 16px; border:1px solid #dfe4ef; border-radius:14px; background:#fff; }
+.strategy-recording-voice-settings>strong { color:#3e4b67; font-size:16px; }
+.strategy-recording-voice-choice { display:inline-grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:center; flex:0 0 auto; gap:4px; width:300px; max-width:100%; min-width:0; box-sizing:border-box; margin:0 0 0 auto; padding:4px; border:1px solid #e3e6f2; border-radius:14px; background:#f2f4fa; }
 .strategy-recording-voice-choice legend { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 .strategy-recording-voice-choice label { position:relative; display:flex; align-items:center; justify-content:center; gap:8px; min-width:0; min-height:42px; box-sizing:border-box; padding:0 14px; border:1px solid transparent; border-radius:10px; background:transparent; color:#66718a; font-size:16px; font-weight:650; white-space:nowrap; cursor:pointer; transition:background .16s ease,color .16s ease,box-shadow .16s ease; }
 .strategy-recording-voice-choice label span { color:inherit; font-size:inherit; line-height:1.25; white-space:nowrap; }
