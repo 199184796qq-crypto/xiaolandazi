@@ -2181,6 +2181,7 @@ const customMainlineTranscript = ref('')
 const customMainlineSaveNotice = ref('')
 const customMainlineError = useFeedbackErrorRef()
 const customMainlineCloneBusy = ref(false)
+const recordingVoiceMode = ref<'original' | 'stream_clone'>('original')
 const originalAiCandidateKey = ref('')
 const originalAiSrtProgress = ref<{
   status: 'idle' | 'generating' | 'done' | 'failed'
@@ -3513,6 +3514,10 @@ async function acceptOriginalAiVoice() {
   }
 }
 
+// 旧“整段生成后采用”的入口保留给兼容排查，不再作为新的录音主线流程。
+void generateOriginalAiVoice
+void acceptOriginalAiVoice
+
 function discardOriginalAiVoice() {
   if (originalAiCandidateKey.value) discardFullShowVoiceCandidate(originalAiCandidateKey.value)
   originalAiCandidateKey.value = ''
@@ -4195,6 +4200,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       variants,
       generation_context: {
         content_mode: contentModeAtSave,
+        ...(contentModeAtSave === 'user_audio' ? { recording_voice_mode: recordingVoiceMode.value } : {}),
         ...(realtimeOptionsAtSave ? { anchor_generation_options: realtimeOptionsAtSave } : {}),
         duration_minutes: Math.round(Number(fullShowDuration.value || 0)),
         round_minutes: Math.round(Number(fullShowRoundMinutes.value || 0)),
@@ -8522,20 +8528,26 @@ onBeforeUnmount(() => {
                       <span v-if="customMainlineCanApply">✓ 原始声音、原始话术与 SRT 已保留</span>
                       <span v-else>请先完成原始声音处理。</span>
                     </div>
+                    <fieldset class="strategy-recording-voice-choice">
+                      <legend>直播间主线声音</legend>
+                      <label>
+                        <input v-model="recordingVoiceMode" type="radio" value="original" name="recording-voice-mode" />
+                        <span>原声</span>
+                      </label>
+                      <label>
+                        <input v-model="recordingVoiceMode" type="radio" value="stream_clone" name="recording-voice-mode" />
+                        <span>AI 声音</span>
+                        <small>录音原文不变，开播后按 40–80 字分段实时生成</small>
+                      </label>
+                    </fieldset>
                     <button
+                      v-if="recordingVoiceMode === 'original'"
+                      class="primary"
                       type="button"
                       :disabled="!customMainlineCanApply"
                       @click="applyCustomMainlineAsFormal"
                     >
                       使用原始音
-                    </button>
-                    <button
-                      class="primary"
-                      type="button"
-                      :disabled="!customMainlineCanApply || Boolean(originalAiCandidateKey && fullShowVoiceState(originalAiCandidateKey).status === 'generating')"
-                      @click="generateOriginalAiVoice"
-                    >
-                      {{ originalAiCandidateKey && fullShowVoiceState(originalAiCandidateKey).status === 'generating' ? 'AI 声音生成中…' : 'AI 生成声音' }}
                     </button>
                   </footer>
 
@@ -10955,6 +10967,13 @@ onBeforeUnmount(() => {
 }
 .strategy-custom-mainline-footer button.primary { border-color:#6574df; background:#6574df; color:#fff; }
 .strategy-custom-mainline-footer button:disabled { cursor:not-allowed; opacity:.5; }
+.strategy-recording-voice-choice { display:flex; align-items:center; gap:12px; min-width:0; margin:0 0 0 auto; padding:0; border:0; }
+.strategy-recording-voice-choice legend { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+.strategy-recording-voice-choice label { display:flex; align-items:center; gap:6px; min-height:38px; padding:0 12px; border:1px solid #d6ddeb; border-radius:10px; background:#fff; color:#536079; font-size:14px; font-weight:850; cursor:pointer; }
+.strategy-recording-voice-choice label:has(input:checked) { border-color:#6574df; background:#eef1ff; color:#4d5bd2; box-shadow:0 0 0 3px rgba(101,116,223,.09); }
+.strategy-recording-voice-choice input { accent-color:#6574df; }
+.strategy-recording-voice-choice small { color:#8791a5; font-size:12px; font-weight:600; }
+@media(max-width:900px){.strategy-recording-voice-choice{width:100%;flex-wrap:wrap;margin:0}.strategy-recording-voice-choice label{flex:1}}
 .strategy-fullshow-voice { display:grid; gap:12px; padding:15px; border:1px solid #d9e0f2; border-radius:14px; background:linear-gradient(180deg,#fbfcff 0%,#f7f9ff 100%); }
 .strategy-fullshow-voice>header { display:flex; align-items:center; justify-content:space-between; gap:14px; }
 .strategy-fullshow-voice>header>div { display:grid; gap:2px; }
