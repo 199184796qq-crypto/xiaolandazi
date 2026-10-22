@@ -862,6 +862,35 @@ func buildFullShowSafePoints(timeline []model.LiveAgentPlanTimelineSegment) []mo
 			NextPreview: nextPreview,
 		})
 	}
+	if len(points) > 0 {
+		return points
+	}
+	// 兜底：合成长音轨或互动插入时，时间轴里可能没有任何一段被标记为
+	// SafeCut。这时按句子边界重新给点，而不是让整个正式声音归档失败
+	// （失败会让整场直播以「没有可用语义安全切点」直接停掉）。
+	for index, segment := range timeline {
+		if strings.TrimSpace(segment.Text) == "" || segment.EndMS <= segment.StartMS {
+			continue
+		}
+		nextPreview := ""
+		if index+1 < len(timeline) {
+			nextPreview = strings.TrimSpace(timeline[index+1].Text)
+		}
+		grade, score := "B", 80
+		if index == len(timeline)-1 {
+			grade, score = "A", 95
+		}
+		points = append(points, model.LiveAgentPlanSafePoint{
+			ID:          fmt.Sprintf("SP%03d", len(points)+1),
+			CutMS:       segment.EndMS,
+			Score:       score,
+			Grade:       grade,
+			Kind:        "SENTENCE",
+			SentenceID:  segment.SegmentID,
+			LeftPreview: strings.TrimSpace(segment.Text),
+			NextPreview: nextPreview,
+		})
+	}
 	return points
 }
 
