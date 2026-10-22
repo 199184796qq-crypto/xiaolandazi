@@ -3130,6 +3130,8 @@ func (s *Store) RecordLiveRuntimeEvent(
 		"AGENT_DOCK_MOVED":         "用户移动场控Agent入口",
 		"PUBLIC_USER_BLOCKED":      "用户屏蔽公屏用户",
 		"PUBLIC_USER_RESTORED":     "用户取消屏蔽公屏用户",
+		"PUBLIC_CONTENT_BLOCKED":   "用户屏蔽公屏相同内容",
+		"PUBLIC_CONTENT_RESTORED":  "用户取消屏蔽公屏内容",
 	}
 	defaultTitle, ok := allowed[code]
 	if !ok {

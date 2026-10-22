@@ -42,8 +42,11 @@ import {
   enqueueRoomManualAgentDecision,
   removeRoomAgentDecision,
   getRoomBlockedUsers,
+  getRoomBlockedContents,
   blockRoomUser,
   restoreRoomBlockedUser,
+  blockRoomContent,
+  restoreRoomBlockedContent,
   getTenants,
   recordLiveRuntimeEvent,
   getRoomCapture,
@@ -73,6 +76,7 @@ import type {
   LiveRuntimeSnapshot,
   Room,
   RoomBlockedUser,
+  RoomBlockedContent,
   RoomBrainTopic,
   RoomBrainQuestion,
   RoomBrainView,
@@ -639,10 +643,12 @@ function finishEventBucketResize(event?: PointerEvent) {
 }
 
 const blockedUsers = ref<RoomBlockedUser[]>([])
+const blockedContents = ref<RoomBlockedContent[]>([])
 const blockedDrawerOpen = ref(false)
 const blockedDrawerHandleEl = ref<HTMLElement | null>(null)
 const blockedDrawerHandleTop = ref<number | null>(null)
 const blockedBusyKey = ref('')
+const blockedContentBusyKey = ref('')
 const moderationError = useFeedbackErrorRef()
 const hoveredEventId = ref<number | null>(null)
 const eventContextMenu = ref<{ x: number; y: number; event: RoomEvent } | null>(null)
@@ -3987,6 +3993,42 @@ async function refreshBlockedUsers() {
   }
 }
 
+async function refreshBlockedContents() {
+  try {
+    const response = await getRoomBlockedContents(roomId)
+    blockedContents.value = response.items
+    moderationError.value = ''
+    pruneBlockedContentEvents()
+  } catch (err) {
+    moderationError.value = err instanceof Error ? err.message : '读取屏蔽内容失败'
+  }
+}
+
+// 屏蔽相同内容：比对口径与后端一致（去掉全部空白、忽略大小写），
+// 只有归一化后整句完全一致才命中，不按关键词包含匹配，避免误伤正常提问。
+function normalizeBlockContent(value?: string) {
+  return (value || '').replace(/\s+/g, '').toLowerCase()
+}
+
+const blockedContentKeys = computed(() => new Set(
+  blockedContents.value.map((item) => normalizeBlockContent(item.content)).filter(Boolean),
+))
+
+function matchesBlockedContent(event: RoomEvent) {
+  const content = normalizeBlockContent(event.content)
+  return content !== '' && blockedContentKeys.value.has(content)
+}
+
+function pruneBlockedContentEvents() {
+  if (!blockedContentKeys.value.size) return
+  const nextEvents = events.value.filter((event) => !matchesBlockedContent(event))
+  pendingStreamEvents = pendingStreamEvents.filter((event) => !matchesBlockedContent(event))
+  if (nextEvents.length !== events.value.length) {
+    events.value = nextEvents
+    rebuildFlowSamples()
+  }
+}
+
 function handleEventMouseEnter(event: RoomEvent) {
   hoveredEventId.value = event.id
 }
@@ -3997,11 +4039,11 @@ function handleEventMouseLeave(event: RoomEvent) {
 }
 
 function openEventContextMenu(mouseEvent: MouseEvent, event: RoomEvent) {
-  if (!event.user_id && !event.nickname) return
+  if (!event.user_id && !event.nickname && !normalizeBlockContent(event.content)) return
   hoveredEventId.value = event.id
   eventContextMenu.value = {
-    x: Math.max(10, Math.min(mouseEvent.clientX, window.innerWidth - 210)),
-    y: Math.max(10, Math.min(mouseEvent.clientY, window.innerHeight - 110)),
+    x: Math.max(10, Math.min(mouseEvent.clientX, window.innerWidth - 250)),
+    y: Math.max(10, Math.min(mouseEvent.clientY, window.innerHeight - 170)),
     event,
   }
 }
@@ -4051,6 +4093,59 @@ async function blockContextUser() {
   }
 }
 
+async function blockContextContent() {
+  const target = eventContextMenu.value?.event
+  const content = (target?.content || '').trim()
+  if (!target || !content) return
+  const busyKey = normalizeBlockContent(content)
+  blockedContentBusyKey.value = busyKey
+  moderationError.value = ''
+  try {
+    const blocked = await blockRoomContent(roomId, {
+      content,
+      reason: '公屏右键人工屏蔽内容',
+    })
+    blockedContents.value = [
+      blocked,
+      ...blockedContents.value.filter((item) => item.content_key !== blocked.content_key),
+    ]
+    pruneBlockedContentEvents()
+    blockedDrawerOpen.value = true
+    logUserAction('PUBLIC_CONTENT_BLOCKED', {
+      content_key: blocked.content_key,
+      content: blocked.content.slice(0, 60),
+    })
+    closeEventContextMenu()
+  } catch (err) {
+    moderationError.value = err instanceof Error ? err.message : '屏蔽内容失败'
+  } finally {
+    blockedContentBusyKey.value = ''
+  }
+}
+
+async function restoreBlockedContent(item: RoomBlockedContent) {
+  if (blockedContentBusyKey.value) return
+  blockedContentBusyKey.value = item.content_key
+  moderationError.value = ''
+  try {
+    await restoreRoomBlockedContent(roomId, {
+      content_key: item.content_key,
+      content: item.content,
+    })
+    blockedContents.value = blockedContents.value.filter(
+      (blocked) => blocked.content_key !== item.content_key,
+    )
+    logUserAction('PUBLIC_CONTENT_RESTORED', {
+      content_key: item.content_key,
+      content: item.content.slice(0, 60),
+    })
+  } catch (err) {
+    moderationError.value = err instanceof Error ? err.message : '恢复内容失败'
+  } finally {
+    blockedContentBusyKey.value = ''
+  }
+}
+
 async function restoreBlockedUser(item: RoomBlockedUser) {
   if (blockedBusyKey.value) return
   blockedBusyKey.value = item.subject_key
@@ -4097,6 +4192,7 @@ function flushStreamEvents() {
 function queueStreamEvent(event: RoomEvent) {
 	if (events.value.some((item) => item.id === event.id)) return
 	if (pendingStreamEvents.some((item) => item.id === event.id)) return
+	if (matchesBlockedContent(event)) return
 	pushFlowSample(event)
 	pendingStreamEvents.push(event)
 	if (pendingStreamEvents.length > 500) pendingStreamEvents = pendingStreamEvents.slice(-500)
@@ -4153,7 +4249,7 @@ async function load() {
     if (roomData.monitor_enabled) startPublicScreenTransport()
     else stopPublicScreenTransport()
     await refreshRuntime()
-    await Promise.all([refreshRoomBrain(), refreshSpeechRuntime(), refreshSpeechMissions(), refreshRoomAudioEngine(), refreshAgentDecisions(), refreshBlockedUsers(), refreshSessionStats(), refreshCaptureStatus(), refreshSpeechAnalysisStatus()])
+    await Promise.all([refreshRoomBrain(), refreshSpeechRuntime(), refreshSpeechMissions(), refreshRoomAudioEngine(), refreshAgentDecisions(), refreshBlockedUsers(), refreshBlockedContents(), refreshSessionStats(), refreshCaptureStatus(), refreshSpeechAnalysisStatus()])
     if (aiActive.value || roomAudioEngine.value?.phase !== 'idle') {
       if (navigator.userActivation?.hasBeenActive) {
         await ensureLocalAudioUnlocked()
@@ -4346,7 +4442,7 @@ onMounted(() => {
   void loadPublishedSpeechRate()
 })
 
-watch([blockedDrawerOpen, () => blockedUsers.value.length], () => {
+watch([blockedDrawerOpen, () => blockedUsers.value.length, () => blockedContents.value.length], () => {
   void nextTick(scheduleBlockedDrawerHandleLayout)
 })
 
@@ -5961,7 +6057,7 @@ onBeforeUnmount(() => {
         @click.stop="blockedDrawerOpen = !blockedDrawerOpen"
       >
         <span>屏蔽池</span>
-        <b>{{ blockedUsers.length }}</b>
+        <b>{{ blockedUsers.length + blockedContents.length }}</b>
       </button>
 
       <aside class="blocked-users-drawer" :class="{ open: blockedDrawerOpen }" @click.stop>
@@ -5969,11 +6065,12 @@ onBeforeUnmount(() => {
           <div>
             <span class="section-kicker">BLOCK POOL</span>
             <h3>屏蔽池</h3>
-            <p>系统已过滤这些用户，仍保留命中记录。</p>
+            <p>系统已过滤这些用户和内容，仍保留命中记录。</p>
           </div>
           <button type="button" aria-label="关闭屏蔽池" @click="blockedDrawerOpen = false">×</button>
         </header>
         <div v-if="moderationError" class="blocked-drawer-error">{{ moderationError }}</div>
+        <h4 class="blocked-drawer-group-title">用户（{{ blockedUsers.length }}）</h4>
         <div v-if="!blockedUsers.length" class="blocked-drawer-empty">暂无屏蔽用户</div>
         <div v-else class="blocked-user-list">
           <button
@@ -5991,6 +6088,24 @@ onBeforeUnmount(() => {
             <em>{{ blockedBusyKey === item.subject_key ? '恢复中…' : '点击恢复' }}</em>
           </button>
         </div>
+        <h4 class="blocked-drawer-group-title">内容（{{ blockedContents.length }}）</h4>
+        <div v-if="!blockedContents.length" class="blocked-drawer-empty">暂无屏蔽内容</div>
+        <div v-else class="blocked-user-list">
+          <button
+            v-for="item in blockedContents"
+            :key="item.content_key"
+            type="button"
+            class="blocked-user-row blocked-content-row"
+            :disabled="blockedContentBusyKey === item.content_key"
+            @click="restoreBlockedContent(item)"
+          >
+            <span>
+              <strong>{{ item.content }}</strong>
+              <small>{{ formatTime(item.blocked_at) }} · {{ item.reason || '人工屏蔽内容' }}</small>
+            </span>
+            <em>{{ blockedContentBusyKey === item.content_key ? '恢复中…' : '点击恢复' }}</em>
+          </button>
+        </div>
       </aside>
 
       <div
@@ -6000,8 +6115,22 @@ onBeforeUnmount(() => {
         @click.stop
       >
         <span>{{ eventContextMenu.event.nickname || '直播间用户' }}</span>
-        <button type="button" :disabled="Boolean(blockedBusyKey)" @click="blockContextUser">
+        <small v-if="eventContextMenu.event.content" class="event-context-preview">
+          {{ eventContextMenu.event.content }}
+        </small>
+        <button
+          type="button"
+          :disabled="Boolean(blockedBusyKey) || (!eventContextMenu.event.user_id && !eventContextMenu.event.nickname)"
+          @click="blockContextUser"
+        >
           屏蔽该用户
+        </button>
+        <button
+          type="button"
+          :disabled="Boolean(blockedContentBusyKey) || !normalizeBlockContent(eventContextMenu.event.content)"
+          @click="blockContextContent"
+        >
+          屏蔽相同内容
         </button>
       </div>
 
@@ -8501,6 +8630,7 @@ onBeforeUnmount(() => {
 
 .event-context-menu { position:fixed; z-index:140; display:grid; min-width:190px; max-width:260px; gap:7px; padding:8px; border:1px solid rgba(120,132,166,.23); border-radius:12px; background:rgba(255,255,255,.98); box-shadow:0 16px 42px rgba(25,34,68,.18); backdrop-filter:blur(14px); }
 .event-context-menu > span { overflow:hidden; padding:5px 7px 2px; color:#667085; font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.event-context-preview { display:block; overflow:hidden; max-height:2.9em; padding:0 7px 4px; color:#8b93a7; font-size:11px; line-height:1.45; word-break:break-all; }
 .event-context-menu button { width:100%; border:1px solid #f1cfd2; border-radius:9px; padding:8px 10px; color:#a44249; background:#fff5f5; font:inherit; font-size:12px; font-weight:800; text-align:left; cursor:pointer; }
 .event-context-menu button:hover { border-color:#e9afb5; background:#ffecec; }
 .event-context-menu button:disabled { opacity:.55; cursor:wait; }
@@ -8527,6 +8657,8 @@ onBeforeUnmount(() => {
 .blocked-user-row small { color:#8a94a7; font-size:10px; }
 .blocked-user-row em { color:#6874bb; font-size:10px; font-style:normal; font-weight:800; }
 .blocked-user-row:disabled { opacity:.6; cursor:wait; }
+.blocked-drawer-group-title { margin:16px 0 0; color:#667085; font-size:11px; font-weight:800; letter-spacing:.04em; }
+.blocked-content-row strong { display:-webkit-box; white-space:normal; word-break:break-all; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
 
 .room-detail-page .detail-layout-no-preview {
   width: 100%;

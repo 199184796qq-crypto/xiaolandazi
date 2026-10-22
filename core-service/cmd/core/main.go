@@ -22,6 +22,7 @@ import (
 	"livecompanion/core/internal/collector"
 	"livecompanion/core/internal/collector/douyin"
 	"livecompanion/core/internal/config"
+	"livecompanion/core/internal/contentblock"
 	"livecompanion/core/internal/coordination"
 	"livecompanion/core/internal/coreaudio"
 	appdb "livecompanion/core/internal/db"
@@ -246,6 +247,10 @@ func main() {
 	userBlocks, err := userblock.NewStore(startupCtx, database)
 	if err != nil {
 		log.Fatalf("load room user blocks: %v", err)
+	}
+	contentBlocks, err := contentblock.NewStore(startupCtx, database)
+	if err != nil {
+		log.Fatalf("load room content blocks: %v", err)
 	}
 	if err := hydrateRoomBrainState(startupCtx, rooms, events, brain, userBlocks, cfg.EventCacheLimit, cfg.ImportantEventCacheLimit); err != nil {
 		log.Printf("hydrate room brain state: %v", err)
@@ -501,6 +506,7 @@ func main() {
 	api.SetAgentWorkRegistry(agentWork)
 	api.SetSpeechRuntimeRegistry(speechState)
 	api.SetUserBlockStore(userBlocks)
+	api.SetContentBlockStore(contentBlocks)
 	go api.RunAgentRuntimeWatch(appCtx, time.Second)
 
 	server := &http.Server{

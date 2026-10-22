@@ -822,6 +822,16 @@ export interface RoomBlockedUser {
   blocked_at: string
 }
 
+export interface RoomBlockedContent {
+  id: number
+  tenant_id: number
+  room_id: number
+  content_key: string
+  content: string
+  reason?: string
+  blocked_at: string
+}
+
 export interface RoomBrainQuestion {
   EventID: number
   UserID: string

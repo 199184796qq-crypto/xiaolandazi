@@ -104,6 +104,7 @@ import type {
   RoomHumanBehaviorProfileInput,
   LiveReviewResponse,
   RoomBlockedUser,
+  RoomBlockedContent,
   RoomBrainView,
   SpeechRuntimeSnapshot,
   SpeechMission,
@@ -737,6 +738,30 @@ export function restoreRoomBlockedUser(
   payload: { user_id?: string; nickname?: string },
 ) {
   return request<{ ok: boolean }>('/api/v1/rooms/' + roomId + '/blocked-users/restore', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getRoomBlockedContents(roomId: number) {
+  return request<ListResponse<RoomBlockedContent>>('/api/v1/rooms/' + roomId + '/blocked-contents')
+}
+
+export function blockRoomContent(
+  roomId: number,
+  payload: { content: string; reason?: string },
+) {
+  return request<RoomBlockedContent>('/api/v1/rooms/' + roomId + '/blocked-contents', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function restoreRoomBlockedContent(
+  roomId: number,
+  payload: { content_key?: string; content?: string },
+) {
+  return request<{ ok: boolean }>('/api/v1/rooms/' + roomId + '/blocked-contents/restore', {
     method: 'POST',
     body: JSON.stringify(payload),
   })

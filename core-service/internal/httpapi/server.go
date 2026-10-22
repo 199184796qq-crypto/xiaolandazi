@@ -17,6 +17,7 @@ import (
 	"livecompanion/core/internal/audiohub"
 	"livecompanion/core/internal/capture"
 	"livecompanion/core/internal/collector"
+	"livecompanion/core/internal/contentblock"
 	eventstore "livecompanion/core/internal/events"
 	"livecompanion/core/internal/media"
 	"livecompanion/core/internal/messagecaptain"
@@ -43,6 +44,7 @@ type Server struct {
 	agentDecisions    *agentdecision.Queue
 	agentWork         *agentwork.Registry
 	userBlocks        *userblock.Store
+	contentBlocks     *contentblock.Store
 	speechAnalysis    *speechanalysis.Manager
 	speechRuntime     *speechruntime.Registry
 	audioHub          *audiohub.Hub
@@ -193,6 +195,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /internal/v1/rooms/{roomID}/blocked-users", s.internal(http.HandlerFunc(s.listRoomBlockedUsers)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/blocked-users", s.internal(http.HandlerFunc(s.blockRoomUser)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/blocked-users/restore", s.internal(http.HandlerFunc(s.restoreRoomBlockedUser)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/blocked-contents", s.internal(http.HandlerFunc(s.listRoomBlockedContents)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/blocked-contents", s.internal(http.HandlerFunc(s.blockRoomContent)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/blocked-contents/restore", s.internal(http.HandlerFunc(s.restoreRoomBlockedContent)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/stream", s.internal(http.HandlerFunc(s.streamEvents)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/preview", s.internal(http.HandlerFunc(s.previewRoom)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/live/{file}", s.internal(http.HandlerFunc(s.liveMedia)))
@@ -568,6 +573,9 @@ func (s *Server) cleanupDeletedRoomRuntime(ctx context.Context, roomID int64) er
 	if s.userBlocks != nil {
 		s.userBlocks.ClearRoom(roomID)
 	}
+	if s.contentBlocks != nil {
+		s.contentBlocks.ClearRoom(roomID)
+	}
 	if s.collectors != nil {
 		s.collectors.Stop(roomID)
 	}
@@ -682,6 +690,16 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	hasMore := len(items) >= limit
+	if s.contentBlocks != nil {
+		filtered := items[:0]
+		for _, item := range items {
+			if s.eventContentBlocked(roomID, item.Content) {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		items = filtered
+	}
 	if s.userBlocks != nil {
 		filtered := items[:0]
 		for _, item := range items {
@@ -769,6 +787,9 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if s.eventIsBlocked(roomID, event.UserID, event.Nickname) {
+				continue
+			}
+			if s.eventContentBlocked(roomID, event.Content) {
 				continue
 			}
 			payload, err := json.Marshal(event)
