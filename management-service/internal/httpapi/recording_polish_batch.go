@@ -14,6 +14,10 @@ import (
 // 固定前缀（改写母版 + P0）占单次输入的大头，合并后前缀只付一次。
 const recordingPolishBatchSize = 5
 
+// recordingPolishBatchEnabled 控制是否合并润色。默认关闭：批量会让模型
+// 照抄部分句子，单句改写每次都到位。
+const recordingPolishBatchEnabled = false
+
 var recordingPolishMarker = regexp.MustCompile(`<<\s*(\d+)\s*>>`)
 
 // polishRecordingSentenceBatch 批量润色若干句，保证每一句都有润色结果。
@@ -28,7 +32,9 @@ func (s *Server) polishRecordingSentenceBatch(ctx context.Context, state *anchor
 		return out
 	}
 
-	if len(sentences) > 1 {
+	// 批量润色默认关闭：实测模型在一次改 5 句时会照抄部分句子，
+	// 单句改写稳定得多。保留实现以便将来重新评估，默认走单句。
+	if recordingPolishBatchEnabled && len(sentences) > 1 {
 		if pieces, ok := s.polishByMarker(ctx, state, sentences); ok {
 			for index := range sentences {
 				if index < len(pieces) && pieces[index] != "" {
