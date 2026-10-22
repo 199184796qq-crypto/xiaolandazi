@@ -1,6 +1,13 @@
 # 项目协作约定
 
-## 当前生产（2026-10-22 09:12）
+## 当前生产（2026-10-22 09:22）
+
+- 当前 `/opt/xiaolan/releases/20261022-recording-direct-670cd78`，源码 `670cd78`；前驱 `20261022-interaction-pref-c8546f0`。Management PID1478229/SHA256 `b25c1170eedad452a0c3a87251d476dd4f642e9e9a7f6aca4e9ffd34d3c7a584`；只重启Management，Core/网关/Nginx/前端保持。
+- 424实测互动决策/TTS正常、Core选A级切点，但`interaction-return` 409 no longer active，BRIDGE返回桥失效；抢答DIRECT可播。录音流式版本下BRIDGE强制改DIRECT，绕开返回桥。
+- 缓存不是主因；互动TTS已生成且Core已选切点。五包测试、健康通过；待重开验证系统互动是否播出。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/recording-direct-release-20261022`，部署记录 `/opt/xiaolan/deployments/20261022-recording-direct-670cd78.json`；回滚c8546f0。
+
+## 历史生产（2026-10-22 09:12）
 
 - 当前 `/opt/xiaolan/releases/20261022-interaction-pref-c8546f0`，源码 `c8546f0`；前驱 `20261022-recording-stream-safe-a6e887b`。Management PID1475731/SHA256 `7334cf9a3b46ca21da517c8e4bf2d4276fee2e3aaf3dfb26d4fae4ad7c6dc83b`；只重启Management，Core/网关/Nginx/前端保持。
 - 排查423：102条chat、4次interaction-purpose，但无自动decision；`live_room_interaction_preferences`无行，疑Core用全0配置。已在开播时Push有效偏好（默认50/50/50/50/50，auto_heat=true）到Core；失败只记日志。
