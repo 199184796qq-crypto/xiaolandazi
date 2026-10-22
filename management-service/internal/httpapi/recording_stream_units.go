@@ -323,6 +323,11 @@ func (s *Server) compileRecordingSpoken(ctx context.Context, tenant int64, versi
 		if text == "" {
 			continue
 		}
+		// 送 TTS 前保证句尾是句末标点：没有句号的句子合成后整条轨道
+		// 找不到安全切点，会被归档拒绝并整句跳过。
+		if !strings.ContainsRune("。！？；!?;", []rune(text)[len([]rune(text))-1]) {
+			text += "。"
+		}
 		track, err := s.synthesizeRecordingStreamSegment(ctx, tenant, version, text, *seq, tabIndex)
 		if err != nil {
 			return units, err
