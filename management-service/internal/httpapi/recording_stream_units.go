@@ -313,9 +313,15 @@ func (s *Server) compileRecordingSentence(ctx context.Context, tenant int64, ver
 // compileRecordingSpoken 把已经润色好的正文切句并逐句合成。
 // 批量润色路径先拿到正文，再走这里，避免重复润色。
 func (s *Server) compileRecordingSpoken(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, spoken string, tabIndex int, seq *int) ([]recordingReadyUnit, error) {
-	parts := splitRecordingSentences(spoken)
-	if len(parts) == 0 {
-		parts = []string{strings.TrimSpace(spoken)}
+	sentences := splitRecordingSentences(spoken)
+	if len(sentences) == 0 {
+		sentences = []string{strings.TrimSpace(spoken)}
+	}
+	// 长句在逗号处再拆一层：整句 40 秒以上时，Core 的 35 秒窗口里没有
+	// 句界，互动插不进去。拆出来的每一段仍是完整小句，各自成一条 track。
+	parts := make([]string, 0, len(sentences))
+	for _, sentence := range sentences {
+		parts = append(parts, splitRecordingLongSentence(sentence, recordingSentenceMaxRunes)...)
 	}
 	units := make([]recordingReadyUnit, 0, len(parts))
 	for _, part := range parts {
@@ -344,4 +350,60 @@ func toRecordingCacheEntries(units []recordingReadyUnit) []recordingStreamCacheE
 		entries = append(entries, recordingStreamCacheEntry{Text: unit.Text, Track: unit.Track})
 	}
 	return entries
+}
+
+// recordingSentenceMaxRunes 是单条 track 的目标上限（约 25 秒）。
+const recordingSentenceMaxRunes = 110
+
+// splitRecordingLongSentence 把过长的句子在逗号/顿号/冒号处拆成若干小句，
+// 拆出来的每一段都以句末标点结尾，保证每条 track 都有可插入的句界。
+func splitRecordingLongSentence(text string, maxRunes int) []string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return nil
+	}
+	runes := []rune(trimmed)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return []string{trimmed}
+	}
+	const softMarks = "，、：,:"
+	var out []string
+	start := 0
+	for start < len(runes) {
+		remaining := len(runes) - start
+		if remaining <= maxRunes {
+			out = append(out, terminateRecordingSentence(string(runes[start:])))
+			break
+		}
+		cut := -1
+		for i := start + maxRunes; i >= start+maxRunes/2; i-- {
+			if strings.ContainsRune(softMarks, runes[i]) {
+				cut = i
+				break
+			}
+		}
+		if cut < 0 {
+			cut = start + maxRunes - 1
+		}
+		out = append(out, terminateRecordingSentence(string(runes[start:cut])))
+		start = cut + 1
+		for start < len(runes) && strings.ContainsRune(" 　", runes[start]) {
+			start++
+		}
+	}
+	return out
+}
+
+// terminateRecordingSentence 去掉句尾的逗号类标点并补句号，保证结尾是句界。
+func terminateRecordingSentence(text string) string {
+	trimmed := strings.TrimSpace(text)
+	trimmed = strings.TrimRight(trimmed, "，、：,:;； 　")
+	if trimmed == "" {
+		return ""
+	}
+	runes := []rune(trimmed)
+	if !strings.ContainsRune("。！？!?", runes[len(runes)-1]) {
+		trimmed += "。"
+	}
+	return trimmed
 }
