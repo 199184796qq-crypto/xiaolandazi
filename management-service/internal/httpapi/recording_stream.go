@@ -282,8 +282,32 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 	return coreclient.ProgramRefreshTrack{
 		ID:    fmt.Sprintf("recording-%d-%d-%d", round, index, archive.AssetID),
 		Label: "录音AI声音", Text: text, AudioURL: audioURL,
-		DurationMS: int(durationMS), Timeline: nil, SafePoints: nil,
+		DurationMS: int(durationMS),
+		Timeline:   recordingStreamTimeline(timeline),
+		SafePoints: recordingStreamSafePoints(archive.SafePoints),
 	}, nil
+}
+
+func recordingStreamTimeline(timeline []model.LiveAgentPlanTimelineSegment) []coreclient.ProgramRefreshTimelineSegment {
+	out := make([]coreclient.ProgramRefreshTimelineSegment, 0, len(timeline))
+	for _, segment := range timeline {
+		out = append(out, coreclient.ProgramRefreshTimelineSegment{
+			SegmentID: segment.SegmentID, Index: segment.Index, StartMS: int(segment.StartMS),
+			EndMS: int(segment.EndMS), Text: segment.Text, SafeCut: segment.SafeCut,
+		})
+	}
+	return out
+}
+
+func recordingStreamSafePoints(points []model.LiveAgentPlanSafePoint) []coreclient.ProgramRefreshSafePoint {
+	out := make([]coreclient.ProgramRefreshSafePoint, 0, len(points))
+	for _, point := range points {
+		out = append(out, coreclient.ProgramRefreshSafePoint{
+			ID: point.ID, CutMS: int(point.CutMS), Score: point.Score, Grade: point.Grade,
+			Kind: point.Kind, SentenceID: point.SentenceID, LeftPreview: point.LeftPreview, NextPreview: point.NextPreview,
+		})
+	}
+	return out
 }
 
 func (s *Server) recordingStreamAssetURL(ctx context.Context, tenant, assetID int64) (string, error) {
