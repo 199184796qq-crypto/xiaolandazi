@@ -20,7 +20,13 @@ import (
 	"livecompanion/management/internal/ttsgateway"
 )
 
-const recordingStreamMode = "stream_clone"
+const (
+	recordingStreamMode = "stream_clone"
+	// Keep Core tracks long enough that an interaction can cut and return
+	// inside the same track, like the original long-form mainline. The
+	// individual 40-80 rune TTS pieces still drive cache and polishing.
+	recordingStreamBlockSegments = 3
+)
 
 type recordingStreamSegment struct {
 	Text string
@@ -78,6 +84,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 			}
 		}
 		current := make([]recordingStreamCacheEntry, 0, len(segments))
+		blockStart := 0
 		for index, segment := range segments {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -118,23 +125,30 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 			} else {
 				log.Printf("recording stream segment cached tenant=%d room=%d round=%d index=%d chars=%d", tenant, room, round, index, len([]rune(text)))
 			}
-			if programID == "" {
-				snapshot, err := s.startRecordingStreamProgram(ctx, tenant, room, runtimeID, version, entry.Track)
-				if err != nil {
-					return err
-				}
-				programID, generation = snapshot.ProgramID, snapshot.Generation
-				log.Printf("recording stream program started tenant=%d room=%d program=%s", tenant, room, programID)
-				s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
-			} else {
-				nextGeneration, err := s.appendRecordingStreamTrack(ctx, tenant, room, version, programID, entry.Track)
-				if err != nil {
-					return err
-				}
-				generation = nextGeneration
-				log.Printf("recording stream segment appended tenant=%d room=%d round=%d index=%d generation=%d", tenant, room, round, index, generation)
-			}
 			current = append(current, entry)
+			if len(current)-blockStart >= recordingStreamBlockSegments || index == len(segments)-1 {
+				block, err := s.combineRecordingStreamBlock(ctx, tenant, version, current[blockStart:], round, blockStart/recordingStreamBlockSegments)
+				if err != nil {
+					return err
+				}
+				if programID == "" {
+					snapshot, err := s.startRecordingStreamProgram(ctx, tenant, room, runtimeID, version, block)
+					if err != nil {
+						return err
+					}
+					programID, generation = snapshot.ProgramID, snapshot.Generation
+					log.Printf("recording stream program started tenant=%d room=%d program=%s", tenant, room, programID)
+					s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
+				} else {
+					nextGeneration, err := s.appendRecordingStreamTrack(ctx, tenant, room, version, programID, block)
+					if err != nil {
+						return err
+					}
+					generation = nextGeneration
+				}
+				log.Printf("recording stream block appended tenant=%d room=%d round=%d chunks=%d generation=%d", tenant, room, round, len(current)-blockStart, generation)
+				blockStart = len(current)
+			}
 		}
 		history = append(history, current)
 		if len(history) > 4 {
@@ -265,6 +279,49 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 		DurationMS: int(durationMS),
 		Timeline:   recordingStreamTimeline(timeline),
 		SafePoints: recordingStreamSafePoints(archive.SafePoints),
+	}, nil
+}
+
+func (s *Server) combineRecordingStreamBlock(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, entries []recordingStreamCacheEntry, round, block int) (coreclient.ProgramRefreshTrack, error) {
+	identity := version.VoiceIdentity
+	voiceID, modelName, err := s.resolveFormalVoice(ctx, tenant, fullShowVariantVoiceInput{
+		Source: identity.Source, VoiceID: identity.VoiceID, ProfileID: identity.ProfileID,
+		BindingID: identity.BindingID, Model: identity.Model,
+	})
+	if err != nil {
+		return coreclient.ProgramRefreshTrack{}, err
+	}
+	pieces := make([]generatedVoiceWAVPiece, 0, len(entries))
+	texts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		raw, err := downloadGeneratedVoiceWAV(ctx, entry.Track.AudioURL)
+		if err != nil {
+			return coreclient.ProgramRefreshTrack{}, err
+		}
+		format, pcm, byteRate, err := parseGeneratedVoiceWAV(raw)
+		if err != nil {
+			return coreclient.ProgramRefreshTrack{}, err
+		}
+		pieces = append(pieces, generatedVoiceWAVPiece{text: entry.Text, fmtData: format, pcmData: pcm, byteRate: byteRate})
+		texts = append(texts, entry.Text)
+	}
+	variantKey := fmt.Sprintf("recording-%d-block-%d", round, block)
+	combined, timeline, durationMS, err := combineGeneratedVoiceWAV(variantKey, pieces)
+	if err != nil {
+		return coreclient.ProgramRefreshTrack{}, err
+	}
+	archive, err := s.archiveFullShowVoice(ctx, tenant, 0, version.PlanID, version.RoomID, variantKey, voiceID, modelName, identity.Source, combined, durationMS, timeline, identity.Rate)
+	if err != nil {
+		return coreclient.ProgramRefreshTrack{}, err
+	}
+	audioURL, err := s.recordingStreamAssetURL(ctx, tenant, archive.AssetID)
+	if err != nil {
+		return coreclient.ProgramRefreshTrack{}, err
+	}
+	return coreclient.ProgramRefreshTrack{
+		ID: fmt.Sprintf("recording-%d-block-%d-%d", round, block, archive.AssetID), Label: "录音AI声音",
+		Text: strings.Join(texts, ""), AudioURL: audioURL, DurationMS: int(durationMS),
+		Timeline: recordingStreamTimeline(timeline), SafePoints: recordingStreamSafePoints(archive.SafePoints),
 	}, nil
 }
 
