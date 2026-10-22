@@ -13,7 +13,7 @@ const source = await readFile(new URL('../src/views/LiveStrategyView.vue', impor
 const marker = '<script setup lang="ts">'
 const script = source.slice(source.indexOf(marker) + marker.length, source.indexOf('</script>'))
 const ast = ts.createSourceFile('view.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-const functionNames = ['addRecordingTab', 'removeRecordingTab', 'reorderRecordingTabs', 'recordingScriptForSave', 'restoreRecordingScript']
+const functionNames = ['addRecordingTab', 'clearUnreferencedRecordingFormalAudio', 'removeRecordingTab', 'reorderRecordingTabs', 'recordingScriptForSave', 'restoreRecordingScript']
 const parentFunctions = functionNames.map(name => {
   const node = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
   assert.ok(node, `Missing real parent function: ${name}`)
@@ -30,6 +30,8 @@ const recordingTabDrafts=ref<Record<string,LiveAgentCustomMainlineResponse>>({})
 let recordingTabSeq=1
 const activeRecordingTab=computed(()=>recordingTabs.value.find(tab=>tab.id===activeRecordingTabId.value)||recordingTabs.value[0]||null)
 const scope=ref(1),disabled=ref(false),customMainlineSaveNotice=ref(''),customMainlineDraft=ref(null),customMainlineTimeline=ref([])
+const fullShowVoiceStates=ref({}),fullShowSavedVersion=ref(null),fullShowSaveReceipt=ref(null)
+function defaultFullShowVoiceState(){return {audio_asset_id:0,audio_url:'',timeline:[],srt:''}}
 const showTabs=ref(true),outsideClicks=ref(0)
 const customMainlineStage=ref('idle')
 ${parentFunctions}

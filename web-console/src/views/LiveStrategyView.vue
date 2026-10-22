@@ -27,6 +27,7 @@ import { planBusinessModes } from '../planBusinessMode'
 import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
 import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import RecordingScriptTabs from '../components/RecordingScriptTabs.vue'
+import RecordingOriginalMedia from '../components/RecordingOriginalMedia.vue'
 import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
 import PlanCreateDialog from '../components/PlanCreateDialog.vue'
 import { isPlanFactMode, type PlanConfigurationMode, type PlanConfigurationSection, type PlanFactMode } from '../livePlanNavigation'
@@ -2189,6 +2190,12 @@ const recordingTabDrafts = ref<Record<string, LiveAgentCustomMainlineResponse>>(
 const activeRecordingTab = computed<RecordingScriptTab | null>(
   () => recordingTabs.value.find((item) => item.id === activeRecordingTabId.value) || recordingTabs.value[0] || null,
 )
+function recordingOriginalForTab(tab: RecordingScriptTab | null): LiveAgentCustomMainlineResponse | null {
+  if (!tab) return null
+  const draft = recordingTabDrafts.value[tab.id]
+  return draft?.audio_url && tab.audioAssetIds.includes(Number(draft.audio_asset_id)) ? draft : null
+}
+const activeRecordingOriginal = computed(() => recordingOriginalForTab(activeRecordingTab.value))
 const activeRecordingTabText = computed<string>({
   get: () => activeRecordingTab.value?.text || '',
   set: (value: string) => {
@@ -2220,10 +2227,18 @@ function removeRecordingTab(id: string): void {
   if (recordingTabs.value.length <= 1) return
   const index = recordingTabs.value.findIndex((item) => item.id === id)
   if (index < 0) return
+  const assetIds = [...recordingTabs.value[index].audioAssetIds]
   recordingTabs.value.splice(index, 1)
   delete recordingTabDrafts.value[id]
   if (activeRecordingTabId.value === id) {
     activeRecordingTabId.value = recordingTabs.value[Math.max(0, index - 1)].id
+  }
+  let removedFormalAudio = false
+  for (const assetId of assetIds) removedFormalAudio = clearUnreferencedRecordingFormalAudio(assetId) || removedFormalAudio
+  if (removedFormalAudio) {
+    fullShowSavedVersion.value = null
+    fullShowSaveReceipt.value = null
+    customMainlineSaveNotice.value = '标签及其原音和 SRT 已移除。尚未保存；保存前请准备替代的正式声音。'
   }
 }
 function reorderRecordingTabs(ids: string[]): void {
@@ -2237,13 +2252,12 @@ function resetRecordingTabs(): void {
   activeRecordingTabId.value = 't1'
   recordingTabDrafts.value = {}
 }
-// 切标签时把「原始声音」换成该标签自己的；没有声音的标签就不显示原始声音。
-watch(activeRecordingTabId, (tabId) => {
-  const draft = recordingTabDrafts.value[tabId] || null
+// 只有显式关联匹配的录音可成为当前草稿，禁止回退到其它标签或全局原音。
+watch(activeRecordingOriginal, (draft) => {
   customMainlineDraft.value = draft
   customMainlineTimeline.value = draft ? (draft.timeline || []).map((item) => ({ ...item })) : []
   customMainlineSaveNotice.value = ''
-})
+}, { flush: 'sync' })
 // 落库形态：1..20 个文本框，每框最多 1 段声音，标签唯一。
 function recordingScriptForSave() {
   return {
@@ -2282,6 +2296,39 @@ const customMainlineSaveNotice = ref('')
 const customMainlineError = useFeedbackErrorRef()
 const customMainlineCloneBusy = ref(false)
 const recordingVoiceMode = ref<'original' | 'stream_clone'>('original')
+const showRecordingOriginalMedia = computed(() => recordingVoiceMode.value === 'original' && Boolean(activeRecordingOriginal.value))
+const recordingOriginalBusy = computed(() => fullShowVersionSaving.value || ['uploading', 'analyzing', 'saving'].includes(customMainlineStage.value))
+let customMainlineCloneRequestNo = 0
+function recordingOriginalRequestIsCurrent(epoch: number, tabId: string, assetId: number): boolean {
+  return epoch === planVersionSaveEpoch && recordingTabs.value.some(tab => tab.id === tabId && tab.audioAssetIds.includes(assetId))
+}
+function clearUnreferencedRecordingFormalAudio(assetId: number): boolean {
+  if (recordingTabs.value.some(tab => tab.audioAssetIds.includes(assetId))) return false
+  let removed = false
+  for (const [key, voice] of Object.entries(fullShowVoiceStates.value)) {
+    if (voice.audio_asset_id !== assetId) continue
+    fullShowVoiceStates.value[key] = defaultFullShowVoiceState()
+    removed = true
+  }
+  return removed
+}
+function removeRecordingOriginal(): void {
+  const tab = activeRecordingTab.value
+  const draft = activeRecordingOriginal.value
+  if (!tab || !draft || recordingOriginalBusy.value || customMainlineCloneBusy.value) return
+  const assetId = draft.audio_asset_id
+  tab.audioAssetIds = []
+  delete recordingTabDrafts.value[tab.id]
+  customMainlineDraft.value = null
+  customMainlineTimeline.value = []
+  const removedFormalAudio = clearUnreferencedRecordingFormalAudio(assetId)
+  fullShowSavedVersion.value = null
+  fullShowSaveReceipt.value = null
+  customMainlineStage.value = 'idle'
+  customMainlineSaveNotice.value = removedFormalAudio
+    ? '已移除原音和 SRT，标签及正文已保留。尚未保存；保存前请准备替代的正式声音。'
+    : '已移除当前标签的原音和 SRT，标签及正文已保留；请保存方案。'
+}
 const originalAiCandidateKey = ref('')
 const originalAiSrtProgress = ref<{
   status: 'idle' | 'generating' | 'done' | 'failed'
@@ -2335,6 +2382,7 @@ const fullShowSaveBlockedReason = computed(() => {
     const error = realtimeGenerationOptionsError(realtimeGenerationOptions.value)
     return error ? `实时声音参数还需要调整哦：${error}。去“生成智能体”改好就能保存啦～` : ''
   }
+  if (isUserAudioContentMode.value && (['uploading', 'analyzing', 'saving'].includes(customMainlineStage.value) || customMainlineCloneBusy.value)) return '原始声音正在处理中，完成后再保存方案。'
   if (isUserAudioContentMode.value && !hasCustomMainlineResult.value) return '还差一段主线录音哦～去“生成智能体”上传并完成处理，就能保存啦。'
   if (!fullShowResult.value) return '先去“生成智能体”生成并核对文稿，再来保存吧～'
   if (!fullShowFormalVariantKeys.value.length) return '选好至少一套正式稿，我们就能保存啦～'
@@ -3065,12 +3113,12 @@ async function createCustomMainlineVoiceSample(file: File) {
 }
 
 async function handleCustomMainlineFile(event: Event) {
+  if (recordingOriginalBusy.value || customMainlineCloneBusy.value) return
   const input = event.currentTarget as HTMLInputElement
   const files = Array.from(input.files || [])
   const file = files[0] || null
+  const ownerEpoch = planVersionSaveEpoch
   customMainlineError.value = ''
-  customMainlineDraft.value = null
-  customMainlineTimeline.value = []
   customMainlineVoiceSample.value = null
   customMainlineUploadProgress.value = 0
   customMainlineStage.value = 'idle'
@@ -3103,11 +3151,13 @@ async function handleCustomMainlineFile(event: Event) {
     Promise.all(files.map((item) => readCustomMainlineDuration(item))),
     createCustomMainlineVoiceSample(file),
   ])
+  if (ownerEpoch !== planVersionSaveEpoch || customMainlineFile.value !== file) return
   customMainlineDurationMS.value = durations.reduce((sum, value) => sum + value, 0)
   customMainlineVoiceSample.value = voiceSample
 }
 
 async function uploadCustomMainline() {
+  if (recordingOriginalBusy.value || customMainlineCloneBusy.value) return
   if (contentModeAccess.value?.content_mode !== 'user_audio') await chooseContentMode('user_audio')
   selectFullShowOutputMode('custom')
   if (!contentModeReady.value || !isUserAudioContentMode.value) {
@@ -3121,11 +3171,18 @@ async function uploadCustomMainline() {
     customMainlineError.value = '请选择当前方案、直播间和要上传的音频。'
     return
   }
+  if (recordingTabs.value.length >= 20) {
+    customMainlineError.value = '最多保留20个标签，请先移除不需要的标签。'
+    return
+  }
+  const ownerEpoch = planVersionSaveEpoch
   customMainlineError.value = ''
   customMainlineUploadProgress.value = 0
   customMainlineStage.value = 'uploading'
   customMainlineAbort?.abort()
-  customMainlineAbort = new AbortController()
+  const controller = new AbortController()
+  customMainlineAbort = controller
+  const current = () => ownerEpoch === planVersionSaveEpoch && customMainlineAbort === controller
   try {
     const response = await uploadLiveAgentCustomMainline(
       planId,
@@ -3134,18 +3191,19 @@ async function uploadCustomMainline() {
       customMainlineDurationMS.value,
       customMainlineVoiceSample.value,
       (loaded, total) => {
+        if (!current()) return
         const percent = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0
         customMainlineUploadProgress.value = percent
         if (percent >= 100) customMainlineStage.value = 'analyzing'
       },
-      customMainlineAbort.signal,
+      controller.signal,
     )
-    customMainlineDraft.value = response
-    customMainlineTimeline.value = (response.timeline || []).map((item) => ({ ...item }))
+    if (!current()) return
     // 一个声音对应一个文本框：上传结果进新标签，不覆盖已有话术。
     beginRecordingTabFromUpload()
     recordingTabDrafts.value[activeRecordingTabId.value] = response
     if (activeRecordingTab.value) {
+      activeRecordingTab.value.audioAssetIds = [Number(response.audio_asset_id)]
       activeRecordingTab.value.text = String(
         response.transcript || (response.timeline || []).map((item) => item.text).filter(Boolean).join('\n'),
       ).trim()
@@ -3157,6 +3215,7 @@ async function uploadCustomMainline() {
       customMainlineError.value = '音稿与 SRT 已完成，但自动生成自定义音色失败：' + response.clone_error
     }
   } catch (err) {
+    if (!current()) return
     if (err instanceof DOMException && err.name === 'AbortError') {
       customMainlineStage.value = 'idle'
       return
@@ -3164,7 +3223,7 @@ async function uploadCustomMainline() {
     customMainlineStage.value = 'failed'
     customMainlineError.value = err instanceof Error ? err.message : '自定义音稿处理失败'
   } finally {
-    customMainlineAbort = null
+    if (customMainlineAbort === controller) customMainlineAbort = null
   }
 }
 
@@ -3219,9 +3278,13 @@ function buildOriginalTimeline(
 async function rebuildCustomMainline() {
   const planId = currentRoomPlanId.value
   const room = activeRoom.value
-  const draft = customMainlineDraft.value
-  if (!planId || !room || !draft) return
-  const transcript = (activeRecordingTabText.value.trim() || customMainlineTranscript.value).trim()
+  const draft = activeRecordingOriginal.value
+  const tab = activeRecordingTab.value
+  if (!planId || !room || !draft || !tab || recordingOriginalBusy.value) return
+  const ownerEpoch = planVersionSaveEpoch
+  const tabId = tab.id
+  const current = () => recordingOriginalRequestIsCurrent(ownerEpoch, tabId, draft.audio_asset_id)
+  const transcript = tab.text.trim()
   if (!transcript) {
     customMainlineError.value = '原始话术不能为空。'
     customMainlineSaveNotice.value = ''
@@ -3233,27 +3296,27 @@ async function rebuildCustomMainline() {
     const response = await rebuildLiveAgentCustomMainline(planId, {
       room_id: room.id,
       audio_asset_id: draft.audio_asset_id,
-      timeline: buildOriginalTimeline(transcript, customMainlineTimeline.value, draft.duration_ms),
+      timeline: buildOriginalTimeline(transcript, draft.timeline, draft.duration_ms),
     })
-    customMainlineDraft.value = {
+    if (!current()) return
+    recordingTabDrafts.value[tabId] = {
       ...response,
       voice_profile: response.voice_profile || draft.voice_profile,
       voice_identity: response.voice_identity || draft.voice_identity,
       clone_error: response.clone_error || draft.clone_error,
     }
-    customMainlineTimeline.value = response.timeline.map((item) => ({ ...item }))
     // 保存原始话术只重建 SRT，不回写任何标签正文：唯一写入口是上传录音。
     if (fullShowResult.value) {
       fullShowResult.value = {
         ...fullShowResult.value,
         variants: fullShowResult.value.variants.map((variant) =>
-          variant.variant_key === 'CUSTOM'
-            ? { ...variant, text: activeRecordingTabText.value.trim() }
+          variant.variant_key === 'CUSTOM' && fullShowVoiceStates.value.CUSTOM?.audio_asset_id === draft.audio_asset_id
+            ? { ...variant, text: transcript }
             : variant,
         ),
       }
     }
-    if (fullShowVoiceStates.value.CUSTOM) {
+    if (fullShowVoiceStates.value.CUSTOM?.audio_asset_id === draft.audio_asset_id) {
       updateFullShowVoiceState('CUSTOM', {
         timeline: response.timeline.map((item) => ({ ...item })),
         srt: response.srt,
@@ -3265,6 +3328,7 @@ async function rebuildCustomMainline() {
     customMainlineStage.value = 'ready'
     customMainlineSaveNotice.value = '原始话术已保存，SRT 已按原声音时间同步更新。'
   } catch (err) {
+    if (!current()) return
     customMainlineStage.value = 'failed'
     customMainlineError.value = err instanceof Error ? err.message : '保存校对并重建 SRT 失败'
     customMainlineSaveNotice.value = ''
@@ -3272,8 +3336,13 @@ async function rebuildCustomMainline() {
 }
 
 async function retryCustomMainlineClone() {
-  const draft = customMainlineDraft.value
-  if (!draft?.audio_asset_id || customMainlineCloneBusy.value) return
+  const draft = activeRecordingOriginal.value
+  const tab = activeRecordingTab.value
+  if (!draft?.audio_asset_id || !tab || customMainlineCloneBusy.value || recordingOriginalBusy.value) return
+  const ownerEpoch = planVersionSaveEpoch
+  const tabId = tab.id
+  const requestNo = ++customMainlineCloneRequestNo
+  const current = () => requestNo === customMainlineCloneRequestNo && recordingOriginalRequestIsCurrent(ownerEpoch, tabId, draft.audio_asset_id)
   customMainlineCloneBusy.value = true
   customMainlineError.value = ''
   try {
@@ -3281,8 +3350,9 @@ async function retryCustomMainlineClone() {
       name: (customMainlineFile.value?.name || '自定义主线') + ' · 自定义音色',
       sample_asset_id: draft.audio_asset_id,
     })
+    if (!current()) return
     const model = String(profile.config?.target_model || 'qwen-audio-3.0-tts-plus')
-    customMainlineDraft.value = {
+    recordingTabDrafts.value[tabId] = {
       ...draft,
       voice_profile: profile,
       voice_identity: {
@@ -3299,9 +3369,10 @@ async function retryCustomMainlineClone() {
       clone_error: '',
     }
   } catch (err) {
+    if (!current()) return
     customMainlineError.value = err instanceof Error ? err.message : '重新生成自定义音色失败'
   } finally {
-    customMainlineCloneBusy.value = false
+    if (requestNo === customMainlineCloneRequestNo && ownerEpoch === planVersionSaveEpoch) customMainlineCloneBusy.value = false
   }
 }
 
@@ -3401,14 +3472,13 @@ async function applyCustomMainlineAsFormal() {
   fullShowOutputMode.value = 'custom'
 }
 
-function originalSourceManifest() {
-  const draft = customMainlineDraft.value
+function originalSourceManifest(draft: LiveAgentCustomMainlineResponse | null = activeRecordingOriginal.value) {
   if (!draft) return null
   return {
     audio_url: draft.audio_url,
     audio_asset_id: Number(draft.audio_asset_id || 0),
     duration_ms: Number(draft.duration_ms || 0),
-    transcript: customMainlineTranscript.value.trim() || draft.transcript,
+    transcript: draft.transcript,
     timeline: draft.timeline.map((item) => ({ ...item })),
     srt: draft.srt,
     safe_points: draft.safe_points.map((item) => ({ ...item })),
@@ -3451,8 +3521,8 @@ async function decompressVersionJSON(value: string) {
   return JSON.parse(await new Response(stream).text()) as Record<string, unknown>
 }
 
-async function compactOriginalSourceManifest() {
-  const source = originalSourceManifest()
+async function compactOriginalSourceManifest(draft: LiveAgentCustomMainlineResponse | null = activeRecordingOriginal.value) {
+  const source = originalSourceManifest(draft)
   if (!source) return null
   const { transcript, timeline, srt, safe_points, ...reference } = source
   try {
@@ -3480,6 +3550,84 @@ async function expandOriginalSourceManifest(source: Record<string, unknown>) {
   } catch {
     return source
   }
+}
+
+// 独立保存在生成上下文，标签仍使用服务端严格校验的 audio_asset_ids。
+async function recordingOriginalSourcesForSave() {
+  const sources: { tab_id: string; source: Record<string, unknown> }[] = []
+  for (const tab of recordingTabs.value) {
+    const draft = recordingOriginalForTab(tab)
+    if (!draft) continue
+    const source = await compactOriginalSourceManifest(draft)
+    if (source) sources.push({ tab_id: tab.id, source })
+  }
+  return sources
+}
+
+async function restoreRecordingOriginalSources(version: LiveAgentPlanVersion) {
+  const ownerEpoch = planVersionSaveEpoch
+  const loadToken = fullShowWorkspaceLoadToken
+  const current = () => ownerEpoch === planVersionSaveEpoch && loadToken === fullShowWorkspaceLoadToken
+  const context = asRecord(version.generation_context)
+  const hasScript = Object.prototype.hasOwnProperty.call(context, 'recording_script')
+  const hasSources = Object.prototype.hasOwnProperty.call(context, 'recording_original_sources')
+  const sources = Array.isArray(context.recording_original_sources) ? context.recording_original_sources : []
+  const restored: Record<string, LiveAgentCustomMainlineResponse> = {}
+  const fromSource = (source: Record<string, unknown>, fallbackText = ''): LiveAgentCustomMainlineResponse | null => {
+    const assetId = Number(source.audio_asset_id || 0)
+    const url = String(source.audio_url || '')
+    if (!(assetId > 0) || !url) return null
+    const identity = asRecord(source.voice_identity)
+    return {
+      audio_asset_id: assetId,
+      audio_url: url,
+      duration_ms: Number(source.duration_ms || source.audio_duration_ms || 0),
+      transcript: String(source.transcript || fallbackText),
+      timeline: Array.isArray(source.timeline) ? (source.timeline as LiveAgentPlanTimelineSegment[]).map(item => ({ ...item })) : [],
+      srt: String(source.srt || ''),
+      safe_points: Array.isArray(source.safe_points) ? (source.safe_points as LiveAgentPlanSafePoint[]).map(item => ({ ...item })) : [],
+      asset_manifest: asRecord(source.asset_manifest),
+      voice_identity: Object.keys(identity).length ? identity as unknown as LiveAgentVoiceIdentity : { ...version.voice_identity },
+    }
+  }
+  for (const item of sources) {
+    const entry = asRecord(item)
+    const tab = recordingTabs.value.find(tab => tab.id === String(entry.tab_id || ''))
+    if (!tab) continue
+    const expanded = await expandOriginalSourceManifest(asRecord(entry.source))
+    if (!current()) return
+    const draft = fromSource(expanded)
+    if (draft && tab.audioAssetIds.includes(draft.audio_asset_id)) restored[tab.id] = draft
+  }
+  // 新归档（包括空数组）是权威来源，禁止由旧 variant.original_source 复活已移除的原音。
+  if (!hasSources) {
+    const legacyVariants = [...version.variants].sort((a, b) =>
+      Number(Object.keys(asRecord(asRecord(b.asset_manifest).original_source)).length > 0)
+      - Number(Object.keys(asRecord(asRecord(a.asset_manifest).original_source)).length > 0),
+    )
+    for (const variant of legacyVariants) {
+      const archive = asRecord(asRecord(variant.asset_manifest).original_source)
+      if (!Object.keys(archive).length && variant.variant_key !== 'CUSTOM') continue
+      const expanded = await expandOriginalSourceManifest(archive)
+      if (!current()) return
+      const draft = fromSource(Object.keys(expanded).length ? expanded : asRecord(variant), variant.text)
+      if (!draft) continue
+      if (!hasScript && recordingTabs.value.length === 1) {
+        const legacyTab = recordingTabs.value[0]
+        legacyTab.audioAssetIds = [draft.audio_asset_id]
+        if (!legacyTab.text.trim()) legacyTab.text = draft.transcript
+      }
+      for (const tab of recordingTabs.value) {
+        if (tab.audioAssetIds.includes(draft.audio_asset_id) && !restored[tab.id]) restored[tab.id] = draft
+      }
+      if (!hasScript && recordingTabs.value.length === 1) break
+    }
+  }
+  if (!current()) return
+  recordingTabDrafts.value = restored
+  customMainlineDraft.value = activeRecordingOriginal.value
+  customMainlineTimeline.value = (activeRecordingOriginal.value?.timeline || []).map(item => ({ ...item }))
+  customMainlineStage.value = activeRecordingOriginal.value ? 'ready' : 'idle'
 }
 
 async function generateOriginalAiVoice() {
@@ -3906,6 +4054,12 @@ async function refreshFullShowVersionHistory() {
 let fullShowWorkspaceLoadToken = 0
 
 function resetFullShowWorkspaceState() {
+  customMainlineAbort?.abort()
+  customMainlineAbort = null
+  customMainlineCloneRequestNo++
+  customMainlineCloneBusy.value = false
+  recordingVoiceMode.value = 'original'
+  fullShowWorkspaceHydrating.value = false
   stopFormalVoiceSet()
   for (const key of fullShowVoiceTimers.keys()) stopFullShowVoiceTimer(key)
   fullShowResult.value = null
@@ -3963,11 +4117,15 @@ function resetFullShowWorkspaceState() {
 }
 
 async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, source: 'draft' | 'published') {
+  const ownerEpoch = planVersionSaveEpoch
+  const loadToken = fullShowWorkspaceLoadToken
+  const current = () => ownerEpoch === planVersionSaveEpoch && loadToken === fullShowWorkspaceLoadToken
   fullShowWorkspaceHydrating.value = true
   try {
     version = normalizeLiveAgentPlanVersion(version)
     const restoredOptions = realtimeOptionsFromVersion(version.generation_context)
     if (restoredOptions) realtimeGenerationOptions.value = restoredOptions
+    resetRecordingTabs()
     restoreRecordingScript(version.generation_context)
     // 声音模式必须回显：否则刷新后单选默认回到「原声」，下次保存会把 AI 声音改回原声。
     const restoredVoiceMode = String((version.generation_context as { recording_voice_mode?: string } | undefined)?.recording_voice_mode || '')
@@ -4082,40 +4240,8 @@ async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, so
       }
     }
     fullShowVoiceStates.value = restoredStates
-    const originalOwner = version.variants.find((item) =>
-      Object.keys(asRecord(asRecord(item.asset_manifest).original_source)).length > 0,
-    ) || version.variants.find((item) => item.variant_key === 'CUSTOM')
-    const archivedOriginal = await expandOriginalSourceManifest(
-      asRecord(asRecord(originalOwner?.asset_manifest).original_source),
-    )
-    const original = Object.keys(archivedOriginal).length ? archivedOriginal : asRecord(originalOwner)
-    const originalAssetID = Number(original.audio_asset_id || 0)
-    const originalAudioURL = String(original.audio_url || '')
-    if (originalAssetID > 0 && originalAudioURL) {
-      const originalTimeline = Array.isArray(original.timeline)
-        ? (original.timeline as LiveAgentPlanTimelineSegment[]).map((item) => ({ ...item }))
-        : []
-      const originalSafePoints = Array.isArray(original.safe_points)
-        ? (original.safe_points as LiveAgentPlanSafePoint[]).map((item) => ({ ...item }))
-        : []
-      const archivedIdentity = asRecord(original.voice_identity)
-      customMainlineDraft.value = {
-        audio_asset_id: originalAssetID,
-        audio_url: originalAudioURL,
-        duration_ms: Number(original.duration_ms || original.audio_duration_ms || 0),
-        transcript: String(original.transcript || originalOwner?.text || ''),
-        timeline: originalTimeline,
-        srt: String(original.srt || ''),
-        safe_points: originalSafePoints,
-        asset_manifest: asRecord(original.asset_manifest),
-        voice_identity: Object.keys(archivedIdentity).length
-          ? (archivedIdentity as unknown as LiveAgentVoiceIdentity)
-          : { ...version.voice_identity },
-      }
-      customMainlineTimeline.value = originalTimeline
-      // 切回原始音频只恢复草稿与时间轴，不改标签正文。
-      customMainlineStage.value = 'ready'
-    }
+    await restoreRecordingOriginalSources(version)
+    if (!current()) return
     fullShowWorkspaceBaseVersion.value = version
     fullShowWorkspaceSource.value = source
     fullShowSavedVersion.value = version
@@ -4125,7 +4251,7 @@ async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, so
         ? '已恢复最近保存的方案，可继续修改、替换声音后保存。'
         : '已恢复当前保存方案；修改后点击保存，下次开播直接使用。'
   } finally {
-    fullShowWorkspaceHydrating.value = false
+    if (current()) fullShowWorkspaceHydrating.value = false
   }
 }
 
@@ -4146,6 +4272,7 @@ async function loadFullShowWorkspace() {
     const restoredOptions = realtimeOptionsFromVersion(workspace.version?.generation_context)
     if (restoredOptions) realtimeGenerationOptions.value = restoredOptions
     else await loadRealtimeOptionsDefaults()
+    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
     // 进入方案时的恢复入口：标签与声音模式都必须回显，否则保存会把 AI 声音写回原声。
     restoreRecordingScript(workspace.version?.generation_context)
     const restoredEntryVoiceMode = String(
@@ -4160,6 +4287,7 @@ async function loadFullShowWorkspace() {
       return
     }
     await restoreFullShowWorkspaceVersion(workspace.version, workspace.source)
+    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
     if (workspace.inherited) {
       fullShowWorkspaceInherited.value = true
       fullShowSavedVersion.value = null
@@ -4250,25 +4378,19 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     const realtimeActive = planBoundToRoom && roomModeAtSave === 'ai_dynamic'
     const realtimeOptionsAtSave = realtimeActive ? validatedRealtimeOptions(realtimeGenerationOptions.value) : null
     fullShowNotice.value = realtimeActive ? '正在保存已核对的公共内容、商品专属内容与资料快照。' : '正在核对事实依据并保存声音方案。'
-    const originalSource = await compactOriginalSourceManifest()
+    const recordingOriginalSources = contentModeAtSave === 'user_audio' ? await recordingOriginalSourcesForSave() : []
     assertCurrent()
     if (realtimeOptionsAtSave && JSON.stringify(realtimeOptionsAtSave) !== JSON.stringify(realtimeGenerationOptions.value)) {
       throw new Error('参数在准备保存时已变化，请重新点击保存新版本。')
     }
-    const originalSourceOwnerKey = fullShowFormalVariantKeys.value[0] || ''
     const variants = (realtimeActive ? [] : (result?.variants || [])).filter((variant) =>
       fullShowFormalVariantKeys.value.includes(variant.variant_key),
     ).map((variant) => {
       const isFormal = fullShowFormalVariantKeys.value.includes(variant.variant_key)
       const voice = fullShowVoiceState(variant.variant_key)
-      const assetManifest = isFormal
-        ? {
-            ...cloneVersionJSON(voice.asset_manifest || {}, {}),
-            ...(originalSource && variant.variant_key === originalSourceOwnerKey
-              ? { original_source: originalSource }
-              : {}),
-          }
-        : {}
+      const baseManifest = cloneVersionJSON(voice.asset_manifest || {}, {})
+      delete baseManifest.original_source
+      const assetManifest = isFormal ? baseManifest : {}
       return {
         index: Math.max(1, Math.round(Number(variant.index || 1))),
         variant_key: variant.variant_key,
@@ -4317,6 +4439,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
         content_mode: contentModeAtSave,
         ...(contentModeAtSave === 'user_audio' ? { recording_voice_mode: recordingVoiceMode.value } : {}),
         ...(contentModeAtSave === 'user_audio' ? { recording_script: recordingScriptForSave() } : {}),
+        ...(contentModeAtSave === 'user_audio' ? { recording_original_sources: recordingOriginalSources } : {}),
         ...(realtimeOptionsAtSave ? { anchor_generation_options: realtimeOptionsAtSave } : {}),
         duration_minutes: Math.round(Number(fullShowDuration.value || 0)),
         round_minutes: Math.round(Number(fullShowRoundMinutes.value || 0)),
@@ -8541,13 +8664,14 @@ onBeforeUnmount(() => {
                 </div>
               </header>
               <section v-if="isUserAudioContentMode" class="strategy-custom-mainline-inline">
-                <!-- 只有「原声」才需要上传录音；AI 声音下纯文本即可，隐藏上传入口。 -->
+                <!-- 原始声音模式显示录音上传入口，AI 声音模式隐藏原音素材。 -->
                 <div v-if="recordingVoiceMode === 'original'" class="strategy-custom-mainline-upload">
                   <label>
                     <input
                       type="file"
                       accept=".wav,.mp3,.m4a,.aac,.flac,.ogg,.webm,audio/*"
                       multiple
+                      :disabled="recordingOriginalBusy || customMainlineCloneBusy"
                       @change="handleCustomMainlineFile"
                     />
                     <i class="strategy-custom-mainline-upload-icon" aria-hidden="true">
@@ -8563,7 +8687,7 @@ onBeforeUnmount(() => {
                     <span v-if="customMainlineDurationMS">{{ formatFullShowTimelineMS(customMainlineDurationMS) }}</span>
                     <button
                       type="button"
-                      :disabled="customMainlineStage === 'uploading' || customMainlineStage === 'analyzing'"
+                      :disabled="recordingOriginalBusy || customMainlineCloneBusy"
                       @click="uploadCustomMainline"
                     >
                       {{
@@ -8597,7 +8721,7 @@ onBeforeUnmount(() => {
 
                 <div class="strategy-recording-voice-settings">
                   <strong>主线声音</strong>
-                  <fieldset class="strategy-recording-voice-choice">
+                  <fieldset class="strategy-recording-voice-choice" :disabled="recordingOriginalBusy || customMainlineCloneBusy">
                     <legend>直播间主线声音</legend>
                     <label>
                       <input v-model="recordingVoiceMode" type="radio" value="original" name="recording-voice-mode" />
@@ -8624,9 +8748,9 @@ onBeforeUnmount(() => {
                       <strong>原始话术</strong>
                     </div>
                     <button
-                      v-if="customMainlineDraft"
+                      v-if="showRecordingOriginalMedia"
                       type="button"
-                      :disabled="customMainlineStage === 'saving' || !customMainlineTranscript.trim()"
+                      :disabled="recordingOriginalBusy || customMainlineCloneBusy || !activeRecordingTabText.trim()"
                       @click="rebuildCustomMainline"
                     >
                       {{ customMainlineStage === 'saving' ? '正在保存…' : '保存原始话术' }}
@@ -8658,41 +8782,16 @@ onBeforeUnmount(() => {
                 </section>
 
                 <div class="strategy-custom-mainline-audio">
-                  <div v-if="customMainlineDraft" class="strategy-custom-mainline-summary">
-                    <div>
-                      <strong>原始声音</strong>
-                      <span>{{ formatFullShowTimelineMS(customMainlineDraft.duration_ms) }}</span>
-                    </div>
-                    <div :class="{ ready: Boolean(customMainlineDraft.voice_identity?.voice_id) }">
-                      <strong>原始声音身份</strong>
-                      <span v-if="customMainlineDraft.voice_identity">
-                        {{ customMainlineDraft.voice_identity.name }} · 已自动生成 · 回答/抢答跟随此音色
-                      </span>
-                      <span v-else>尚未生成</span>
-                      <button
-                        v-if="!customMainlineDraft.voice_identity"
-                        type="button"
-                        :disabled="customMainlineCloneBusy"
-                        @click="retryCustomMainlineClone"
-                      >
-                        {{ customMainlineCloneBusy ? '生成中…' : '重新生成自定义音色' }}
-                      </button>
-                    </div>
-                  </div>
-
-                  <audio v-if="customMainlineDraft" controls preload="metadata" :src="liveSupportMediaPlaybackURL(customMainlineDraft.audio_url)"></audio>
-
-                  <footer v-if="customMainlineDraft" class="strategy-custom-mainline-footer">
-                    <div>
-                      <span v-if="customMainlineCanApply">✓ 原始声音、原始话术与 SRT 已保留</span>
-                      <span v-else>请先完成原始声音处理。</span>
-                    </div>
-                  </footer>
-
-                  <details v-if="customMainlineDraft" class="strategy-custom-mainline-srt strategy-recording-side-srt">
-                    <summary><i aria-hidden="true">▤</i> 查看 SRT</summary>
-                    <pre>{{ customMainlineDraft.srt }}</pre>
-                  </details>
+                  <RecordingOriginalMedia
+                    v-if="showRecordingOriginalMedia && activeRecordingOriginal"
+                    :draft="activeRecordingOriginal"
+                    :audio-src="liveSupportMediaPlaybackURL(activeRecordingOriginal.audio_url)"
+                    :duration-label="formatFullShowTimelineMS(activeRecordingOriginal.duration_ms)"
+                    :busy="recordingOriginalBusy"
+                    :clone-busy="customMainlineCloneBusy"
+                    @remove="removeRecordingOriginal"
+                    @retry-clone="retryCustomMainlineClone"
+                  />
 
                   <div
                     v-if="originalAiCandidateKey && fullShowVoiceState(originalAiCandidateKey).status === 'generating'"
