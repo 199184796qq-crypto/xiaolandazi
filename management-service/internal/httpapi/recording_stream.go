@@ -258,7 +258,7 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 	rate *= 0.98
 	generated, err := gateway.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{
 		Model: modelName, VoiceID: voiceID, Text: text, Rate: rate,
-		Instruction: recordingStreamInstruction(text),
+		Instruction: recordingInstructionForVersion(version, text),
 	})
 	if err != nil {
 		return coreclient.ProgramRefreshTrack{}, err
@@ -373,6 +373,13 @@ func (s *Server) combineRecordingStreamBlock(ctx context.Context, tenant int64, 
 // for each TTS chunk. It never changes the spoken text; it only tells the
 // cloned voice how to phrase it (questions lift, prices slow down, urgency is
 // tighter, ordinary chat keeps a relaxed pause and drawl).
+func recordingInstructionForVersion(version model.LiveAgentPlanVersion, text string) string {
+	if version.VoiceIdentity.EmotionEnabled == nil || !*version.VoiceIdentity.EmotionEnabled {
+		return ""
+	}
+	return recordingStreamInstruction(text)
+}
+
 func recordingStreamInstruction(text string) string {
 	trimmed := strings.TrimSpace(text)
 	switch {

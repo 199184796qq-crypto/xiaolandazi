@@ -632,9 +632,9 @@ type LiveAgentPlanFactAdoptionResult struct {
 // FactConflictWarning 是事实矛盾检测的非阻塞提示：不阻止保存，
 // 仅提示用户该条事实与现有事实/商品卡可能存在语义冲突及建议改写。
 type FactConflictWarning struct {
-	Detected    bool   `json:"detected"`
-	Conflict    string `json:"conflict,omitempty"`
-	Suggestion  string `json:"suggestion,omitempty"`
+	Detected     bool     `json:"detected"`
+	Conflict     string   `json:"conflict,omitempty"`
+	Suggestion   string   `json:"suggestion,omitempty"`
 	RelatedFacts []string `json:"related_facts,omitempty"`
 }
 
@@ -895,9 +895,9 @@ type LiveAgentFullShowPreviewResponse struct {
 	Preview   bool                               `json:"preview"`
 }
 
-// Historical versions keep their emotion flags for audit. Runtime emotion
-// processing is fixed off and cannot be restored by an old browser tab.
-const LiveSpeechEmotionEnabled = false
+// Runtime emotion is room/version scoped. Historical versions with no flag
+// default to off; the room switch writes a new published version.
+const LiveSpeechEmotionEnabled = true
 
 type LiveAgentVoiceIdentity struct {
 	Name           string         `json:"name"`

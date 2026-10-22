@@ -768,8 +768,8 @@ func TestProcessRoomUsesPublishedVersionVoiceIdentity(t *testing.T) {
 	if tts.last.Provider != ttsgateway.ProviderQwen {
 		t.Fatalf("provider=%q want %q", tts.last.Provider, ttsgateway.ProviderQwen)
 	}
-	if tts.last.Instruction != "" {
-		t.Fatalf("legacy enabled flag restored emotion instructions: %q", tts.last.Instruction)
+	if strings.TrimSpace(tts.last.Instruction) == "" {
+		t.Fatal("enabled emotion flag should produce a delivery instruction")
 	}
 }
 

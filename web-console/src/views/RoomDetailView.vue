@@ -37,6 +37,7 @@ import {
   getRoomSpeechMissions,
   getRoomGeneratedSpeechHistory,
   getRoomPublishedLiveAgentPlanVersion,
+  publishLiveAgentEmotion,
   getRoomAgentDecisions,
   enqueueRoomManualAgentDecision,
   removeRoomAgentDecision,
@@ -1080,6 +1081,20 @@ async function changeLiveSpeechRate(event: Event) {
   target.value = String(liveSpeechRate.value)
 }
 
+async function toggleLiveSpeechEmotion() {
+  if (liveSpeechEmotionBusy.value || !publishedSpeechVersion.value) return
+  liveSpeechEmotionBusy.value = true
+  liveSpeechEmotionError.value = ''
+  try {
+    const updated = await publishLiveAgentEmotion(roomId, !liveSpeechEmotionEnabled.value)
+    publishedSpeechVersion.value = updated
+  } catch (err) {
+    liveSpeechEmotionError.value = err instanceof Error ? err.message : '情感开关保存失败，请重试'
+  } finally {
+    liveSpeechEmotionBusy.value = false
+  }
+}
+
 async function loadGeneratedSpeechHistory(page = generatedSpeechHistory.value.page || 1) {
   speechHistoryLoading.value = true
   speechHistoryError.value = ''
@@ -1185,6 +1200,8 @@ async function loadLiveAgentPlansForRoom() {
 const selectedLiveAgentPlanId = computed(() => runtimeSnapshot.value?.agent_plan_id || 0)
 const planVoiceRate = usePlanVoiceRate(() => ({ planId: selectedLiveAgentPlanId.value, tenantId: room.value?.tenant_id || 0, key: String(session.bootstrap?.actor.user_id || 0) + ':' + roomId, allowed: canConfigureRoomStrategy.value }))
 const liveSpeechRate = planVoiceRate.rate, liveSpeechRateBusy = planVoiceRate.busy, liveSpeechRateError = planVoiceRate.error
+const liveSpeechEmotionEnabled = computed(() => publishedSpeechVersion.value?.voice_identity?.emotion_enabled === true)
+const liveSpeechEmotionBusy = ref(false), liveSpeechEmotionError = ref('')
 const selectedLiveAgentPlanName = computed(() => runtimeSnapshot.value?.agent_plan_name || '')
 const publishedSpeechVersion = ref<LiveAgentPlanVersion | null>(null)
 let publishedSpeechLoadEpoch = 0
@@ -4911,8 +4928,9 @@ onBeforeUnmount(() => {
           <small v-if="canConfigureRoomStrategy && (planVoiceRate.loading.value || liveSpeechRateBusy)" class="speech-rate-status" role="status">{{ liveSpeechRateBusy ? '语速保存中…' : '语速读取中…' }}</small>
           <div v-if="canConfigureRoomStrategy" class="speech-emotion-control">
             <span>情感</span>
-            <strong class="speech-emotion-status">已关闭</strong>
+            <button type="button" class="speech-emotion-status" :class="{ active: liveSpeechEmotionEnabled }" :aria-pressed="liveSpeechEmotionEnabled" :disabled="liveSpeechEmotionBusy || !publishedSpeechVersion" @click="toggleLiveSpeechEmotion">{{ liveSpeechEmotionBusy ? '保存中…' : liveSpeechEmotionEnabled ? '已开启' : '已关闭' }}</button>
           </div>
+          <small v-if="liveSpeechEmotionError" class="speech-emotion-error">{{ liveSpeechEmotionError }}</small>
           <button type="button" class="speech-answer-library-button" @click="openGeneratedSpeechHistory">
             本场回答库
           </button>
@@ -6693,7 +6711,10 @@ onBeforeUnmount(() => {
 .speech-rate-control select:disabled{opacity:.55;cursor:wait}
 .speech-emotion-control{display:inline-flex;align-items:center;gap:7px;min-height:32px;font-size:12px;font-weight:800;white-space:nowrap}
 .speech-emotion-control>span{color:#8fa1bb}
-.speech-emotion-status{display:inline-flex;align-items:center;min-height:32px;padding:0 9px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#aebbd0;background:#18243a;font-size:12px;font-weight:900}
+.speech-emotion-status{display:inline-flex;align-items:center;min-height:32px;padding:0 9px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#aebbd0;background:#18243a;font-size:12px;font-weight:900;cursor:pointer}
+.speech-emotion-status.active{color:#59d1b2;border-color:rgba(89,209,178,.55);background:rgba(52,185,151,.12)}
+.speech-emotion-status:disabled{opacity:.55;cursor:wait}
+.speech-emotion-error{color:#ff9b9b;font-size:12px}
 .speech-answer-library-button{height:32px;padding:0 12px;border:1px solid rgba(137,160,201,.28);border-radius:9px;color:#dbe5f5;background:rgba(255,255,255,.045);font-size:12px;font-weight:850;cursor:pointer;transition:border-color .16s ease,background .16s ease,color .16s ease}
 .speech-answer-library-button:hover{color:#fff;border-color:rgba(89,209,178,.5);background:rgba(52,185,151,.1)}
 .speech-rate-error{max-width:360px;color:#ff9b9b;font-size:16px;overflow-wrap:anywhere}
