@@ -1074,6 +1074,15 @@ func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 
 	}
 
+	// 删除直播间前先清掉这个房间的音频缓存；有在播场次就跳过，等下场前再清。
+	if active, guardErr := s.store.RoomHasActiveSession(r.Context(), roomID); guardErr != nil {
+		log.Printf("room deletion: active session check failed tenant=%d room=%d: %v", tenantID, roomID, guardErr)
+	} else if active {
+		log.Printf("room deletion: skip cache purge, room is live tenant=%d room=%d", tenantID, roomID)
+	} else if _, purgeErr := s.purgeRecordingCacheScope(r.Context(), tenantID, roomID, 0, "", ""); purgeErr != nil {
+		log.Printf("room deletion: cache purge failed tenant=%d room=%d: %v", tenantID, roomID, purgeErr)
+	}
+
 	// Persist the deletion intent before touching Core. If either service fails,
 	// the worker continues cleanup after restart; no room restoration is offered.
 	if err := s.store.QueueRoomDeletion(r.Context(), tenantID, roomID, actor.UserID); err != nil {

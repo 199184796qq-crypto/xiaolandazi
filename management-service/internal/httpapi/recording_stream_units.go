@@ -154,6 +154,28 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 					continue
 				}
 				pending = append(pending, state.Versions[rng.Intn(len(state.Versions))]...)
+
+				// 首块只等前 3 个就绪单元，不把整标签全部合成完才开播。
+				// 否则 50 句的标签会让观众先听几十秒静音，第一句迟迟不出声。
+				if programID == "" && len(pending) >= 3 {
+					track, consumed, err := s.combineRecordingStreamBlockSafe(ctx, tenant, version, toRecordingCacheEntries(pending[:3]), seq, blockSeq)
+					if err != nil {
+						return err
+					}
+					blockSeq++
+					pending = pending[consumed:]
+					if track.AudioURL == "" {
+						log.Printf("recording stream first block skipped tenant=%d room=%d tab=%d units=%d", tenant, room, tabIndex, consumed)
+					} else {
+						snapshot, err := s.startRecordingStreamProgram(ctx, tenant, room, runtimeID, version, track)
+						if err != nil {
+							return err
+						}
+						programID, generation = snapshot.ProgramID, snapshot.Generation
+						log.Printf("recording stream first block started tenant=%d room=%d tab=%d units=%d program=%s", tenant, room, tabIndex, consumed, programID)
+						s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
+					}
+				}
 			}
 
 			// 合块追加：每块最多 3 个就绪单元；块内切点由句界保证。
