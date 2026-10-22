@@ -95,7 +95,11 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				}
 			}
 			text := segment.Text
-			if round > 0 {
+			if round == 0 {
+				// The first pass is polished too: reading the raw transcript is
+				// noticeably less natural than the live delivery we want.
+				text = polishRecordingText(ctx, s, polish, text)
+			} else {
 				switch {
 				case round < 4:
 					text = polishRecordingText(ctx, s, polish, text)
@@ -247,6 +251,7 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 	gateway := ttsgateway.NewFromEnv()
 	generated, err := gateway.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{
 		Model: modelName, VoiceID: voiceID, Text: text, Rate: identity.Rate,
+		Instruction: "像真人直播自然说话，允许自然停顿和拖音，不要播音腔。",
 	})
 	if err != nil {
 		return coreclient.ProgramRefreshTrack{}, err
@@ -394,8 +399,8 @@ func polishRecordingText(ctx context.Context, server *Server, state *anchorcycle
 		candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: strings.TrimSpace(rewritten)}
 		candidate.OutputText = candidate.Text
 		if state.CheckP0Candidate(&candidate) == nil {
-			if len([]rune(candidate.OutputText)) > 80 {
-				log.Printf("recording stream polish expanded beyond 80 runes; fallback original")
+			if len([]rune(candidate.OutputText)) > 160 {
+				log.Printf("recording stream polish expanded beyond 160 runes; fallback original")
 				return text
 			}
 			return candidate.OutputText
