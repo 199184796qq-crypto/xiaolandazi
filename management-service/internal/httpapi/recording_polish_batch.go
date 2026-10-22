@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"log"
-	"strconv"
 	"strings"
 
 	"livecompanion/management/internal/anchorcycle"
@@ -34,23 +33,21 @@ func (s *Server) polishRecordingSentenceBatch(ctx context.Context, state *anchor
 		return out
 	}
 
-	prompt := strings.Join([]string{
-		"下面有 " + strconv.Itoa(len(sentences)) + " 句直播口播。请逐句改写成更自然的口语，意思、数字、商品名都不能变。",
-		"只输出 " + strconv.Itoa(len(sentences)) + " 行，每行对应一句，按原顺序，不要编号，不要解释，不要空行。",
-	}, "\n")
-	joined := strings.Join(sentences, "\n")
-	rewritten := polishRecordingText(ctx, s, state, prompt+"\n\n原文：\n"+joined)
+	// 把 5 句当成一整段交给模型改写，回来按句号切回 5 句。
+	// 不要求模型按行输出——它本来不是按行工作的，强行要求行数只会失败。
+	passage := strings.Join(sentences, "")
+	rewritten := polishRecordingText(ctx, s, state, passage)
 	if strings.TrimSpace(rewritten) == "" {
 		return out
 	}
 
-	lines := splitPolishedLines(rewritten)
-	if len(lines) != len(sentences) {
-		log.Printf("recording stream polish batch misaligned want=%d got=%d, fallback to script", len(sentences), len(lines))
+	parts := splitRecordingSentences(rewritten)
+	if len(parts) != len(sentences) {
+		log.Printf("recording stream polish batch sentence count changed want=%d got=%d, fallback to script", len(sentences), len(parts))
 		return out
 	}
 	for index := range sentences {
-		candidate := strings.TrimSpace(lines[index])
+		candidate := strings.TrimSpace(parts[index])
 		if candidate == "" || !sameNumbers(sentences[index], candidate) {
 			continue
 		}
