@@ -89,7 +89,7 @@ func recordingStreamRefreshSet(tab *recordingTabRun, round int, rng *rand.Rand) 
 	return set
 }
 
-func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
+func (s *Server) runRecordingStreamProducerTabsLegacy(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
 	texts := recordingStreamTexts(version)
 	if len(texts) == 0 {
 		return errors.New("话术优先没有可播放的正文")
