@@ -609,11 +609,13 @@ func combineGeneratedVoiceWAV(
 		if endMS <= startMS {
 			endMS = startMS + 1
 		}
-		timeline = append(timeline, model.LiveAgentPlanTimelineSegment{
-			SegmentID: fmt.Sprintf("%s-%03d", variantKey, index+1),
-			Index:     index + 1, StartMS: startMS, EndMS: endMS,
-			Text: strings.TrimSpace(piece.text), SafeCut: strongFullShowVoiceCut(piece.text),
-		})
+		if strings.TrimSpace(piece.text) != "" {
+			timeline = append(timeline, model.LiveAgentPlanTimelineSegment{
+				SegmentID: fmt.Sprintf("%s-%03d", variantKey, index+1),
+				Index:     index + 1, StartMS: startMS, EndMS: endMS,
+				Text: strings.TrimSpace(piece.text), SafeCut: strongFullShowVoiceCut(piece.text),
+			})
+		}
 	}
 	data := pcm.Bytes()
 	if len(data) == 0 || len(data) > maxGeneratedVoiceBytes {
