@@ -121,6 +121,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 	programID, generation := "", uint64(0)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	seq := 0
+	blockSeq := 0
 	previousLast := -1
 
 	for round := 0; ; round++ {
@@ -166,7 +167,8 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 
 				blockTarget := recordingStreamBlockTarget(blockStart)
 				if len(current)-blockStart >= blockTarget || index == len(tab.segments)-1 {
-					block, err := s.combineRecordingStreamBlock(ctx, tenant, version, current[blockStart:], seq, blockStart/recordingStreamBlockSegments)
+					block, err := s.combineRecordingStreamBlock(ctx, tenant, version, current[blockStart:], seq, blockSeq)
+					blockSeq++
 					if err != nil {
 						return err
 					}
