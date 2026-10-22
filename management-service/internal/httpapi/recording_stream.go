@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
@@ -230,12 +231,17 @@ func (s *Server) appendRecordingStreamTrack(ctx context.Context, tenant, room in
 		return 0, err
 	}
 	defer resp.Body.Close()
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 	var snapshot coreclient.ProgramRefreshSnapshot
-	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
-		return 0, err
+	if readErr == nil {
+		_ = json.Unmarshal(raw, &snapshot)
 	}
 	if resp.StatusCode != http.StatusOK || snapshot.ProgramID != programID || snapshot.VersionID != version.ID || !snapshot.Sequential {
-		log.Printf("recording stream append rejected tenant=%d room=%d program=%s status=%d response_program=%s response_version=%d sequential=%t", tenant, room, programID, resp.StatusCode, snapshot.ProgramID, snapshot.VersionID, snapshot.Sequential)
+		body := strings.TrimSpace(string(raw))
+		if len([]rune(body)) > 300 {
+			body = string([]rune(body)[:300])
+		}
+		log.Printf("recording stream append rejected tenant=%d room=%d program=%s status=%d response_program=%s response_version=%d sequential=%t body=%s", tenant, room, programID, resp.StatusCode, snapshot.ProgramID, snapshot.VersionID, snapshot.Sequential, body)
 		return 0, anchorcycle.ErrStale
 	}
 	return snapshot.Generation, nil
