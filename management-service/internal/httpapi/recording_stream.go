@@ -505,6 +505,12 @@ func polishRecordingTextLimit(ctx context.Context, server *Server, state *anchor
 				log.Printf("recording stream polish expanded beyond %d runes; fallback original", maxRunes)
 				return source
 			}
+			// 信息保底：改写后比原文短太多，说明内容被砍了，宁可保留原文。
+			if ratioTooShort(source, candidate.OutputText) {
+				log.Printf("recording stream polish too short src=%d out=%d; fallback original",
+					len([]rune(speakableKey(source))), len([]rune(speakableKey(candidate.OutputText))))
+				return source
+			}
 			return candidate.OutputText
 		} else {
 			// 踩到违规词：把违规之处告诉模型，让它就这一句重写，
@@ -562,4 +568,14 @@ func splitRecordingStreamText(text string) []recordingStreamSegment {
 		}
 	}
 	return result
+}
+
+// ratioTooShort 判断改写是否丢掉了过多内容：字数低于原文 85% 视为信息缺失。
+func ratioTooShort(source, rewritten string) bool {
+	srcLen := len([]rune(speakableKey(source)))
+	outLen := len([]rune(speakableKey(rewritten)))
+	if srcLen < 10 {
+		return false
+	}
+	return outLen*100 < srcLen*85
 }
