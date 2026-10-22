@@ -1,6 +1,13 @@
 # 项目协作约定
 
-## 当前生产（2026-10-22 09:02）
+## 当前生产（2026-10-22 09:12）
+
+- 当前 `/opt/xiaolan/releases/20261022-interaction-pref-c8546f0`，源码 `c8546f0`；前驱 `20261022-recording-stream-safe-a6e887b`。Management PID1475731/SHA256 `7334cf9a3b46ca21da517c8e4bf2d4276fee2e3aaf3dfb26d4fae4ad7c6dc83b`；只重启Management，Core/网关/Nginx/前端保持。
+- 排查423：102条chat、4次interaction-purpose，但无自动decision；`live_room_interaction_preferences`无行，疑Core用全0配置。已在开播时Push有效偏好（默认50/50/50/50/50，auto_heat=true）到Core；失败只记日志。
+- 五包测试、8080/8081/8083健康通过；待重开验证是否产生互动decision与安全切点插入。
+- 说明 `E:/直播伴播/docs/2026-10-21-主播风格来源与风格卡.md`，证据 `E:/直播伴播-local/interaction-pref-release-20261022`，部署记录 `/opt/xiaolan/deployments/20261022-interaction-pref-c8546f0.json`；回滚目标a6e887b。
+
+## 历史生产（2026-10-22 09:02）
 
 - 当前 `/opt/xiaolan/releases/20261022-recording-stream-safe-a6e887b`，源码 `a6e887b`；前驱 `20261022-recording-stream-owner-ad9cfbd`。Management PID1472966/SHA256 `b70ee771f88f593baec2d31145f24455cc552d88944af5898a0f6552852526e8`；只重启Management，Core/网关/Nginx/前端保持。
 - 场次422实测：08:56:29—09:01:20，9段；第0轮全部合成/追加，第1-2轮润色正常，无tts失败。流式分段与循环已验证。
