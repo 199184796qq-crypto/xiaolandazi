@@ -63,3 +63,12 @@ func TestBridgeUsesInteractionAPIDefault(t *testing.T) {
 		t.Fatal(p, err)
 	}
 }
+
+func TestRecordingStreamVersionDetection(t *testing.T) {
+	if isRecordingStreamVersion(model.LiveAgentPlanVersion{GenerationContext: map[string]any{"content_mode": "user_audio"}}) {
+		t.Fatal("original recording must not force DIRECT")
+	}
+	if !isRecordingStreamVersion(model.LiveAgentPlanVersion{GenerationContext: map[string]any{"content_mode": "user_audio", "recording_voice_mode": "stream_clone"}}) {
+		t.Fatal("stream recording must force DIRECT")
+	}
+}

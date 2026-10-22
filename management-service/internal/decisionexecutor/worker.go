@@ -2281,6 +2281,13 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 		seed = strings.TrimSpace(primaryQuestion(*item))
 	}
 	w.applyStrategyPipeline(ctx, session, seed, item)
+	// Recording-stream programs are a queue of pre-built tracks. Core's
+	// interaction-return bridge has no valid return scope for them; DIRECT lets
+	// the approved answer play and continue with the next queued track.
+	if strings.EqualFold(strings.TrimSpace(item.SelectedResume), "BRIDGE") && w.recordingStreamPublished(ctx, session) {
+		item.SelectedResume = "DIRECT"
+		item.BridgeText = ""
+	}
 	if item.contentError != nil {
 		return "", item.contentError
 	}
@@ -2934,4 +2941,20 @@ func (w *Worker) clearBackoff(roomID int64) {
 	w.mu.Lock()
 	delete(w.retryAfter, roomID)
 	w.mu.Unlock()
+}
+
+func (w *Worker) recordingStreamPublished(ctx context.Context, session model.LiveRuntimeSession) bool {
+	if w == nil || w.store == nil {
+		return false
+	}
+	version, err := w.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, session.TenantID, session.RoomID)
+	if err != nil {
+		return false
+	}
+	return isRecordingStreamVersion(version)
+}
+
+func isRecordingStreamVersion(version model.LiveAgentPlanVersion) bool {
+	mode, _ := version.GenerationContext["recording_voice_mode"].(string)
+	return strings.EqualFold(strings.TrimSpace(mode), "stream_clone")
 }
