@@ -1,6 +1,14 @@
 # 项目协作约定
 
-## 当前生产（2026-10-22 09:33）
+## 当前生产（2026-10-22 14:37）
+
+- 当前 `/opt/xiaolan/releases/20261022-voice-selector-38bb904`，前端源码 `38bb904`，前驱 `20261022-voice-choice-b62f96a`。北京时间14:37:27—14:37:30纯前端发布，未重启任何服务，Nginx不变。
+- 录音主线页脚「原声 / AI 声音」改为图标＋文字的圆角分段选择器，紫色选中，保留原生单选/v-model、键盘切换及保存逻辑；修正单选框继承全局输入框宽高导致的大圆圈和文字外溢，支持窄屏。
+- 固定提交重建旧前端98文件与实际生产匹配，再发布web/web-desktop两个入口及40个新资源；5107个旧非入口文件、后端/提示词/手机端保持。Management/Core/网关PID仍1502264/1503625/1503626，二进制与Nginx指纹相同；三服务健康200、两接口未登录401，五项公网页面/新旧资源字节核验通过。
+- 新入口 `index-BtIC-WQZ.js`、样式 `index-DnB_i7g_.css`。4175个前端文件完整备份的哈希/大小/权限已核对，权威指针 `E:/直播伴播-local/frontend-preservation/latest.json` 已更新。回滚目标 b62f96a，纯静态、无需重启。
+- 证据 `E:/直播伴播-local/recording-voice-choice-style-20261022/release`，服务器发布记录 `/opt/xiaolan/deployments/20261022-voice-selector-38bb904.json`。本地局部预览已验点击互斥、方向键及360px窄屏；未执行真实方案保存/模型/TTS。隔离构建的依赖意外重新解析已恢复十项原运行版本并保留整个意外依赖目录，后续使用显式Node CLI；恢复后旧版98文件匹配，详情见证据内environment-recovery.json。
+
+## 历史生产（2026-10-22 09:33）
 
 - 当前 `/opt/xiaolan/releases/20261022-recording-append-db2d799`，源码 `db2d799`；前驱 `20261022-recording-buffer-cbb64ac`。Management PID1480893/SHA256 `3cf6deaccb8f2206e7c61d3cecf56974f18b26c240fc0ed476cce619cb64f650`；只重启Management，Core/网关/Nginx/前端保持。
 - 按交接文档改用Core `program/append`，不再用`RefreshRoomProgram`替换；下一段立即进未来窗口，自动互动可准备/领取。45s缓冲保留。
