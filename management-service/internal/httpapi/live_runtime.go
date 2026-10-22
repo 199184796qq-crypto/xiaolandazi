@@ -1383,7 +1383,7 @@ func (s *Server) requestCorePublishedPlanProgramStart(
 	if err := s.requestCorePublishedPlanProgramControl(ctx, tenantID, roomID, "stop"); err != nil {
 		return fmt.Errorf("reset previous audio program: %w", err)
 	}
-	if isRealtimeScheme(version.GenerationContext) {
+	if isRealtimeScheme(version.GenerationContext) || recordingVoiceMode(version) == recordingStreamMode {
 		return s.startLiveAnchorProducer(ctx, tenantID, roomID, runtimeSessionID, version)
 	}
 	tracks := make([]map[string]any, 0, len(version.Variants))

@@ -16,6 +16,9 @@ import (
 )
 
 func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
+	if recordingVoiceMode(version) == recordingStreamMode {
+		return s.runRecordingStreamProducer(ctx, tenant, room, runtimeID, version)
+	}
 	state, err := s.createLiveAnchorRun(ctx, tenant, room, runtimeID, version)
 	if err != nil {
 		return errordetail.WithStage("方案与开场初始化", err)
