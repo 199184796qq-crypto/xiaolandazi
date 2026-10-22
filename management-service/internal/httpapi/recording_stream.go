@@ -51,7 +51,9 @@ func recordingVoiceMode(version model.LiveAgentPlanVersion) string {
 	return ""
 }
 
-func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
+// runRecordingStreamProducerLegacy 是改造前的单文本框播放路径，已由
+// recording_stream_tabs.go 里的多标签实现取代，保留仅作对照，不要在新代码里调用。
+func (s *Server) runRecordingStreamProducerLegacy(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
 	transcript := ""
 	for _, variant := range version.Variants {
 		if variant.IsFormal && strings.TrimSpace(variant.Text) != "" {
