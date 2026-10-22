@@ -477,8 +477,10 @@ func polishRecordingText(ctx context.Context, server *Server, state *anchorcycle
 		candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: strings.TrimSpace(rewritten)}
 		candidate.OutputText = candidate.Text
 		if state.CheckP0Candidate(&candidate) == nil {
-			if len([]rune(candidate.OutputText)) > 160 {
-				log.Printf("recording stream polish expanded beyond 160 runes; fallback original")
+			// 润色会把句子写长；超过 110 字就回退原文，否则整条 track 可能
+			// 就没有可用的安全切点，Core 会以「没有可用语义安全切点」启动失败。
+			if len([]rune(candidate.OutputText)) > 110 {
+				log.Printf("recording stream polish expanded beyond 110 runes; fallback original")
 				return text
 			}
 			return candidate.OutputText
