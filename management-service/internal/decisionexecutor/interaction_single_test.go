@@ -101,44 +101,6 @@ func TestDirectQuestionWithoutFactsUsesBoundaryNotGreeting(t *testing.T) {
 	if strings.Contains(got, "问得好") || strings.Contains(got, "我这就") {
 		t.Fatalf("awkward greeting leaked: %q", got)
 	}
-	if agent.calls != 0 {
-		t.Fatalf("no-fact boundary should not call model, calls=%d", agent.calls)
-	}
-}
-
-func TestUnknownFactBoundaryExamples(t *testing.T) {
-	cases := map[string]string{
-		"鸭子是当天现杀的吗": "当天现杀这个，我这边还没核实。你要是特别在意这一点，先别急着拍，确认清楚再决定。",
-		"这是南充第一中餐吗": "第一我就不替大家排了，每个人口味不一样嘛。你吃中餐更看重味道，还是分量？",
-		"能保证明天到吗":   "明天能不能到，现在还确定不了。你要是赶着明天用，先别按这个时间安排，免得耽误事。",
-	}
-	for question, want := range cases {
-		if got := unknownFactBoundary(question); got != want {
-			t.Fatalf("question=%q\ngot:  %q\nwant: %q", question, got, want)
-		}
-	}
-}
-
-func TestUnknownFactBoundaryIsSpecificAndNotDisclaimer(t *testing.T) {
-	cases := []struct {
-		question string
-		want     string
-	}{
-		{"鸭子是当天现杀的吗", "现杀"},
-		{"1号链接多少钱", "价格"},
-		{"你们是不是南充第一", "第一"},
-		{"还发券吗", "券"},
-		{"包邮吗", "发货"},
-		{"能保证明天到吗", "明天"},
-		{"几个人吃", "规格"},
-	}
-	for _, tc := range cases {
-		item := decisionItem{MissionKind: "reply_question", SampleQuestions: []string{tc.question}}
-		got := unknownFactBoundary(primaryQuestion(item))
-		if !strings.Contains(got, tc.want) || strings.Contains(got, "页面") || strings.Contains(got, "不能乱说") {
-			t.Fatalf("question=%q got=%q", tc.question, got)
-		}
-	}
 }
 
 func TestDirectQuestionWithFactsUsesOneCallAndNoGreeting(t *testing.T) {

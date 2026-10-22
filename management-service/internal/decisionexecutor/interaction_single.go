@@ -133,30 +133,27 @@ func (w *Worker) generateSingleInteractionText(ctx context.Context, session mode
 // 称呼 + 答案；没有事实时直接给边界，不再先生成“问得好/我这就讲”的接住句。
 const interactionNoFactBoundary = "这个我还没确认，先不跟你说死。"
 
-// unknownFactBoundary 按问题类型说“具体哪一点没确认”，不再统一用“没有依据/不能乱说/页面为准”。
-// 事实仍然不编；但观众听到的是针对这句话的边界，不是客服免责声明。
-func unknownFactBoundary(question string) string {
-	q := strings.TrimSpace(question)
-	switch {
-	case strings.Contains(q, "第一"), strings.Contains(q, "最好"), strings.Contains(q, "排名"), strings.Contains(q, "最正宗"):
-		return "第一我就不替大家排了，每个人口味不一样嘛。你吃中餐更看重味道，还是分量？"
-	case strings.Contains(q, "现杀"), strings.Contains(q, "活杀"), strings.Contains(q, "当天杀"):
-		return "当天现杀这个，我这边还没核实。你要是特别在意这一点，先别急着拍，确认清楚再决定。"
-	case strings.Contains(q, "多少钱"), strings.Contains(q, "价格"), strings.Contains(q, "什么价"), strings.Contains(q, "贵不贵"):
-		return "价格我还没核实，先不给你报错。你要是急着定，确认清楚再拍。"
-	case strings.Contains(q, "券"), strings.Contains(q, "领"), strings.Contains(q, "核销"):
-		return "券的事我还没确认，先别按我说的算。你要是冲券来的，确认清楚再下单。"
-	case strings.Contains(q, "明天"), strings.Contains(q, "到货"), strings.Contains(q, "能到"), strings.Contains(q, "到吗"), strings.Contains(q, "保证"):
-		return "明天能不能到，现在还确定不了。你要是赶着明天用，先别按这个时间安排，免得耽误事。"
-	case strings.Contains(q, "包邮"), strings.Contains(q, "发货"), strings.Contains(q, "快递"), strings.Contains(q, "物流"):
-		return "发货这块我还没核实，先不跟你说死。你要是赶时间，先确认清楚再安排。"
-	case strings.Contains(q, "库存"), strings.Contains(q, "还有吗"), strings.Contains(q, "卖完"):
-		return "库存我还没核实，先不给你打包票。你要是怕白跑一趟，先确认清楚再决定。"
-	case strings.Contains(q, "几个"), strings.Contains(q, "规格"), strings.Contains(q, "多人"), strings.Contains(q, "大小"):
-		return "具体规格我还没确认，先不给你说死。你要是按人数选，确认清楚再拍。"
-	default:
-		return "这个我还没核实，先不给你说死。你要是特别在意，确认清楚再决定。"
+// generateNoFactBoundary 不再按行业词分类。
+// 没有事实时，让模型只针对当前这句话说“哪一点还没确认”，程序负责兜底和拦截承诺。
+func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
+	question := strings.TrimSpace(primaryQuestion(item))
+	if w == nil || w.agent == nil || question == "" {
+		return interactionNoFactBoundary
 	}
+	system := "你是直播间主播。观众问了一个你目前没有确认答案的问题。只回一句到两句口播：" +
+		"\n- 直接回应对方实际问的点；" +
+		"\n- 明确说这一点还没确认/现在确定不了；" +
+		"\n- 不编事实、数字、价格、规格、承诺；" +
+		"\n- 不说“资料未提供、不能乱说、以页面为准”；" +
+		"\n- 不假装查过，不承诺稍后回复；" +
+		"\n- 不用固定模板，像真人说话，能短就短。"
+	user := "观众问题：" + question
+	text := strings.TrimSpace(w.completeWelcome(ctx, session, "interaction_no_fact_boundary", system, user, 80))
+	text = stripAwkwardAnswerLead(text)
+	if text == "" || strings.Contains(text, "页面") || strings.Contains(text, "资料未提供") || strings.Contains(text, "不能乱说") || strings.Contains(text, "没有依据") || strings.Contains(text, "保证") || strings.Contains(text, "绝对") || strings.Contains(text, "帮您确认") || strings.Contains(text, "稍后") || strings.Contains(text, "马上") {
+		return interactionNoFactBoundary
+	}
+	return text
 }
 
 func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
@@ -169,7 +166,7 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	}
 	answerText := w.singleAnswerFacts(item)
 	if strings.TrimSpace(answerText) == "" {
-		return address + "，" + unknownFactBoundary(primaryQuestion(item))
+		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
 	}
 	voiceCard, _ := w.welcomeVoiceCard(ctx, session)
 	system := "你是直播口播合成器。根据答案事实直接回答观众，第一句必须给出答案，不要先评价问题，也不要宣布“我这就讲/确认”。"
@@ -189,7 +186,7 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	text := w.completeWelcome(ctx, session, "interaction_single_direct_answer", system, user, 100)
 	text = stripAwkwardAnswerLead(strings.TrimSpace(text))
 	if text == "" || text == address || text == address+"。" {
-		return address + "，" + unknownFactBoundary(primaryQuestion(item))
+		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
 	}
 	if !strings.HasPrefix(text, address) {
 		text = address + "，" + text

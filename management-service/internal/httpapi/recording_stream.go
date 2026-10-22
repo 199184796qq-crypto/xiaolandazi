@@ -474,8 +474,22 @@ func polishRecordingTextLimit(ctx context.Context, server *Server, state *anchor
 		return text
 	}
 	source := text
+	// 换句式而不是换同义词：同一句话的多个版本要有不同的句子骨架，
+	// 否则四个版本听起来只是换了几个词。骨架由程序轮换，信息边界不变。
+	skeletons := []string{
+		"把结论放到最前面，再补原因",
+		"先描述场景或对象，再说做法",
+		"拆成两个短句，第二句补充条件",
+		"改成对观众直接说话的问句加回答",
+		"把原来的主谓宾顺序倒过来表达",
+	}
+	skeleton := ""
+	if len(skeletons) > 0 {
+		skeleton = skeletons[rand.Intn(len(skeletons))]
+	}
+	promptText := "改写要求：不要只替换同义词，请改变这句话的句式骨架。这一次按「" + skeleton + "」来组织。对象、动作、条件、数字、商品名必须保持完全不变，不能增删信息，不能改变语气对象。\n原文：" + text
 	for attempt := 0; attempt < 3; attempt++ {
-		rewritten, err := server.rewriteCycleText(ctx, state, text)
+		rewritten, err := server.rewriteCycleText(ctx, state, promptText)
 		if err != nil || strings.TrimSpace(rewritten) == "" {
 			return source
 		}

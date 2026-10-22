@@ -184,3 +184,48 @@ func suspiciousPolish(before, after string) bool {
 	}
 	return false
 }
+
+// speechSimilarity 用二元字组重叠比例粗算两句话的相似度，0 到 1。
+func speechSimilarity(a, b string) float64 {
+	ka := speakableKey(a)
+	kb := speakableKey(b)
+	if ka == "" || kb == "" {
+		return 0
+	}
+	if ka == kb {
+		return 1
+	}
+	ra := []rune(ka)
+	rb := []rune(kb)
+	if len(ra) < 2 || len(rb) < 2 {
+		return 0
+	}
+	count := func(r []rune) map[string]int {
+		m := make(map[string]int, len(r)-1)
+		for i := 0; i+1 < len(r); i++ {
+			m[string(r[i:i+2])]++
+		}
+		return m
+	}
+	ma := count(ra)
+	mb := count(rb)
+	inter := 0
+	total := 0
+	for k, v := range ma {
+		total += v
+		if w, ok := mb[k]; ok {
+			if w < v {
+				inter += w
+			} else {
+				inter += v
+			}
+		}
+	}
+	for _, v := range mb {
+		total += v
+	}
+	if total == 0 {
+		return 0
+	}
+	return 2 * float64(inter) / float64(total)
+}
