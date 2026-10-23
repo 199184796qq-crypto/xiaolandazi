@@ -96,9 +96,8 @@ func pruneRecordingCacheEntries(entries []recordingcache.Entry) []recordingcache
 	out := make([]recordingcache.Entry, 0, len(entries))
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
-		if entry.Hits >= recordingCacheVersionHits {
-			continue
-		}
+		// 命中到期的版本不再参与“新生”轮换，但它的音频仍然保留可用，
+		// 否则一句被淘汰后整句要重新合成，费用会反弹。
 		if perSentence[entry.Sentence] >= recordingCacheMaxVersions {
 			continue
 		}
@@ -116,7 +115,7 @@ func pruneRecordingCacheEntries(entries []recordingcache.Entry) []recordingcache
 func recordingCacheLookup(manifest *recordingcache.Manifest) map[string][]recordingcache.Entry {
 	hit := make(map[string][]recordingcache.Entry, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
-		if entry.AssetID > 0 && len(entry.Segments) > 0 && entry.Polished && entry.Hits < recordingCacheVersionHits {
+		if entry.AssetID > 0 && len(entry.Segments) > 0 && entry.Polished {
 			hit[entry.Sentence] = append(hit[entry.Sentence], entry)
 		}
 	}
