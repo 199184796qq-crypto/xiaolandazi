@@ -119,6 +119,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 	programID, generation := "", uint64(0)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	seq, blockSeq, previousLast := 0, 0, -1
+	startAt := time.Now()
 
 	// 开播前把本方案这一版话术的缓存清单读一次，之后整场走内存。
 	// 命中就不润色、不合成，直接复用已有音轨。
@@ -243,9 +244,10 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				}
 				pending = append(pending, state.Versions[rng.Intn(len(state.Versions))]...)
 
-				// 首块只等前 3 个就绪单元，不把整标签全部合成完才开播。
-				// 否则 50 句的标签会让观众先听几十秒静音，第一句迟迟不出声。
-				if programID == "" && len(pending) >= 3 {
+				// 起播门槛：先攒够 60 秒音频再开播。播一下就断比多等一会儿更难接受，
+				// 用户会以为直播坏了。合成太慢时（超过 90 秒墙钟）降到 45 秒开播，
+				// 避免迟迟不出声。
+				if programID == "" && !recordingStartReady(pending, startAt) {
 					track, consumed, err := s.combineRecordingStreamBlockSafe(ctx, tenant, version, toRecordingCacheEntries(pending[:3]), seq, blockSeq)
 					if err != nil {
 						return err
@@ -430,4 +432,26 @@ func terminateRecordingSentence(text string) string {
 		trimmed += "。"
 	}
 	return trimmed
+}
+
+// 起播缓冲目标：60 秒；合成过慢时退到 45 秒。
+const (
+	recordingStartBufferMS   = 60000
+	recordingStartFallbackMS = 45000
+	recordingStartSlowWait   = 90 * time.Second
+)
+
+// recordingStartReady 判断是否已经攒够开播所需的音频。
+func recordingStartReady(pending []recordingReadyUnit, startAt time.Time) bool {
+	total := 0
+	for _, unit := range pending {
+		total += int(unit.Track.DurationMS)
+	}
+	if total >= recordingStartBufferMS {
+		return true
+	}
+	if time.Since(startAt) >= recordingStartSlowWait {
+		return total >= recordingStartFallbackMS
+	}
+	return false
 }
