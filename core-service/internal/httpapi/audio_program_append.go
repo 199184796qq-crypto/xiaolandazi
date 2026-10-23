@@ -6,7 +6,40 @@ import (
 	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/coreaudio"
 	"net/http"
+	"time"
 )
+
+// 追加回执里带整条节目快照，播得越久越大。这里只回最近一小时的回执和
+// 有限长度的队列，调用方需要的 generation/缓冲量等标量不受影响。
+const (
+	appendReceiptWindow    = time.Hour
+	appendCoverageLimit    = 200
+	appendPlaybackLimit    = 500
+	appendFutureTrackLimit = 100
+)
+
+func trimAppendSnapshot(snapshot audioout.RoomProgramSnapshot, now time.Time) audioout.RoomProgramSnapshot {
+	if n := len(snapshot.PlaybackReceipts); n > appendCoverageLimit {
+		snapshot.PlaybackReceipts = snapshot.PlaybackReceipts[n-appendCoverageLimit:]
+	}
+	if n := len(snapshot.MainlinePlaybackReceipts); n > 0 {
+		cutoff := now.Add(-appendReceiptWindow)
+		kept := snapshot.MainlinePlaybackReceipts[:0]
+		for _, receipt := range snapshot.MainlinePlaybackReceipts {
+			if !receipt.StartedAt.Before(cutoff) {
+				kept = append(kept, receipt)
+			}
+		}
+		if len(kept) > appendPlaybackLimit {
+			kept = kept[len(kept)-appendPlaybackLimit:]
+		}
+		snapshot.MainlinePlaybackReceipts = kept
+	}
+	if n := len(snapshot.FutureWindow); n > appendFutureTrackLimit {
+		snapshot.FutureWindow = snapshot.FutureWindow[n-appendFutureTrackLimit:]
+	}
+	return snapshot
+}
 
 type audioProgramAppendClient interface {
 	AppendProgram(context.Context, audioout.AppendProgramInput) (audioout.RoomProgramSnapshot, error)
@@ -50,5 +83,5 @@ func (s *Server) appendRoomAudioProgram(w http.ResponseWriter, r *http.Request) 
 		writeError(w, status, err.Error())
 		return
 	}
-	writeJSON(w, 200, result)
+	writeJSON(w, 200, trimAppendSnapshot(result, time.Now()))
 }
