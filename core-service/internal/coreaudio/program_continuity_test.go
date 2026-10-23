@@ -153,15 +153,22 @@ func TestInvalidCursorUsesOnlyPinnedIdentityAndRejectsChangedGeneration(t *testi
 	c.mu.Lock()
 	p.TrackIndex = 400
 	c.mu.Unlock()
-	if restored, err := c.AppendProgram(context.Background(), appendFixtureInput(start, url)); err != nil || restored.TrackID != "stable-64" {
+	input := appendFixtureInput(start, url)
+	if restored, err := c.AppendProgram(context.Background(), input); err != nil || restored.TrackID != "stable-64" {
 		t.Fatal("lost recoverable stable cursor", restored, err)
 	}
 	c.mu.Lock()
 	p.TrackIndex = 400
 	p.MainlinePosition.TrackID = "missing"
 	c.mu.Unlock()
-	if _, err := c.AppendProgram(context.Background(), appendFixtureInput(start, url)); err == nil {
-		t.Fatal("unknown cursor was silently reset to the first track")
+	// An already accepted unit only reconciles its receipt and must not inspect
+	// or mutate playback. A genuinely new unit must validate the current cursor.
+	if reconciled, err := c.AppendProgram(context.Background(), input); err != nil || reconciled.TrackIndex != 400 {
+		t.Fatal("accepted unit retry mutated or revalidated the playback cursor", reconciled, err)
+	}
+	input.Tracks[0].ID = "new-unit-with-unknown-cursor"
+	if _, err := c.AppendProgram(context.Background(), input); !errors.Is(err, ErrProgramPositionInvalid) {
+		t.Fatal("new unit did not reject an unknown playback cursor", err)
 	}
 	c.mu.Lock()
 	p.TrackIndex = 4
