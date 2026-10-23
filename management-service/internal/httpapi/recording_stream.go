@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -467,7 +468,21 @@ func (s *Server) recordingPolishState(ctx context.Context, tenant, plan, room in
 
 const recordingParticlePercent = 40
 
+// recordingOriginalBase 打开后，润色直接返回原句：原文作为基础版本先播出，
+// 需要更新时再由上层决定是否改写。默认关闭，保持现行行为，可用环境变量
+// LIVE_RECORDING_ORIGINAL_BASE=1 切换到“原句优先”。
+func recordingOriginalBase() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LIVE_RECORDING_ORIGINAL_BASE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 func polishRecordingText(ctx context.Context, server *Server, state *anchorcycle.State, text string) string {
+	if recordingOriginalBase() {
+		return text
+	}
 	// 不设字数上限：分段已经按句末标点切开，长句本身就是一个完整语义单元，
 	// 它的结尾天然是合法断点，没必要为了字数去腰斩。
 	return polishRecordingTextLimit(ctx, server, state, text, 0)
