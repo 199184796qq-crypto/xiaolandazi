@@ -621,6 +621,7 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.cancelLiveResumeRecovery(tenantID, roomID)
 
 	room, err := s.getCoreRoomState(r.Context(), tenantID, roomID)
 	if err != nil {
@@ -845,6 +846,7 @@ func (s *Server) liveRuntimePause(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.cancelLiveResumeRecovery(tenantID, roomID)
 
 	agentRuntime, agentErr := s.getCoreAgentState(r.Context(), tenantID, roomID)
 	if agentErr != nil {
@@ -924,7 +926,7 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentRuntime, agentErr := s.getCoreAgentState(r.Context(), tenantID, roomID)
+	agentRuntime, agentErr := s.resumeAgentRequest(r.Context(), tenantID, roomID, http.MethodGet, nil)
 	if agentErr != nil {
 		writeError(w, http.StatusBadGateway, "无法读取智能体真实运行状态")
 		return
@@ -938,6 +940,22 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "当前直播间AI暂停状态属于另一运行端")
 		return
 	}
+	// Pin the paused cursor before changing the durable session. An old Core
+	// without conditional resume support must fail here, never receive an
+	// unguarded fallback that could act on another run.
+	var baseline liveResumeProgram
+	hasProgram := strings.EqualFold(strings.TrimSpace(agentRuntime.Mode), "anchor")
+	if agentRuntime.BootID == "" || agentRuntime.RunGeneration == 0 {
+		writeError(w, http.StatusConflict, "无法确认本场恢复身份，请重新检查直播状态")
+		return
+	}
+	if hasProgram {
+		baseline, err = s.resumeCoreRequest(r.Context(), tenantID, roomID, http.MethodGet, "", nil)
+		if err != nil || !baseline.validSession(existing.ID) {
+			writeError(w, http.StatusConflict, "无法确认本场原播放位置，请重新检查直播状态")
+			return
+		}
+	}
 	if published, e := s.store.GetPublishedLiveAgentPlanVersionForRoom(r.Context(), tenantID, roomID); e == nil && isRealtimeScheme(published.GenerationContext) {
 		alive, e := s.liveAnchorProducerAlive(r.Context(), tenantID, roomID, existing.ID)
 		if e != nil {
@@ -950,6 +968,7 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	recoveryCtx, recoveryDone := s.liveResumeRecoveryContext(tenantID, roomID)
 	// ResumeLiveRuntimeSession performs the single account-pool availability
 	// check. Returning to running is the durable registration with the billing
 	// manager; no room-local quota lease is created.
@@ -957,6 +976,7 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC(),
 	)
 	if err != nil {
+		recoveryDone()
 		switch {
 		case errors.Is(err, appdb.ErrLiveRuntimeNotRunning):
 			writeError(w, http.StatusConflict, "当前直播间AI没有处于暂停状态")
@@ -967,23 +987,68 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := s.requestCoreAgentStart(r.Context(), tenantID, roomID, session.TotalBilledSeconds); err != nil {
-		_, _ = s.store.PauseLiveRuntimeSession(r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC())
-		writeError(w, http.StatusBadGateway, "智能体恢复失败，请稍后重试")
+	if session.ID != existing.ID || !producerOwnsRunningSession(session, existing.ID, s.executionRealm) || recoveryCtx.Err() != nil {
+		recoveryDone()
+		writeError(w, http.StatusConflict, "恢复过程中本场状态已变化，已取消旧恢复操作")
 		return
 	}
-	if strings.EqualFold(strings.TrimSpace(agentRuntime.Mode), "anchor") {
-		if audioErr := s.requestCorePublishedPlanProgramControl(r.Context(), tenantID, roomID, "resume"); audioErr != nil {
-			stopped, _ := s.requestCoreAgentStop(r.Context(), tenantID, roomID, session.TotalBilledSeconds, "system_error")
-			_, _ = s.store.PauseLiveRuntimeSessionMeter(
-				r.Context(), tenantID, roomID, actor.UserID,
-				stopped.WorkingSeconds, time.Now().UTC(),
-			)
-			writeError(w, http.StatusBadGateway, "主线声音恢复失败，请稍后重试")
+	expectedGeneration := agentRuntime.RunGeneration
+	if agentRuntime.State != "working" {
+		expectedGeneration++
+	}
+	operationCtx, operationCancel := context.WithTimeout(recoveryCtx, 10*time.Second)
+	started, startErr := s.resumeAgentRequest(operationCtx, tenantID, roomID, http.MethodPut, map[string]any{"command": "start", "base_working_seconds": session.TotalBilledSeconds})
+	operationCancel()
+	if startErr != nil {
+		log.Printf("live resume agent result unconfirmed session=%d: %v", session.ID, startErr)
+	}
+	recovery := &liveResumeRecovery{Session: session, Realm: s.executionRealm, HasProgram: hasProgram,
+		Fence:              liveResumeFence{ProgramID: baseline.ProgramID, VersionID: baseline.VersionID, BootID: agentRuntime.BootID, RunGeneration: expectedGeneration},
+		PreviousGeneration: agentRuntime.RunGeneration, StartUnconfirmed: startErr != nil,
+		ReadSession: func(ctx context.Context) (model.LiveRuntimeSession, error) {
+			return s.store.GetLiveRuntimeByRoom(ctx, tenantID, roomID)
+		},
+		ReadAgent: func(ctx context.Context) (coreAgentRuntimeState, error) {
+			return s.resumeAgentRequest(ctx, tenantID, roomID, http.MethodGet, nil)
+		},
+		ReadProgram: func(ctx context.Context) (liveResumeProgram, error) {
+			return s.resumeCoreRequest(ctx, tenantID, roomID, http.MethodGet, "", nil)
+		},
+		Resume: func(ctx context.Context, fence liveResumeFence) (liveResumeProgram, error) {
+			return s.resumeCoreRequest(ctx, tenantID, roomID, http.MethodPost, "/resume", fence)
+		},
+	}
+	if baseline.ControlRevision != nil {
+		recovery.Fence.ControlRevision = *baseline.ControlRevision
+	}
+	if startErr == nil {
+		if started.BootID != agentRuntime.BootID || started.RunGeneration != expectedGeneration || started.State != "working" {
+			recoveryDone()
+			writeError(w, http.StatusConflict, "恢复过程中本场状态已变化，请重新检查直播状态")
 			return
 		}
+		// Use the confirmed response identity; unknown responses only permit
+		// read reconciliation of the expected adjacent generation.
+		recovery.Fence.BootID = started.BootID
+		recovery.Fence.RunGeneration = started.RunGeneration
 	}
-	writeJSON(w, http.StatusOK, session)
+	operationCtx, operationCancel = context.WithTimeout(recoveryCtx, 10*time.Second)
+	recoveryErr := liveContinuityAttempt(func() error { return recovery.attempt(operationCtx) })
+	operationCancel()
+	if recoveryErr == nil {
+		s.reportLiveResumeRecovery(recoveryCtx, session, "已确认继续原场次和原播放位置")
+		recoveryDone()
+		writeJSON(w, http.StatusOK, session)
+		return
+	}
+	if liveContinuityTerminal(recoveryCtx, recoveryErr) {
+		recoveryDone()
+		writeError(w, http.StatusConflict, "恢复过程中本场状态已变化，已取消旧恢复操作")
+		return
+	}
+	s.reportLiveResumeRecovery(recoveryCtx, session, "恢复尚未确认，正在核对原场次和播放位置；如持续未恢复，请重新人工操作")
+	go s.continueLiveResumeRecovery(recoveryCtx, recoveryDone, recovery)
+	writeLiveResumePending(w, session)
 }
 
 func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
@@ -1011,6 +1076,7 @@ func (s *Server) liveRuntimeStop(w http.ResponseWriter, r *http.Request) {
 	if reason == "" {
 		reason = "manual_stop"
 	}
+	s.cancelLiveResumeRecovery(tenantID, roomID)
 
 	agentRuntime, agentErr := s.getCoreAgentState(r.Context(), tenantID, roomID)
 	if agentErr != nil {

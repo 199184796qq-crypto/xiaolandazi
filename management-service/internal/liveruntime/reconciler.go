@@ -526,6 +526,13 @@ func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 				if !authoritative {
 					continue
 				}
+				if staleManualPauseBeforeResume(session, fresh) {
+					// The durable Resume is newer than this old pause receipt.
+					// A missing start ACK does not turn the previous manual pause
+					// into a fresh stop. Hardware lifecycle still has authority.
+					_ = r.stopForDeviceOffline(ctx, session, job.State, now)
+					continue
+				}
 				if isCoreRestartReason(reason) {
 					confirmed, confirmErr := r.confirmCoreRestartStop(ctx, tenantID, session.RoomID)
 					if confirmErr != nil {
@@ -622,6 +629,13 @@ func authoritativeCoreStopReason(state coreAgentRuntimeState) (string, bool) {
 		return "", false
 	}
 	return reason, true
+}
+
+func staleManualPauseBeforeResume(session model.LiveRuntimeSession, state coreAgentRuntimeState) bool {
+	return session.Status == "running" && session.EndedAt == nil &&
+		strings.EqualFold(strings.TrimSpace(state.State), "stopped") &&
+		strings.EqualFold(strings.TrimSpace(state.StopReason), "manual_pause") &&
+		!state.UpdatedAt.IsZero() && session.LastBilledAt.After(state.UpdatedAt)
 }
 
 func isCoreRestartReason(reason string) bool {

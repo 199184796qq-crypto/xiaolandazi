@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -16,6 +17,42 @@ type audioProgramClient interface {
 	PauseProgram(context.Context, int64) (audioout.RoomProgramSnapshot, error)
 	ResumeProgram(context.Context, int64) (audioout.RoomProgramSnapshot, error)
 	StopProgram(context.Context, int64) (audioout.RoomProgramSnapshot, error)
+}
+
+type guardedAudioProgramResumer interface {
+	ResumeProgramIfCurrent(context.Context, int64, audioout.ProgramResumeGuard, func() bool) (audioout.RoomProgramSnapshot, error)
+}
+
+func (s *Server) resumeRoomAudioProgramChecked(w http.ResponseWriter, r *http.Request, roomID int64, client audioProgramClient) (audioout.RoomProgramSnapshot, error) {
+	var input struct {
+		ProgramID       *string `json:"expected_program_id"`
+		VersionID       *int64  `json:"expected_version_id"`
+		ControlRevision *uint64 `json:"expected_control_revision"`
+		BootID          *string `json:"expected_boot_id"`
+		RunGeneration   *uint64 `json:"expected_run_generation"`
+	}
+	if err := readJSON(w, r, &input); err != nil && !errors.Is(err, io.EOF) {
+		return audioout.RoomProgramSnapshot{}, coreaudio.ErrProgramResumeBaselineConflict
+	}
+	if input.ProgramID == nil && input.VersionID == nil && input.ControlRevision == nil && input.BootID == nil && input.RunGeneration == nil {
+		return client.ResumeProgram(r.Context(), roomID)
+	}
+	if input.ProgramID == nil || input.VersionID == nil || input.ControlRevision == nil || input.BootID == nil || input.RunGeneration == nil || strings.TrimSpace(*input.ProgramID) == "" || *input.VersionID <= 0 || strings.TrimSpace(*input.BootID) == "" || *input.RunGeneration == 0 {
+		return audioout.RoomProgramSnapshot{}, coreaudio.ErrProgramResumeBaselineConflict
+	}
+	guard := audioout.ProgramResumeGuard{ExpectedProgramID: strings.TrimSpace(*input.ProgramID), ExpectedVersionID: *input.VersionID, ExpectedControlRevision: *input.ControlRevision, ExpectedBootID: strings.TrimSpace(*input.BootID), ExpectedRunGeneration: *input.RunGeneration}
+	allowed := func() bool {
+		if s.agentWork == nil {
+			return false
+		}
+		current := s.agentWork.Get(roomID)
+		return current.State == agentwork.StateWorking && current.BootID == guard.ExpectedBootID && current.RunGeneration == guard.ExpectedRunGeneration
+	}
+	guarded, ok := client.(guardedAudioProgramResumer)
+	if !ok || !allowed() {
+		return audioout.RoomProgramSnapshot{}, coreaudio.ErrProgramResumeBaselineConflict
+	}
+	return guarded.ResumeProgramIfCurrent(r.Context(), roomID, guard, allowed)
 }
 
 func (s *Server) startRoomAudioProgram(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +160,7 @@ func (s *Server) controlRoomAudioProgram(w http.ResponseWriter, r *http.Request,
 	case "pause":
 		snapshot, err = client.PauseProgram(r.Context(), roomID)
 	case "resume":
-		snapshot, err = client.ResumeProgram(r.Context(), roomID)
+		snapshot, err = s.resumeRoomAudioProgramChecked(w, r, roomID, client)
 	case "stop":
 		snapshot, err = client.StopProgram(r.Context(), roomID)
 	default:
@@ -131,6 +168,10 @@ func (s *Server) controlRoomAudioProgram(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if err != nil {
+		if errors.Is(err, coreaudio.ErrProgramResumeBaselineConflict) {
+			writeJSON(w, http.StatusConflict, audioDeliveryError{Error: "本次声音恢复已被新的暂停、停止或场次替代。", Code: "audio_resume_baseline_conflict", Stage: "播放恢复状态校验", Retryable: false})
+			return
+		}
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}

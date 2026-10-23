@@ -96,6 +96,15 @@ type StartProgramInput struct {
 	Tracks     []ProgramTrack `json:"tracks"`
 }
 
+// A delayed resume belongs to one paused program and one paid runtime only.
+type ProgramResumeGuard struct {
+	ExpectedProgramID       string `json:"expected_program_id"`
+	ExpectedVersionID       int64  `json:"expected_version_id"`
+	ExpectedControlRevision uint64 `json:"expected_control_revision"`
+	ExpectedBootID          string `json:"expected_boot_id"`
+	ExpectedRunGeneration   uint64 `json:"expected_run_generation"`
+}
+
 type RefreshProgramInput struct {
 	RoomID             int64          `json:"-"`
 	JobID              string         `json:"job_id"`
@@ -164,6 +173,9 @@ type MainlinePlaybackReceipt struct {
 }
 
 type RoomProgramSnapshot struct {
+	SessionID                string                    `json:"session_id,omitempty"`
+	ManualPaused             bool                      `json:"manual_paused"`
+	ControlRevision          uint64                    `json:"control_revision"`
 	MainlinePlayedMS         int64                     `json:"mainline_played_ms,omitempty"`
 	PlaybackReceipts         []MainlineCoverageReceipt `json:"playback_receipts,omitempty"`
 	MainlinePlaybackReceipts []MainlinePlaybackReceipt `json:"mainline_playback_receipts,omitempty"`

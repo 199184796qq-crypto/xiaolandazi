@@ -39,7 +39,7 @@ func TestManifestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := &Manifest{Version: 1, VoiceKey: "v1", ScriptHash: "s1", Entries: []Entry{
+	manifest := &Manifest{Version: 2, VoiceKey: "v1", ScriptHash: "s1", Entries: []Entry{
 		{Sentence: "第一句。", Spoken: "第一句。", AssetID: 42, Duration: 1200},
 	}}
 	if err := scope.Save(manifest); err != nil {
@@ -55,6 +55,20 @@ func TestManifestRoundTrip(t *testing.T) {
 	// 另一个话术版本读不到别人的清单。
 	if other, err := scope.Load("v1", "s2"); err != nil || other != nil {
 		t.Fatalf("other script must miss: %v %+v", err, other)
+	}
+}
+
+func TestManifestVersionOneIsCacheMiss(t *testing.T) {
+	scope, err := ScopeFor(t.TempDir(), 14, 29, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := &Manifest{Version: 1, VoiceKey: "voice", ScriptHash: "script", Entries: []Entry{{Sentence: "旧缓存。", AssetID: 42}}}
+	if err := scope.Save(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := scope.Load("voice", "script"); err != nil || loaded != nil {
+		t.Fatalf("legacy schema must remain a miss: %v %+v", err, loaded)
 	}
 }
 

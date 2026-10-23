@@ -60,6 +60,7 @@ type programState struct {
 	ControlRevision     uint64
 	FailedMainlineTask  string
 	Recovery            *mainlineRecovery
+	ManualResume        *manualProgramResume
 	StartedAt           time.Time
 	ActualStartedAt     time.Time
 	CutWaitingTaskID    string
@@ -619,6 +620,10 @@ func (c *Client) startPreparedProgramGuarded(
 }
 
 func (c *Client) publishMainline(program *programState, sequence uint64, startOffsetMS int, startedAt time.Time, expectedTask ...string) (audioout.SpeechTask, error) {
+	return c.publishMainlineGuarded(program, sequence, startOffsetMS, startedAt, nil, expectedTask...)
+}
+
+func (c *Client) publishMainlineGuarded(program *programState, sequence uint64, startOffsetMS int, startedAt time.Time, resume *manualProgramResume, expectedTask ...string) (audioout.SpeechTask, error) {
 	if program == nil {
 		return audioout.SpeechTask{}, errors.New("room program is not running")
 	}
@@ -626,6 +631,10 @@ func (c *Client) publishMainline(program *programState, sequence uint64, startOf
 	if c.programs[program.RoomID] != program || !program.Running {
 		c.mu.Unlock()
 		return audioout.SpeechTask{}, errors.New("room program is not running")
+	}
+	if resume != nil && !manualResumeOwnedLocked(program, resume) {
+		c.mu.Unlock()
+		return audioout.SpeechTask{}, ErrProgramResumeBaselineConflict
 	}
 	if len(expectedTask) > 0 && (program.CurrentTaskID != expectedTask[0] || program.Suspended || program.ManualPaused) {
 		c.mu.Unlock()
@@ -675,15 +684,20 @@ func (c *Client) publishMainline(program *programState, sequence uint64, startOf
 	})
 	if err != nil {
 		c.mu.Lock()
-		rollbackProgramRefreshLocked(program)
+		if c.programs[program.RoomID] == program && program.ControlRevision == controlRevision {
+			rollbackProgramRefreshLocked(program)
+		}
 		c.mu.Unlock()
 		return audioout.SpeechTask{}, err
 	}
 
 	c.mu.Lock()
-	if c.programs[program.RoomID] != program || !program.Running || program.ControlRevision != controlRevision || (len(expectedTask) > 0 && program.CurrentTaskID != expectedTask[0]) {
+	if c.programs[program.RoomID] != program || !program.Running || program.ControlRevision != controlRevision || (len(expectedTask) > 0 && program.CurrentTaskID != expectedTask[0]) || (resume != nil && !manualResumeOwnedLocked(program, resume)) {
 		c.mu.Unlock()
 		c.hub.Expire(task.ID)
+		if resume != nil {
+			return audioout.SpeechTask{}, ErrProgramResumeBaselineConflict
+		}
 		return audioout.SpeechTask{}, errors.New("room program stopped before mainline publish")
 	}
 	trackIndex, err = position.index(program)
@@ -1348,14 +1362,25 @@ func (c *Client) PauseProgram(_ context.Context, roomID int64) (audioout.RoomPro
 		c.mu.Unlock()
 		return audioout.RoomProgramSnapshot{}, errors.New("room program is not running")
 	}
-	if program.Transitioning {
-		c.mu.Unlock()
-		return audioout.RoomProgramSnapshot{}, errors.New("room program is advancing at a safe boundary; retry pause")
-	}
 	if program.ManualPaused {
+		// A new pause intent must fence a resume already waiting on publication.
+		program.ControlRevision++
+		if resume := program.ManualResume; resume != nil {
+			if program.ApplyingRefresh != nil {
+				rollbackProgramRefreshLocked(program)
+			} else if index, err := resume.position.index(program); err == nil {
+				program.TrackIndex, program.MainlinePosition = index, resume.position
+				program.ResumeOffsetMS = resume.offsetMS
+			}
+			program.ManualResume = nil
+		}
 		snapshot := c.programSnapshotLocked(program, now)
 		c.mu.Unlock()
 		return snapshot, nil
+	}
+	if program.Transitioning {
+		c.mu.Unlock()
+		return audioout.RoomProgramSnapshot{}, errors.New("room program is advancing at a safe boundary; retry pause")
 	}
 	currentTaskID := program.CurrentTaskID
 	resumeMS := program.ResumeOffsetMS
@@ -1401,54 +1426,8 @@ func (c *Client) PauseProgram(_ context.Context, roomID int64) (audioout.RoomPro
 	return snapshot, nil
 }
 
-func (c *Client) ResumeProgram(_ context.Context, roomID int64) (audioout.RoomProgramSnapshot, error) {
-	if roomID <= 0 {
-		return audioout.RoomProgramSnapshot{}, errors.New("room_id is required")
-	}
-	c.mu.Lock()
-	program := c.programs[roomID]
-	if program == nil || !program.Running {
-		c.mu.Unlock()
-		return audioout.RoomProgramSnapshot{}, errors.New("room program is not running")
-	}
-	if !program.ManualPaused {
-		if program.Suspended {
-			c.mu.Unlock()
-			return audioout.RoomProgramSnapshot{}, errors.New("room program is suspended by an active interaction")
-		}
-		snapshot := c.programSnapshotLocked(program, c.now().UTC())
-		c.mu.Unlock()
-		return snapshot, nil
-	}
-	if program.WaitingForContent && program.PendingRefresh == nil {
-		program.Suspended, program.ManualPaused = false, false
-		if program.TrackIndex+1 < len(program.Tracks) {
-			go c.advanceMainline(program, program.CurrentTaskID)
-		}
-		snapshot := c.programSnapshotLocked(program, c.now().UTC())
-		c.mu.Unlock()
-		return snapshot, nil
-	}
-	resumeMS := prepareProgramResumeLocked(program, program.ResumeOffsetMS)
-	if program.Sequential && program.WaitingForContent && program.ApplyingRefresh == nil {
-		program.Suspended, program.ManualPaused = false, false
-		snapshot := c.programSnapshotLocked(program, c.now().UTC())
-		c.mu.Unlock()
-		return snapshot, nil
-	}
-	nextSequence := program.Sequence + 1
-	c.mu.Unlock()
-
-	now := c.now().UTC()
-	if _, err := c.publishMainline(
-		program,
-		nextSequence,
-		resumeMS,
-		now.Add(-time.Duration(resumeMS)*time.Millisecond),
-	); err != nil {
-		return audioout.RoomProgramSnapshot{}, err
-	}
-	return c.ProgramSnapshot(context.Background(), roomID)
+func (c *Client) ResumeProgram(ctx context.Context, roomID int64) (audioout.RoomProgramSnapshot, error) {
+	return c.resumeProgram(ctx, roomID, nil, nil)
 }
 
 func (c *Client) StopProgram(ctx context.Context, roomID int64) (audioout.RoomProgramSnapshot, error) {
@@ -1522,6 +1501,9 @@ func (c *Client) programSnapshotLocked(program *programState, now time.Time) aud
 		safePoints = append([]audioout.ProgramSafePoint(nil), track.SafePoints...)
 	}
 	snapshot := audioout.RoomProgramSnapshot{
+		SessionID:                program.SessionID,
+		ManualPaused:             program.ManualPaused,
+		ControlRevision:          program.ControlRevision,
 		MainlinePlayedMS:         program.MainlinePlayedMS,
 		PlaybackReceipts:         append([]audioout.MainlineCoverageReceipt(nil), program.PlaybackReceipts...),
 		MainlinePlaybackReceipts: append([]audioout.MainlinePlaybackReceipt(nil), program.ActualTrackReceipts...),
