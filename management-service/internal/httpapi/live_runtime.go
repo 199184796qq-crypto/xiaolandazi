@@ -27,6 +27,7 @@ type coreRoomRuntimeState struct {
 }
 
 type coreAgentRuntimeState struct {
+	ControlRevision       *uint64    `json:"control_revision"`
 	RunGeneration         uint64     `json:"run_generation"`
 	BootID                string     `json:"boot_id"`
 	RoomID                int64      `json:"room_id"`
@@ -945,7 +946,7 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 	// unguarded fallback that could act on another run.
 	var baseline liveResumeProgram
 	hasProgram := strings.EqualFold(strings.TrimSpace(agentRuntime.Mode), "anchor")
-	if agentRuntime.BootID == "" || agentRuntime.RunGeneration == 0 {
+	if agentRuntime.BootID == "" || agentRuntime.RunGeneration == 0 || agentRuntime.ControlRevision == nil {
 		writeError(w, http.StatusConflict, "无法确认本场恢复身份，请重新检查直播状态")
 		return
 	}
@@ -968,16 +969,16 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	recoveryCtx, recoveryDone := s.liveResumeRecoveryContext(tenantID, roomID)
 	// ResumeLiveRuntimeSession performs the single account-pool availability
 	// check. Returning to running is the durable registration with the billing
 	// manager; no room-local quota lease is created.
-	session, err := s.store.ResumeLiveRuntimeSession(
-		r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC(),
+	session, err := s.store.ResumeLiveRuntimeSessionIfCurrent(
+		r.Context(), tenantID, roomID, actor.UserID, time.Now().UTC(), existing.ID, existing.Version,
 	)
 	if err != nil {
-		recoveryDone()
 		switch {
+		case errors.Is(err, appdb.ErrLiveRuntimeResumeConflict):
+			writeError(w, http.StatusConflict, "当前场次或暂停状态已变化，本次继续操作已取消")
 		case errors.Is(err, appdb.ErrLiveRuntimeNotRunning):
 			writeError(w, http.StatusConflict, "当前直播间AI没有处于暂停状态")
 		case errors.Is(err, appdb.ErrLiveQuotaExhausted):
@@ -987,24 +988,32 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	recoveryCtx, recoveryDone := s.liveResumeRecoveryContext(tenantID, roomID, session.ID, session.Version)
 	if session.ID != existing.ID || !producerOwnsRunningSession(session, existing.ID, s.executionRealm) || recoveryCtx.Err() != nil {
 		recoveryDone()
 		writeError(w, http.StatusConflict, "恢复过程中本场状态已变化，已取消旧恢复操作")
 		return
 	}
 	expectedGeneration := agentRuntime.RunGeneration
+	expectedAgentRevision := *agentRuntime.ControlRevision
 	if agentRuntime.State != "working" {
 		expectedGeneration++
+		expectedAgentRevision++
 	}
+	agentBaseline := liveResumeAgentFence{BootID: agentRuntime.BootID, RunGeneration: agentRuntime.RunGeneration, ControlRevision: *agentRuntime.ControlRevision}
 	operationCtx, operationCancel := context.WithTimeout(recoveryCtx, 10*time.Second)
-	started, startErr := s.resumeAgentRequest(operationCtx, tenantID, roomID, http.MethodPut, map[string]any{"command": "start", "base_working_seconds": session.TotalBilledSeconds})
+	started, startErr := s.startLiveResumeAgent(operationCtx, tenantID, roomID, agentBaseline, session.TotalBilledSeconds)
 	operationCancel()
 	if startErr != nil {
 		log.Printf("live resume agent result unconfirmed session=%d: %v", session.ID, startErr)
 	}
 	recovery := &liveResumeRecovery{Session: session, Realm: s.executionRealm, HasProgram: hasProgram,
-		Fence:              liveResumeFence{ProgramID: baseline.ProgramID, VersionID: baseline.VersionID, BootID: agentRuntime.BootID, RunGeneration: expectedGeneration},
-		PreviousGeneration: agentRuntime.RunGeneration, StartUnconfirmed: startErr != nil,
+		Fence:            liveResumeFence{ProgramID: baseline.ProgramID, VersionID: baseline.VersionID, BootID: agentRuntime.BootID, RunGeneration: expectedGeneration},
+		StartUnconfirmed: startErr != nil,
+		AgentBaseline:    agentBaseline, AgentControlRevision: expectedAgentRevision,
+		Start: func(ctx context.Context, base liveResumeAgentFence) (coreAgentRuntimeState, error) {
+			return s.startLiveResumeAgent(ctx, tenantID, roomID, base, session.TotalBilledSeconds)
+		},
 		ReadSession: func(ctx context.Context) (model.LiveRuntimeSession, error) {
 			return s.store.GetLiveRuntimeByRoom(ctx, tenantID, roomID)
 		},
@@ -1022,13 +1031,13 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		recovery.Fence.ControlRevision = *baseline.ControlRevision
 	}
 	if startErr == nil {
-		if started.BootID != agentRuntime.BootID || started.RunGeneration != expectedGeneration || started.State != "working" {
+		if started.BootID != agentRuntime.BootID || started.RunGeneration != expectedGeneration || started.State != "working" || started.ControlRevision == nil || *started.ControlRevision != expectedAgentRevision {
 			recoveryDone()
 			writeError(w, http.StatusConflict, "恢复过程中本场状态已变化，请重新检查直播状态")
 			return
 		}
-		// Use the confirmed response identity; unknown responses only permit
-		// read reconciliation of the expected adjacent generation.
+		// Use the confirmed response identity. Unknown responses permit only
+		// the same atomically guarded start when its old baseline still owns.
 		recovery.Fence.BootID = started.BootID
 		recovery.Fence.RunGeneration = started.RunGeneration
 	}

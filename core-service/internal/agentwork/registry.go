@@ -24,6 +24,7 @@ type StopReason string
 const LeaseRenewThresholdSeconds uint64 = 0
 
 var ErrRuntimeReplaced = errors.New("agent runtime was replaced")
+var ErrStartBaselineConflict = errors.New("本次智能体恢复已被新的暂停、停止或场次替代")
 
 const (
 	StateStopped  State = "stopped"
@@ -44,6 +45,7 @@ const (
 )
 
 type Snapshot struct {
+	ControlRevision       uint64     `json:"control_revision"`
 	RunGeneration         uint64     `json:"run_generation"`
 	BootID                string     `json:"boot_id"`
 	RoomID                int64      `json:"room_id"`
@@ -64,19 +66,20 @@ type Snapshot struct {
 }
 
 type roomState struct {
-	runGeneration uint64
-	roomID        int64
-	state         State
-	mode          Mode
-	planID        int64
-	planName      string
-	hotRevision   uint64
-	hotModules    []string
-	hotUpdatedAt  time.Time
-	stopReason    StopReason
-	accumulated   time.Duration
-	workingSince  time.Time
-	updatedAt     time.Time
+	controlRevision uint64
+	runGeneration   uint64
+	roomID          int64
+	state           State
+	mode            Mode
+	planID          int64
+	planName        string
+	hotRevision     uint64
+	hotModules      []string
+	hotUpdatedAt    time.Time
+	stopReason      StopReason
+	accumulated     time.Duration
+	workingSince    time.Time
+	updatedAt       time.Time
 }
 
 type Registry struct {
@@ -165,6 +168,7 @@ func (r *Registry) SetWithReason(
 	}
 
 	r.accrueLocked(current, now)
+	current.controlRevision++
 
 	if current.state == StateStopped && (state == StateStarting || state == StateWorking) {
 		current.accumulated = time.Duration(baseWorkingSeconds) * time.Second
@@ -268,6 +272,7 @@ func (r *Registry) SetMode(roomID int64, mode Mode) (Snapshot, error) {
 	}
 	r.accrueLocked(current, now)
 	if current.mode != mode {
+		current.controlRevision++
 		current.mode = mode
 		current.updatedAt = now
 	}
@@ -299,6 +304,7 @@ func (r *Registry) SetPlan(roomID, planID int64, planName string) (Snapshot, err
 	}
 	r.accrueLocked(current, now)
 	if current.planID != planID || current.planName != planName {
+		current.controlRevision++
 		current.planID = planID
 		current.planName = planName
 		current.updatedAt = now
@@ -355,10 +361,44 @@ func (r *Registry) IsWorking(roomID int64) bool {
 // StartAgent starts room-local Agent work. Core intentionally does not inspect
 // account quota; Management is the account-level billing authority.
 func (r *Registry) StartAgent(roomID int64, baseWorkingSeconds uint64) (Snapshot, error) {
-	if _, err := r.SetWithReason(roomID, StateStarting, "", baseWorkingSeconds); err != nil {
-		return Snapshot{}, err
+	return r.startAgent(roomID, baseWorkingSeconds, "", nil, nil)
+}
+
+// A resume may only start the exact paused lifecycle read by its owner. The
+// comparison and state change share one lock, so a later stop always wins.
+func (r *Registry) StartAgentIfCurrent(roomID int64, baseWorkingSeconds uint64, bootID string, generation, controlRevision uint64) (Snapshot, error) {
+	return r.startAgent(roomID, baseWorkingSeconds, bootID, &generation, &controlRevision)
+}
+
+func (r *Registry) startAgent(roomID int64, baseWorkingSeconds uint64, bootID string, generation, controlRevision *uint64) (Snapshot, error) {
+	if roomID <= 0 {
+		return Snapshot{}, errors.New("room_id must be positive")
 	}
-	return r.SetWithReason(roomID, StateWorking, "", baseWorkingSeconds)
+	now := r.now().UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := r.rooms[roomID]
+	if generation != nil && (bootID != r.bootID || current == nil || current.runGeneration != *generation || current.controlRevision != *controlRevision) {
+		return Snapshot{}, ErrStartBaselineConflict
+	}
+	if current == nil {
+		current = &roomState{roomID: roomID, state: StateStopped, mode: ModeControl, updatedAt: now}
+		r.rooms[roomID] = current
+	}
+	working := current.state == StateWorking
+	r.accrueLocked(current, now)
+	if working {
+		return r.snapshotLocked(current, now), nil
+	}
+	if current.state == StateStopped {
+		current.accumulated = time.Duration(baseWorkingSeconds) * time.Second
+	} else if baseWorkingSeconds > uint64(current.accumulated/time.Second) {
+		current.accumulated = time.Duration(baseWorkingSeconds) * time.Second
+	}
+	current.controlRevision++
+	current.runGeneration++
+	current.state, current.stopReason, current.workingSince, current.updatedAt = StateWorking, "", now, now
+	return r.snapshotLocked(current, now), nil
 }
 
 // StopAgent is the single paid-agent stop entry point.
@@ -389,6 +429,7 @@ func (r *Registry) stopAgent(roomID int64, reason StopReason, bootID string, gen
 	}
 	r.accrueLocked(current, now)
 	reason = NormalizeStopReason(reason)
+	current.controlRevision++ // Even a repeated pause/stop is a newer control intent.
 	// A concurrent normal stop wins; a late failure cannot replace its reason.
 	if current.state != StateStopped || current.stopReason == "" {
 		current.state, current.stopReason, current.updatedAt = StateStopped, reason, now
@@ -464,6 +505,7 @@ func (r *Registry) snapshotLocked(current *roomState, now time.Time) Snapshot {
 		hotUpdatedAt = &value
 	}
 	return Snapshot{
+		ControlRevision:       current.controlRevision,
 		BootID:                r.bootID,
 		RunGeneration:         current.runGeneration,
 		RoomID:                current.roomID,

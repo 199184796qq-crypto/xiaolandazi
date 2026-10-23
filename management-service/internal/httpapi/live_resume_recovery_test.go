@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,9 +20,11 @@ import (
 func newResumeRecoveryFixture() (*liveResumeRecovery, *liveResumeProgram, *coreAgentRuntimeState, *model.LiveRuntimeSession) {
 	paused, revision := true, uint64(7)
 	program := &liveResumeProgram{ProgramID: "program-386", VersionID: 208, SessionID: "recording-stream-386", Running: true, ManualPaused: &paused, ControlRevision: &revision}
-	agent := &coreAgentRuntimeState{BootID: "boot-1", RunGeneration: 3, RoomID: 29, State: "working"}
+	agentRevision := uint64(11)
+	agent := &coreAgentRuntimeState{BootID: "boot-1", RunGeneration: 3, RoomID: 29, State: "working", ControlRevision: &agentRevision}
 	session := &model.LiveRuntimeSession{ID: 386, TenantID: 14, RoomID: 29, ExecutionRealm: "prod", Status: "running"}
 	r := &liveResumeRecovery{Session: *session, Realm: "prod", HasProgram: true, Fence: liveResumeFence{ProgramID: program.ProgramID, VersionID: program.VersionID, ControlRevision: revision, BootID: agent.BootID, RunGeneration: agent.RunGeneration},
+		AgentBaseline: liveResumeAgentFence{BootID: "boot-1", RunGeneration: 2, ControlRevision: 10}, AgentControlRevision: 11,
 		ReadSession: func(context.Context) (model.LiveRuntimeSession, error) { return *session, nil },
 		ReadAgent:   func(context.Context) (coreAgentRuntimeState, error) { return *agent, nil },
 		ReadProgram: func(context.Context) (liveResumeProgram, error) { return *program, nil },
@@ -68,7 +71,7 @@ func TestLiveResumeTemporaryFailureRetainsFenceAndBackoff(t *testing.T) {
 }
 
 func TestLiveResumeManualStopOrReplacementCancelsPendingOperation(t *testing.T) {
-	for _, change := range []string{"stop", "pause", "replacement", "realm", "program", "revision", "boot", "generation"} {
+	for _, change := range []string{"stop", "pause", "replacement", "realm", "program", "revision", "boot", "generation", "agent-revision"} {
 		t.Run(change, func(t *testing.T) {
 			r, program, agent, session := newResumeRecoveryFixture()
 			calls := 0
@@ -94,6 +97,8 @@ func TestLiveResumeManualStopOrReplacementCancelsPendingOperation(t *testing.T) 
 					agent.BootID = "new-boot"
 				case "generation":
 					agent.RunGeneration++
+				case "agent-revision":
+					(*agent.ControlRevision)++
 				}
 				return nil
 			}
@@ -107,10 +112,23 @@ func TestLiveResumeManualStopOrReplacementCancelsPendingOperation(t *testing.T) 
 func TestLiveResumeUnknownStartOnlyConfirmsAdjacentGeneration(t *testing.T) {
 	r, program, agent, _ := newResumeRecoveryFixture()
 	r.StartUnconfirmed = true
-	r.PreviousGeneration = 2
 	agent.RunGeneration = 2
 	agent.State = "stopped"
-	calls, waits := 0, 0
+	*agent.ControlRevision = 10
+	calls, waits, starts := 0, 0, 0
+	r.Start = func(_ context.Context, baseline liveResumeAgentFence) (coreAgentRuntimeState, error) {
+		starts++
+		if baseline != r.AgentBaseline {
+			t.Fatal("start intent baseline changed", baseline)
+		}
+		if starts == 1 {
+			return coreAgentRuntimeState{}, io.EOF
+		}
+		agent.RunGeneration = 3
+		*agent.ControlRevision = 11
+		agent.State = "working"
+		return *agent, nil
+	}
 	r.Resume = func(context.Context, liveResumeFence) (liveResumeProgram, error) {
 		calls++
 		*program.ManualPaused = false
@@ -118,16 +136,97 @@ func TestLiveResumeUnknownStartOnlyConfirmsAdjacentGeneration(t *testing.T) {
 	}
 	r.Wait = func(context.Context, time.Duration) error {
 		waits++
-		agent.RunGeneration = 3
-		agent.State = "working"
 		return nil
 	}
-	if err := r.run(context.Background()); err != nil || calls != 1 || waits != 1 {
-		t.Fatal(err, calls, waits)
+	if err := r.run(context.Background()); err != nil || calls != 1 || waits != 1 || starts != 2 {
+		t.Fatal(err, calls, waits, starts)
 	}
 	// A later manual start is a new run, not authority for this old worker.
 	agent.RunGeneration = 4
 	if err := r.attempt(context.Background()); !errors.Is(err, anchorcycle.ErrStale) {
+		t.Fatal(err)
+	}
+}
+
+func TestLiveResumeUnknownStartAcceptedAckNeverStartsAgain(t *testing.T) {
+	r, program, _, _ := newResumeRecoveryFixture()
+	r.StartUnconfirmed = true
+	r.Start = func(context.Context, liveResumeAgentFence) (coreAgentRuntimeState, error) {
+		t.Fatal("already accepted start replayed")
+		return coreAgentRuntimeState{}, nil
+	}
+	r.Resume = func(context.Context, liveResumeFence) (liveResumeProgram, error) {
+		*program.ManualPaused = false
+		return *program, nil
+	}
+	if err := r.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLiveResumeNewManualIntentPreventsUnknownStartRetry(t *testing.T) {
+	r, _, agent, _ := newResumeRecoveryFixture()
+	r.StartUnconfirmed = true
+	agent.State = "stopped"
+	agent.RunGeneration = 2
+	*agent.ControlRevision = 11 // New manual stop, although the generation did not change.
+	r.Start = func(context.Context, liveResumeAgentFence) (coreAgentRuntimeState, error) {
+		t.Fatal("new manual stop ignored")
+		return coreAgentRuntimeState{}, nil
+	}
+	if err := r.run(context.Background()); !errors.Is(err, anchorcycle.ErrStale) {
+		t.Fatal(err)
+	}
+}
+
+func TestLiveResumeGuardConflictReconcilesOnlyExactAcceptedStart(t *testing.T) {
+	for _, accepted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "manual-stop", true: "accepted-after-read"}[accepted], func(t *testing.T) {
+			r, program, agent, _ := newResumeRecoveryFixture()
+			r.StartUnconfirmed = true
+			agent.State = "stopped"
+			agent.RunGeneration = 2
+			*agent.ControlRevision = 10
+			starts, audio := 0, 0
+			r.Start = func(context.Context, liveResumeAgentFence) (coreAgentRuntimeState, error) {
+				starts++
+				*agent.ControlRevision = 11
+				if accepted {
+					agent.State = "working"
+					agent.RunGeneration = 3
+				}
+				return coreAgentRuntimeState{}, anchorcycle.ErrStale
+			}
+			r.Resume = func(context.Context, liveResumeFence) (liveResumeProgram, error) {
+				audio++
+				*program.ManualPaused = false
+				return *program, nil
+			}
+			err := r.run(context.Background())
+			if starts != 1 || (accepted && (err != nil || audio != 1)) || (!accepted && (!errors.Is(err, anchorcycle.ErrStale) || audio != 0)) {
+				t.Fatal(err, starts, audio)
+			}
+		})
+	}
+}
+
+func TestLiveResumeConditionalAgentStartHTTPContractAndConflict(t *testing.T) {
+	baseline := liveResumeAgentFence{BootID: "boot-1", RunGeneration: 2, ControlRevision: 10}
+	h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			liveResumeAgentFence
+			Command            string `json:"command"`
+			BaseWorkingSeconds uint64 `json:"base_working_seconds"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.liveResumeAgentFence != baseline || body.Command != "start" || body.BaseWorkingSeconds != 123 {
+			t.Error(err, body)
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":"agent_start_baseline_conflict","error":"恢复操作已被新的操作替代"}`))
+	}))
+	defer h.Close()
+	s := &Server{core: coreclient.New(h.URL, "")}
+	if _, err := s.startLiveResumeAgent(context.Background(), 14, 29, baseline, 123); !errors.Is(err, anchorcycle.ErrStale) {
 		t.Fatal(err)
 	}
 }
@@ -150,17 +249,53 @@ func TestLiveResumeApplicationAndManualCancellationPreserveFormalWorker(t *testi
 	formalCtx, formalCancel := context.WithCancel(app)
 	defer formalCancel()
 	s.cycleCancels.entries = map[string]cycleCancel{"formal-1": {tenant: 14, room: 29, cancel: formalCancel}}
-	ctx, done := s.liveResumeRecoveryContext(14, 29)
+	ctx, done := s.liveResumeRecoveryContext(14, 29, 386, 1)
 	defer done()
 	s.cancelLiveResumeRecovery(14, 29)
 	if !errors.Is(ctx.Err(), context.Canceled) || formalCtx.Err() != nil {
 		t.Fatal(ctx.Err(), formalCtx.Err())
 	}
-	ctx2, done2 := s.liveResumeRecoveryContext(14, 29)
+	ctx2, done2 := s.liveResumeRecoveryContext(14, 29, 386, 2)
 	defer done2()
 	cancelApp()
 	if !errors.Is(ctx2.Err(), context.Canceled) {
 		t.Fatal(ctx2.Err())
+	}
+}
+
+func TestLiveResumeConcurrentRegistrationKeepsLatestDurableVersion(t *testing.T) {
+	for attempt := 0; attempt < 20; attempt++ {
+		s := &Server{anchorProducerContext: context.Background()}
+		var contexts [2]context.Context
+		var dones [2]func()
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := range contexts {
+			wg.Add(1)
+			go func(index int) {
+				defer wg.Done()
+				<-start
+				contexts[index], dones[index] = s.liveResumeRecoveryContext(14, 29, 386, uint64(index+1))
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+		if contexts[0].Err() == nil || contexts[1].Err() != nil {
+			t.Fatal("older registration cancelled the newer owner", contexts[0].Err(), contexts[1].Err())
+		}
+		late, lateDone := s.liveResumeRecoveryContext(14, 29, 386, 1)
+		if late.Err() == nil || contexts[1].Err() != nil {
+			t.Fatal("late old version cancelled new worker")
+		}
+		lateDone()
+		newSession, newDone := s.liveResumeRecoveryContext(14, 29, 387, 1)
+		if newSession.Err() != nil || contexts[1].Err() == nil {
+			t.Fatal("new session did not supersede prior session")
+		}
+		for _, done := range dones {
+			done()
+		}
+		newDone()
 	}
 }
 

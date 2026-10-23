@@ -35,6 +35,12 @@ type liveResumeFence struct {
 	RunGeneration   uint64 `json:"expected_run_generation"`
 }
 
+type liveResumeAgentFence struct {
+	BootID          string `json:"expected_boot_id"`
+	RunGeneration   uint64 `json:"expected_run_generation"`
+	ControlRevision uint64 `json:"expected_control_revision"`
+}
+
 func (p liveResumeProgram) validSession(session int64) bool {
 	return p.ProgramID != "" && p.VersionID > 0 && p.Running && p.ManualPaused != nil && p.ControlRevision != nil &&
 		(p.SessionID == fmt.Sprintf("live-runtime-%d", session) || p.SessionID == fmt.Sprintf("recording-stream-%d", session))
@@ -47,17 +53,19 @@ func (p liveResumeProgram) matches(f liveResumeFence, session int64) bool {
 // This operation deliberately has no StartProgram or generation callback.
 // The fixed program and Core's guarded resume own the existing cursor.
 type liveResumeRecovery struct {
-	Session            model.LiveRuntimeSession
-	Realm              string
-	Fence              liveResumeFence
-	HasProgram         bool
-	PreviousGeneration uint64
-	StartUnconfirmed   bool
-	ReadSession        func(context.Context) (model.LiveRuntimeSession, error)
-	ReadAgent          func(context.Context) (coreAgentRuntimeState, error)
-	ReadProgram        func(context.Context) (liveResumeProgram, error)
-	Resume             func(context.Context, liveResumeFence) (liveResumeProgram, error)
-	Wait               func(context.Context, time.Duration) error
+	Session              model.LiveRuntimeSession
+	Realm                string
+	Fence                liveResumeFence
+	HasProgram           bool
+	StartUnconfirmed     bool
+	AgentBaseline        liveResumeAgentFence
+	AgentControlRevision uint64
+	Start                func(context.Context, liveResumeAgentFence) (coreAgentRuntimeState, error)
+	ReadSession          func(context.Context) (model.LiveRuntimeSession, error)
+	ReadAgent            func(context.Context) (coreAgentRuntimeState, error)
+	ReadProgram          func(context.Context) (liveResumeProgram, error)
+	Resume               func(context.Context, liveResumeFence) (liveResumeProgram, error)
+	Wait                 func(context.Context, time.Duration) error
 }
 
 func (r *liveResumeRecovery) attempt(ctx context.Context) error {
@@ -75,14 +83,30 @@ func (r *liveResumeRecovery) attempt(ctx context.Context) error {
 	if agent.BootID != r.Fence.BootID || agent.RoomID != r.Session.RoomID {
 		return anchorcycle.ErrStale
 	}
-	if r.StartUnconfirmed && agent.RunGeneration == r.PreviousGeneration && agent.State != "working" {
-		// A lost start response does not prove that start was accepted. Never
-		// blindly send another unguarded start, especially after a manual stop.
-		return errors.New("智能体恢复尚未确认，正在核对；如持续未恢复，请重新人工操作")
+	if agent.ControlRevision == nil {
+		return errors.New("智能体恢复回执缺少状态信息，正在继续核对")
 	}
-	if agent.RunGeneration != r.Fence.RunGeneration || agent.State != "working" {
+	if r.StartUnconfirmed && agent.BootID == r.AgentBaseline.BootID && agent.RunGeneration == r.AgentBaseline.RunGeneration && *agent.ControlRevision == r.AgentBaseline.ControlRevision && agent.State != "working" {
+		// Retry only the original atomic start intent. A later manual stop,
+		// mode change or new run invalidates its control revision in Core.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		agent, err = r.Start(ctx, r.AgentBaseline)
+		if errors.Is(err, anchorcycle.ErrStale) {
+			// The first guarded start may have completed after the prior GET.
+			// Only its exact expected accepted identity can reconcile this CAS
+			// conflict; never adopt another intent's baseline.
+			agent, err = r.ReadAgent(ctx)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if agent.BootID != r.Fence.BootID || agent.RoomID != r.Session.RoomID || agent.RunGeneration != r.Fence.RunGeneration || agent.State != "working" || agent.ControlRevision == nil || *agent.ControlRevision != r.AgentControlRevision {
 		return anchorcycle.ErrStale
 	}
+	r.StartUnconfirmed = false
 	if !r.HasProgram {
 		return nil
 	}
@@ -159,10 +183,27 @@ func (s *Server) resumeAgentRequest(ctx context.Context, tenant, room int64, met
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var rejection struct {
+			Code string `json:"code"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 32<<10)).Decode(&rejection)
+		if resp.StatusCode == http.StatusConflict && rejection.Code == "agent_start_baseline_conflict" {
+			return result, anchorcycle.ErrStale
+		}
 		return result, fmt.Errorf("智能体恢复服务响应%d", resp.StatusCode)
 	}
 	err = json.NewDecoder(resp.Body).Decode(&result)
+	if err == nil && (result.ControlRevision == nil || result.BootID == "" || result.RoomID != room) {
+		err = errors.New("智能体恢复回执缺少状态信息，正在继续核对")
+	}
 	return result, err
+}
+
+func (s *Server) startLiveResumeAgent(ctx context.Context, tenant, room int64, baseline liveResumeAgentFence, baseWorkingSeconds uint64) (coreAgentRuntimeState, error) {
+	return s.resumeAgentRequest(ctx, tenant, room, http.MethodPut, map[string]any{
+		"command": "start", "base_working_seconds": baseWorkingSeconds,
+		"expected_boot_id": baseline.BootID, "expected_run_generation": baseline.RunGeneration, "expected_control_revision": baseline.ControlRevision,
+	})
 }
 
 func (s *Server) cancelLiveResumeRecovery(tenant, room int64) {
@@ -171,20 +212,32 @@ func (s *Server) cancelLiveResumeRecovery(tenant, room int64) {
 	for key, entry := range s.cycleCancels.entries {
 		if entry.tenant == tenant && entry.room == room && strings.HasPrefix(key, "resume-") {
 			entry.cancel()
+			delete(s.cycleCancels.entries, key)
 		}
 	}
 }
 
-func (s *Server) liveResumeRecoveryContext(tenant, room int64) (context.Context, func()) {
+func (s *Server) liveResumeRecoveryContext(tenant, room, sessionID int64, version uint64) (context.Context, func()) {
 	parent := s.anchorProducerContext
 	if parent == nil {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	key := "resume-" + anchorcycle.ID()
+	// A slower, older successful CAS cannot cancel a newer session/pause
+	// generation that registered first. Fixed-width numeric prefixes sort the
+	// durable session identity before the per-session revision.
+	prefix := fmt.Sprintf("resume-%020d-%020d-", sessionID, version)
+	key := prefix + anchorcycle.ID()
 	s.cycleCancels.Lock()
 	if s.cycleCancels.entries == nil {
 		s.cycleCancels.entries = map[string]cycleCancel{}
+	}
+	for other, entry := range s.cycleCancels.entries {
+		if entry.tenant == tenant && entry.room == room && strings.HasPrefix(other, "resume-") && len(other) >= len(prefix) && other[:len(prefix)] >= prefix {
+			cancel()
+			s.cycleCancels.Unlock()
+			return ctx, func() { cancel() }
+		}
 	}
 	for other, entry := range s.cycleCancels.entries {
 		if entry.tenant == tenant && entry.room == room && strings.HasPrefix(other, "resume-") {

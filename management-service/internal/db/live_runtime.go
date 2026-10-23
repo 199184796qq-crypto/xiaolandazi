@@ -17,6 +17,7 @@ import (
 var (
 	ErrLiveRuntimeAlreadyRunning   = errors.New("live runtime already running")
 	ErrLiveRuntimeNotRunning       = errors.New("live runtime not running")
+	ErrLiveRuntimeResumeConflict   = errors.New("live runtime resume baseline changed")
 	ErrLiveRuntimeNotRecoverable   = errors.New("live runtime is not recoverable")
 	ErrLiveQuotaExhausted          = errors.New("live quota exhausted")
 	ErrLiveDeviceNotBound          = errors.New("live device not bound")
@@ -472,6 +473,20 @@ func (s *Store) ResumeLiveRuntimeSession(
 	tenantID, roomID, userID int64,
 	now time.Time,
 ) (model.LiveRuntimeSession, error) {
+	return s.resumeLiveRuntimeSession(ctx, tenantID, roomID, userID, now, 0, 0)
+}
+
+// ResumeLiveRuntimeSessionIfCurrent binds the user intent to the paused row
+// observed by the API, including a later pause of the same session. Validate
+// under the row lock before quota, pool registration, events or any mutation.
+func (s *Store) ResumeLiveRuntimeSessionIfCurrent(ctx context.Context, tenantID, roomID, userID int64, now time.Time, expectedSessionID int64, expectedVersion uint64) (model.LiveRuntimeSession, error) {
+	if expectedSessionID <= 0 || expectedVersion == 0 {
+		return model.LiveRuntimeSession{}, ErrLiveRuntimeResumeConflict
+	}
+	return s.resumeLiveRuntimeSession(ctx, tenantID, roomID, userID, now, expectedSessionID, expectedVersion)
+}
+
+func (s *Store) resumeLiveRuntimeSession(ctx context.Context, tenantID, roomID, userID int64, now time.Time, expectedSessionID int64, expectedVersion uint64) (model.LiveRuntimeSession, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.LiveRuntimeSession{}, err
@@ -484,6 +499,9 @@ func (s *Store) ResumeLiveRuntimeSession(
 			return model.LiveRuntimeSession{}, ErrLiveRuntimeNotRunning
 		}
 		return model.LiveRuntimeSession{}, err
+	}
+	if expectedSessionID > 0 && (session.ID != expectedSessionID || session.Version != expectedVersion) {
+		return model.LiveRuntimeSession{}, ErrLiveRuntimeResumeConflict
 	}
 	buckets, err := ensureLiveQuotaAvailableTx(ctx, tx, tenantID, 1, now)
 	if err != nil {

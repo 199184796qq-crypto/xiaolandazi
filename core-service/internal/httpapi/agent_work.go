@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -145,14 +147,29 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 		LeaseSeconds       uint64               `json:"lease_seconds"`
 		ExpectedBootID     string               `json:"expected_boot_id"`
 		ExpectedGeneration *uint64              `json:"expected_run_generation"`
+		ExpectedRevision   *uint64              `json:"expected_control_revision"`
 	}
-	if err := readJSON(w, r, &input); err != nil {
+	var raw json.RawMessage
+	if err := readJSON(w, r, &raw); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &fields)
 	command := strings.ToLower(strings.TrimSpace(input.Command))
-	if input.ExpectedGeneration != nil && (command != "stop" || input.ExpectedBootID == "" || input.Mode != "" || input.PlanID != nil || len(input.HotReload) > 0 || input.LeaseSeconds != 0) {
-		writeError(w, http.StatusBadRequest, "conditional stop requires boot id and an unmixed stop command")
+	conditionalStart := command == "start" && (fields["expected_boot_id"] != nil || fields["expected_run_generation"] != nil || fields["expected_control_revision"] != nil)
+	if conditionalStart && (input.ExpectedBootID == "" || input.ExpectedGeneration == nil || input.ExpectedRevision == nil || input.Mode != "" || input.PlanID != nil || len(input.HotReload) > 0 || input.LeaseSeconds != 0 || input.State != "" || input.StopReason != "") {
+		writeJSON(w, http.StatusConflict, audioDeliveryError{Error: "智能体恢复条件不完整，已取消旧恢复操作。", Code: "agent_start_baseline_conflict", Stage: "智能体恢复状态校验", Retryable: false})
+		return
+	}
+	if !conditionalStart && (input.ExpectedGeneration != nil || input.ExpectedRevision != nil) && (command != "stop" || input.ExpectedBootID == "" || input.ExpectedGeneration == nil || input.ExpectedRevision != nil || input.Mode != "" || input.PlanID != nil || len(input.HotReload) > 0 || input.LeaseSeconds != 0) {
+		writeError(w, http.StatusBadRequest, "条件控制需要完整身份与单一控制命令")
 		return
 	}
 	if command != "" && input.State != "" {
@@ -227,7 +244,11 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 	if command != "" {
 		switch command {
 		case "start":
-			snapshot, err = s.agentWork.StartAgent(roomID, input.BaseWorkingSeconds)
+			if conditionalStart {
+				snapshot, err = s.agentWork.StartAgentIfCurrent(roomID, input.BaseWorkingSeconds, input.ExpectedBootID, *input.ExpectedGeneration, *input.ExpectedRevision)
+			} else {
+				snapshot, err = s.agentWork.StartAgent(roomID, input.BaseWorkingSeconds)
+			}
 		case "stop":
 			reason := agentwork.NormalizeStopReason(input.StopReason)
 			if reason == "" {
@@ -240,6 +261,10 @@ func (s *Server) updateRoomAgentWork(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err != nil {
+			if errors.Is(err, agentwork.ErrStartBaselineConflict) {
+				writeJSON(w, http.StatusConflict, audioDeliveryError{Error: "本次智能体恢复已被新的暂停、停止或场次替代。", Code: "agent_start_baseline_conflict", Stage: "智能体恢复状态校验", Retryable: false})
+				return
+			}
 			if errors.Is(err, agentwork.ErrRuntimeReplaced) {
 				writeError(w, http.StatusConflict, "agent runtime was replaced")
 				return
