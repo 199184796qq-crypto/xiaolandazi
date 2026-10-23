@@ -233,11 +233,15 @@ func (s *Server) appendRecordingStreamTrack(ctx context.Context, tenant, room in
 		return 0, err
 	}
 	defer resp.Body.Close()
-	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 32<<10))
+	// 回执里带整条节目快照，播得越久越大；固定 32KB 限长会把 JSON 截断，
+	// 解码失败后 generation 丢失、节目号也无法校验。改成流式解码，不整体读入。
 	var snapshot coreclient.ProgramRefreshSnapshot
 	var decodeErr error
-	if readErr == nil {
-		decodeErr = json.Unmarshal(raw, &snapshot)
+	var raw []byte
+	if resp.StatusCode != http.StatusOK {
+		raw, _ = io.ReadAll(io.LimitReader(resp.Body, 32<<10))
+	} else {
+		decodeErr = json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&snapshot)
 	}
 	if resp.StatusCode != http.StatusOK {
 		body := strings.TrimSpace(string(raw))

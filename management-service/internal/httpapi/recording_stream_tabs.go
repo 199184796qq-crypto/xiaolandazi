@@ -49,14 +49,51 @@ func recordingStreamTexts(version model.LiveAgentPlanVersion) []string {
 	return nil
 }
 
-// recordingStreamOrder 生成一轮的播放顺序；跨轮不重复上一轮的最后一个框。
-func recordingStreamOrder(count, previousLast int, rng *rand.Rand) []int {
-	order := rng.Perm(count)
-	if count < 2 || previousLast < 0 || order[0] != previousLast {
+// recordingStreamPinned 返回与 recordingStreamTexts 同序的钉住标记。
+func recordingStreamPinned(version model.LiveAgentPlanVersion) []bool {
+	script, ok := recordingScriptFromContext(version.GenerationContext)
+	if !ok {
+		return nil
+	}
+	pinned := make([]bool, 0, len(script.Tabs))
+	for _, tab := range script.Tabs {
+		if strings.TrimSpace(tab.Text) != "" {
+			pinned = append(pinned, tab.Pinned)
+		}
+	}
+	return pinned
+}
+
+// recordingStreamOrder 生成一轮的播放顺序；钉住的标签固定在自己的位置，其余位置随机。
+func recordingStreamOrder(count, previousLast int, pinned []bool, rng *rand.Rand) []int {
+	order := make([]int, count)
+	for i := range order {
+		order[i] = -1
+	}
+	freeSlots := make([]int, 0, count)
+	freeTabs := make([]int, 0, count)
+	for i := 0; i < count; i++ {
+		if i < len(pinned) && pinned[i] {
+			order[i] = i
+			continue
+		}
+		freeSlots = append(freeSlots, i)
+		freeTabs = append(freeTabs, i)
+	}
+	rng.Shuffle(len(freeTabs), func(i, j int) { freeTabs[i], freeTabs[j] = freeTabs[j], freeTabs[i] })
+	for i, slot := range freeSlots {
+		order[slot] = freeTabs[i]
+	}
+	if count < 2 || previousLast < 0 || order[0] != previousLast || (len(pinned) > 0 && pinned[0]) {
 		return order
 	}
-	swap := 1 + rng.Intn(count-1)
-	order[0], order[swap] = order[swap], order[0]
+	for j := 1; j < count; j++ {
+		if j < len(pinned) && pinned[j] {
+			continue
+		}
+		order[0], order[j] = order[j], order[0]
+		break
+	}
 	return order
 }
 
@@ -91,6 +128,7 @@ func recordingStreamRefreshSet(tab *recordingTabRun, round int, rng *rand.Rand) 
 
 func (s *Server) runRecordingStreamProducerTabsLegacy(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
 	texts := recordingStreamTexts(version)
+	pinned := recordingStreamPinned(version)
 	if len(texts) == 0 {
 		return errors.New("话术优先没有可播放的正文")
 	}
@@ -128,7 +166,7 @@ func (s *Server) runRecordingStreamProducerTabsLegacy(ctx context.Context, tenan
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		order := recordingStreamOrder(len(tabs), previousLast, rng)
+		order := recordingStreamOrder(len(tabs), previousLast, pinned, rng)
 		for _, tabIndex := range order {
 			tab := &tabs[tabIndex]
 			refresh := recordingStreamRefreshSet(tab, round, rng)

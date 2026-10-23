@@ -103,6 +103,21 @@ func TestDirectQuestionWithoutFactsUsesBoundaryNotGreeting(t *testing.T) {
 	}
 }
 
+func TestSingleAnswerFactsPrefersSelectedAndFallsBackToFull(t *testing.T) {
+	worker := &Worker{}
+	selected := decisionItem{
+		SelectedContentPlan: &contentstrategy.Selection{Facts: []contentstrategy.Fact{{ID: "F1", Text: "选中事实"}}},
+		FullFacts:           "全量事实",
+	}
+	if got := worker.singleAnswerFacts(selected); !strings.Contains(got, "F1 选中事实") || strings.Contains(got, "全量事实") {
+		t.Fatalf("selected facts should win: %q", got)
+	}
+	empty := decisionItem{FullFacts: "全量事实"}
+	if got := worker.singleAnswerFacts(empty); got != "全量事实" {
+		t.Fatalf("empty selection should fall back to full facts: %q", got)
+	}
+}
+
 func TestDirectQuestionWithFactsUsesOneCallAndNoGreeting(t *testing.T) {
 	agent := &fakeAgent{responses: []string{"小陈，3号和6号主要差在份量和配菜。"}}
 	worker := &Worker{agent: agent}

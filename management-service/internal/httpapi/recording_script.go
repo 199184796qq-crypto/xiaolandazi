@@ -25,10 +25,11 @@ const (
 var recordingScriptTabIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 
 type recordingScriptTab struct {
-	TabID string `json:"tab_id"`
-	Title string `json:"title"`
-	Order int    `json:"order"`
-	Text  string `json:"text"`
+	TabID  string `json:"tab_id"`
+	Title  string `json:"title"`
+	Order  int    `json:"order"`
+	Text   string `json:"text"`
+	Pinned bool   `json:"pinned,omitempty"`
 	// 一个声音对应一个文本框，不合并；这里保留数组是为了将来能挂多轨字幕，
 	// 当前上限 1 段，多传一段就多一个文本框。
 	AudioAssetIDs []int64 `json:"audio_asset_ids,omitempty"`

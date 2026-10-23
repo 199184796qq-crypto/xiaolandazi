@@ -142,7 +142,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		order := recordingStreamOrder(len(tabs), previousLast, rng)
+		order := recordingStreamOrder(len(tabs), previousLast, recordingStreamPinned(version), rng)
 		for _, tabIndex := range order {
 			refresh := recordingSentenceRefresh(tabs[tabIndex], round, rng)
 

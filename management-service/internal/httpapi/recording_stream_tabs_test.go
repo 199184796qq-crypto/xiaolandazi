@@ -12,7 +12,7 @@ func TestRecordingStreamOrderReshufflesWithoutAdjacentRepeat(t *testing.T) {
 	previousLast := -1
 	seen := make(map[int]bool)
 	for round := 0; round < 50; round++ {
-		order := recordingStreamOrder(5, previousLast, rng)
+		order := recordingStreamOrder(5, previousLast, nil, rng)
 		if len(order) != 5 {
 			t.Fatalf("order must cover every tab, got %v", order)
 		}
@@ -27,6 +27,24 @@ func TestRecordingStreamOrderReshufflesWithoutAdjacentRepeat(t *testing.T) {
 			t.Fatalf("round %d starts with the tab that ended the previous round: %v", round, order)
 		}
 		previousLast = order[len(order)-1]
+	}
+}
+
+func TestRecordingStreamOrderKeepsPinnedPositions(t *testing.T) {
+	rng := rand.New(rand.NewSource(11))
+	pinned := []bool{false, true, false, false}
+	for round := 0; round < 50; round++ {
+		order := recordingStreamOrder(4, -1, pinned, rng)
+		if order[1] != 1 {
+			t.Fatalf("pinned tab moved: %v", order)
+		}
+		seen := map[int]bool{}
+		for _, tab := range order {
+			if tab < 0 || tab >= 4 || seen[tab] {
+				t.Fatalf("order not permutation: %v", order)
+			}
+			seen[tab] = true
+		}
 	}
 }
 
