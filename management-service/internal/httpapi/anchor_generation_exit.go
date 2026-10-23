@@ -41,20 +41,11 @@ func (s *Server) handleLiveAnchorProducerExit(tenant, room, runtimeID int64, ver
 		return
 	}
 	reason := explicitProducerStop(coreState)
-	if reason == "" {
-		// Stop and generation check are atomic in Core. A newer run returns 409;
-		// a normal stop racing this request returns its original business reason.
-		coreState, err = s.putCoreAgentState(cleanup, tenant, room, map[string]any{
-			"command": "stop", "stop_reason": "system_error",
-			"expected_boot_id": coreState.BootID, "expected_run_generation": coreState.RunGeneration,
-		})
-		if err != nil {
-			log.Printf("formal producer conditional stop unconfirmed tenant=%d room=%d session=%d: %v", tenant, room, runtimeID, err)
-			return
-		}
-		reason = explicitProducerStop(coreState)
-	}
 	if reason == "" || reason == "manual_pause" {
+		// A technical producer failure is diagnostic, never authority to stop
+		// the live session. Core may still be draining admitted audio. Operation
+		// workers retry locally; an unhandled exit must not manufacture a stop.
+		log.Printf("formal producer exited without stopping live tenant=%d room=%d session=%d error=%s", tenant, room, runtimeID, errordetail.Safe(cause.Error()))
 		return
 	}
 	databaseReason := reason

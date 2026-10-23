@@ -21,7 +21,7 @@ func TestPublicLiveFailureExplainsSourceChangeWithoutProviderSecrets(t *testing.
 }
 
 func TestLiveRuntimeFailureDoesNotApplyToReplacementSession(t *testing.T) {
-	snapshot := model.LiveRuntimeSnapshot{AgentState: "working", Session: &model.LiveRuntimeSession{ID: 2}}
+	snapshot := model.LiveRuntimeSnapshot{AgentState: "working", Session: &model.LiveRuntimeSession{ID: 2, Status: "stopped"}}
 	applyLiveRuntimeFailure(&snapshot, &anchorcycle.LiveFailure{SessionID: 1, Message: "old failure"})
 	if snapshot.Failure != nil || snapshot.AgentState != "working" {
 		t.Fatal("old failure stopped replacement run")
@@ -29,5 +29,17 @@ func TestLiveRuntimeFailureDoesNotApplyToReplacementSession(t *testing.T) {
 	applyLiveRuntimeFailure(&snapshot, &anchorcycle.LiveFailure{SessionID: 2, Code: "formal_mainline_failed", Message: "failed"})
 	if snapshot.Failure == nil || snapshot.Failure.SessionID != 2 || snapshot.AgentState != "stopped" {
 		t.Fatal(snapshot)
+	}
+}
+
+func TestRecoveringSessionCannotBePresentedAsStoppedBySavedFailure(t *testing.T) {
+	for _, status := range []string{"running", "paused", "starting", ""} {
+		t.Run(status, func(t *testing.T) {
+			snapshot := model.LiveRuntimeSnapshot{AgentState: "working", Session: &model.LiveRuntimeSession{ID: 476, Status: status}}
+			applyLiveRuntimeFailure(&snapshot, &anchorcycle.LiveFailure{SessionID: 476, Code: "core_request_failed", Message: "音频交付失败"})
+			if snapshot.Failure != nil || snapshot.AgentState != "working" {
+				t.Fatal("saved request error invented a session stop", snapshot)
+			}
+		})
 	}
 }

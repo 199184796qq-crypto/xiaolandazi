@@ -61,6 +61,11 @@ func newCycleSupply(s *Server, parent context.Context, state *anchorcycle.State)
 		high = int64(state.Config.TTS.BufferSeconds) * 1000
 	}
 	p := &cycleSupply{s: s, ctx: ctx, cancel: cancel, initial: state, policy: productionbuffer.New(high, state.StreamControlled), delivered: map[string]bool{}, skippedVoices: map[string]bool{}, voiceFailures: map[string]pendingVoiceFailure{}, started: map[string]time.Time{}, done: make(chan struct{})}
+	if state.Delivery != nil {
+		for _, id := range state.Delivery.DeliveredCandidates {
+			p.delivered[id] = true
+		}
+	}
 	for _, seg := range state.Accepted {
 		if seg.DeliveryStatus != nil {
 			p.skippedVoices[seg.Selected.ID] = true
@@ -98,6 +103,12 @@ func (p *cycleSupply) fail(err error) {
 	if err == nil || p.ctx.Err() != nil {
 		return
 	}
+	if p.initial != nil && p.initial.Surface == "formal_live" && !liveContinuityTerminal(p.ctx, err) {
+		// The worker supervisor restarts from the same persisted run/cursor.
+		// Do not turn Redis/model/PCM/housekeeping errors into a live stop.
+		log.Printf("formal supply worker recovering tenant=%d room=%d run=%s error=%s", p.initial.TenantID, p.initial.RoomID, p.initial.RunID, errordetail.Safe(err.Error()))
+		return
+	}
 	p.mu.Lock()
 	if p.failure == "" {
 		p.failure, p.failureCause = errordetail.Safe(err.Error()), err
@@ -111,6 +122,9 @@ func (p *cycleSupply) wait(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if err := waitLiveLeasePermit(ctx); err != nil {
+			return err
+		}
 		p.mu.Lock()
 		paused, finished := p.paused, p.finished
 		p.mu.Unlock()
@@ -119,7 +133,16 @@ func (p *cycleSupply) wait(ctx context.Context) error {
 		}
 		if !paused && p.guard != nil {
 			var err error
-			paused, err = p.guard(ctx)
+			check := func() error {
+				var err error
+				paused, err = p.guard(ctx)
+				return err
+			}
+			if p.initial.Surface == "formal_live" {
+				err = retryLiveOperation(ctx, "核对直播供料所有权", 0, nil, check)
+			} else {
+				err = check()
+			}
 			if err != nil {
 				return err
 			}
@@ -212,8 +235,8 @@ func (p *cycleSupply) stock(ctx context.Context) (productionbuffer.Stock, int64,
 }
 func (p *cycleSupply) start() {
 	p.workers.Add(2)
-	go func() { defer p.workers.Done(); p.textLoop() }()
-	go func() { defer p.workers.Done(); p.voiceLoop() }()
+	go func() { defer p.workers.Done(); p.superviseWorker("文字", p.textLoop) }()
+	go func() { defer p.workers.Done(); p.superviseWorker("声音", p.voiceLoop) }()
 	go func() {
 		p.workers.Wait()
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(p.ctx), 2*time.Second)
@@ -221,6 +244,27 @@ func (p *cycleSupply) start() {
 		_ = p.flushVoiceFailures(ctx)
 		close(p.done)
 	}()
+}
+
+func (p *cycleSupply) superviseWorker(name string, work func()) {
+	for attempt := 1; p.ctx.Err() == nil; attempt++ {
+		err := liveContinuityAttempt(func() error { work(); return nil })
+		if name == "文字" {
+			p.mu.Lock()
+			p.reserved = 0
+			p.mu.Unlock()
+		}
+		if p.ctx.Err() != nil || p.initial.Surface != "formal_live" {
+			return
+		}
+		if err != nil {
+			p.fail(err)
+		}
+		if err := supplyWait(p.ctx, liveContinuityDelay(attempt)); err != nil {
+			return
+		}
+		log.Printf("formal supply worker resumed tenant=%d room=%d worker=%s", p.initial.TenantID, p.initial.RoomID, name)
+	}
 }
 func (p *cycleSupply) progressContext(part string) context.Context {
 	return context.WithValue(p.ctx, cycleProgressKey{}, cycleProgressReporter(func(percent int) {
@@ -396,6 +440,7 @@ func (p *cycleSupply) skipVoice(state *anchorcycle.State, id, reason string, sta
 }
 
 func (p *cycleSupply) voiceLoop() {
+	failureStreak := 0
 	for p.ctx.Err() == nil {
 		if err := p.flushVoiceFailures(p.ctx); err != nil {
 			p.fail(err)
@@ -420,7 +465,10 @@ func (p *cycleSupply) voiceLoop() {
 			if skipped {
 				continue
 			}
-			if segment.Voice == nil || segment.Voice.Status != "ready" {
+			p.mu.Lock()
+			delivered := p.delivered[segment.Selected.ID]
+			p.mu.Unlock()
+			if segment.Voice == nil || segment.Voice.Status != "ready" || (p.onReady != nil && !delivered) {
 				next = segment
 				break
 			}
@@ -434,13 +482,39 @@ func (p *cycleSupply) voiceLoop() {
 		if next.Voice != nil && next.Voice.Status == "failed" {
 			if state.Surface == "formal_live" {
 				p.skipVoice(state, next.Selected.ID, next.Voice.Error)
+				failureStreak++
+				if failureStreak > 1 {
+					if supplyWait(p.ctx, liveContinuityDelay(failureStreak-1)) != nil {
+						return
+					}
+				}
 				continue
 			}
 			p.fail(errors.New(next.Voice.Error))
 			return
 		}
 		p.reportStartup("generating_voice")
-		voice, err := p.synthesize(p.progressContext("voice"), state, next.Selected.ID)
+		voice := next.Voice
+		// A worker retry may reload already synthesized audio whose delivery
+		// failed. Reuse it directly instead of paying for TTS again or losing it.
+		if voice == nil || voice.Status != "ready" {
+			if state.Surface == "formal_live" {
+				voice, err = p.synthesize(p.progressContext("voice"), state, next.Selected.ID)
+				if transientLiveOperation(err) {
+					err = retryLiveOperation(p.ctx, "读取或生成本段声音", 2, nil, func() error {
+						var err error
+						voice, err = p.synthesize(p.progressContext("voice"), state, next.Selected.ID)
+						return err
+					})
+				}
+			} else {
+				voice, err = p.synthesize(p.progressContext("voice"), state, next.Selected.ID)
+			}
+		}
+		if err != nil && liveContinuityTerminal(p.ctx, err) {
+			p.fail(err)
+			return
+		}
 		if err != nil || voice == nil || voice.Status != "ready" {
 			if state.Surface == "formal_live" {
 				reason := "本段声音未完整生成"
@@ -450,6 +524,12 @@ func (p *cycleSupply) voiceLoop() {
 					reason = voice.Error
 				}
 				p.skipVoice(state, next.Selected.ID, reason)
+				failureStreak++
+				if failureStreak > 1 {
+					if supplyWait(p.ctx, liveContinuityDelay(failureStreak-1)) != nil {
+						return
+					}
+				}
 				continue
 			}
 			if err == nil {
@@ -458,6 +538,7 @@ func (p *cycleSupply) voiceLoop() {
 			p.fail(err)
 			return
 		}
+		failureStreak = 0
 		p.reportStartup("voice_ready")
 		next.Voice = voice
 		p.mu.Lock()

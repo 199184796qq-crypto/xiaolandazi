@@ -17,7 +17,7 @@ import (
 type interactionReturn struct {
 	pendingMainlineTask string
 	snapshot            audioout.InteractionReturnSnapshot
-	resumeTrack         int
+	resumePosition      programTrackPosition
 	resumeMS            int
 	bridgePCM           []byte
 	bridgeText          string
@@ -33,7 +33,10 @@ type BridgeReady struct {
 }
 
 func buildInteractionReturn(program *programState, taskID, reply string, cutMS, durationMS int, allowRepeat bool) *interactionReturn {
-	state := &interactionReturn{resumeTrack: program.TrackIndex, resumeMS: cutMS, snapshot: audioout.InteractionReturnSnapshot{ProgramID: program.ID, TaskID: taskID, ReplyText: reply, AllowConsecutiveRepeat: allowRepeat, AnswerDurationMS: durationMS, Units: []audioout.ReturnUnit{}}}
+	state := &interactionReturn{resumePosition: programPositionAt(program, program.TrackIndex), resumeMS: cutMS, snapshot: audioout.InteractionReturnSnapshot{ProgramID: program.ID, TaskID: taskID, ReplyText: reply, AllowConsecutiveRepeat: allowRepeat, AnswerDurationMS: durationMS, Units: []audioout.ReturnUnit{}}}
+	if program.TrackIndex < 0 || program.TrackIndex >= len(program.Tracks) {
+		return state
+	}
 	for trackIndex := program.TrackIndex; trackIndex < len(program.Tracks) && len(state.snapshot.Units) < 8; trackIndex++ {
 		track := program.Tracks[trackIndex]
 		if trackIndex == program.TrackIndex {
@@ -76,8 +79,9 @@ func buildInteractionReturn(program *programState, taskID, reply string, cutMS, 
 		state.snapshot.Units = state.snapshot.Units[1:]
 	}
 	if len(state.snapshot.Units) > 0 {
-		state.resumeTrack, state.resumeMS = state.snapshot.Units[0].TrackIndex, state.snapshot.Units[0].StartMS
-		state.snapshot.ReturnAllowsRepeat = program.Tracks[state.resumeTrack].AllowConsecutiveRepeat
+		index := state.snapshot.Units[0].TrackIndex
+		state.resumePosition, state.resumeMS = programPositionAt(program, index), state.snapshot.Units[0].StartMS
+		state.snapshot.ReturnAllowsRepeat = program.Tracks[index].AllowConsecutiveRepeat
 	}
 	raw, _ := json.Marshal([]any{program.ID, program.Generation, program.VersionID, taskID, program.TrackIndex, cutMS, allowRepeat, state.snapshot.Units})
 	state.snapshot.Token = fmt.Sprintf("%x", sha256.Sum256(raw))

@@ -2,9 +2,7 @@ package httpapi
 
 import (
 	"context"
-	"errors"
 	"livecompanion/core/internal/audioout"
-	"livecompanion/core/internal/coreaudio"
 	"net/http"
 	"time"
 )
@@ -46,6 +44,7 @@ type audioProgramAppendClient interface {
 }
 
 func (s *Server) appendRoomAudioProgram(w http.ResponseWriter, r *http.Request) {
+	defer recoverRoomAudioDelivery(w)
 	room, ok := pathID(w, r, "roomID")
 	if !ok {
 		return
@@ -76,11 +75,7 @@ func (s *Server) appendRoomAudioProgram(w http.ResponseWriter, r *http.Request) 
 	input.RoomID = room
 	result, err := client.AppendProgram(r.Context(), input)
 	if err != nil {
-		status := 400
-		if errors.Is(err, coreaudio.ErrProgramRefreshConflict) {
-			status = 409
-		}
-		writeError(w, status, err.Error())
+		writeAudioAppendFailure(w, err)
 		return
 	}
 	writeJSON(w, 200, trimAppendSnapshot(result, time.Now()))

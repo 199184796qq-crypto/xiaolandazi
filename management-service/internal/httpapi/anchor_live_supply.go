@@ -10,7 +10,6 @@ import (
 	"livecompanion/management/internal/errordetail"
 	"livecompanion/management/internal/model"
 	"net/http"
-	"net/url"
 	"sync"
 	"time"
 )
@@ -19,7 +18,12 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 	if recordingVoiceMode(version) == recordingStreamMode {
 		return s.runRecordingStreamProducer(ctx, tenant, room, runtimeID, version)
 	}
-	state, err := s.createLiveAnchorRun(ctx, tenant, room, runtimeID, version)
+	var state *anchorcycle.State
+	err := retryLiveOperation(ctx, "初始化本场主线", 0, nil, func() error {
+		var err error
+		state, err = s.createLiveAnchorRun(ctx, tenant, room, runtimeID, version)
+		return err
+	})
 	if err != nil {
 		return errordetail.WithStage("方案与开场初始化", err)
 	}
@@ -148,25 +152,17 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 		mu.Lock()
 		program := delivery.ProgramID
 		mu.Unlock()
-		query := url.Values{"tenant_id": {fmt.Sprint(tenant)}}
-		path := fmt.Sprintf("/internal/v1/rooms/%d/audio/program/append", room)
-		var input any = map[string]any{"expected_program_id": program, "expected_version_id": version.ID, "tracks": []coreclient.ProgramRefreshTrack{track}}
+		var snapshot coreclient.ProgramRefreshSnapshot
 		if program == "" {
 			s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
-			path = fmt.Sprintf("/internal/v1/rooms/%d/audio/program/start", room)
-			input = map[string]any{"session_id": fmt.Sprintf("live-runtime-%d", runtimeID), "label": fmt.Sprintf("实时主线 V%d", version.VersionNo), "version_id": version.ID, "version_no": version.VersionNo, "sequential": true, "tracks": []coreclient.ProgramRefreshTrack{track}}
+			snapshot, err = s.startLiveReadyProgram(ctx, tenant, room, version, fmt.Sprintf("live-runtime-%d", runtimeID), fmt.Sprintf("实时主线 V%d", version.VersionNo), track)
+		} else {
+			var generation uint64
+			generation, err = s.appendRecordingStreamTrack(ctx, tenant, room, version, program, track)
+			snapshot = coreclient.ProgramRefreshSnapshot{ProgramID: program, VersionID: version.ID, Generation: generation, Sequential: true}
 		}
-		resp, err := s.core.DoRoom(ctx, tenant, room, http.MethodPost, path, query, input)
 		if err != nil {
 			return errordetail.WithStage("Core音频交付", err)
-		}
-		defer resp.Body.Close()
-		snapshot, err := decodeLiveHandoffResponse(resp, version.ID)
-		if err != nil {
-			return err
-		}
-		if program != "" && snapshot.ProgramID != program {
-			return anchorcycle.ErrStale
 		}
 		archiveCtx, archiveCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		_ = s.store.SaveSessionSpeechAsset(archiveCtx, model.SessionSpeechAsset{TenantID: tenant, RoomID: room, SessionID: runtimeID,

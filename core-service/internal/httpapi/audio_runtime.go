@@ -827,46 +827,7 @@ func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audio
 		delay = 0
 	}
 	time.AfterFunc(delay, func() {
-		if s.speechRuntime == nil {
-			return
-		}
-		snapshot, err := s.speechRuntime.Snapshot(roomID)
-		if err != nil || snapshot.Interrupt.SpeechTaskID != task.ID {
-			return
-		}
-		if snapshot.Interrupt.Status != speechruntime.StatusPlaying && snapshot.Interrupt.Status != speechruntime.StatusReady {
-			return
-		}
-		if until := snapshot.Interrupt.StartedAt.Add(time.Duration(snapshot.Interrupt.DurationMS+4000) * time.Millisecond); until.After(time.Now()) {
-			task.DurationMS = snapshot.Interrupt.DurationMS
-			s.scheduleRoomAudioInteractionCompletion(roomID, task, decisionID, waitForMainline)
-			return
-		}
-		status := speechruntime.StatusFailed
-		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
-			Track:          speechruntime.TrackInterrupt,
-			Status:         status,
-			Text:           snapshot.Interrupt.Text,
-			QuestionText:   snapshot.Interrupt.QuestionText,
-			ReplyText:      snapshot.Interrupt.ReplyText,
-			ResumeStrategy: snapshot.Interrupt.ResumeStrategy,
-			BridgeText:     snapshot.Interrupt.BridgeText,
-			BridgeUsed:     snapshot.Interrupt.BridgeUsed,
-			Source:         snapshot.Interrupt.Source,
-			AudioURL:       snapshot.Interrupt.AudioURL,
-			DecisionID:     snapshot.Interrupt.DecisionID,
-			MissionID:      snapshot.Interrupt.MissionID,
-			SpeechTaskID:   snapshot.Interrupt.SpeechTaskID,
-			SwitchAtMS:     snapshot.Interrupt.SwitchAtMS,
-			DurationMS:     snapshot.Interrupt.DurationMS,
-			StartedAt:      snapshot.Interrupt.StartedAt,
-		})
-		if strings.TrimSpace(decisionID) == "" {
-			return
-		}
-		if s.agentDecisions != nil {
-			_, _ = s.agentDecisions.Release(roomID, decisionID)
-		}
+		s.expireRoomAudioInteraction(roomID, task, decisionID, startedAt, waitForMainline)
 	})
 }
 

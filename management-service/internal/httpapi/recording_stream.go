@@ -175,7 +175,12 @@ func waitRecordingStreamBuffer(ctx context.Context, s *Server, tenant, room int6
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		snapshot, err := s.core.GetRoomProgramSnapshot(ctx, tenant, room)
+		var snapshot coreclient.ProgramRefreshSnapshot
+		err := retryLiveOperation(ctx, "读取播放缓冲", 0, nil, func() error {
+			var err error
+			snapshot, err = s.core.GetRoomProgramSnapshot(ctx, tenant, room)
+			return err
+		})
 		if err != nil {
 			return err
 		}
@@ -197,28 +202,54 @@ func waitRecordingStreamBuffer(ctx context.Context, s *Server, tenant, room int6
 }
 
 func (s *Server) startRecordingStreamProgram(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion, track coreclient.ProgramRefreshTrack) (coreclient.ProgramRefreshSnapshot, error) {
+	return s.startLiveReadyProgram(ctx, tenant, room, version, fmt.Sprintf("recording-stream-%d", runtimeID), fmt.Sprintf("录音AI声音 V%d", version.VersionNo), track)
+}
+
+func (s *Server) startLiveReadyProgram(ctx context.Context, tenant, room int64, version model.LiveAgentPlanVersion, sessionID, label string, track coreclient.ProgramRefreshTrack) (coreclient.ProgramRefreshSnapshot, error) {
 	query := url.Values{"tenant_id": {strconv.FormatInt(tenant, 10)}}
 	body := map[string]any{
-		"session_id": fmt.Sprintf("recording-stream-%d", runtimeID),
-		"label":      fmt.Sprintf("录音AI声音 V%d", version.VersionNo),
+		"session_id": sessionID,
+		"label":      label,
 		"version_id": version.ID,
 		"version_no": version.VersionNo,
 		"sequential": true,
 		"tracks":     []coreclient.ProgramRefreshTrack{track},
 	}
-	resp, err := s.core.DoRoom(ctx, tenant, room, http.MethodPost, fmt.Sprintf("/internal/v1/rooms/%d/audio/program/start", room), query, body)
-	if err != nil {
-		return coreclient.ProgramRefreshSnapshot{}, err
-	}
-	defer resp.Body.Close()
 	var snapshot coreclient.ProgramRefreshSnapshot
-	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
-		return snapshot, err
-	}
-	if resp.StatusCode != http.StatusOK || !snapshot.Sequential || snapshot.VersionID != version.ID || snapshot.ProgramID == "" {
-		return snapshot, errors.New("录音AI声音主线启动未确认")
-	}
-	return snapshot, nil
+	err := retryLiveOperation(ctx, "启动话术播放", 0, nil, func() error {
+		// A lost response may follow a successful start. Reconcile the exact
+		// live session before resending; never restart an already running track.
+		current, err := s.core.GetRoomProgramSnapshot(ctx, tenant, room)
+		if err != nil {
+			return err
+		}
+		if current.Running {
+			if current.Sequential && current.VersionID == version.ID && current.Task.SessionID == sessionID {
+				snapshot = current
+				return nil
+			}
+			return anchorcycle.ErrStale
+		}
+		resp, err := s.core.DoRoom(ctx, tenant, room, http.MethodPost, fmt.Sprintf("/internal/v1/rooms/%d/audio/program/start", room), query, body)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return liveHandoffRejection(resp)
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&snapshot); err != nil {
+			return err
+		}
+		if resp.StatusCode == http.StatusOK && snapshot.Running && snapshot.Task.SessionID != sessionID {
+			return anchorcycle.ErrStale
+		}
+		if resp.StatusCode != http.StatusOK || !snapshot.Running || !snapshot.Sequential || snapshot.VersionID != version.ID || snapshot.ProgramID == "" || snapshot.Task.SessionID != sessionID {
+			return errors.New("话术播放启动尚未确认，正在自动核对")
+		}
+		return nil
+	})
+	return snapshot, err
 }
 
 func (s *Server) appendRecordingStreamTrack(ctx context.Context, tenant, room int64, version model.LiveAgentPlanVersion, programID string, track coreclient.ProgramRefreshTrack) (uint64, error) {
@@ -228,45 +259,52 @@ func (s *Server) appendRecordingStreamTrack(ctx context.Context, tenant, room in
 		"expected_version_id": version.ID,
 		"tracks":              []coreclient.ProgramRefreshTrack{track},
 	}
-	resp, err := s.core.DoRoom(ctx, tenant, room, http.MethodPost,
-		fmt.Sprintf("/internal/v1/rooms/%d/audio/program/append", room), query, body)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	// 回执里带整条节目快照，播得越久越大；固定 32KB 限长会把 JSON 截断，
-	// 解码失败后 generation 丢失、节目号也无法校验。改成流式解码，不整体读入。
 	var snapshot coreclient.ProgramRefreshSnapshot
-	var decodeErr error
-	var raw []byte
-	if resp.StatusCode != http.StatusOK {
-		raw, _ = io.ReadAll(io.LimitReader(resp.Body, 32<<10))
-	} else {
-		decodeErr = json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&snapshot)
-	}
-	if resp.StatusCode != http.StatusOK {
-		body := strings.TrimSpace(string(raw))
-		if len([]rune(body)) > 500 {
-			body = string([]rune(body)[:500])
+	uncertain := false
+	err := retryLiveOperation(ctx, "追加话术音频", 0, nil, func() error {
+		resp, err := s.core.DoRoom(ctx, tenant, room, http.MethodPost,
+			fmt.Sprintf("/internal/v1/rooms/%d/audio/program/append", room), query, body)
+		if err != nil {
+			uncertain = true
+			return err
 		}
-		log.Printf("recording stream append rejected tenant=%d room=%d program=%s status=%d body=%s", tenant, room, programID, resp.StatusCode, body)
-		return 0, anchorcycle.ErrStale
-	}
-	// Core returns 200 only after it accepts the ready unit. Some append
-	// snapshots omit program/version fields (or contain newer receipt shapes),
-	// so a 200 must not be turned into a false "late result" failure.
-	if snapshot.ProgramID != "" && snapshot.ProgramID != programID {
-		log.Printf("recording stream append stale program tenant=%d room=%d expected=%s got=%s", tenant, room, programID, snapshot.ProgramID)
-		return 0, anchorcycle.ErrStale
-	}
-	if snapshot.VersionID != 0 && snapshot.VersionID != version.ID {
-		log.Printf("recording stream append stale version tenant=%d room=%d expected=%d got=%d", tenant, room, version.ID, snapshot.VersionID)
-		return 0, anchorcycle.ErrStale
-	}
-	if decodeErr != nil {
-		log.Printf("recording stream append accepted with partial snapshot tenant=%d room=%d decode_error=%v", tenant, room, decodeErr)
-	}
-	return snapshot.Generation, nil
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			rejection := liveHandoffRejection(resp)
+			var notAccepted *mainlineNotSubmitted
+			if errors.As(rejection, &notAccepted) && !uncertain {
+				return rejection
+			}
+			if notAccepted != nil {
+				rejection = notAccepted.cause
+			}
+			// HTTP status alone does not establish an owner change (409 also
+			// covers a full queue). Confirm the program before abandoning audio.
+			current, readErr := s.core.GetRoomProgramSnapshot(ctx, tenant, room)
+			if readErr == nil && (!current.Running || current.ProgramID != programID || current.VersionID != version.ID) {
+				return anchorcycle.ErrStale
+			}
+			uncertain = true
+			return rejection
+		}
+		snapshot = coreclient.ProgramRefreshSnapshot{}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&snapshot); err != nil {
+			uncertain = true
+			return err
+		}
+		if snapshot.ProgramID != "" && snapshot.ProgramID != programID {
+			return anchorcycle.ErrStale
+		}
+		if snapshot.VersionID != 0 && snapshot.VersionID != version.ID {
+			return anchorcycle.ErrStale
+		}
+		if snapshot.ProgramID == "" || snapshot.VersionID == 0 {
+			uncertain = true
+			return errors.New("音频追加回执不完整，保留原单元核对")
+		}
+		return nil
+	})
+	return snapshot.Generation, err
 }
 
 func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, text string, round, index int) (coreclient.ProgramRefreshTrack, error) {
@@ -283,14 +321,27 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 	if rate == 0 {
 		rate = 1
 	}
-	generated, err := gateway.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{
+	request := ttsgateway.SynthesizeRequest{
 		Model: modelName, VoiceID: voiceID, Text: text, Rate: rate,
 		Instruction: recordingInstructionForVersion(version, text),
+	}
+	var generated ttsgateway.SynthesizeResponse
+	err = retryLiveOperation(ctx, "合成话术单句", 3, nil, func() error {
+		var err error
+		generated, err = gateway.SynthesizeURL(ctx, request)
+		return err
 	})
 	if err != nil {
 		return coreclient.ProgramRefreshTrack{}, err
 	}
-	raw, err := downloadGeneratedVoiceWAV(ctx, generated.AudioURL)
+	// Preserve the successful paid TTS result across download/archive retries.
+	// An OSS outage must not regenerate the sentence or create a new unit ID.
+	var raw []byte
+	err = retryLiveOperation(ctx, "读取已生成声音", 3, nil, func() error {
+		var err error
+		raw, err = downloadGeneratedVoiceWAV(ctx, generated.AudioURL)
+		return err
+	})
 	if err != nil {
 		return coreclient.ProgramRefreshTrack{}, err
 	}
@@ -302,13 +353,23 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 	if err != nil {
 		return coreclient.ProgramRefreshTrack{}, err
 	}
-	archive, err := s.archiveFullShowVoice(ctx, tenant, 0, version.PlanID, version.RoomID,
-		fmt.Sprintf("recording-%d-%d", round, index), voiceID, modelName, identity.Source,
-		combined, durationMS, timeline, identity.Rate)
+	var archive fullShowVoiceArchiveResult
+	err = retryLiveOperation(ctx, "归档已生成声音", 3, nil, func() error {
+		var err error
+		archive, err = s.archiveFullShowVoice(ctx, tenant, 0, version.PlanID, version.RoomID,
+			fmt.Sprintf("recording-%d-%d", round, index), voiceID, modelName, identity.Source,
+			combined, durationMS, timeline, identity.Rate)
+		return err
+	})
 	if err != nil {
 		return coreclient.ProgramRefreshTrack{}, err
 	}
-	audioURL, err := s.recordingStreamAssetURL(ctx, tenant, archive.AssetID)
+	var audioURL string
+	err = retryLiveOperation(ctx, "取得声音播放地址", 3, nil, func() error {
+		var err error
+		audioURL, err = s.recordingStreamAssetURL(ctx, tenant, archive.AssetID)
+		return err
+	})
 	if err != nil {
 		return coreclient.ProgramRefreshTrack{}, err
 	}

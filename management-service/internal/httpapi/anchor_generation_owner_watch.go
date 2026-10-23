@@ -51,16 +51,12 @@ func (s *Server) RunLiveAnchorOwnerWatch(ctx context.Context) {
 				stop()
 				continue
 			}
-			// Presence is a lease, not a state restoration or permission to restart.
-			_ = s.requestCorePublishedPlanProgramControl(check, session.TenantID, session.RoomID, "pause")
-			coreState, err := s.requestCoreAgentStop(check, session.TenantID, session.RoomID, fresh.TotalBilledSeconds, "system_error")
-			if err == nil {
-				_, err = s.store.PauseLiveRuntimeSessionMeter(check, session.TenantID, session.RoomID, 0, coreState.WorkingSeconds, time.Now().UTC())
-			}
+			// A lease expiry proves only missing liveness evidence. Existing Core
+			// audio must continue; it does not authorize a technical stop, a new
+			// producer, or recovery of a prior process's cursor. A surviving local
+			// producer renews/reclaims its exact same-session lease itself.
+			log.Printf("formal owner lease missing tenant=%d room=%d session=%d local_producer=%t; playback retained", session.TenantID, session.RoomID, fresh.ID, s.hasLiveAnchorProducer(session.TenantID, session.RoomID))
 			stop()
-			if err != nil {
-				log.Printf("formal orphan pause tenant=%d room=%d failed: %v", session.TenantID, session.RoomID, err)
-			}
 		}
 	}
 }

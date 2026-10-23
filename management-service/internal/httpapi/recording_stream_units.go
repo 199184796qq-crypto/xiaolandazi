@@ -116,12 +116,26 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 	log.Printf("recording stream start tenant=%d room=%d version=%d tabs=%d sentences=%d", tenant, room, version.ID, len(tabs), total)
 
 	polish := s.recordingPolishState(ctx, tenant, version.PlanID, room)
-	programID, generation := "", uint64(0)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	seq, blockSeq, previousLast := 0, 0, -1
-	startAt := time.Now()
+	seq, previousLast := 0, -1
+	queue := recordingReadyQueue{startedAt: time.Now(), tenant: tenant, room: room}
+	queue.combine = func(ctx context.Context, ready []recordingReadyUnit, block int) (coreclient.ProgramRefreshTrack, int, error) {
+		return s.combineRecordingStreamBlockSafe(ctx, tenant, version, toRecordingCacheEntries(ready), seq, block)
+	}
+	queue.start = func(ctx context.Context, track coreclient.ProgramRefreshTrack) (coreclient.ProgramRefreshSnapshot, error) {
+		snapshot, err := s.startRecordingStreamProgram(ctx, tenant, room, runtimeID, version, track)
+		if err == nil {
+			s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
+		}
+		return snapshot, err
+	}
+	queue.append = func(ctx context.Context, program string, track coreclient.ProgramRefreshTrack) (uint64, error) {
+		return s.appendRecordingStreamTrack(ctx, tenant, room, version, program, track)
+	}
+	queue.buffer = func(ctx context.Context, program string) error {
+		return waitRecordingStreamBuffer(ctx, s, tenant, room, program, version.ID)
+	}
 
-	// 开播前把本方案这一版话术的缓存清单读一次，之后整场走内存。
 	// 命中就不润色、不合成，直接复用已有音轨。
 	cacheScope, cacheOK := recordingCacheScopeFor(tenant, room, version.PlanID)
 	voiceKey := recordingcache.VoiceKey(version.VoiceIdentity.VoiceID, version.VoiceIdentity.Model, fmt.Sprint(version.VoiceIdentity.Rate))
@@ -140,7 +154,11 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 	}
 
 	for round := 0; ; round++ {
+		queue.delivered = 0
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := waitLiveLeasePermit(ctx); err != nil {
 			return err
 		}
 		order := recordingStreamOrder(len(tabs), previousLast, recordingStreamPinned(version), rng)
@@ -151,6 +169,9 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 			// 返回按行拆回，行数或数字不一致的句子回退原文。
 			batched := map[int]string{}
 			for start := 0; start < len(tabs[tabIndex]); start += recordingPolishBatchSize {
+				if err := waitLiveLeasePermit(ctx); err != nil {
+					return err
+				}
 				end := start + recordingPolishBatchSize
 				if end > len(tabs[tabIndex]) {
 					end = len(tabs[tabIndex])
@@ -169,8 +190,14 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				for i := start; i < end; i++ {
 					sources = append(sources, tabs[tabIndex][i].Source)
 				}
-				polished := s.polishRecordingSentenceBatch(ctx, polish, sources)
+				var polished []string
+				if err := liveContinuityAttempt(func() error { polished = s.polishRecordingSentenceBatch(ctx, polish, sources); return nil }); err != nil {
+					log.Printf("recording polish batch isolated tenant=%d room=%d tab=%d error=%v", tenant, room, tabIndex, err)
+				}
 				for i := start; i < end; i++ {
+					if i-start >= len(polished) {
+						break
+					}
 					if text := strings.TrimSpace(polished[i-start]); text != "" {
 						batched[i] = text
 					}
@@ -178,9 +205,11 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 			}
 
 			// 本轮这个标签要播的就绪单元；游标显式记录未消费范围。
-			pending := make([]recordingReadyUnit, 0, len(tabs[tabIndex]))
 			for index := range tabs[tabIndex] {
 				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if err := waitLiveLeasePermit(ctx); err != nil {
 					return err
 				}
 				state := &tabs[tabIndex][index]
@@ -197,18 +226,28 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 								}
 							}
 							log.Printf("recording stream cache hit tenant=%d room=%d tab=%d index=%d versions=%d hits=%d", tenant, room, tabIndex, index, len(versions), pick.Hits+1)
-							pending = append(pending, units...)
+							queue.pending = append(queue.pending, units...)
+							if err := queue.flush(ctx, false); err != nil {
+								return err
+							}
 							continue
 						}
 					}
 					var units []recordingReadyUnit
 					var err error
-					if spoken, ok := batched[index]; ok {
-						units, err = s.compileRecordingSpoken(ctx, tenant, version, spoken, tabIndex, &seq)
-					} else {
-						units, err = s.compileRecordingSentence(ctx, tenant, version, polish, state.Source, tabIndex, &seq)
-					}
+					err = liveContinuityAttempt(func() error {
+						var err error
+						if spoken, ok := batched[index]; ok {
+							units, err = s.compileRecordingSpoken(ctx, tenant, version, spoken, tabIndex, &seq)
+						} else {
+							units, err = s.compileRecordingSentence(ctx, tenant, version, polish, state.Source, tabIndex, &seq)
+						}
+						return err
+					})
 					if err != nil {
+						if liveContinuityTerminal(ctx, err) {
+							return err
+						}
 						// 单元级失败：有旧版本就沿用，没有就跳过这一句并留痕。
 						if len(state.Versions) == 0 {
 							log.Printf("recording stream sentence skipped tenant=%d room=%d tab=%d index=%d err=%v", tenant, room, tabIndex, index, err)
@@ -242,73 +281,20 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				if len(state.Versions) == 0 {
 					continue
 				}
-				pending = append(pending, state.Versions[rng.Intn(len(state.Versions))]...)
-
-				// 起播门槛：先攒够 60 秒音频再开播。播一下就断比多等一会儿更难接受，
-				// 用户会以为直播坏了。合成太慢时（超过 90 秒墙钟）降到 45 秒开播，
-				// 避免迟迟不出声。
-				if programID == "" && !recordingStartReady(pending, startAt) {
-					track, consumed, err := s.combineRecordingStreamBlockSafe(ctx, tenant, version, toRecordingCacheEntries(pending[:3]), seq, blockSeq)
-					if err != nil {
-						return err
-					}
-					blockSeq++
-					pending = pending[consumed:]
-					if track.AudioURL == "" {
-						log.Printf("recording stream first block skipped tenant=%d room=%d tab=%d units=%d", tenant, room, tabIndex, consumed)
-					} else {
-						snapshot, err := s.startRecordingStreamProgram(ctx, tenant, room, runtimeID, version, track)
-						if err != nil {
-							return err
-						}
-						programID, generation = snapshot.ProgramID, snapshot.Generation
-						log.Printf("recording stream first block started tenant=%d room=%d tab=%d units=%d program=%s", tenant, room, tabIndex, consumed, programID)
-						s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
-					}
+				queue.pending = append(queue.pending, state.Versions[rng.Intn(len(state.Versions))]...)
+				if err := queue.flush(ctx, false); err != nil {
+					return err
 				}
 			}
-
-			// 合块追加：每块最多 3 个就绪单元；块内切点由句界保证。
-			cursor := 0
-			for cursor < len(pending) {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				if programID != "" {
-					if err := waitRecordingStreamBuffer(ctx, s, tenant, room, programID, version.ID); err != nil {
-						return err
-					}
-				}
-				take := 3
-				if remaining := len(pending) - cursor; remaining < take {
-					take = remaining
-				}
-				track, consumed, err := s.combineRecordingStreamBlockSafe(ctx, tenant, version, toRecordingCacheEntries(pending[cursor:cursor+take]), seq, blockSeq)
-				if err != nil {
-					return err
-				}
-				blockSeq++
-				cursor += consumed
-				if track.AudioURL == "" {
-					log.Printf("recording stream block skipped tenant=%d room=%d tab=%d round=%d units=%d", tenant, room, tabIndex, round, consumed)
-					continue
-				}
-				if programID == "" {
-					snapshot, err := s.startRecordingStreamProgram(ctx, tenant, room, runtimeID, version, track)
-					if err != nil {
-						return err
-					}
-					programID, generation = snapshot.ProgramID, snapshot.Generation
-					log.Printf("recording stream program started tenant=%d room=%d program=%s", tenant, room, programID)
-					s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
-				} else {
-					nextGeneration, err := s.appendRecordingStreamTrack(ctx, tenant, room, version, programID, track)
-					if err != nil {
-						return err
-					}
-					generation = nextGeneration
-				}
-				log.Printf("recording stream block appended tenant=%d room=%d tab=%d round=%d units=%d safe_points=%d generation=%d", tenant, room, tabIndex, round, consumed, len(track.SafePoints), generation)
+		}
+		// A short script cannot supply sixty unique seconds. Start its complete
+		// first pass instead of manufacturing repeated startup copies forever.
+		if err := queue.flush(ctx, true); err != nil {
+			return err
+		}
+		if queue.delivered == 0 {
+			if err := supplyWait(ctx, 16*time.Second); err != nil {
+				return err
 			}
 		}
 		previousLast = order[len(order)-1]

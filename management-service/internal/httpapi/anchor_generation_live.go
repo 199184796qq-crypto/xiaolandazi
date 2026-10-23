@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"livecompanion/management/internal/agentgateway"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -57,6 +58,9 @@ func (s *Server) startLiveAnchorProducer(ctx context.Context, tenant, room, runt
 		parent = context.Background()
 	}
 	runCtx, cancel := context.WithCancel(parent)
+	var leasePermit atomic.Int64
+	leasePermit.Store(time.Now().Add(25 * time.Second).UnixNano())
+	runCtx = context.WithValue(runCtx, liveLeasePermitKey{}, &leasePermit)
 	runCtx = agentgateway.WithRoomModelScope(runCtx, agentgateway.RoomModelScope{TenantID: tenant, RoomID: room, RuntimeID: runtimeID, RequireLease: true})
 	key := "formal-" + anchorcycle.ID()
 	s.cycleCancels.Lock()
@@ -71,7 +75,6 @@ func (s *Server) startLiveAnchorProducer(ctx context.Context, tenant, room, runt
 			defer stop()
 			_ = owners.ReleaseLiveOwner(release, tenant, room, runtimeID, ownerToken)
 		}()
-		var guardFailed atomic.Bool
 		defer cancel()
 		defer func() { s.cycleCancels.Lock(); delete(s.cycleCancels.entries, key); s.cycleCancels.Unlock() }()
 		watchDone := make(chan struct{})
@@ -79,24 +82,39 @@ func (s *Server) startLiveAnchorProducer(ctx context.Context, tenant, room, runt
 			defer close(watchDone)
 			for waitLiveProducer(runCtx) == nil {
 				checkCtx, stop := context.WithTimeout(runCtx, 10*time.Second)
-				_, err := s.checkLiveAnchorOwner(checkCtx, tenant, room, runtimeID, version.ID)
-				if err == nil {
-					var renewed bool
-					renewed, err = owners.RenewLiveOwner(checkCtx, tenant, room, runtimeID, ownerToken)
-					if err == nil && !renewed {
-						err = anchorcycle.ErrStale
+				// Renew independently of a slow database read. A transient read or
+				// Redis error is not proof that this session has ended.
+				var renewed bool
+				var renewErr error
+				err := liveContinuityAttempt(func() error {
+					renewed, renewErr = owners.RenewLiveOwner(checkCtx, tenant, room, runtimeID, ownerToken)
+					_, err := s.checkLiveAnchorOwner(checkCtx, tenant, room, runtimeID, version.ID)
+					if err == nil && renewErr == nil && !renewed {
+						// Reclaim only after verifying this exact still-live session;
+						// NX never steals a lease held by another producer.
+						renewed, err = owners.ClaimLiveOwner(checkCtx, tenant, room, runtimeID, ownerToken)
+						if err == nil && !renewed {
+							err = anchorcycle.ErrStale
+						}
 					}
-				}
+					return err
+				})
 				stop()
-				if err != nil {
-					guardFailed.Store(true)
+				if errors.Is(err, anchorcycle.ErrStale) {
+					leasePermit.Store(0)
 					cancel()
 					return
+				}
+				if err != nil || renewErr != nil {
+					leasePermit.Store(0)
+					log.Printf("formal owner check retry tenant=%d room=%d session=%d check=%v renew=%v", tenant, room, runtimeID, err, renewErr)
+				} else if renewed {
+					leasePermit.Store(time.Now().Add(25 * time.Second).UnixNano())
 				}
 			}
 		}()
 		defer func() { cancel(); <-watchDone }()
-		if err := s.runLiveAnchorProducer(runCtx, tenant, room, runtimeID, version); err != nil && (runCtx.Err() == nil || guardFailed.Load()) {
+		if err := liveContinuityAttempt(func() error { return s.runLiveAnchorProducer(runCtx, tenant, room, runtimeID, version) }); err != nil && runCtx.Err() == nil {
 			s.handleLiveAnchorProducerExit(tenant, room, runtimeID, version, err)
 		}
 	}()
@@ -248,24 +266,33 @@ func (s *Server) checkLiveAnchorOwner(ctx context.Context, tenant, room, runtime
 	if err != nil {
 		return false, err
 	}
-	if session.ID != runtimeID || !session.BelongsToExecutionRealm(s.executionRealm) || (session.Status != "running" && session.Status != "paused") {
+	if session.ID != runtimeID || session.EndedAt != nil || !session.BelongsToExecutionRealm(s.executionRealm) || (session.Status != "running" && session.Status != "paused") {
 		return false, anchorcycle.ErrStale
 	}
 	// Saving a new snapshot must not cancel this session's startup snapshot.
 	selected, err := s.store.GetLiveAgentPlanForRoom(ctx, tenant, room)
 	if err != nil {
+		if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
+			return false, anchorcycle.ErrStale
+		}
 		return false, err
 	}
 	pinned, err := s.store.GetLiveAgentPlanVersion(ctx, tenant, selected.ID, versionID)
-	if err != nil || pinned.PlanID != selected.ID {
-		return false, errors.New("本场方案关联已变化，请重新开播")
+	if err != nil {
+		if errors.Is(err, appdb.ErrLiveAgentPlanVersionNotFound) {
+			return false, anchorcycle.ErrStale
+		}
+		return false, err
+	}
+	if pinned.PlanID != selected.ID {
+		return false, anchorcycle.ErrStale
 	}
 	mode, err := s.store.GetLiveContentMode(ctx, tenant, room)
 	if err != nil {
 		return false, err
 	}
 	if !liveAnchorOwnerModeAllowed(mode.ContentMode, pinned) {
-		return false, errors.New("实时生成内容模式已变化")
+		return false, anchorcycle.ErrStale
 	}
 	return session.Status == "paused", nil
 }

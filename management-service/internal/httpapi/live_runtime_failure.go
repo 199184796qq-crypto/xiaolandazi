@@ -78,8 +78,11 @@ func applyLiveRuntimeFailure(snapshot *model.LiveRuntimeSnapshot, failure *ancho
 }
 
 func suppressLiveFailure(session *model.LiveRuntimeSession) bool {
+	// A saved diagnostic is not a lifecycle transition. In particular, a
+	// recovering or manually paused session must never be presented as stopped
+	// merely because an earlier request left a failure record behind.
 	if session == nil || session.Status != "stopped" {
-		return false
+		return true
 	}
 	switch session.StopReason {
 	case "manual", "manual_stop", "manual_restart", "manual_pause", "live_finished", "device_offline", "device_shutdown", "quota_exhausted", "core_restart", "core_runtime_reset":

@@ -67,6 +67,7 @@ func (c *Client) planNextMainline(program *programState, taskID string) {
 	}
 	currentTrack := program.TrackIndex
 	generation := program.Generation
+	queueRevision := program.QueueRevision
 	c.mu.RUnlock()
 
 	nextIndex, score, reason := c.selectNextMainlineTrack(program, currentTrack)
@@ -75,7 +76,7 @@ func (c *Client) planNextMainline(program *programState, taskID string) {
 	}
 
 	c.mu.Lock()
-	if c.programs[program.RoomID] != program || !program.Running || program.Suspended || program.Transitioning || program.Generation != generation || program.CurrentTaskID != taskID {
+	if c.programs[program.RoomID] != program || !program.Running || program.Suspended || program.Transitioning || program.Generation != generation || program.QueueRevision != queueRevision || program.CurrentTaskID != taskID || currentTrack < 0 || currentTrack >= len(program.Tracks) || nextIndex >= len(program.Tracks) {
 		c.mu.Unlock()
 		return
 	}
@@ -299,10 +300,11 @@ func (c *Client) prefetchMainlineTrack(program *programState, sourceTaskID strin
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.programs[program.RoomID] != program || !program.Running || program.Generation != generation || program.CurrentTaskID != sourceTaskID || program.PlannedNextTrack != trackIndex {
+		index, err := (programTrackPosition{program.ID, generation, program.VersionID, track.ID}).index(program)
+		if c.programs[program.RoomID] != program || !program.Running || program.Generation != generation || program.CurrentTaskID != sourceTaskID || err != nil || program.PlannedNextTrack != index {
 			return
 		}
-		program.PrefetchedTrack = trackIndex
+		program.PrefetchedTrack = index
 		program.PrefetchedAudio = audio
 	}()
 }
