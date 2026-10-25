@@ -2179,10 +2179,10 @@ const customMainlineUploadProgress = ref(0)
 const customMainlineStage = ref<'idle' | 'uploading' | 'analyzing' | 'ready' | 'saving' | 'failed'>('idle')
 const customMainlineDraft = ref<LiveAgentCustomMainlineResponse | null>(null)
 const customMainlineTimeline = ref<LiveAgentPlanTimelineSegment[]>([])
-type RecordingScriptTab = { id: string; title: string; text: string; audioAssetIds: number[] }
+type RecordingScriptTab = { id: string; title: string; text: string; audioAssetIds: number[]; pinned: boolean }
 // 话术优先可以有多段话术：一个标签 = 一个文本框；一个声音对应一个文本框，不合并。
 // 只有一段时就是原来的单文本框，保存与播放行为不变。
-const recordingTabs = ref<RecordingScriptTab[]>([{ id: 't1', title: '开场', text: '', audioAssetIds: [] }])
+const recordingTabs = ref<RecordingScriptTab[]>([{ id: 't1', title: '开场', text: '', audioAssetIds: [], pinned: false }])
 const activeRecordingTabId = ref('t1')
 let recordingTabSeq = 1
 // 原始声音跟着标签走：每个标签各自记住自己上传的那段声音。
@@ -2207,6 +2207,10 @@ const customMainlineTranscript = computed<string>(() =>
   recordingTabs.value.map((tab) => tab.text.trim()).filter(Boolean).join('\n'),
 )
 // 显式按「当前标签」写入：切标签时不会把上一个标签的文本带进新标签。
+const recordingTabCharCount = computed(() =>
+  Array.from(activeRecordingTab.value?.text ?? '').length,
+)
+
 function onRecordingTabInput(event: Event): void {
   const value = (event.target as HTMLTextAreaElement | null)?.value ?? ''
   if (activeRecordingTab.value) activeRecordingTab.value.text = value
@@ -2215,7 +2219,7 @@ function addRecordingTab(): void {
   do {
     recordingTabSeq += 1
   } while (recordingTabs.value.some(tab => tab.id === `t${recordingTabSeq}`))
-  const tab: RecordingScriptTab = { id: `t${recordingTabSeq}`, title: `话术${recordingTabs.value.length + 1}`, text: '', audioAssetIds: [] }
+  const tab: RecordingScriptTab = { id: `t${recordingTabSeq}`, title: `话术${recordingTabs.value.length + 1}`, text: '', audioAssetIds: [], pinned: false }
   recordingTabs.value.push(tab)
   activeRecordingTabId.value = tab.id
 }
@@ -2246,9 +2250,14 @@ function reorderRecordingTabs(ids: string[]): void {
   if (ids.length !== recordingTabs.value.length || new Set(ids).size !== ids.length || ids.some(id => !tabsById.has(id))) return
   recordingTabs.value = ids.map(id => tabsById.get(id)!)
 }
+function toggleRecordingTabPin(id: string): void {
+  const tab = recordingTabs.value.find(item => item.id === id)
+  if (!tab || fullShowVersionSaving.value) return
+  tab.pinned = !tab.pinned
+}
 function resetRecordingTabs(): void {
   recordingTabSeq = 1
-  recordingTabs.value = [{ id: 't1', title: '开场', text: '', audioAssetIds: [] }]
+  recordingTabs.value = [{ id: 't1', title: '开场', text: '', audioAssetIds: [], pinned: false }]
   activeRecordingTabId.value = 't1'
   recordingTabDrafts.value = {}
 }
@@ -2267,6 +2276,7 @@ function recordingScriptForSave() {
       order: index,
       text: tab.text,
       audio_asset_ids: tab.audioAssetIds || [],
+      pinned: Boolean(tab.pinned),
     })),
     active_tab_id: activeRecordingTabId.value,
   }
@@ -2277,13 +2287,14 @@ function restoreRecordingScript(context: Record<string, unknown> | undefined): v
   const tabs = Array.isArray(raw?.tabs) ? raw.tabs : []
   const restored: RecordingScriptTab[] = []
   tabs.forEach((item, index) => {
-    const tab = item as { tab_id?: string; title?: string; text?: string; audio_asset_ids?: unknown[] }
+    const tab = item as { tab_id?: string; title?: string; text?: string; audio_asset_ids?: unknown[]; pinned?: boolean }
     const id = String(tab?.tab_id || `t${index + 1}`)
     restored.push({
       id,
       title: String(tab?.title || `话术${index + 1}`),
       text: String(tab?.text || ''),
       audioAssetIds: Array.isArray(tab?.audio_asset_ids) ? tab!.audio_asset_ids!.map(Number).filter((value) => value > 0) : [],
+      pinned: Boolean(tab?.pinned),
     })
   })
   if (!restored.length) return
@@ -8765,6 +8776,7 @@ onBeforeUnmount(() => {
                     @add="addRecordingTab"
                     @remove="removeRecordingTab"
                     @reorder="reorderRecordingTabs"
+                    @toggle-pin="toggleRecordingTabPin"
                   />
                   <label v-if="activeRecordingTab" class="strategy-script-tab-title">
                     <span>标题</span>
@@ -8774,10 +8786,15 @@ onBeforeUnmount(() => {
                     class="strategy-original-transcript-editor"
                     :value="activeRecordingTab?.text || ''"
                     rows="16"
+                    maxlength="4000"
                     spellcheck="false"
                     placeholder="粘贴或输入这一段话术…"
                     @input="onRecordingTabInput"
                   ></textarea>
+                  <p class="strategy-script-counts">
+                    <span>当前字数 {{ recordingTabCharCount }} / 4000</span>
+                    <span>话术标签 {{ recordingTabs.length }} / 20</span>
+                  </p>
                   <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
                 </section>
 
@@ -9870,6 +9887,7 @@ onBeforeUnmount(() => {
 .strategy-v2-empty { display:grid; gap:7px; min-height:150px; place-content:center; padding:28px; border:1px dashed #ccd4e5; border-radius:18px; background:#fff; color:#7d879a; text-align:center; }
 .strategy-v2-empty strong { color:#394660; font-size:18px; }
 .strategy-v2-empty span { max-width:620px; line-height:1.6; }
+.strategy-script-counts{display:flex;gap:18px;margin:6px 0 0;font-size:14px;color:#6b7280}
 .strategy-script-notice { padding:11px 14px; border:1px solid #d8e5fb; border-radius:12px; background:#f1f6ff; color:#52648f; font-size:13px; }
 .strategy-analysis-progress { display:grid; gap:10px; padding:14px 16px; border:1px solid #d7e1fb; border-radius:14px; background:linear-gradient(135deg,#f4f7ff,#eef3ff); box-shadow:0 8px 22px rgba(74,91,189,.06); }
 .strategy-analysis-progress-head { display:flex; align-items:center; justify-content:space-between; gap:14px; }

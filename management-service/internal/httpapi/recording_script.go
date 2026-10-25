@@ -17,8 +17,8 @@ import (
 const (
 	recordingScriptMaxTabs        = 20
 	recordingScriptMaxTitleRunes  = 30
-	recordingScriptMaxTextRunes   = 20000
-	recordingScriptMaxTotalRunes  = 200000
+	recordingScriptMaxTextRunes   = 4000
+	recordingScriptMaxTotalRunes  = 80000
 	recordingScriptMaxAudioPerTab = 1
 )
 
