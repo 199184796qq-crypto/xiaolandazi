@@ -9,27 +9,61 @@ import (
 	"livecompanion/management/internal/contentguard"
 )
 
+// BaseP0Allowances 是公共的安全语境排除项：只放行“第一”作为时间/序数
+// 的普通用法，不放行“第一品牌、销量第一、全网第一”等宣传用法。
+var BaseP0Allowances = []P0Allowance{
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一天", Decision: "基础排除：时间/序数用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一天开", Decision: "基础排除：首播时间"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一次", Decision: "基础排除：序数用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一口", Decision: "基础排除：序数用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一单", Decision: "基础排除：序数用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一轮", Decision: "基础排除：轮次用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一场", Decision: "基础排除：场次用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一步", Decision: "基础排除：步骤用法"},
+}
+
+func p0AllowanceMatches(item P0Allowance, hit contentguard.Hit, p *contentguard.Policy, original []rune) bool {
+	key := strings.TrimSpace(item.MatchKey)
+	if key == "" {
+		key = p.MatchKey(item.MatchedText)
+	}
+	if key == "" {
+		return false
+	}
+	if key == p.MatchKey(hit.Text) {
+		return true
+	}
+	// P0 命中“第一”时，排除词可能是“第一天”等更长的上下文短语。
+	// 必须从命中起点开始，整段完全等于排除词；不能只看附近是否包含。
+	phrase := []rune(item.MatchedText)
+	if len(phrase) == 0 || hit.Start < 0 || hit.Start+len(phrase) > len(original) {
+		return false
+	}
+	if hit.End > hit.Start+len(phrase) {
+		return false
+	}
+	return p.MatchKey(string(original[hit.Start:hit.Start+len(phrase)])) == key
+}
+
 func (s *State) scanP0(p *contentguard.Policy, text string) contentguard.Report {
 	report := p.Scan(text, s.Config.ComplianceScope)
-	if report.Passed || len(s.P0Allowances) == 0 {
+	if report.Passed {
 		return report
 	}
-	allowed := map[string]bool{}
-	for _, item := range s.P0Allowances {
-		key := strings.TrimSpace(item.MatchKey)
-		if key == "" {
-			key = p.MatchKey(item.MatchedText)
-		}
-		if item.RuleID != "" && key != "" {
-			allowed[item.RuleID+"\x00"+key] = true
-		}
-	}
+	allowances := append(append([]P0Allowance{}, BaseP0Allowances...), s.P0Allowances...)
+	original := []rune(text)
 	blocked := report.Hits[:0]
 	for _, hit := range report.Hits {
-		if allowed[hit.RuleID+"\x00"+p.MatchKey(hit.Text)] {
-			continue
+		allowed := false
+		for _, item := range allowances {
+			if item.RuleID == hit.RuleID && p0AllowanceMatches(item, hit, p, original) {
+				allowed = true
+				break
+			}
 		}
-		blocked = append(blocked, hit)
+		if !allowed {
+			blocked = append(blocked, hit)
+		}
 	}
 	report.Hits = blocked
 	report.Passed = report.Error == "" && len(blocked) == 0

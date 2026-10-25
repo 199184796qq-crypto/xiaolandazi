@@ -159,3 +159,29 @@ func TestP0PlanAllowanceAppliesToTextAndVoiceOnlyForExactRuleAndTerm(t *testing.
 		t.Fatal("approved generated speech was not adopted", addErr)
 	}
 }
+
+func TestBaseP0AllowancesOnlyReleaseTimeOrdinalContexts(t *testing.T) {
+	state := p0Fixture(t, 1)
+	policy, err := contentguard.Compile(state.P0PolicyMD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		text string
+		pass bool
+	}{
+		{"今天第一天开，欢迎朋友们。", true},
+		{"第一口先尝这个味道。", true},
+		{"第一次来直播间，先看看。", true},
+		{"全网第一的品牌。", false},
+		{"第一天销量第一。", false},
+		{"第一天第一品牌。", false},
+		{"我们是第一品牌。", false},
+	}
+	for _, c := range cases {
+		report := state.scanP0(policy, c.text)
+		if report.Passed != c.pass {
+			t.Fatalf("%q passed=%t, want %t hits=%+v", c.text, report.Passed, c.pass, report.Hits)
+		}
+	}
+}
