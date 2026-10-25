@@ -43,7 +43,7 @@ func (w *Worker) completeInteractionAnswer(ctx context.Context, session model.Li
 	}
 	source, ok := w.store.(interactionExchangeStore)
 	if !ok {
-		return w.agent.Complete(ctx, request)
+		return w.completePaidModel(ctx, session, request, "answer")
 	}
 	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
 	if err != nil {
@@ -71,7 +71,7 @@ func (w *Worker) completeInteractionAnswer(ctx context.Context, session model.Li
 		return agentgateway.Response{}, fmt.Errorf("互动请求记录失败: %w", err)
 	}
 	started := time.Now()
-	response, callErr := w.agent.Complete(ctx, request)
+	response, callErr := w.completePaidModel(ctx, session, request, "answer")
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
 	defer cancel()
 	var input, output, cached *int64

@@ -115,7 +115,7 @@ func pruneRecordingCacheEntries(entries []recordingcache.Entry) []recordingcache
 func recordingCacheLookup(manifest *recordingcache.Manifest) map[string][]recordingcache.Entry {
 	hit := make(map[string][]recordingcache.Entry, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
-		if entry.AssetID > 0 && len(entry.Segments) > 0 && entry.Polished {
+		if entry.AssetID > 0 && len(entry.Segments) > 0 {
 			hit[entry.Sentence] = append(hit[entry.Sentence], entry)
 		}
 	}

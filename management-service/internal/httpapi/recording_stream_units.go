@@ -2,16 +2,18 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math/rand"
-	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/coreclient"
+	"livecompanion/management/internal/livecost"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/recordingcache"
 )
@@ -61,37 +63,54 @@ func splitRecordingSentences(text string) []string {
 	return out
 }
 
-// recordingSentenceRefresh 选出本轮要重新润色合成的句索引。
-func recordingSentenceRefresh(states []recordingSentenceState, round int, rng *rand.Rand) []bool {
-	set := make([]bool, len(states))
-	if len(set) == 0 {
-		return set
+// Optional updates stop once the rolling-hour soft budget is nearly spent.
+// Original A and necessary first audio remain allowed; only refresh work is
+// suppressed, and the caller can still fall back to a valid cached version.
+const recordingBudgetSoftCapMicros int64 = 1_200_000
+
+func recordingBudgetPercent(costMicros int64, desired int) int {
+	if desired > 0 && costMicros >= recordingBudgetSoftCapMicros {
+		return 0
 	}
-	if round < 4 {
-		for index := range set {
-			set[index] = true
-		}
-		return set
+	return desired
+}
+
+func (s *Server) recordingBudgetPercent(ctx context.Context, tenant, room int64, desired int) int {
+	if s == nil || s.store == nil || desired <= 0 {
+		return desired
 	}
-	want := (len(set)*30 + 99) / 100
-	if want < 1 {
-		want = 1
+	cost, err := s.liveCostController().Summary(ctx, livecost.Scope{TenantID: tenant, RoomID: room})
+	if err != nil {
+		log.Printf("recording stream budget unavailable tenant=%d room=%d error=%v; optional updates paused", tenant, room, err)
+		return 0
 	}
-	if want > len(set) {
-		want = len(set)
+	// The transactional request ledger includes pending/unknown attempts; media
+	// archival duration and a delayed cron snapshot cannot authorize paid work.
+	percent := recordingBudgetPercent(cost.TotalMicros, desired)
+	if percent == 0 && desired > 0 {
+		log.Printf("recording stream budget reuse-only tenant=%d room=%d cost_micros=%d target_micros=%d", tenant, room, cost.TotalMicros, recordingBudgetSoftCapMicros)
 	}
-	order := rng.Perm(len(set))
-	sort.SliceStable(order, func(i, j int) bool {
-		return states[order[i]].Refreshed < states[order[j]].Refreshed
-	})
-	for i := 0; i < want; i++ {
-		set[order[i]] = true
+	return percent
+}
+
+func recordingUpdatePercent(totalRunes int) int {
+	minutes := float64(totalRunes) / 220.0
+	switch {
+	case minutes < 20:
+		return 25
+	case minutes <= 60:
+		return 20
+	default:
+		return 10
 	}
-	return set
 }
 
 func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
 	texts := recordingStreamTexts(version)
+	totalRunes := 0
+	for _, text := range texts {
+		totalRunes += len([]rune(text))
+	}
 	if len(texts) == 0 {
 		return errors.New("话术优先没有可播放的正文")
 	}
@@ -138,18 +157,49 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 
 	// 命中就不润色、不合成，直接复用已有音轨。
 	cacheScope, cacheOK := recordingCacheScopeFor(tenant, room, version.PlanID)
-	voiceKey := recordingcache.VoiceKey(version.VoiceIdentity.VoiceID, version.VoiceIdentity.Model, fmt.Sprint(version.VoiceIdentity.Rate))
-	scriptHash := recordingcache.ScriptHash(texts)
+	// Resolve a profile/binding before cache lookup, so a changed binding cannot
+	// continue speaking in a previously resolved voice under the same profile ID.
+	resolvedID, resolvedModel, voiceErr := s.resolveFormalVoice(ctx, tenant, fullShowVariantVoiceInput{
+		Source: version.VoiceIdentity.Source, VoiceID: version.VoiceIdentity.VoiceID,
+		ProfileID: version.VoiceIdentity.ProfileID, BindingID: version.VoiceIdentity.BindingID,
+		Model: version.VoiceIdentity.Model,
+	})
+	if voiceErr != nil {
+		return voiceErr
+	}
+	version.VoiceIdentity.VoiceID, version.VoiceIdentity.Model = resolvedID, resolvedModel
+	voiceKey, cacheKey := recordingCurrentCacheIdentity(version, texts, polish)
 	var cacheManifest *recordingcache.Manifest
 	hit := map[string][]recordingcache.Entry{}
 	if cacheOK {
-		loaded, err := cacheScope.Load(voiceKey, scriptHash)
+		loaded, err := cacheScope.Load(voiceKey, cacheKey)
 		if err != nil {
 			log.Printf("recording stream cache load failed tenant=%d room=%d: %v", tenant, room, err)
-		} else if loaded != nil {
+		}
+		if loaded != nil {
+			loaded.ScriptHash = cacheKey
 			cacheManifest = loaded
 			hit = recordingCacheLookup(loaded)
 			log.Printf("recording stream cache loaded tenant=%d room=%d entries=%d", tenant, room, len(hit))
+		}
+	}
+	planner := recordingUpdatePlanner{}
+	if cacheManifest != nil && len(cacheManifest.UpdateState) > 0 {
+		if err := json.Unmarshal(cacheManifest.UpdateState, &planner); err != nil {
+			log.Printf("recording update credit unavailable tenant=%d room=%d; start empty", tenant, room)
+			planner = recordingUpdatePlanner{}
+		} else if planner.Version != 1 {
+			planner = recordingUpdatePlanner{}
+		}
+	}
+	tabIDs := recordingStableTabIDs(version, texts)
+	saveCache := func() {
+		if !cacheOK || cacheManifest == nil {
+			return
+		}
+		cacheManifest.UpdateState, _ = json.Marshal(planner)
+		if err := cacheScope.Save(cacheManifest); err != nil {
+			log.Printf("recording stream cache save failed tenant=%d room=%d: %v", tenant, room, err)
 		}
 	}
 
@@ -163,48 +213,12 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		}
 		order := recordingStreamOrder(len(tabs), previousLast, recordingStreamPinned(version), rng)
 		for _, tabIndex := range order {
-			refresh := recordingSentenceRefresh(tabs[tabIndex], round, rng)
-
-			// 每 5 句合并成一次润色调用：固定前缀只付一次，成本降到原来的 1/5。
-			// 返回按行拆回，行数或数字不一致的句子回退原文。
-			batched := map[int]string{}
-			for start := 0; start < len(tabs[tabIndex]); start += recordingPolishBatchSize {
-				if err := waitLiveLeasePermit(ctx); err != nil {
-					return err
-				}
-				end := start + recordingPolishBatchSize
-				if end > len(tabs[tabIndex]) {
-					end = len(tabs[tabIndex])
-				}
-				need := false
-				for i := start; i < end; i++ {
-					if refresh[i] || len(tabs[tabIndex][i].Versions) == 0 {
-						need = true
-						break
-					}
-				}
-				if !need {
-					continue
-				}
-				sources := make([]string, 0, end-start)
-				for i := start; i < end; i++ {
-					sources = append(sources, tabs[tabIndex][i].Source)
-				}
-				var polished []string
-				if err := liveContinuityAttempt(func() error { polished = s.polishRecordingSentenceBatch(ctx, polish, sources); return nil }); err != nil {
-					log.Printf("recording polish batch isolated tenant=%d room=%d tab=%d error=%v", tenant, room, tabIndex, err)
-				}
-				for i := start; i < end; i++ {
-					if i-start >= len(polished) {
-						break
-					}
-					if text := strings.TrimSpace(polished[i-start]); text != "" {
-						batched[i] = text
-					}
-				}
+			roundPercent := s.recordingBudgetPercent(ctx, tenant, room, recordingUpdatePercent(totalRunes))
+			if round == 0 {
+				roundPercent = 0 // First pass may use original A or validated persisted audio.
 			}
-
-			// 本轮这个标签要播的就绪单元；游标显式记录未消费范围。
+			updatePlan := planner.Plan(tabIDs[tabIndex], fmt.Sprintf("%d:%d", runtimeID, round), tabs[tabIndex], roundPercent, rng)
+			refresh := updatePlan.Selected
 			for index := range tabs[tabIndex] {
 				if err := ctx.Err(); err != nil {
 					return err
@@ -213,79 +227,88 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 					return err
 				}
 				state := &tabs[tabIndex][index]
-				if refresh[index] || len(state.Versions) == 0 {
-					if versions := hit[state.Source]; shouldReuseCachedVersion(len(versions), rng) {
-						pick := versions[rng.Intn(len(versions))]
-						if units, ok := s.rebuildRecordingUnitsFromCache(ctx, tenant, pick); ok && len(units) > 0 {
-							if cacheManifest != nil {
-								for i := range cacheManifest.Entries {
-									if cacheManifest.Entries[i].Sentence == pick.Sentence && cacheManifest.Entries[i].AssetID == pick.AssetID {
-										cacheManifest.Entries[i].Hits++
-										break
-									}
-								}
-							}
-							log.Printf("recording stream cache hit tenant=%d room=%d tab=%d index=%d versions=%d hits=%d", tenant, room, tabIndex, index, len(versions), pick.Hits+1)
-							queue.pending = append(queue.pending, units...)
-							if err := queue.flush(ctx, false); err != nil {
-								return err
-							}
-							continue
-						}
-					}
-					var units []recordingReadyUnit
-					var err error
-					err = liveContinuityAttempt(func() error {
-						var err error
-						if spoken, ok := batched[index]; ok {
-							units, err = s.compileRecordingSpoken(ctx, tenant, version, spoken, tabIndex, &seq)
-						} else {
-							units, err = s.compileRecordingSentence(ctx, tenant, version, polish, state.Source, tabIndex, &seq)
-						}
-						return err
-					})
-					if err != nil {
-						if liveContinuityTerminal(ctx, err) {
-							return err
-						}
-						// 单元级失败：有旧版本就沿用，没有就跳过这一句并留痕。
-						if len(state.Versions) == 0 {
-							log.Printf("recording stream sentence skipped tenant=%d room=%d tab=%d index=%d err=%v", tenant, room, tabIndex, index, err)
-							continue
-						}
-						log.Printf("recording stream sentence kept previous tenant=%d room=%d tab=%d index=%d err=%v", tenant, room, tabIndex, index, err)
-					} else if len(units) > 0 {
-						state.Versions = append(state.Versions, units)
-						if len(state.Versions) > 4 {
-							state.Versions = state.Versions[len(state.Versions)-4:]
-						}
-						state.Refreshed = round
-						// 只有真正被改写过的句子才进缓存；回退原文的条目进了缓存
-						// 会把“没润色”固化成永久结果。
-						if cacheOK && len(units) > 0 && strings.TrimSpace(units[0].Text) != strings.TrimSpace(state.Source) {
-							if entry, ok := recordingCacheEntryFromUnits(state.Source, units); ok {
-								entry.Polished = true
-								if cacheManifest == nil {
-									cacheManifest = &recordingcache.Manifest{Version: 2, VoiceKey: voiceKey, ScriptHash: scriptHash}
-								}
-								cacheManifest.Entries = append(cacheManifest.Entries, entry)
-								cacheManifest.Entries = pruneRecordingCacheEntries(cacheManifest.Entries)
-								hit = recordingCacheLookup(cacheManifest)
-								if err := cacheScope.Save(cacheManifest); err != nil {
-									log.Printf("recording stream cache save failed tenant=%d room=%d: %v", tenant, room, err)
-								}
-							}
-						}
-					}
+				priority, reason := livecost.PriorityNecessary, "当前事实和音色下缺少可播放声音，补充基础供料"
+				if refresh[index] {
+					priority, reason = livecost.PriorityOptional, "话术优先跨轮更新"
 				}
-				if len(state.Versions) == 0 {
+				callScope := liveCostCallScope{TenantID: tenant, RoomID: room, PlanID: version.PlanID, SessionID: runtimeID,
+					RunID: fmt.Sprint(runtimeID), Priority: priority, Reason: reason,
+					Key: fmt.Sprintf("recording:%d:%d:%s:%d:%d", runtimeID, version.ID, tabIDs[tabIndex], round, index)}
+				callCtx := withLiveCostScope(ctx, callScope)
+				candidates := hit[state.Source]
+				result, err := resolveRecordingReuse(callCtx, recordingReuseRequest{
+					Versions: state.Versions, Cached: candidates, Refresh: refresh[index], RNG: rng,
+					BuildCache: func(c context.Context, entry recordingcache.Entry) ([]recordingReadyUnit, bool) {
+						units, ok := s.rebuildRecordingUnitsFromCache(c, tenant, entry)
+						if !ok {
+							return nil, false
+						}
+						for _, unit := range units {
+							if _, err := approvedRecordingSpoken(polish, unit.Text); err != nil {
+								return nil, false
+							}
+						}
+						return units, true
+					},
+					Generate: func(c context.Context) ([]recordingReadyUnit, error) {
+						var units []recordingReadyUnit
+						err := liveContinuityAttempt(func() error {
+							var err error
+							if refresh[index] {
+								units, err = s.compileRecordingSentence(c, tenant, version, polish, state.Source, tabIndex, &seq)
+							} else {
+								units, err = s.compileRecordingOriginal(c, tenant, version, polish, state.Source, tabIndex, &seq)
+								if errors.Is(err, errRecordingOriginalRejected) {
+									units, err = s.compileRecordingSentence(c, tenant, version, polish, state.Source, tabIndex, &seq)
+								}
+							}
+							return err
+						})
+						return units, err
+					},
+				})
+				if err != nil {
+					if liveContinuityTerminal(ctx, err) {
+						return err
+					}
+					log.Printf("recording stream sentence unavailable tenant=%d room=%d tab=%d index=%d err=%v", tenant, room, tabIndex, index, err)
 					continue
 				}
-				queue.pending = append(queue.pending, state.Versions[rng.Intn(len(state.Versions))]...)
+				state.Versions = result.Versions
+				if result.GenerationErr != nil {
+					log.Printf("recording stream previous retained tenant=%d room=%d tab=%d index=%d err=%v", tenant, room, tabIndex, index, result.GenerationErr)
+				}
+				if result.Generated {
+					state.Refreshed = round
+					if refresh[index] {
+						planner.Commit(updatePlan, index)
+					}
+					if entry, ok := recordingCacheEntryFromUnits(state.Source, result.Units); cacheOK && ok {
+						entry.Polished = !sameSpeechText(state.Source, strings.Join(recordingUnitTexts(result.Units), ""))
+						if cacheManifest == nil {
+							cacheManifest = &recordingcache.Manifest{Version: 2, VoiceKey: voiceKey, ScriptHash: cacheKey}
+						}
+						cacheManifest.Entries = pruneRecordingCacheEntries(append(cacheManifest.Entries, entry))
+						hit = recordingCacheLookup(cacheManifest)
+					}
+				} else if result.CacheHit && result.CacheIndex >= 0 {
+					pick := candidates[result.CacheIndex]
+					for i := range cacheManifest.Entries {
+						entry := &cacheManifest.Entries[i]
+						if entry.Sentence == pick.Sentence && entry.AssetID == pick.AssetID && entry.UpdatedAt == pick.UpdatedAt {
+							entry.Hits++
+							break
+						}
+					}
+				}
+				saveCache()
+				// The resolver selects a newly generated version directly this round.
+				queue.pending = append(queue.pending, result.Units...)
 				if err := queue.flush(ctx, false); err != nil {
 					return err
 				}
 			}
+			saveCache()
 		}
 		// A short script cannot supply sixty unique seconds. Start its complete
 		// first pass instead of manufacturing repeated startup copies forever.
@@ -301,13 +324,55 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 	}
 }
 
-// compileRecordingSentence 把一句话润色后重新切句、逐句合成，返回就绪单元。
+var errRecordingOriginalRejected = errors.New("原句未通过P0，需要改写")
+
+// compileRecordingOriginal 让原文 A 在通过 P0 后直接合成，不先调用润色。
+// 只有明确的 P0 内容拒绝才返回 errRecordingOriginalRejected；
+// 审核状态不可用、存储或 TTS 错误不能被误判成“需要润色”。
+func (s *Server) compileRecordingOriginal(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, polish *anchorcycle.State, source string, tabIndex int, seq *int) ([]recordingReadyUnit, error) {
+	if polish == nil {
+		return nil, errors.New("原句审核状态不可用")
+	}
+	candidate := anchorcycle.Candidate{ID: fmt.Sprintf("recording-original-%d", *seq), Text: source, OutputText: source}
+	if err := polish.CheckP0Candidate(&candidate); err != nil {
+		return nil, err
+	}
+	if candidate.P0Report == nil {
+		return nil, errors.New("原句未取得P0审核回执")
+	}
+	if !candidate.P0Report.Passed {
+		return nil, errRecordingOriginalRejected
+	}
+	approved := source
+	if text := strings.TrimSpace(candidate.OutputText); text != "" {
+		approved = text
+	}
+	if err := polish.CheckApprovedText(candidate, approved); err != nil {
+		return nil, err
+	}
+	return s.compileRecordingSpoken(ctx, tenant, version, approved, tabIndex, seq)
+}
+
 func (s *Server) compileRecordingSentence(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, polish *anchorcycle.State, source string, tabIndex int, seq *int) ([]recordingReadyUnit, error) {
-	spoken := polishRecordingText(ctx, s, polish, source)
+	// The active planner already chose a rewrite. The retired original-base
+	// switch must not silently veto every optional update forever.
+	spoken := polishRecordingTextLimit(ctx, s, polish, source, 0)
 	if strings.TrimSpace(spoken) == "" {
 		spoken = source
 	}
-	return s.compileRecordingSpoken(ctx, tenant, version, spoken, tabIndex, seq)
+	// An optional rewrite that failed or echoed the original must reuse the
+	// existing audio instead of buying another identical TTS rendition.
+	if scope, _ := ctx.Value(liveCostScopeKey{}).(liveCostCallScope); scope.Priority == livecost.PriorityOptional && sameSpeechText(source, spoken) {
+		return nil, errors.New("本次改写未产生新表达，保留已有声音")
+	}
+	if !sameNumbers(source, spoken) || suspiciousPolish(source, spoken) {
+		return nil, errors.New("改写改变了原文信息，保留已有声音")
+	}
+	approved, err := approvedRecordingSpoken(polish, spoken)
+	if err != nil {
+		return nil, err
+	}
+	return s.compileRecordingSpoken(ctx, tenant, version, approved, tabIndex, seq)
 }
 
 // compileRecordingSpoken 把已经润色好的正文切句并逐句合成。
@@ -394,11 +459,27 @@ func splitRecordingLongSentence(text string, maxRunes int) []string {
 				}
 			}
 		}
+		end, next := cut, cut+1
 		if cut < 0 {
-			cut = start + maxRunes - 1
+			// A hard boundary is between characters, unlike a punctuation cut.
+			// Do not drop the boundary character or divide a price/quantity.
+			end = start + maxRunes
+			numeric := func(r rune) bool { return unicode.IsDigit(r) || strings.ContainsRune(".．%％", r) }
+			if end < len(runes) && numeric(runes[end-1]) && numeric(runes[end]) {
+				for end > start && numeric(runes[end-1]) {
+					end--
+				}
+				if end == start {
+					end = start + maxRunes
+					for end < len(runes) && numeric(runes[end]) {
+						end++
+					}
+				}
+			}
+			next = end
 		}
-		out = append(out, terminateRecordingSentence(string(runes[start:cut])))
-		start = cut + 1
+		out = append(out, terminateRecordingSentence(string(runes[start:end])))
+		start = next
 		for start < len(runes) && strings.ContainsRune(" 　", runes[start]) {
 			start++
 		}
@@ -420,11 +501,12 @@ func terminateRecordingSentence(text string) string {
 	return trimmed
 }
 
-// 起播缓冲目标：60 秒；合成过慢时退到 45 秒。
+// 起播缓冲目标：90 秒；合成过慢时退到 60 秒。
+// 45 秒缓冲会被尾段 TTS 抖动吃穿，导致播放静音。
 const (
-	recordingStartBufferMS   = 60000
-	recordingStartFallbackMS = 45000
-	recordingStartSlowWait   = 90 * time.Second
+	recordingStartBufferMS   = 90000
+	recordingStartFallbackMS = 60000
+	recordingStartSlowWait   = 120 * time.Second
 )
 
 // recordingStartReady 判断是否已经攒够开播所需的音频。

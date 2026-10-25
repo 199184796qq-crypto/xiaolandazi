@@ -93,6 +93,8 @@ type Worker struct {
 	core               coreDoer
 	agent              completer
 	tts                synthesizer
+	paidContextFactory PaidRequestContextFactory
+	paidModelCompleter PaidModelCompleter
 	leader             leader
 	interval           time.Duration
 	executionRealm     string
@@ -1775,6 +1777,9 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 
 	manualOrigin := strings.ToLower(strings.TrimSpace(item.ManualOrigin))
 	isSimulation := manualOrigin == "test_simulation" || manualOrigin == "agent_input_preview"
+	if isSimulation {
+		ctx = context.WithValue(ctx, workerPaidOptOutKey{}, true)
+	}
 	memoryBefore, err := w.interactionMemoryFingerprint(ctx, session)
 	if err != nil {
 		return err
@@ -1804,6 +1809,13 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	}
 	if item.AudioPrepared && !item.ExpiresAt.IsZero() && !w.now().Before(item.ExpiresAt) && (item.CompletionUntil.IsZero() || !w.now().Before(item.CompletionUntil)) {
 		return fmt.Errorf("已准备音频失效且原事件已到期，停止重新生成")
+	}
+	if !isSimulation && session.ID > 0 && (w.paidContextFactory != nil || w.paidModelCompleter != nil) {
+		plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
+		if planErr != nil {
+			return planErr
+		}
+		ctx = withWorkerPaidScope(ctx, session, plan.ID, item.ID+":"+preparationScope)
 	}
 	text, err := w.generateDecisionTextMutable(ctx, session, item)
 	if err != nil {
@@ -1914,7 +1926,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		// Corrections remain hard constraints, unlike advisory host style.
 		// 规则更新后只用最新文本重新合成语音，不再做长度兜底修复。
 		text = item.nicknameSpeechText(text)
-		audio, err = w.tts.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: ttsModel, VoiceID: voice.VoiceID, Text: prefixedInteractionText(text), Rate: voiceRate(voice), Instruction: ttsInstruction})
+		audio, err = w.synthesizePaidAudio(ctx, session, "interaction_fact_refresh_tts", item.ID, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: ttsModel, VoiceID: voice.VoiceID, Text: prefixedInteractionText(text), Rate: voiceRate(voice), Instruction: ttsInstruction})
 		if err != nil || strings.TrimSpace(audio.AudioURL) == "" {
 			return fmt.Errorf("纠正规则更新后重新生成语音失败: %v", err)
 		}

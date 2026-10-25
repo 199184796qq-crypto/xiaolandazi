@@ -59,6 +59,9 @@ type Manifest struct {
 	VoiceKey   string  `json:"voice_key"`
 	ScriptHash string  `json:"script_hash"`
 	Entries    []Entry `json:"entries"`
+	// UpdateState carries fractional per-tab update credit across sessions. It
+	// shares this manifest's fact/voice/content identity and contains no URLs.
+	UpdateState json.RawMessage `json:"update_state,omitempty"`
 }
 
 // Scope locates one cache directory.

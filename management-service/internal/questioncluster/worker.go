@@ -40,15 +40,16 @@ type leader interface {
 }
 
 type Worker struct {
-	store            sessionStore
-	core             *coreclient.Client
-	agent            completer
-	leader           leader
-	interval         time.Duration
-	executionRealm   string
-	now              func() time.Time
-	semanticEmbedder semantic.Embedder
-	semanticService  *semantic.Service
+	store              sessionStore
+	core               *coreclient.Client
+	agent              completer
+	paidModelCompleter PaidModelCompleter
+	leader             leader
+	interval           time.Duration
+	executionRealm     string
+	now                func() time.Time
+	semanticEmbedder   semantic.Embedder
+	semanticService    *semantic.Service
 
 	mu              sync.Mutex
 	inFlight        map[int64]bool
@@ -116,6 +117,14 @@ func (w *Worker) SetExecutionRealm(realm string) {
 		return
 	}
 	w.executionRealm = model.NormalizeExecutionRealm(realm)
+}
+
+// SetPaidModelCompleter shares live model accounting with mainline and answers.
+// Configure before Run; the adapter is invoked only at the existing paid call.
+func (w *Worker) SetPaidModelCompleter(completer PaidModelCompleter) {
+	if w != nil {
+		w.paidModelCompleter = completer
+	}
 }
 
 func (w *Worker) SetSemanticEmbedder(embedder semantic.Embedder) {
@@ -262,7 +271,8 @@ func (w *Worker) refineRoom(ctx context.Context, session model.LiveRuntimeSessio
 		return err
 	}
 	systemPrompt := w.store.AgentPromptValue(ctx, "question.cluster.system", "按可用同一段主播回答覆盖的语义整理问题类别；不要回答问题，严格输出 JSON。")
-	response, err := w.agent.Complete(ctx, agentgateway.Request{
+	response, err := w.completePaidModel(ctx, session, agentgateway.Request{
+		Stage: "question_cluster",
 		Messages: []agentgateway.Message{
 			{Role: "system", Content: systemPrompt},
 			{
@@ -274,7 +284,7 @@ func (w *Worker) refineRoom(ctx context.Context, session model.LiveRuntimeSessio
 		EnableThinking: false,
 		ResponseFormat: agentgateway.ResponseJSON,
 		Timeout:        20 * time.Second,
-	})
+	}, maxEventID)
 	if err != nil {
 		return err
 	}

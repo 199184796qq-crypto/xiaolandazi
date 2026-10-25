@@ -3,6 +3,7 @@ package ttsgateway
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -23,11 +24,17 @@ type SynthesizeRequest struct {
 }
 
 type SynthesizeResponse struct {
-	AudioURL string
-	Provider string
-	Model    string
-	VoiceID  string
-	Rate     float64
+	AudioURL          string
+	Provider          string
+	Model             string
+	VoiceID           string
+	Rate              float64
+	ProviderRequestID string
+	Usage             SynthesisUsage
+	UsageSource       string
+	// A completed synthesis remains usable if accounting could not be persisted.
+	// Callers must retain this audio instead of synthesizing it again.
+	AccountingPending bool
 }
 
 type CloneRequest struct {
@@ -128,7 +135,7 @@ func (g *Gateway) SynthesizeURL(ctx context.Context, request SynthesizeRequest) 
 	if request.Rate == 0 {
 		request.Rate = 1.0
 	}
-	if request.Rate < 0.5 || request.Rate > 2.0 {
+	if math.IsNaN(request.Rate) || math.IsInf(request.Rate, 0) || request.Rate < 0.5 || request.Rate > 2.0 {
 		return SynthesizeResponse{}, errors.New("tts rate must be between 0.5 and 2.0")
 	}
 	if request.Provider == "" && (IsCosyVoiceModel(request.Model) || request.Model == TencentPremiumModel) {
@@ -142,7 +149,7 @@ func (g *Gateway) SynthesizeURL(ctx context.Context, request SynthesizeRequest) 
 		return SynthesizeResponse{}, err
 	}
 	request.Provider = canonical
-	return p.SynthesizeURL(ctx, request)
+	return observeSynthesis(ctx, p, request)
 }
 
 func (g *Gateway) CloneVoice(ctx context.Context, request CloneRequest) (CloneResponse, error) {

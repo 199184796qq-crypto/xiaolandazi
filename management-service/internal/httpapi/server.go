@@ -21,6 +21,7 @@ import (
 	"livecompanion/management/internal/auth"
 	"livecompanion/management/internal/coreclient"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/livecost"
 	"livecompanion/management/internal/mailer"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/semantic"
@@ -55,30 +56,37 @@ type Server struct {
 		IsLeader() bool
 		Owner() string
 	}
-	mailer                *mailer.Client
-	env                   string
-	executionRealm        string
-	avatarDir             string
-	publicWebURL          string
-	assetStorage          *assetstorage.Registry
-	assetURLTTL           time.Duration
-	coreStatusMu          sync.RWMutex
-	coreStatus            coreRuntimeStatus
-	speechMissions        SpeechMissionReader
-	semanticMetrics       SemanticMetricsReader
-	xiaozhiInternalToken  string
-	deviceClaims          deviceClaimLimiter
-	deviceBusinessLimits  deviceBusinessLimiter
-	wechatPay             WechatPaymentProvider
-	stylePlugins          *styleplugin.Registry
-	anchorCycles          anchorcycle.Repository
-	anchorVoiceCache      anchorvoicecache.Repository
-	speechLibrary         speechlibrary.Repository
-	generationCachePolicy model.GenerationCachePolicyReader
-	cycleCancels          cycleCancels
-	previewStreams        previewStreams
-	anchorProducerContext context.Context
-	sessionArchiveWatches sync.Map
+	mailer                 *mailer.Client
+	env                    string
+	executionRealm         string
+	avatarDir              string
+	publicWebURL           string
+	assetStorage           *assetstorage.Registry
+	assetURLTTL            time.Duration
+	coreStatusMu           sync.RWMutex
+	coreStatus             coreRuntimeStatus
+	speechMissions         SpeechMissionReader
+	semanticMetrics        SemanticMetricsReader
+	xiaozhiInternalToken   string
+	deviceClaims           deviceClaimLimiter
+	deviceBusinessLimits   deviceBusinessLimiter
+	wechatPay              WechatPaymentProvider
+	stylePlugins           *styleplugin.Registry
+	anchorCycles           anchorcycle.Repository
+	anchorVoiceCache       anchorvoicecache.Repository
+	speechLibrary          speechlibrary.Repository
+	generationCachePolicy  model.GenerationCachePolicyReader
+	cycleCancels           cycleCancels
+	previewStreams         previewStreams
+	anchorProducerContext  context.Context
+	liveCostMu             sync.Mutex
+	liveCostRequests       *livecost.Controller
+	liveCostInitialized    bool
+	liveCostReplayAt       time.Time
+	liveCostPrices         []liveCostPriceRule
+	liveModelCostTickets   map[int64]liveModelCostAttempt
+	liveModelCostSequence  int64
+	sessionArchiveWatches  sync.Map
 	invalidateBenefitCache func(ctx context.Context, tenantID, planID int64)
 }
 

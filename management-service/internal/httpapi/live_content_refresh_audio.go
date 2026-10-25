@@ -215,11 +215,14 @@ func (s *Server) refreshContentVariant(ctx context.Context, tenantID, actorID, p
 	}
 	gateway := ttsgateway.NewFromEnv()
 	newPieces := make([]generatedVoiceWAVPiece, 0)
-	for _, text := range splitFullShowVoiceText(newText) {
+	for part, text := range splitFullShowVoiceText(newText) {
 		if err := stillAllowed(); err != nil {
 			return original, err
 		}
-		generated, err := gateway.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Model: modelName, VoiceID: voiceID, Text: text, Rate: voice.Rate})
+		paidCtx := s.withLiveCostTTS(ctx, liveCostCallScope{TenantID: tenantID, RoomID: roomID, PlanID: planID,
+			Priority: "necessary", Reason: "事实或内容更新需要重新交付声音",
+			Key: fmt.Sprintf("content-refresh:%d:%d:%d:%d", original.AudioAssetID, original.GenerationNo, part, percent)})
+		generated, err := gateway.SynthesizeURL(paidCtx, ttsgateway.SynthesizeRequest{Model: modelName, VoiceID: voiceID, Text: text, Rate: voice.Rate})
 		if err != nil {
 			return original, err
 		}

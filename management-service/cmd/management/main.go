@@ -140,6 +140,9 @@ func main() {
 	if err := store.MigrateLiveRuntime(ctx); err != nil {
 		log.Fatalf("migrate live runtime database: %v", err)
 	}
+	if err := store.MigrateLiveCostRequests(ctx); err != nil {
+		log.Fatalf("migrate live request cost ledger: %v", err)
+	}
 	if err := store.MigrateModelPool(ctx); err != nil {
 		log.Fatalf("migrate model pool: %v", err)
 	}
@@ -311,11 +314,13 @@ func main() {
 		log.Printf("semantic embedding disabled")
 	}
 	clusterWorker := questioncluster.New(store, core, agentGateway, executionLeaderLease)
+	clusterWorker.SetPaidModelCompleter(api.CompleteLivePaidModel)
 	clusterWorker.SetExecutionRealm(cfg.RuntimeExecutionRealm)
 	clusterWorker.SetSemanticEmbedder(semanticEmbedder)
 	clusterWorker.SetSemanticService(semanticService)
 	go clusterWorker.Run(appCtx)
 	decisionWorker := decisionexecutor.New(store, core, agentGateway, ttsgateway.NewFromEnv(), executionLeaderLease)
+	decisionWorker.SetPaidRequestAdapters(api.LivePaidContext, api.CompleteLivePaidModel)
 	decisionWorker.SetExecutionRealm(cfg.RuntimeExecutionRealm)
 	decisionWorker.SetSemanticEmbedder(semanticEmbedder)
 	decisionWorker.SetSemanticService(semanticService)

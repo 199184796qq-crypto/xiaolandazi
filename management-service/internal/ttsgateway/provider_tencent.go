@@ -102,37 +102,37 @@ func tencentSignedURL(endpoint, secret string, params url.Values) (string, error
 }
 func (p *tencentProvider) SynthesizeURL(parent context.Context, r SynthesizeRequest) (SynthesizeResponse, error) {
 	if r.Model != TencentPremiumModel {
-		return SynthesizeResponse{}, errors.New("腾讯精品音色模型不匹配")
+		return SynthesizeResponse{}, notSent(errors.New("腾讯精品音色模型不匹配"))
 	}
 	voice, ok := voicecatalog.Find(r.VoiceID)
 	if !ok || voice.Model != TencentPremiumModel {
-		return SynthesizeResponse{}, errors.New("请选择腾讯精品音色")
+		return SynthesizeResponse{}, notSent(errors.New("请选择腾讯精品音色"))
 	}
 	text := strings.TrimSpace(r.Text)
 	if text == "" || utf8.RuneCountInString(text) > 10000 {
-		return SynthesizeResponse{}, errors.New("腾讯单次合成文字须为1到10000字符")
+		return SynthesizeResponse{}, notSent(errors.New("腾讯单次合成文字须为1到10000字符"))
 	}
 	if r.Rate == 0 {
 		r.Rate = 1
 	}
 	speed, err := tencentSpeed(r.Rate)
 	if err != nil {
-		return SynthesizeResponse{}, err
+		return SynthesizeResponse{}, notSent(err)
 	}
 	c := p.config
 	app, err := strconv.ParseUint(c.AppID, 10, 64)
 	if err != nil || app == 0 || c.SecretID == "" || c.SecretKey == "" {
-		return SynthesizeResponse{}, errors.New("腾讯声音尚未配置AppID和API密钥，请联系运维配置")
+		return SynthesizeResponse{}, notSent(errors.New("腾讯声音尚未配置AppID和API密钥，请联系运维配置"))
 	}
 	session, err := tencentSessionID()
 	if err != nil {
-		return SynthesizeResponse{}, err
+		return SynthesizeResponse{}, notSent(err)
 	}
 	now := time.Now().Unix()
 	params := url.Values{"Action": {"TextToStreamAudioWSv2"}, "AppId": {c.AppID}, "SecretId": {c.SecretID}, "Timestamp": {strconv.FormatInt(now, 10)}, "Expired": {strconv.FormatInt(now+3600, 10)}, "SessionId": {session}, "VoiceType": {r.VoiceID}, "Codec": {"pcm"}, "SampleRate": {"16000"}, "Speed": {strconv.FormatFloat(speed, 'f', 2, 64)}, "Volume": {"0"}}
 	endpoint, err := tencentSignedURL(c.Endpoint, c.SecretKey, params)
 	if err != nil {
-		return SynthesizeResponse{}, err
+		return SynthesizeResponse{}, notSent(err)
 	}
 	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 	defer cancel()
@@ -163,17 +163,18 @@ func (p *tencentProvider) SynthesizeURL(parent context.Context, r SynthesizeRequ
 	}
 	var pcm bytes.Buffer
 	sent := false
+	result := SynthesizeResponse{Provider: ProviderTencent, Model: r.Model, VoiceID: r.VoiceID, Rate: r.Rate, UsageSource: UsageSentTextEstimate}
 	for {
 		kind, raw, e := conn.ReadMessage()
 		if e != nil {
 			if ctx.Err() != nil {
-				return SynthesizeResponse{}, ctx.Err()
+				return result, ctx.Err()
 			}
-			return SynthesizeResponse{}, errors.New("腾讯声音连接提前结束，未收到完整音频")
+			return result, errors.New("腾讯声音连接提前结束，未收到完整音频")
 		}
 		if kind == websocket.BinaryMessage {
 			if !sent || pcm.Len()+len(raw) > 32<<20 {
-				return SynthesizeResponse{}, errors.New("腾讯声音数据顺序或大小异常")
+				return result, errors.New("腾讯声音数据顺序或大小异常")
 			}
 			pcm.Write(raw)
 			continue
@@ -182,34 +183,39 @@ func (p *tencentProvider) SynthesizeURL(parent context.Context, r SynthesizeRequ
 			continue
 		}
 		var event struct {
-			Code  *int `json:"code"`
-			Ready int  `json:"ready"`
-			Final int  `json:"final"`
+			Code      *int   `json:"code"`
+			Ready     int    `json:"ready"`
+			Final     int    `json:"final"`
+			RequestID string `json:"request_id"`
 		}
 		if json.Unmarshal(raw, &event) != nil || event.Code == nil {
-			return SynthesizeResponse{}, errors.New("腾讯声音响应无效")
+			return result, errors.New("腾讯声音响应无效")
+		}
+		if requestID := safeProviderRequestID(event.RequestID); requestID != "" {
+			result.ProviderRequestID = requestID
 		}
 		if *event.Code != 0 {
 			// Do not return provider messages or the signed handshake URL: either may contain credentials.
-			return SynthesizeResponse{}, fmt.Errorf("腾讯声音合成失败（错误码%d），请检查密钥、语音合成服务权限及额度", *event.Code)
+			return result, fmt.Errorf("腾讯声音合成失败（错误码%d），请检查密钥、语音合成服务权限及额度", *event.Code)
 		}
 		if event.Ready == 1 && !sent {
 			if send("ACTION_SYNTHESIS", text) != nil || send("ACTION_COMPLETE", "") != nil {
-				return SynthesizeResponse{}, errors.New("发送腾讯合成文字失败")
+				return result, errors.New("发送腾讯合成文字失败")
 			}
 			sent = true
 		}
 		if event.Final == 1 {
 			if !sent || pcm.Len() == 0 || pcm.Len()%2 != 0 {
-				return SynthesizeResponse{}, errors.New("腾讯返回的完整PCM音频为空或无效")
+				return result, errors.New("腾讯返回的完整PCM音频为空或无效")
 			}
 			// Premium voices are 16kHz. Declare the real format; Core normalizes it to its output rate.
 			wav := tencentPCMToWAV(pcm.Bytes())
 			audioURL, e := c.Publish(ctx, wav)
 			if e != nil {
-				return SynthesizeResponse{}, e
+				return result, e
 			}
-			return SynthesizeResponse{AudioURL: audioURL, Provider: ProviderTencent, Model: r.Model, VoiceID: r.VoiceID, Rate: r.Rate}, nil
+			result.AudioURL = audioURL
+			return result, nil
 		}
 	}
 }

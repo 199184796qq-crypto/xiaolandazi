@@ -245,7 +245,7 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 		return err
 	}
 	input, _ := json.Marshal(map[string]any{"互动句": plan.ReplyText, "回归后的那一句": firstBridgeReturnSentence(plan)})
-	result, err := w.agent.Complete(ctx, agentgateway.Request{Stage: "interaction_bridge", Provider: "anchor:" + profile.ID, Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: string(template)}, {Role: "user", Content: string(input)}}, ResponseFormat: agentgateway.ResponseJSON, MaxTokens: 128, EnableThinking: false, Timeout: 4 * time.Second})
+	result, err := w.completePaidModel(ctx, session, agentgateway.Request{Stage: "interaction_bridge", Provider: "anchor:" + profile.ID, Model: profile.Model, Messages: []agentgateway.Message{{Role: "system", Content: string(template)}, {Role: "user", Content: string(input)}}, ResponseFormat: agentgateway.ResponseJSON, MaxTokens: 128, EnableThinking: false, Timeout: 4 * time.Second}, item.ID+":bridge:"+scope)
 	if err != nil {
 		return err
 	}
@@ -280,7 +280,7 @@ func (w *Worker) generateAndStageBridge(ctx context.Context, session model.LiveR
 	if err != nil || !ok {
 		return fmt.Errorf("bridge voice unavailable")
 	}
-	audio, err := w.tts.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: voiceModel(voice), VoiceID: voice.VoiceID, Text: prefixedInteractionText(bridge.Text), Rate: voiceRate(voice)})
+	audio, err := w.synthesizePaidAudio(ctx, session, "interaction_bridge_tts", item.ID+":"+scope, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: voiceModel(voice), VoiceID: voice.VoiceID, Text: prefixedInteractionText(bridge.Text), Rate: voiceRate(voice)})
 	if err != nil || audio.AudioURL == "" {
 		return fmt.Errorf("bridge TTS unavailable: %v", err)
 	}

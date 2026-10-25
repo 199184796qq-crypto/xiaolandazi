@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"livecompanion/management/internal/agentgateway"
 	appdb "livecompanion/management/internal/db"
+	"log"
 	"time"
 )
 
@@ -32,12 +33,21 @@ func (s *Server) beginModelExchange(ctx context.Context, stage, profile string, 
 	if err != nil {
 		return 0, fmt.Errorf("模型请求日志保存失败，未发送：%w", err)
 	}
+	if err := s.beginLiveModelCost(ctx, id, stage, profile, request); err != nil {
+		persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		// This request has definitely not reached its supplier. Close only the
+		// journal row; the cost controller retains its own decline/unknown state.
+		_ = s.store.CompleteModelExchange(persist, id, nil, "", 0, nil, nil, nil, err)
+		return 0, err
+	}
 	return id, nil
 }
 func (s *Server) finishModelExchange(ctx context.Context, id int64, response any, text string, started time.Time, in, out int64, callErr error) error {
 	if id == 0 {
 		return callErr
 	}
+	s.finishLiveModelCost(ctx, id, response, in, out, callErr)
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	var input, output, cached *int64
@@ -53,8 +63,12 @@ func (s *Server) finishModelExchange(ctx context.Context, id int64, response any
 		v := r.CachedInputTokens
 		cached = &v
 	}
-	if err := s.store.CompleteModelExchange(persist, id, response, text, time.Since(started).Milliseconds(), input, output, cached, callErr); err != nil {
-		return fmt.Errorf("模型已返回，但日志保存失败：%w", err)
+	if s.store != nil {
+		if err := s.store.CompleteModelExchange(persist, id, response, text, time.Since(started).Milliseconds(), input, output, cached, callErr); err != nil {
+			// Paid success must not become a generation failure: callers otherwise
+			// send the same content again and pay twice merely to repair a journal.
+			log.Printf("[model-exchange] 模型请求已经返回，日志暂未保存；保留原结果，不重新发送 exchange=%d", id)
+		}
 	}
 	return callErr
 }

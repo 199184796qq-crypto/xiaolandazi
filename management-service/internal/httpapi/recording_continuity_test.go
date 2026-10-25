@@ -51,7 +51,7 @@ func TestRecordingReadyQueueShortScriptStartsCompleteFirstPassWithoutSlicePanic(
 func TestRecordingReadyQueueCachedUnitsUseSameDurationGateAndDrainInOrder(t *testing.T) {
 	q, sent := readyQueueFixture()
 	for _, id := range []string{"cached-a", "cached-b"} {
-		q.pending = append(q.pending, readyQueueUnit(id, 20000))
+		q.pending = append(q.pending, readyQueueUnit(id, 30000))
 		if err := q.flush(context.Background(), false); err != nil {
 			t.Fatal(err)
 		}
@@ -59,7 +59,7 @@ func TestRecordingReadyQueueCachedUnitsUseSameDurationGateAndDrainInOrder(t *tes
 	if len(*sent) != 0 {
 		t.Fatal("cache bypassed startup buffer", *sent)
 	}
-	q.pending = append(q.pending, readyQueueUnit("new-c", 20000))
+	q.pending = append(q.pending, readyQueueUnit("new-c", 30000))
 	if err := q.flush(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}

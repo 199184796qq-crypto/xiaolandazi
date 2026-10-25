@@ -68,10 +68,10 @@ func (*cosyVoiceProvider) Name() string { return ProviderCosyVoice }
 
 func (p *cosyVoiceProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequest) (SynthesizeResponse, error) {
 	if !IsCosyVoiceModel(request.Model) {
-		return SynthesizeResponse{}, errors.New("CosyVoice模型不支持")
+		return SynthesizeResponse{}, notSent(errors.New("CosyVoice模型不支持"))
 	}
 	if CharacterCount(request.Instruction) > 100 {
-		return SynthesizeResponse{}, errors.New("CosyVoice表达指令不能超过100个字符（汉字按2个字符计算）")
+		return SynthesizeResponse{}, notSent(errors.New("CosyVoice表达指令不能超过100个字符（汉字按2个字符计算）"))
 	}
 	result, err := p.transport.SynthesizeURL(ctx, request)
 	result.Provider = ProviderCosyVoice

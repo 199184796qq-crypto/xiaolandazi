@@ -29,7 +29,8 @@ func (w *Worker) synthesizeInteractionAudio(ctx context.Context, item *decisionI
 		n := min(80, len(runes))
 		log.Printf("interaction tts text decision=%s mission=%s text=%q", item.ID, item.MissionKind, string(runes[:n]))
 	}
-	response, err := w.tts.SynthesizeURL(ctx, request)
+	scope, _ := ctx.Value(workerPaidScopeKey{}).(workerPaidScope)
+	response, err := w.synthesizePaidAudio(ctx, scope.session, "interaction_tts", item.ID, request)
 	if err != nil {
 		return response, err
 	}

@@ -326,11 +326,15 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 		Instruction: recordingInstructionForVersion(version, text),
 	}
 	var generated ttsgateway.SynthesizeResponse
-	err = retryLiveOperation(ctx, "合成话术单句", 3, nil, func() error {
-		var err error
-		generated, err = gateway.SynthesizeURL(ctx, request)
-		return err
-	})
+	// Only the provider boundary is charged. Re-signing, rebuilding a cache
+	// track and retrying archive/download never create another TTS request.
+	scope, _ := ctx.Value(liveCostScopeKey{}).(liveCostCallScope)
+	if scope.TenantID == 0 {
+		scope = liveCostCallScope{TenantID: tenant, RoomID: version.RoomID, PlanID: version.PlanID,
+			Priority: "necessary", Reason: "当前事实和音色下补充可播放声音", Key: fmt.Sprintf("recording:%d:%d:%d", version.ID, round, index)}
+	}
+	scope.Key += fmt.Sprintf(":part:%d", round)
+	generated, err = gateway.SynthesizeURL(s.withLiveCostTTS(ctx, scope), request)
 	if err != nil {
 		return coreclient.ProgramRefreshTrack{}, err
 	}
@@ -522,7 +526,9 @@ func (s *Server) recordingPolishState(ctx context.Context, tenant, plan, room in
 		return nil
 	}
 	if err := s.installCycleTextModel(ctx, state); err != nil || state.TextModel == nil {
-		return nil
+		// Warm audio and an admitted original do not need a text model. A model
+		// credential outage must not disable otherwise valid cached supply.
+		log.Printf("recording rewrite model unavailable tenant=%d room=%d; retain admitted originals/cache", tenant, room)
 	}
 	return state
 }
@@ -580,13 +586,28 @@ func polishRecordingTextLimit(ctx context.Context, server *Server, state *anchor
 		"对象、动作、条件、数字、商品名必须保持完全不变，数字仍用阿拉伯数字写，不能改成中文写法，" +
 		"不能增删信息，不能改变说话对象。\n原文：" + text
 	for attempt := 0; attempt < 3; attempt++ {
-		rewritten, err := server.rewriteCycleText(ctx, state, promptText)
+		attemptCtx := ctx
+		if scope := liveCostScope(ctx); scope.Key != "" {
+			// Only a definite returned result can reach the next iteration. An
+			// unknown request exits below, never getting another identity merely
+			// because a random expression or prompt changed during retry.
+			scope.Key += fmt.Sprintf(":rewrite-attempt:%d", attempt)
+			attemptCtx = withLiveCostScope(ctx, scope)
+		}
+		rewritten, err := server.rewriteCycleText(attemptCtx, state, promptText)
 		if err != nil || strings.TrimSpace(rewritten) == "" {
 			return source
 		}
 		candidate := anchorcycle.Candidate{ID: anchorcycle.ID(), Text: strings.TrimSpace(rewritten)}
 		candidate.OutputText = candidate.Text
-		if problem := state.CheckP0Candidate(&candidate); problem == nil {
+		problem := state.CheckP0Candidate(&candidate)
+		if problem == nil && (candidate.P0Report == nil || !candidate.P0Report.Passed) {
+			problem = errors.New("改写未通过文字审核")
+		}
+		if problem == nil {
+			problem = state.CheckApprovedText(candidate, candidate.OutputText)
+		}
+		if problem == nil {
 			// 润色会把句子写长；超过上限就回退原文。
 			if maxRunes > 0 && len([]rune(candidate.OutputText)) > maxRunes {
 				log.Printf("recording stream polish expanded beyond %d runes; fallback original", maxRunes)
@@ -603,11 +624,12 @@ func polishRecordingTextLimit(ctx context.Context, server *Server, state *anchor
 			// 踩到违规词：把违规之处告诉模型，让它就这一句重写，
 			// 而不是直接放弃、退回原文。
 			log.Printf("recording stream polish p0 rejected attempt=%d reason=%v", attempt+1, problem)
-			text = "原句：" + source + "\n上一次改写出现了违规表述：" + problem.Error() +
+			promptText = "原句：" + source + "\n上一次改写出现了违规表述：" + problem.Error() +
 				"\n请重写原句，去掉上述违规表述，其余意思、数字、商品名保持不变，只输出改写后的这一句。"
 		}
 	}
-	return text
+	// A repair instruction must never become spoken content after exhaustion.
+	return source
 }
 
 func chooseRecordingHistory(history [][]recordingStreamCacheEntry, index int, rng *rand.Rand) recordingStreamCacheEntry {

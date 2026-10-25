@@ -60,10 +60,10 @@ func (p *qwenProvider) Name() string { return ProviderQwen }
 
 func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequest) (SynthesizeResponse, error) {
 	if p.apiKey == "" {
-		return SynthesizeResponse{}, errors.New("DASHSCOPE_API_KEY not configured")
+		return SynthesizeResponse{}, notSent(errors.New("DASHSCOPE_API_KEY not configured"))
 	}
 	if strings.TrimSpace(request.Model) == "" || strings.TrimSpace(request.VoiceID) == "" || strings.TrimSpace(request.Text) == "" {
-		return SynthesizeResponse{}, errors.New("model, voice_id and text are required")
+		return SynthesizeResponse{}, notSent(errors.New("model, voice_id and text are required"))
 	}
 	payload := map[string]any{
 		"model": request.Model,
@@ -96,11 +96,11 @@ func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequ
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return SynthesizeResponse{}, err
+		return SynthesizeResponse{}, notSent(err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
-		return SynthesizeResponse{}, err
+		return SynthesizeResponse{}, notSent(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -113,35 +113,45 @@ func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequ
 	if err != nil {
 		return SynthesizeResponse{}, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		message := strings.TrimSpace(string(body))
-		if len(message) > 1200 {
-			message = message[:1200]
-		}
-		if message == "" {
-			return SynthesizeResponse{}, fmt.Errorf("qwen tts provider http %d", resp.StatusCode)
-		}
-		return SynthesizeResponse{}, fmt.Errorf("qwen tts provider http %d: %s", resp.StatusCode, message)
-	}
 	var result struct {
-		Output struct {
+		RequestID string          `json:"request_id"`
+		Usage     json.RawMessage `json:"usage"`
+		Output    struct {
 			Audio struct {
 				URL string `json:"url"`
 			} `json:"audio"`
 		} `json:"output"`
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return SynthesizeResponse{}, err
+	parseErr := json.Unmarshal(body, &result)
+	synthesis := SynthesizeResponse{Provider: ProviderQwen, Model: request.Model, VoiceID: request.VoiceID, Rate: request.Rate}
+	if parseErr == nil {
+		synthesis.ProviderRequestID = safeProviderRequestID(result.RequestID)
+		synthesis.Usage = parseSynthesisUsage(result.Usage)
+		synthesis.UsageSource = synthesisUsageSource(synthesis.Usage)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message := strings.TrimSpace(string(body))
+		if len(message) > 1200 {
+			message = message[:1200]
+		}
+		if message == "" {
+			return synthesis, fmt.Errorf("qwen tts provider http %d", resp.StatusCode)
+		}
+		return synthesis, fmt.Errorf("qwen tts provider http %d: %s", resp.StatusCode, message)
+	}
+	if parseErr != nil {
+		return synthesis, parseErr
 	}
 	audioURL := strings.TrimSpace(result.Output.Audio.URL)
 	if audioURL == "" {
 		if strings.TrimSpace(result.Message) != "" {
-			return SynthesizeResponse{}, errors.New(result.Message)
+			return synthesis, errors.New(result.Message)
 		}
-		return SynthesizeResponse{}, errors.New("qwen tts provider returned no audio URL")
+		return synthesis, errors.New("qwen tts provider returned no audio URL")
 	}
-	return SynthesizeResponse{AudioURL: audioURL, Provider: ProviderQwen, Model: request.Model, VoiceID: request.VoiceID, Rate: request.Rate}, nil
+	synthesis.AudioURL = audioURL
+	return synthesis, nil
 }
 
 func qwenUsesMultimodalGeneration(model string) bool {

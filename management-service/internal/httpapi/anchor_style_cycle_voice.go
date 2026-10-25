@@ -401,7 +401,20 @@ func (j journaledMainlineSynthesizer) SynthesizeURL(ctx context.Context, request
 		return ttsgateway.SynthesizeResponse{}, err
 	}
 	started := time.Now()
-	response, err := j.gateway.SynthesizeURL(ctx, request)
+	scope := liveCostScope(ctx)
+	if scope.Key == "" {
+		exchange, _ := ctx.Value(exchangeScopeKey{}).(appdb.ModelExchangeScope)
+		scope.Key = "mainline:" + exchange.RunID + ":" + exchange.CandidateID
+	}
+	// synthesizeMainlinePreview assigns the explicit part index. Its identity
+	// cannot change merely because a retry happens to change payload wording.
+	if scope.Priority == "" {
+		scope.Priority = "necessary"
+	}
+	if scope.Reason == "" {
+		scope.Reason = "已采纳主线话术需要声音"
+	}
+	response, err := j.gateway.SynthesizeURL(j.s.withLiveCostTTS(ctx, scope), request)
 	err = j.s.finishModelExchange(ctx, id, response, "", started, 0, 0, err)
 	return response, err
 }
@@ -410,7 +423,14 @@ func synthesizeMainlinePreview(ctx context.Context, gateway mainlineSynthesizer,
 	pieces := []generatedVoiceWAVPiece{}
 	parts := splitFullShowVoiceText(text)
 	for i, part := range parts {
-		generated, err := gateway.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Model: voice.Model, VoiceID: voice.VoiceID, Text: part, Rate: voice.Rate})
+		partScope := liveCostScope(ctx)
+		if partScope.Key == "" {
+			exchange, _ := ctx.Value(exchangeScopeKey{}).(appdb.ModelExchangeScope)
+			partScope.Key = "mainline:" + exchange.RunID + ":" + exchange.CandidateID
+		}
+		partScope.Key += fmt.Sprintf(":part:%d", i)
+		partCtx := withLiveCostScope(ctx, partScope)
+		generated, err := gateway.SynthesizeURL(partCtx, ttsgateway.SynthesizeRequest{Model: voice.Model, VoiceID: voice.VoiceID, Text: part, Rate: voice.Rate})
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("第%d个声音片段生成失败: %w", i+1, err)
 		}

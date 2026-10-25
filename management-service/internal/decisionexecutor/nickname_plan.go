@@ -353,7 +353,7 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 	for i, name := range pending {
 		// One nickname per call: failures never shift another person's alias.
 		packet, _ := json.Marshal(map[string]any{"name": name, "preferred_terms": prefs.PreferredTerms, "blocked_terms": prefs.BlockedTerms, "shortening": nicknameShorteningHint(name.RawName)})
-		response, err := w.agent.Complete(callCtx, agentgateway.Request{Stage: "interaction_addressing_plan", Messages: []agentgateway.Message{{Role: "system", Content: string(mother)}, {Role: "user", Content: string(packet)}}, EnableThinking: false, MaxTokens: 160, Timeout: 8 * time.Second})
+		response, err := w.completePaidModel(callCtx, s, agentgateway.Request{Stage: "interaction_addressing_plan", Messages: []agentgateway.Message{{Role: "system", Content: string(mother)}, {Role: "user", Content: string(packet)}}, EnableThinking: false, MaxTokens: 160, Timeout: 8 * time.Second}, item.ID+":nickname:"+strconv.Itoa(positions[i]))
 		alias := ""
 		if err == nil {
 			alias, err = decodeNicknameAddress(response.Text)
