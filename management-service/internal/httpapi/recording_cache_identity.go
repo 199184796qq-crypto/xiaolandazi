@@ -60,8 +60,10 @@ func recordingStableTabIDs(version model.LiveAgentPlanVersion, texts []string) [
 	}
 	if len(ids) != len(texts) {
 		ids = make([]string, len(texts))
-		for i, text := range texts {
-			ids[i] = recordingcache.VoiceKey("legacy-tab", text, fmt.Sprint(i))
+		for i := range texts {
+			// Legacy single-box plans have no tab ID. Their slot is stable in
+			// this tenant/room/plan scope; body edits are source revisions.
+			ids[i] = recordingcache.VoiceKey("legacy-tab-slot-v1", fmt.Sprint(i))
 		}
 	}
 	return ids

@@ -106,6 +106,9 @@ func recordingUpdatePercent(totalRunes int) int {
 }
 
 func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
+	if err := waitLiveLeasePermit(ctx); err != nil {
+		return err
+	}
 	texts := recordingStreamTexts(version)
 	totalRunes := 0
 	for _, text := range texts {
@@ -176,39 +179,63 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		return voiceErr
 	}
 	version.VoiceIdentity.VoiceID, version.VoiceIdentity.Model = resolvedID, resolvedModel
-	voiceKey, cacheKey := recordingCurrentCacheIdentity(version, texts, polish)
 	var cacheManifest *recordingcache.Manifest
 	hit := map[string][]recordingcache.Entry{}
-	if cacheOK {
-		loaded, err := cacheScope.Load(voiceKey, cacheKey)
-		if err != nil {
-			log.Printf("recording stream cache load failed tenant=%d room=%d: %v", tenant, room, err)
-		}
-		if loaded != nil {
-			loaded.ScriptHash = cacheKey
-			cacheManifest = loaded
-			hit = recordingCacheLookup(loaded)
-			log.Printf("recording stream cache loaded tenant=%d room=%d entries=%d", tenant, room, len(hit))
+	planner := recordingUpdatePlanner{}
+	blueprint, identityErr := recordingCacheSnapshot(version, texts, polish, runtimeID)
+	if identityErr == nil {
+		for tabIndex, states := range tabs {
+			if tabIndex >= len(blueprint.Tabs) || len(blueprint.Tabs[tabIndex].Sources) != len(states) {
+				identityErr = errors.New("话术缓存源句与当前供料分段不一致")
+				break
+			}
+			for index, state := range states {
+				if blueprint.Tabs[tabIndex].Sources[index] != state.Source {
+					identityErr = errors.New("话术缓存源句与当前供料分段不一致")
+					break
+				}
+			}
 		}
 	}
-	planner := recordingUpdatePlanner{}
-	if cacheManifest != nil && len(cacheManifest.UpdateState) > 0 {
-		if err := json.Unmarshal(cacheManifest.UpdateState, &planner); err != nil {
-			log.Printf("recording update credit unavailable tenant=%d room=%d; start empty", tenant, room)
-			planner = recordingUpdatePlanner{}
-		} else if planner.Version != 1 {
-			planner = recordingUpdatePlanner{}
+	if identityErr != nil {
+		cacheOK = false
+		blueprint = nil
+		log.Printf("recording incremental identity unavailable tenant=%d room=%d; supply without persisted reuse: %v", tenant, room, identityErr)
+	}
+	if cacheOK {
+		if err := waitLiveLeasePermit(ctx); err != nil {
+			return err
+		}
+		loaded, loadedPlanner, stats, err := openRecordingIncrementalCache(cacheScope, blueprint)
+		if err != nil {
+			if errors.Is(err, errRecordingCacheSuperseded) {
+				return err
+			}
+			cacheOK = false
+			log.Printf("recording incremental cache load failed tenant=%d room=%d; retain normal supply: %v", tenant, room, err)
+		}
+		if loaded != nil {
+			cacheManifest = loaded
+			planner = loadedPlanner
+			hit = recordingScopedCacheLookup(loaded)
+			log.Printf("recording incremental cache loaded tenant=%d room=%d session=%d version=%d sources=%d inherited_versions=%d invalidated_versions=%d legacy_exact=%t", tenant, room, runtimeID, version.ID, len(hit), stats.InheritedVersions, stats.InvalidVersions, stats.LegacyExact)
 		}
 	}
 	tabIDs := recordingStableTabIDs(version, texts)
-	saveCache := func() {
+	saveCache := func() error {
 		if !cacheOK || cacheManifest == nil {
-			return
+			return nil
 		}
 		cacheManifest.UpdateState, _ = json.Marshal(planner)
-		if err := cacheScope.Save(cacheManifest); err != nil {
+		saved, err := cacheScope.SaveActive(cacheManifest)
+		if err != nil {
 			log.Printf("recording stream cache save failed tenant=%d room=%d: %v", tenant, room, err)
+			return nil // Successful paid media is still supplied; never buy it again.
 		}
+		if !saved {
+			return errRecordingCacheSuperseded
+		}
+		return nil
 	}
 
 	for round := 0; ; round++ {
@@ -247,7 +274,12 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 					Key:         fmt.Sprintf("recording:%d:%d:%s:%d:%d", runtimeID, version.ID, tabIDs[tabIndex], round, index),
 					Attribution: &livecost.Attribution{Source: "recording_mainline", Round: round + 1, TabID: tabIDs[tabIndex], SourceIndex: index}, Events: &liveCostCallEvents{}}
 				callCtx := withLiveCostScope(ctx, callScope)
-				candidates := hit[state.Source]
+				unitKey, contextKey := "", ""
+				if blueprint != nil {
+					unitKey = blueprint.Tabs[tabIndex].UnitKeys[index]
+					contextKey = blueprint.Tabs[tabIndex].ContextKeys[index]
+				}
+				candidates := recordingCacheCandidates(hit, unitKey, contextKey)
 				result, err := resolveRecordingReuse(callCtx, recordingReuseRequest{
 					Versions: state.Versions, Cached: candidates, Refresh: refresh[index], RNG: rng,
 					BuildCache: func(c context.Context, entry recordingcache.Entry) ([]recordingReadyUnit, bool) {
@@ -304,30 +336,32 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 					}
 					if entry, ok := recordingCacheEntryFromUnits(state.Source, result.Units); cacheOK && ok {
 						entry.Polished = !sameSpeechText(state.Source, strings.Join(recordingUnitTexts(result.Units), ""))
-						if cacheManifest == nil {
-							cacheManifest = &recordingcache.Manifest{Version: 2, VoiceKey: voiceKey, ScriptHash: cacheKey}
-						}
+						entry.UnitKey, entry.ContextKey = unitKey, contextKey
 						cacheManifest.Entries = pruneRecordingCacheEntries(append(cacheManifest.Entries, entry))
-						hit = recordingCacheLookup(cacheManifest)
+						hit = recordingScopedCacheLookup(cacheManifest)
 					}
 				} else if result.CacheHit && result.CacheIndex >= 0 {
 					pick := candidates[result.CacheIndex]
 					for i := range cacheManifest.Entries {
 						entry := &cacheManifest.Entries[i]
-						if entry.Sentence == pick.Sentence && entry.AssetID == pick.AssetID && entry.UpdatedAt == pick.UpdatedAt {
+						if entry.UnitKey == pick.UnitKey && entry.Sentence == pick.Sentence && entry.AssetID == pick.AssetID && entry.UpdatedAt == pick.UpdatedAt {
 							entry.Hits++
 							break
 						}
 					}
 				}
-				saveCache()
+				if err := saveCache(); err != nil {
+					return err
+				}
 				// The resolver selects a newly generated version directly this round.
 				queue.pending = append(queue.pending, result.Units...)
 				if err := queue.flush(ctx, false); err != nil {
 					return err
 				}
 			}
-			saveCache()
+			if err := saveCache(); err != nil {
+				return err
+			}
 			supplyStats.write(true)
 			supplyStats = nil
 		}

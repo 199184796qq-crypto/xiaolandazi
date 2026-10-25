@@ -42,23 +42,31 @@ type Part struct {
 }
 
 type Entry struct {
-	Sentence  string    `json:"sentence"`
-	Parts     []Part    `json:"parts,omitempty"`
-	Spoken    string    `json:"spoken"`
-	AssetID   int64     `json:"asset_id"`
-	Duration  int64     `json:"duration_ms"`
-	Segments  []Segment `json:"segments"`
-	Polished  bool      `json:"polished"`
-	Hits      int       `json:"hits"`
-	UpdatedAt string    `json:"updated_at"`
+	UnitKey    string    `json:"unit_key,omitempty"`
+	ContextKey string    `json:"context_key,omitempty"`
+	Sentence   string    `json:"sentence"`
+	Parts      []Part    `json:"parts,omitempty"`
+	Spoken     string    `json:"spoken"`
+	AssetID    int64     `json:"asset_id"`
+	Duration   int64     `json:"duration_ms"`
+	Segments   []Segment `json:"segments"`
+	Polished   bool      `json:"polished"`
+	Hits       int       `json:"hits"`
+	UpdatedAt  string    `json:"updated_at"`
 }
 
 // Manifest is the cache index for one plan + voice + script version.
 type Manifest struct {
-	Version    int     `json:"version"`
-	VoiceKey   string  `json:"voice_key"`
-	ScriptHash string  `json:"script_hash"`
-	Entries    []Entry `json:"entries"`
+	Version            int         `json:"version"`
+	VoiceKey           string      `json:"voice_key"`
+	ScriptHash         string      `json:"script_hash"`
+	Entries            []Entry     `json:"entries"`
+	CompatibilityKey   string      `json:"compatibility_key,omitempty"`
+	LegacyBootstrapKey string      `json:"legacy_bootstrap_key,omitempty"`
+	Tabs               []SourceTab `json:"tabs,omitempty"`
+	SessionID          int64       `json:"session_id,omitempty"`
+	OwnerToken         string      `json:"owner_token,omitempty"`
+	PlanVersionID      int64       `json:"plan_version_id,omitempty"`
 	// UpdateState carries fractional per-tab update credit across sessions. It
 	// shares this manifest's fact/voice/content identity and contains no URLs.
 	UpdateState json.RawMessage `json:"update_state,omitempty"`
@@ -193,8 +201,14 @@ func (s Scope) Lock() (func(), error) {
 	}
 }
 
-// RemoveCache drops only the cache layers, never the uploaded recordings.
+// RemoveCache drops only the cache layers, never uploaded recordings, generated
+// media, or the durable V3 history barrier outside recording-cache.
 func (s Scope) RemoveCache(voiceKey, scriptHash string) error {
+	unlock, err := s.lockActiveIndex()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	var dir string
 	switch {
 	case voiceKey != "" && scriptHash != "":
@@ -203,6 +217,18 @@ func (s Scope) RemoveCache(voiceKey, scriptHash string) error {
 		dir = filepath.Join(s.Root, "recording-cache", safeSegment(voiceKey))
 	default:
 		dir = filepath.Join(s.Root, "recording-cache")
+	}
+	if voiceKey != "" {
+		active, err := s.loadActiveUnlocked()
+		if err != nil {
+			return err
+		}
+		if active != nil && safeSegment(active.VoiceKey) == safeSegment(voiceKey) &&
+			(scriptHash == "" || safeSegment(active.ScriptHash) == safeSegment(scriptHash)) {
+			if err := os.Remove(s.activePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
 	}
 	return removeDir(dir)
 }

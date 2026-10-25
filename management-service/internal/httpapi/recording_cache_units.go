@@ -98,10 +98,16 @@ func pruneRecordingCacheEntries(entries []recordingcache.Entry) []recordingcache
 		entry := entries[i]
 		// 命中到期的版本不再参与“新生”轮换，但它的音频仍然保留可用，
 		// 否则一句被淘汰后整句要重新合成，费用会反弹。
-		if perSentence[entry.Sentence] >= recordingCacheMaxVersions {
+		key := entry.UnitKey
+		if key == "" {
+			key = entry.Sentence // V2 exact-identity compatibility only.
+		} else {
+			key += "\x00" + entry.ContextKey
+		}
+		if perSentence[key] >= recordingCacheMaxVersions {
 			continue
 		}
-		perSentence[entry.Sentence]++
+		perSentence[key]++
 		out = append(out, entry)
 	}
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {

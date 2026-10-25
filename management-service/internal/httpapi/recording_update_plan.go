@@ -37,6 +37,75 @@ type recordingUpdatePlan struct {
 	committed  map[int]bool
 }
 
+// MigrateTab carries a stable tab's existing update balance into an explicitly
+// compatible content revision. The caller must establish fact/voice/policy
+// compatibility before calling; matching text alone cannot establish that.
+// A nil oldSources means the previous source snapshot is unavailable.
+// Migration never accrues credit and always invalidates older plan handles.
+func (planner *recordingUpdatePlanner) MigrateTab(tabID string, oldSources, newSources []string) bool {
+	if planner == nil || strings.TrimSpace(tabID) == "" {
+		return false
+	}
+	tabID = strings.TrimSpace(tabID)
+	previous, ok := planner.Tabs[tabID]
+	if !ok {
+		return false
+	}
+	contentKey := recordingcache.ScriptHash(newSources)
+	var total int64
+	for _, source := range newSources {
+		total += int64(utf8.RuneCountInString(strings.TrimSpace(source))) * recordingUpdateCreditScale
+	}
+	next := previous
+	next.ContentKey = contentKey
+	next.Revision++
+	// Own the new slice: a migrated state must not mutate the old snapshot or
+	// another tab's planning state through a shared backing array.
+	next.SentenceUpdated = make([]uint64, len(newSources))
+	for _, sequence := range previous.SentenceUpdated {
+		if sequence > next.UpdateSequence {
+			next.UpdateSequence = sequence
+		}
+	}
+	sameContent := previous.ContentKey == contentKey
+	trustedSnapshot := oldSources != nil && previous.ContentKey == recordingcache.ScriptHash(oldSources)
+	if sameContent {
+		if len(previous.SentenceUpdated) == len(newSources) {
+			copy(next.SentenceUpdated, previous.SentenceUpdated)
+		}
+	} else if trustedSnapshot {
+		oldCounts := make(map[string]int, len(oldSources))
+		newCounts := make(map[string]int, len(newSources))
+		oldIndices := make(map[string]int, len(oldSources))
+		for index, source := range oldSources {
+			oldCounts[source]++
+			oldIndices[source] = index
+		}
+		for _, source := range newSources {
+			newCounts[source]++
+		}
+		for index, source := range newSources {
+			if oldCounts[source] == 1 && newCounts[source] == 1 && len(previous.SentenceUpdated) == len(oldSources) {
+				next.SentenceUpdated[index] = previous.SentenceUpdated[oldIndices[source]]
+			}
+		}
+	} else {
+		// No reliable old snapshot: retain only a completely unchanged tab.
+		// An edited tab cannot borrow balance/order from an unverified layout.
+		next.CreditMicros = 0
+		next.UpdateSequence = 0
+	}
+	if next.CreditMicros < 0 {
+		next.CreditMicros = 0
+	}
+	if next.CreditMicros > total {
+		next.CreditMicros = total
+	}
+	planner.Version = 1
+	planner.Tabs[tabID] = next
+	return true
+}
+
 // Plan accrues once for a caller-supplied session+round key and selects the
 // oldest eligible source sentences whose character costs fit the balance.
 // Selection reserves local planning space only. Commit deducts a sentence only
