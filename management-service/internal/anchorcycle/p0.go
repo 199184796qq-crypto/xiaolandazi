@@ -12,14 +12,43 @@ import (
 // BaseP0Allowances 是公共的安全语境排除项：只放行“第一”作为时间/序数
 // 的普通用法，不放行“第一品牌、销量第一、全网第一”等宣传用法。
 var BaseP0Allowances = []P0Allowance{
-	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一天", Decision: "基础排除：时间/序数用法"},
+	// 时间、序数、轮次、步骤用法
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一天", Decision: "基础排除：时间用法"},
 	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一天开", Decision: "基础排除：首播时间"},
 	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一次", Decision: "基础排除：序数用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一回", Decision: "基础排除：序数用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一趟", Decision: "基础排除：序数用法"},
 	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一口", Decision: "基础排除：序数用法"},
 	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一单", Decision: "基础排除：序数用法"},
 	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一轮", Decision: "基础排除：轮次用法"},
 	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一场", Decision: "基础排除：场次用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一年", Decision: "基础排除：年份用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一周", Decision: "基础排除：时间用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一个", Decision: "基础排除：序数用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一遍", Decision: "基础排除：遍数用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一层", Decision: "基础排除：层次用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一段", Decision: "基础排除：段落用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一篇", Decision: "基础排除：篇章用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一句", Decision: "基础排除：句子用法"},
 	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一步", Decision: "基础排除：步骤用法"},
+
+	// “最好”作为日常建议，不是最好产品/最好品牌
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最好当天", Decision: "基础排除：食用建议"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最好提前", Decision: "基础排除：时间建议"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最好先", Decision: "基础排除：操作建议"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最好放", Decision: "基础排除：保存建议"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最好冷藏", Decision: "基础排除：保存建议"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最好加热", Decision: "基础排除：食用建议"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最好尽快", Decision: "基础排除：时间建议"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最好预约", Decision: "基础排除：预约建议"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最好问", Decision: "基础排除：咨询建议"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最好别", Decision: "基础排除：提醒建议"},
+
+	// 物理量/程度表达，不是排名或品质最高
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最高温度", Decision: "基础排除：温度参数"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最低温度", Decision: "基础排除：温度参数"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最大程度", Decision: "基础排除：程度表达"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "最大限度", Decision: "基础排除：程度表达"},
 }
 
 func p0AllowanceMatches(item P0Allowance, hit contentguard.Hit, p *contentguard.Policy, original []rune) bool {
