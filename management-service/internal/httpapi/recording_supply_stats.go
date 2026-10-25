@@ -12,32 +12,52 @@ import (
 // source sentence may produce several units; counting those as source updates
 // would inflate both the refresh rate and the apparent TTS bill.
 type recordingSupplyStats struct {
-	TenantID          int64  `json:"tenant_id"`
-	RoomID            int64  `json:"room_id"`
-	SessionID         int64  `json:"session_id"`
-	PlanID            int64  `json:"plan_id"`
-	Round             int    `json:"round"`
-	TabID             string `json:"tab_id"`
-	DesiredPercent    int    `json:"desired_percent"`
-	EffectivePercent  int    `json:"effective_percent"`
-	BudgetPaused      bool   `json:"budget_paused"`
-	SourceSentences   int    `json:"source_sentences"`
-	SourceCharacters  int    `json:"source_characters"`
-	PlannedUpdates    int    `json:"planned_updates"`
-	PlannedCharacters int    `json:"planned_characters"`
-	Visited           int    `json:"visited"`
-	Generated         int    `json:"generated_sentences"`
-	Updated           int    `json:"updated_sentences"`
-	UpdatedCharacters int    `json:"updated_source_characters"`
-	Reused            int    `json:"reused_sentences"`
-	PersistentReused  int    `json:"persistent_reused_sentences"`
-	Unavailable       int    `json:"unavailable_sentences"`
-	RefreshFailed     int    `json:"refresh_failed_sentences"`
-	BudgetDeclined    int    `json:"budget_declined_sentences"`
-	ReadyUnits        int    `json:"ready_units"`
-	Complete          bool   `json:"complete"`
-	StartedAt         string `json:"started_at"`
-	FinishedAt        string `json:"finished_at"`
+	TenantID              int64  `json:"tenant_id"`
+	RoomID                int64  `json:"room_id"`
+	SessionID             int64  `json:"session_id"`
+	PlanID                int64  `json:"plan_id"`
+	Round                 int    `json:"round"`
+	TabID                 string `json:"tab_id"`
+	DesiredPercent        int    `json:"desired_percent"`
+	EffectivePercent      int    `json:"effective_percent"`
+	BudgetPaused          bool   `json:"budget_paused"`
+	SourceSentences       int    `json:"source_sentences"`
+	SourceCharacters      int    `json:"source_characters"`
+	PlannedUpdates        int    `json:"planned_updates"`
+	PlannedCharacters     int    `json:"planned_characters"`
+	Visited               int    `json:"visited"`
+	Generated             int    `json:"generated_sentences"`
+	Updated               int    `json:"updated_sentences"`
+	UpdatedCharacters     int    `json:"updated_source_characters"`
+	Reused                int    `json:"reused_sentences"`
+	PersistentReused      int    `json:"persistent_reused_sentences"`
+	Unavailable           int    `json:"unavailable_sentences"`
+	RefreshFailed         int    `json:"refresh_failed_sentences"`
+	BudgetDeclined        int    `json:"budget_declined_sentences"`
+	ReadyUnits            int    `json:"ready_units"`
+	Complete              bool   `json:"complete"`
+	StartedAt             string `json:"started_at"`
+	FinishedAt            string `json:"finished_at"`
+	DynamicBudget         bool   `json:"dynamic_budget"`
+	RoundLimitMicros      int64  `json:"round_limit_micros"`
+	RoundSpentMicros      int64  `json:"round_spent_micros"`
+	BudgetPauseReason     string `json:"budget_pause_reason,omitempty"`
+	RefreshAttempts       int    `json:"refresh_attempts"`
+	ReplacementCandidates int    `json:"replacement_candidates"`
+	ForecastDurationMS    int64  `json:"forecast_round_duration_ms"`
+	InventoryFilling      bool   `json:"inventory_filling"`
+}
+
+// Round limits/spending are shared cumulative snapshots across tabs, not
+// additive per-tab charges. Provider requests remain the billing source.
+func (s *recordingSupplyStats) setSchedule(schedule *recordingRefreshSchedule) {
+	s.DynamicBudget = true
+	s.RoundLimitMicros = schedule.Budget.RoundLimitMicros
+	s.RoundSpentMicros = schedule.SpentMicros
+	s.BudgetPaused = schedule.Paused
+	s.BudgetPauseReason = schedule.PauseReason
+	s.ForecastDurationMS = schedule.ForecastDurationMS
+	s.InventoryFilling = schedule.InventoryFilling
 }
 
 func newRecordingSupplyStats(tenant, room, session, plan int64, round int, tab string, states []recordingSentenceState, selected []bool, desired, effective int) *recordingSupplyStats {

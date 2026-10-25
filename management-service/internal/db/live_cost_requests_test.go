@@ -164,10 +164,11 @@ func (c *costSQLConn) QueryContext(_ context.Context, query string, named []driv
 		return out, nil
 	}
 	if strings.Contains(query, "COALESCE(SUM(") {
-		if len(args) != 7 || !strings.Contains(query, "OR status IN ('reserved','unknown')") || !strings.Contains(query, "WHEN in_window AND status") || !strings.Contains(query, "WHEN is_aged AND status") {
+		if len(args) != 7 || !strings.Contains(query, "OR status IN ('reserved','unknown')") || !strings.Contains(query, "WHEN in_window AND status") || !strings.Contains(query, "WHEN is_aged AND status") ||
+			!strings.Contains(query, "in_window AND priority='optional'") || !strings.Contains(query, "attribution_source='recording_mainline'") || !strings.Contains(query, "JSON_EXTRACT(request_json,'$.attribution.source')") {
 			return nil, errors.New("missing rolling-window and historical unresolved separation")
 		}
-		var values [11]int64
+		var values [13]int64
 		for _, row := range c.state.rows {
 			e := row.entry
 			r := e.Request
@@ -190,6 +191,18 @@ func (c *costSQLConn) QueryContext(_ context.Context, query string, named []driv
 				values[9] += e.ReservedMicros
 				values[10]++
 			}
+			if inWindow && r.Priority == livecost.PriorityOptional {
+				amount := int64(0)
+				if pending {
+					amount = e.ReservedMicros
+				} else if e.Status == livecost.StatusSettled {
+					amount = e.ChargedMicros
+				}
+				values[11] += amount
+				if r.Attribution != nil && r.Attribution.Source == "recording_mainline" {
+					values[12] += amount
+				}
+			}
 			if e.Status == livecost.StatusSettled {
 				if r.Kind == livecost.KindModel {
 					values[0] += e.ChargedMicros
@@ -211,7 +224,7 @@ func (c *costSQLConn) QueryContext(_ context.Context, query string, named []driv
 		for i, value := range values {
 			result[i] = value
 		}
-		return &costSQLRows{columns: []string{"model", "tts", "estimate", "usage", "invoice", "reserved", "unknown", "unresolved", "settled", "aged_unresolved_micros", "aged_unresolved_requests"}, values: [][]driver.Value{result}}, nil
+		return &costSQLRows{columns: []string{"model", "tts", "estimate", "usage", "invoice", "reserved", "unknown", "unresolved", "settled", "aged_unresolved_micros", "aged_unresolved_requests", "optional", "mainline_optional"}, values: [][]driver.Value{result}}, nil
 	}
 	if strings.Contains(query, "SELECT request_key FROM live_cost_requests") {
 		if len(args) != 4 {
@@ -287,8 +300,118 @@ func TestLiveCostConcurrentConnectionsCannotOverReserveOptionalBudget(t *testing
 		t.Fatal(allowed, declined, failure)
 	}
 	summary, err := store.LiveCostSummary(ctx, livecost.Scope{TenantID: 14, RoomID: 29}, policy, now)
-	if err != nil || summary.TotalMicros != 1200000 || summary.UnresolvedRequests != 30 || state.locks != 60 {
+	if err != nil || summary.TotalMicros != 1200000 || summary.OptionalMicros != 1200000 || summary.MainlineOptionalMicros != 0 || summary.UnresolvedRequests != 30 || state.locks != 60 {
 		t.Fatal(summary, err, state.locks)
+	}
+}
+
+func TestLiveCostSummarySeparatesMainlineOptionalFromNecessaryAndOtherWork(t *testing.T) {
+	store, _ := newCostSQLStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	policy := livecost.DefaultPolicy()
+	scope := livecost.Scope{TenantID: 14, RoomID: 29}
+	reserve := func(key, priority, source, kind string, amount int64, at time.Time) livecost.Request {
+		t.Helper()
+		r := sqlCostRequest(key)
+		r.Priority, r.Kind, r.EstimatedMicros = priority, kind, amount
+		if priority == livecost.PriorityNecessary {
+			r.Reason = "首次必要声音"
+		}
+		if source != "" {
+			r.Attribution = &livecost.Attribution{Source: source}
+			if source == "recording_mainline" {
+				r.Attribution.Round, r.Attribution.TabID = 1, "tab"
+			}
+		}
+		if result, err := store.ReserveLiveCost(ctx, r, policy, at); err != nil || !result.Allowed {
+			t.Fatalf("reserve %s: %+v err=%v", key, result, err)
+		}
+		return r
+	}
+	finish := func(r livecost.Request, status string, quote *int64) {
+		t.Helper()
+		receipt := livecost.Receipt{TenantID: 14, RoomID: 29, Status: status, EstimatedMicros: quote}
+		if err := store.FinishLiveCost(ctx, scope, r.Key, receipt, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	necessary := reserve("first-audio", livecost.PriorityNecessary, "recording_mainline", livecost.KindTTS, 200_000, now)
+	finish(necessary, livecost.ReceiptSuccess, nil)
+	mainModel := reserve("mainline-model", livecost.PriorityOptional, "recording_mainline", livecost.KindModel, 100_000, now)
+	paidQuote := int64(90_000)
+	finish(mainModel, livecost.ReceiptSuccess, &paidQuote)
+	mainUnknown := reserve("mainline-unknown", livecost.PriorityOptional, "recording_mainline", livecost.KindTTS, 150_000, now)
+	finish(mainUnknown, livecost.ReceiptUnknown, nil)
+	reserve("other-optional", livecost.PriorityOptional, "other", livecost.KindModel, 100_000, now)
+	legacy := reserve("unattributed-optional", livecost.PriorityOptional, "", livecost.KindTTS, 50_000, now)
+	finish(legacy, livecost.ReceiptSuccess, nil)
+	old := reserve("old-unknown", livecost.PriorityOptional, "recording_mainline", livecost.KindTTS, 90_000, now.Add(-2*time.Hour))
+	finish(old, livecost.ReceiptUnknown, nil)
+	unsent := reserve("known-unsent", livecost.PriorityOptional, "recording_mainline", livecost.KindTTS, 40_000, now)
+	finish(unsent, livecost.ReceiptNotSent, nil)
+	declined := sqlCostRequest("too-large-optional")
+	declined.EstimatedMicros = 900_000
+	if result, err := store.ReserveLiveCost(ctx, declined, policy, now); err != nil || result.Allowed || result.Status != livecost.StatusDeclined {
+		t.Fatal(result, err)
+	}
+	otherRoom := sqlCostRequest("other-room")
+	otherRoom.RoomID = 30
+	if result, err := store.ReserveLiveCost(ctx, otherRoom, policy, now); err != nil || !result.Allowed {
+		t.Fatal(result, err)
+	}
+	summary, err := store.LiveCostSummary(ctx, scope, policy, now)
+	if err != nil || summary.TotalMicros != 590_000 || summary.OptionalMicros != 390_000 || summary.MainlineOptionalMicros != 240_000 ||
+		summary.ReservedMicros != 250_000 || summary.UnknownMicros != 150_000 || summary.AgedUnresolvedMicros != 90_000 || summary.AgedUnresolvedRequests != 1 {
+		t.Fatalf("cohorts double-counted pending/necessary/aged/unrelated work: %+v err=%v", summary, err)
+	}
+}
+
+func TestLiveCostOptionalReservationChecksItsOwnSoftLineAndWholeRoomTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		necessary int64
+		optional  int64
+		wantAllow bool
+	}{
+		{"both_exact_boundaries", 100_000, 1_200_000, true},
+		{"room_target_before_optional_soft_line", 300_000, 1_000_000, true},
+		{"room_target_would_be_crossed", 300_000, 1_000_001, false},
+		{"optional_soft_line_would_be_crossed", 0, 1_200_001, false},
+		{"necessary_already_at_target", 1_300_000, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, _ := newCostSQLStore(t)
+			ctx, now, policy := context.Background(), time.Now().UTC(), livecost.DefaultPolicy()
+			if tc.necessary > 0 {
+				r := sqlCostRequest("necessary")
+				r.Priority, r.EstimatedMicros = livecost.PriorityNecessary, tc.necessary
+				r.Reason = "首次必要声音"
+				if result, err := store.ReserveLiveCost(ctx, r, policy, now); err != nil || !result.Allowed {
+					t.Fatal(result, err)
+				}
+			}
+			optional := sqlCostRequest("optional")
+			optional.EstimatedMicros = tc.optional
+			result, err := store.ReserveLiveCost(ctx, optional, policy, now)
+			if err != nil || result.Allowed != tc.wantAllow {
+				t.Fatalf("optional result=%+v err=%v", result, err)
+			}
+			if tc.wantAllow {
+				more := sqlCostRequest("one-more-optional")
+				more.EstimatedMicros = 1
+				if result, err := store.ReserveLiveCost(ctx, more, policy, now); err != nil || result.Allowed || result.Status != livecost.StatusDeclined {
+					t.Fatal("optional crossed an exhausted boundary", result, err)
+				}
+			}
+			// Neither optional limit is allowed to interrupt required supply.
+			required := sqlCostRequest("required-overuse")
+			required.Priority, required.EstimatedMicros = livecost.PriorityNecessary, 1_400_000
+			required.Reason = "事实变化后的必要声音"
+			if result, err := store.ReserveLiveCost(ctx, required, policy, now); err != nil || !result.Allowed || !result.OverBudget {
+				t.Fatal("required supply was blocked or overuse lost", result, err)
+			}
+		})
 	}
 }
 func TestLiveCostDuplicateScopedReservationAndNecessaryOverspend(t *testing.T) {
@@ -384,6 +507,10 @@ func TestLiveCostAgedUnknownKeepsFenceWithoutBlockingNewSessionRefresh(t *testin
 	// The previous request still occupies its actual rolling hour, including
 	// the boundary, rather than being released merely by a new session ID.
 	boundary := now.Add(time.Hour)
+	current, err := store.LiveCostSummary(ctx, scope, policy, boundary)
+	if err != nil || current.OptionalMicros != policy.OptionalLimitMicros || current.MainlineOptionalMicros != policy.OptionalLimitMicros || current.UnknownMicros != policy.OptionalLimitMicros {
+		t.Fatal("in-window unknown lost one of its budget cohorts", current, err)
+	}
 	blocked := sqlCostRequest("new-session-before-expiry")
 	blocked.SessionID = 480
 	if res, err := store.ReserveLiveCost(ctx, blocked, policy, boundary); err != nil || res.Allowed || res.Status != livecost.StatusDeclined {
@@ -393,7 +520,7 @@ func TestLiveCostAgedUnknownKeepsFenceWithoutBlockingNewSessionRefresh(t *testin
 	// reservation amount and its permanent same-key fence remain intact.
 	afterWindow := boundary.Add(time.Microsecond)
 	summary, err := store.LiveCostSummary(ctx, scope, policy, afterWindow)
-	if err != nil || summary.TotalMicros != 0 || summary.ReservedMicros != 0 || summary.UnresolvedRequests != 0 || summary.AgedUnresolvedMicros != policy.OptionalLimitMicros || summary.AgedUnresolvedRequests != 1 {
+	if err != nil || summary.TotalMicros != 0 || summary.OptionalMicros != 0 || summary.MainlineOptionalMicros != 0 || summary.ReservedMicros != 0 || summary.UnresolvedRequests != 0 || summary.AgedUnresolvedMicros != policy.OptionalLimitMicros || summary.AgedUnresolvedRequests != 1 {
 		t.Fatal(summary, err)
 	}
 	duplicate, err := store.ReserveLiveCost(ctx, request, policy, afterWindow)
@@ -406,11 +533,12 @@ func TestLiveCostAgedUnknownKeepsFenceWithoutBlockingNewSessionRefresh(t *testin
 	}
 	fresh := sqlCostRequest("new-session-after-expiry")
 	fresh.SessionID = 480
+	fresh.Attribution = &livecost.Attribution{Source: "recording_mainline", Round: 1, TabID: "tab-a", SourceIndex: 0}
 	if res, err := store.ReserveLiveCost(ctx, fresh, policy, afterWindow); err != nil || !res.Allowed {
 		t.Fatal("new round stayed blocked by historical unknown", res, err)
 	}
 	summary, err = store.LiveCostSummary(ctx, scope, policy, afterWindow)
-	if err != nil || summary.TotalMicros != fresh.EstimatedMicros || summary.ReservedMicros != fresh.EstimatedMicros || summary.UnresolvedRequests != 1 || summary.AgedUnresolvedMicros != policy.OptionalLimitMicros || summary.AgedUnresolvedRequests != 1 {
+	if err != nil || summary.TotalMicros != fresh.EstimatedMicros || summary.OptionalMicros != fresh.EstimatedMicros || summary.MainlineOptionalMicros != fresh.EstimatedMicros || summary.ReservedMicros != fresh.EstimatedMicros || summary.UnresolvedRequests != 1 || summary.AgedUnresolvedMicros != policy.OptionalLimitMicros || summary.AgedUnresolvedRequests != 1 {
 		t.Fatal(summary, err)
 	}
 	if err = store.FinishLiveCost(ctx, scope, request.Key, livecost.Receipt{TenantID: 14, RoomID: 29, Status: livecost.ReceiptNotSent}, afterWindow); !errors.Is(err, livecost.ErrReceiptConflict) {

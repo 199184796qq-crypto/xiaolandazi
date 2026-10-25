@@ -17,6 +17,23 @@ func costRequest(key string) Request {
 }
 func costReceipt(status string) Receipt { return Receipt{TenantID: 14, RoomID: 29, Status: status} }
 
+func TestSummaryOptionalCohortsSerializeAsSubsetsWithoutChangingTotals(t *testing.T) {
+	want := Summary{TotalMicros: 590_000, OptionalMicros: 390_000, MainlineOptionalMicros: 240_000,
+		ReservedMicros: 250_000, UnknownMicros: 150_000, AgedUnresolvedMicros: 90_000}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil || fields["optional_micros"] != float64(390_000) || fields["mainline_optional_micros"] != float64(240_000) || fields["total_micros"] != float64(590_000) {
+		t.Fatalf("summary cohorts did not survive JSON: %s err=%v", raw, err)
+	}
+	var old Summary
+	if err := json.Unmarshal([]byte(`{"total_micros":590000,"reserved_micros":250000,"unknown_micros":150000}`), &old); err != nil || old.TotalMicros != 590_000 || old.OptionalMicros != 0 || old.MainlineOptionalMicros != 0 {
+		t.Fatalf("legacy summary invented optional attribution: %+v err=%v", old, err)
+	}
+}
+
 func TestReceiptEvidenceMonotonicUnknownNeverRefunded(t *testing.T) {
 	r, _ := NormalizeRequest(costRequest("one"))
 	entry := Entry{Request: r, Status: StatusReserved, ReservedMicros: r.EstimatedMicros}

@@ -37,7 +37,40 @@ type liveCostCallScope struct {
 	Events      *liveCostCallEvents
 }
 
-type liveCostCallEvents struct{ OptionalDeclined atomic.Bool }
+type liveCostCallEvents struct {
+	OptionalDeclined      atomic.Bool
+	Uncertain             atomic.Bool
+	AccountingUnavailable atomic.Bool
+	ChargedMicros         atomic.Int64
+}
+
+// Local scheduling observes the same successful-request receipt as the ledger;
+// it never refunds paid work merely because the new expression was not used.
+func (events *liveCostCallEvents) observeReceipt(receipt livecost.Receipt, fallbackEstimate int64, persistErr error) {
+	if events == nil {
+		return
+	}
+	if persistErr != nil {
+		events.AccountingUnavailable.Store(true)
+	}
+	if receipt.Status == livecost.ReceiptUnknown {
+		events.Uncertain.Store(true)
+		return
+	}
+	if receipt.Status != livecost.ReceiptSuccess {
+		return
+	}
+	amount := fallbackEstimate
+	if receipt.ActualKnown {
+		amount = receipt.ActualMicros
+	} else if receipt.EstimatedMicros != nil {
+		amount = *receipt.EstimatedMicros
+	}
+	if amount > 0 {
+		events.ChargedMicros.Add(amount)
+	}
+}
+
 type liveCostScopeKey struct{}
 
 func withLiveCostScope(ctx context.Context, scope liveCostCallScope) context.Context {
@@ -181,6 +214,9 @@ func (s *Server) reserveLiveCost(ctx context.Context, request livecost.Request) 
 	s.replayLiveCostSpool(ctx, controller)
 	reservation, err := controller.Begin(ctx, request)
 	if reservation.Existing {
+		if events := liveCostScope(ctx).Events; events != nil {
+			events.Uncertain.Store(true)
+		}
 		return errLiveCostRequestRecorded
 	}
 	if reservation.Allowed {
@@ -193,6 +229,9 @@ func (s *Server) reserveLiveCost(ctx context.Context, request livecost.Request) 
 	}
 	if request.Priority == livecost.PriorityOptional {
 		if events := liveCostScope(ctx).Events; events != nil {
+			if reservation.AccountingUnavailable || errors.Is(err, livecost.ErrAccountingUnavailable) {
+				events.AccountingUnavailable.Store(true)
+			}
 			events.OptionalDeclined.Store(true)
 		}
 		return errLiveCostOptionalDeclined
@@ -345,6 +384,11 @@ func (o liveTTSObserver) AfterSynthesis(ctx context.Context, r ttsgateway.Synthe
 		}
 	}
 	err := o.s.liveCostController().Finish(ctx, r.Ticket, receipt)
+	fallback, _, quoteErr := o.s.estimateLiveTTS(r.SynthesisAttempt, o.scope)
+	if quoteErr != nil && o.scope.Events != nil {
+		o.scope.Events.AccountingUnavailable.Store(true)
+	}
+	o.scope.Events.observeReceipt(receipt, fallback, err)
 	if err != nil {
 		log.Printf("[live-cost] 声音费用回执尚未落库，成功声音继续使用；费用记录待核对 tenant=%d room=%d request=%s", o.scope.TenantID, o.scope.RoomID, r.Ticket)
 	}
@@ -355,6 +399,7 @@ type liveModelCostAttempt struct {
 	scope                           liveCostCallScope
 	key, provider, model            string
 	estimatedInput, estimatedOutput int64
+	estimatedMicros                 int64
 }
 
 func actualLiveModelRequest(request any) (agentgateway.Request, bool) {
@@ -439,7 +484,7 @@ func (s *Server) beginLiveModelCost(ctx context.Context, id int64, stage, profil
 	if s.liveModelCostTickets == nil {
 		s.liveModelCostTickets = make(map[int64]liveModelCostAttempt)
 	}
-	s.liveModelCostTickets[id] = liveModelCostAttempt{scope: scope, key: key, provider: provider, model: model, estimatedInput: input, estimatedOutput: output}
+	s.liveModelCostTickets[id] = liveModelCostAttempt{scope: scope, key: key, provider: provider, model: model, estimatedInput: input, estimatedOutput: output, estimatedMicros: estimate}
 	s.liveCostMu.Unlock()
 	return nil
 }
@@ -513,7 +558,9 @@ func (s *Server) finishLiveModelCost(ctx context.Context, id int64, response any
 	}
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := s.liveCostController().Finish(persist, attempt.key, receipt); err != nil {
+	err := s.liveCostController().Finish(persist, attempt.key, receipt)
+	attempt.scope.Events.observeReceipt(receipt, attempt.estimatedMicros, err)
+	if err != nil {
 		log.Printf("[live-cost] 模型费用回执尚未落库，成功结果继续使用；费用记录待核对 tenant=%d room=%d request=%s", attempt.scope.TenantID, attempt.scope.RoomID, attempt.key)
 	}
 }

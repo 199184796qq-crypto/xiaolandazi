@@ -119,21 +119,25 @@ type Reservation struct {
 	EstimatedMicros       int64  `json:"estimated_micros"`
 }
 type Summary struct {
-	Scope                  Scope     `json:"scope"`
-	WindowStart            time.Time `json:"window_start"`
-	WindowEnd              time.Time `json:"window_end"`
-	ModelMicros            int64     `json:"model_micros"`
-	TTSMicros              int64     `json:"tts_micros"`
-	EstimatedMicros        int64     `json:"estimated_micros"`
-	SupplierUsageMicros    int64     `json:"supplier_usage_micros"`
-	SupplierInvoiceMicros  int64     `json:"supplier_invoice_micros"`
-	ReservedMicros         int64     `json:"reserved_micros"`
-	UnknownMicros          int64     `json:"unknown_micros"`
-	UnresolvedRequests     int64     `json:"unresolved_requests"`
-	AgedUnresolvedMicros   int64     `json:"aged_unresolved_micros"`
-	AgedUnresolvedRequests int64     `json:"aged_unresolved_requests"`
-	SettledRequests        int64     `json:"settled_requests"`
-	TotalMicros            int64     `json:"total_micros"`
+	Scope       Scope     `json:"scope"`
+	WindowStart time.Time `json:"window_start"`
+	WindowEnd   time.Time `json:"window_end"`
+	ModelMicros int64     `json:"model_micros"`
+	TTSMicros   int64     `json:"tts_micros"`
+	// OptionalMicros is a subset of TotalMicros, including the window's
+	// settled and unresolved optional requests across model and TTS work.
+	OptionalMicros         int64 `json:"optional_micros"`
+	MainlineOptionalMicros int64 `json:"mainline_optional_micros"`
+	EstimatedMicros        int64 `json:"estimated_micros"`
+	SupplierUsageMicros    int64 `json:"supplier_usage_micros"`
+	SupplierInvoiceMicros  int64 `json:"supplier_invoice_micros"`
+	ReservedMicros         int64 `json:"reserved_micros"`
+	UnknownMicros          int64 `json:"unknown_micros"`
+	UnresolvedRequests     int64 `json:"unresolved_requests"`
+	AgedUnresolvedMicros   int64 `json:"aged_unresolved_micros"`
+	AgedUnresolvedRequests int64 `json:"aged_unresolved_requests"`
+	SettledRequests        int64 `json:"settled_requests"`
+	TotalMicros            int64 `json:"total_micros"`
 }
 
 type Store interface {

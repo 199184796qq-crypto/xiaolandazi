@@ -610,3 +610,161 @@ func TestLiveCostModelCancellationBeforeTransportDoesNotKeepReservation(t *testi
 		})
 	}
 }
+
+func TestLiveCostCallEventsReceiptAmountPrecedenceAndFailureFlags(t *testing.T) {
+	estimate, zero := int64(450), int64(0)
+	for _, tc := range []struct {
+		name        string
+		receipt     livecost.Receipt
+		fallback    int64
+		persistErr  error
+		charged     int64
+		uncertain   bool
+		unavailable bool
+	}{
+		{"successful_actual_usage", livecost.Receipt{Status: livecost.ReceiptSuccess, ActualKnown: true, ActualMicros: 120}, 900, nil, 120, false, false},
+		{"successful_returned_estimate", livecost.Receipt{Status: livecost.ReceiptSuccess, EstimatedMicros: &estimate}, 900, nil, 450, false, false},
+		{"successful_without_usage_keeps_preflight_quote", livecost.Receipt{Status: livecost.ReceiptSuccess}, 900, nil, 900, false, false},
+		{"explicit_zero_actual_is_not_a_missing_usage", livecost.Receipt{Status: livecost.ReceiptSuccess, ActualKnown: true, ActualMicros: 0}, 900, nil, 0, false, false},
+		{"explicit_zero_estimate_is_not_a_missing_usage", livecost.Receipt{Status: livecost.ReceiptSuccess, EstimatedMicros: &zero}, 900, nil, 0, false, false},
+		{"unknown_is_reserved_not_a_fake_charge", livecost.Receipt{Status: livecost.ReceiptUnknown}, 900, nil, 0, true, false},
+		{"known_not_sent_has_no_charge", livecost.Receipt{Status: livecost.ReceiptNotSent}, 900, nil, 0, false, false},
+		{"success_persistence_failure_still_spent_money", livecost.Receipt{Status: livecost.ReceiptSuccess, EstimatedMicros: &estimate}, 900, errors.New("ledger unavailable"), 450, false, true},
+		{"unknown_persistence_failure_stops_optional_work", livecost.Receipt{Status: livecost.ReceiptUnknown}, 900, errors.New("ledger unavailable"), 0, true, true},
+		{"unsent_persistence_failure_marks_accounting_only", livecost.Receipt{Status: livecost.ReceiptNotSent}, 900, errors.New("ledger unavailable"), 0, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := &liveCostCallEvents{}
+			events.ChargedMicros.Store(37)
+			events.observeReceipt(tc.receipt, tc.fallback, tc.persistErr)
+			if got := events.ChargedMicros.Load(); got != 37+tc.charged || events.Uncertain.Load() != tc.uncertain || events.AccountingUnavailable.Load() != tc.unavailable || events.OptionalDeclined.Load() {
+				t.Fatalf("receipt flags/charge: charged=%d uncertain=%t unavailable=%t declined=%t", got, events.Uncertain.Load(), events.AccountingUnavailable.Load(), events.OptionalDeclined.Load())
+			}
+		})
+	}
+	var absent *liveCostCallEvents
+	absent.observeReceipt(livecost.Receipt{Status: livecost.ReceiptSuccess}, 900, errors.New("not tracked"))
+}
+
+func TestLiveCostCallEventsTTSReturnedButUnusedSuccessCountsWithPendingAccounting(t *testing.T) {
+	for _, failFinish := range []bool{false, true} {
+		t.Run(fmt.Sprintf("persist_failure_%t", failFinish), func(t *testing.T) {
+			store := &adapterCostStore{failFinish: failFinish}
+			s := adapterTestServer(t, store)
+			events := &liveCostCallEvents{}
+			provider := &adapterTTSProvider{result: ttsgateway.SynthesizeResponse{AudioURL: "https://audio.invalid", ProviderRequestID: "not-adopted"}}
+			gateway := ttsgateway.New(provider.Name(), "m")
+			gateway.Register(provider)
+			ctx := s.withLiveCostTTS(t.Context(), liveCostCallScope{TenantID: 14, RoomID: 29, SessionID: 500, Key: "events-unused-tts", Priority: livecost.PriorityOptional, Events: events})
+			// No downstream download/archive/adoption/playback is invoked.
+			out, err := gateway.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{VoiceID: "voice", Text: "你好，A1！"})
+			if err != nil || out.AudioURL == "" || provider.calls.Load() != 1 || out.AccountingPending != failFinish {
+				t.Fatalf("paid success was thrown away: out=%+v err=%v calls=%d", out, err, provider.calls.Load())
+			}
+			if events.ChargedMicros.Load() != 640 || events.Uncertain.Load() || events.AccountingUnavailable.Load() != failFinish {
+				t.Fatalf("local round omitted unadopted TTS: charged=%d uncertain=%t unavailable=%t", events.ChargedMicros.Load(), events.Uncertain.Load(), events.AccountingUnavailable.Load())
+			}
+		})
+	}
+}
+
+func TestLiveCostCallEventsModelSuccessChargesReturnedOrMissingUsageBeforeAdoption(t *testing.T) {
+	for _, usage := range []bool{false, true} {
+		for _, failFinish := range []bool{false, true} {
+			t.Run(fmt.Sprintf("usage_%t_persist_failure_%t", usage, failFinish), func(t *testing.T) {
+				store := &adapterCostStore{failFinish: failFinish}
+				s := adapterTestServer(t, store)
+				events := &liveCostCallEvents{}
+				ctx := withLiveCostScope(t.Context(), liveCostCallScope{TenantID: 14, RoomID: 29, SessionID: 500, Key: "events-unused-model", Priority: livecost.PriorityOptional, Events: events})
+				request := agentgateway.Request{Stage: "mainline_text_rewrite", Provider: "qwen", Model: "m", MaxTokens: 800, Messages: []agentgateway.Message{{Role: "user", Content: "句"}}}
+				if err := s.beginLiveModelCost(ctx, 1, request.Stage, "", request); err != nil {
+					t.Fatal(err)
+				}
+				response := agentgateway.Response{Provider: "qwen", Model: "m"}
+				want := store.requests[0].EstimatedMicros
+				if usage {
+					response.InputTokens, response.OutputTokens = 10, 5
+					want = 6 // 10*0.2 + 5*0.8 micro-CNY at the reference rates.
+				}
+				// Empty returned text remains a successfully paid model response.
+				s.finishLiveModelCost(ctx, 1, response, response.InputTokens, response.OutputTokens, nil)
+				if want <= 0 || events.ChargedMicros.Load() != want || events.Uncertain.Load() || events.AccountingUnavailable.Load() != failFinish {
+					t.Fatalf("model response omitted from local round: want=%d charged=%d uncertain=%t unavailable=%t", want, events.ChargedMicros.Load(), events.Uncertain.Load(), events.AccountingUnavailable.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestLiveCostCallEventsUnknownKeepsMoneyUnconfirmedAndSameCandidateFenced(t *testing.T) {
+	store := &adapterCostStore{}
+	s := adapterTestServer(t, store)
+	events := &liveCostCallEvents{}
+	ctx := withLiveCostScope(t.Context(), liveCostCallScope{TenantID: 14, RoomID: 29, SessionID: 500, Key: "events-unknown-candidate", Priority: livecost.PriorityOptional, Events: events})
+	request := agentgateway.Request{Stage: "mainline_text_rewrite", Provider: "qwen", Model: "m", MaxTokens: 800, Messages: []agentgateway.Message{{Role: "user", Content: "同一源句"}}}
+	if err := s.beginLiveModelCost(ctx, 1, request.Stage, "", request); err != nil {
+		t.Fatal(err)
+	}
+	s.finishLiveModelCost(ctx, 1, agentgateway.Response{}, 0, 0, errors.New("response unknown"))
+	if events.ChargedMicros.Load() != 0 || !events.Uncertain.Load() || events.AccountingUnavailable.Load() {
+		t.Fatal("unknown request was described as a paid success or lost its stop flag")
+	}
+	for _, entry := range store.entries {
+		if entry.Status != livecost.StatusUnknown || entry.ReservedMicros <= 0 || entry.ChargedMicros != 0 {
+			t.Fatalf("unknown request was refunded or falsely settled: %+v", entry)
+		}
+	}
+	if err := s.beginLiveModelCost(ctx, 2, request.Stage, "", request); !errors.Is(err, errLiveCostRequestRecorded) || len(store.requests) != 1 {
+		t.Fatalf("unknown candidate became sendable again: err=%v requests=%d", err, len(store.requests))
+	}
+}
+
+func TestLiveCostCallEventsDefinitelyUnsentModelFailureAddsNoFee(t *testing.T) {
+	store := &adapterCostStore{}
+	s := adapterTestServer(t, store)
+	events := &liveCostCallEvents{}
+	ctx := withLiveCostScope(t.Context(), liveCostCallScope{TenantID: 14, RoomID: 29, SessionID: 500, Key: "events-unsent-candidate", Priority: livecost.PriorityOptional, Events: events})
+	request := agentgateway.Request{Stage: "mainline_text_rewrite", Provider: "qwen", Model: "m", MaxTokens: 800}
+	if err := s.beginLiveModelCost(ctx, 1, request.Stage, "", request); err != nil {
+		t.Fatal(err)
+	}
+	s.finishLiveModelCost(ctx, 1, agentgateway.Response{}, 0, 0, errLiveCostModelNotSent)
+	if events.ChargedMicros.Load() != 0 || events.Uncertain.Load() || events.AccountingUnavailable.Load() {
+		t.Fatal("definitely unsent work charged or marked uncertain")
+	}
+	for _, entry := range store.entries {
+		if entry.Status != livecost.StatusReleased || entry.ReservedMicros != 0 || entry.ChargedMicros != 0 {
+			t.Fatalf("unsent reservation remained charged: %+v", entry)
+		}
+	}
+}
+
+func TestLiveCostCallEventsReserveDatabaseFailureAfterSuccessfulSummaryStopsBeforeSupplier(t *testing.T) {
+	store := &adapterCostStore{}
+	s := adapterTestServer(t, store)
+	// The optimistic scheduling read is valid. The database can still become
+	// unavailable before the authoritative, transactional request reservation.
+	if summary, err := s.liveCostController().Summary(t.Context(), livecost.Scope{TenantID: 14, RoomID: 29}); err != nil || summary.TotalMicros != 0 {
+		t.Fatal("fixture summary was not available", summary, err)
+	}
+	store.failReserve = true
+	events := &liveCostCallEvents{}
+	provider := &adapterTTSProvider{result: ttsgateway.SynthesizeResponse{AudioURL: "https://audio.invalid"}}
+	gateway := ttsgateway.New(provider.Name(), "m")
+	gateway.Register(provider)
+	ctx := s.withLiveCostTTS(t.Context(), liveCostCallScope{TenantID: 14, RoomID: 29, SessionID: 500, Key: "reserve-db-failed", Priority: livecost.PriorityOptional, Events: events})
+	if _, err := gateway.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{VoiceID: "voice", Text: "你好。"}); !errors.Is(err, errLiveCostOptionalDeclined) {
+		t.Fatalf("optional work did not fail closed before sending: %v", err)
+	}
+	if provider.calls.Load() != 0 || events.ChargedMicros.Load() != 0 || !events.OptionalDeclined.Load() || !events.AccountingUnavailable.Load() || events.Uncertain.Load() {
+		t.Fatalf("database outage misclassified or supplier called: calls=%d charged=%d declined=%t unavailable=%t uncertain=%t", provider.calls.Load(), events.ChargedMicros.Load(), events.OptionalDeclined.Load(), events.AccountingUnavailable.Load(), events.Uncertain.Load())
+	}
+	if len(store.entries) != 0 || len(store.receipts) != 0 {
+		t.Fatal("unsent optional work invented a reservation/receipt", store.entries, store.receipts)
+	}
+	schedule := &recordingRefreshSchedule{Budget: recordingRefreshBudget{RoundLimitMicros: 10_000}, Pending: map[recordingRefreshPosition]int64{{Tab: 0, Index: 0}: 1_000}}
+	schedule.complete(0, 0, events)
+	if !schedule.Paused || schedule.PauseReason != "更新请求记账暂不可用" || schedule.SpentMicros != 0 {
+		t.Fatalf("outage was reported as exhausted budget: %+v", schedule)
+	}
+}

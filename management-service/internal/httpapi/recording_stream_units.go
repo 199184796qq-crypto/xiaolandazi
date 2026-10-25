@@ -32,9 +32,12 @@ type recordingReadyUnit struct {
 }
 
 type recordingSentenceState struct {
-	Source    string
-	Versions  [][]recordingReadyUnit
-	Refreshed int
+	Source         string
+	Versions       [][]recordingReadyUnit
+	Refreshed      int
+	VersionCount   int
+	InventoryKnown bool
+	UpdateEligible bool
 }
 
 // splitRecordingSentences 只按句末标点切句；整段没有句末标点时保留整段
@@ -63,6 +66,8 @@ func splitRecordingSentences(text string) []string {
 	return out
 }
 
+// Legacy percentage helpers remain for compatibility. The producer below uses
+// prepareRecordingRefreshSchedule and joint monetary quotes instead.
 // Optional updates stop once the rolling-hour soft budget is nearly spent.
 // Original A and necessary first audio remain allowed; only refresh work is
 // suppressed, and the caller can still fall back to a valid cached version.
@@ -110,10 +115,6 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		return err
 	}
 	texts := recordingStreamTexts(version)
-	totalRunes := 0
-	for _, text := range texts {
-		totalRunes += len([]rune(text))
-	}
 	if len(texts) == 0 {
 		return errors.New("话术优先没有可播放的正文")
 	}
@@ -222,6 +223,18 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		}
 	}
 	tabIDs := recordingStableTabIDs(version, texts)
+	startedAt := queue.startedAt
+	if s.store != nil {
+		if session, err := s.store.GetLiveRuntimeSession(ctx, tenant, runtimeID); err == nil && session.RoomID == room && !session.StartedAt.IsZero() {
+			startedAt = session.StartedAt
+		}
+	}
+	cacheCandidates := func(tabIndex, index int) []recordingcache.Entry {
+		if blueprint == nil {
+			return nil
+		}
+		return recordingCacheCandidates(hit, blueprint.Tabs[tabIndex].UnitKeys[index], blueprint.Tabs[tabIndex].ContextKeys[index])
+	}
 	saveCache := func() error {
 		if !cacheOK || cacheManifest == nil {
 			return nil
@@ -247,16 +260,14 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 			return err
 		}
 		order := recordingStreamOrder(len(tabs), previousLast, recordingStreamPinned(version), rng)
+		refreshSchedule, updatePlans := s.prepareRecordingRefreshSchedule(ctx, tenant, room, version, polish, tabs, cacheCandidates,
+			&planner, tabIDs, fmt.Sprintf("%d:%d", runtimeID, round), time.Since(startedAt), round == 0, rng)
 		for _, tabIndex := range order {
-			desiredPercent := recordingUpdatePercent(totalRunes)
-			roundPercent := s.recordingBudgetPercent(ctx, tenant, room, desiredPercent)
-			if round == 0 {
-				desiredPercent = 0
-				roundPercent = 0 // First pass may use original A or validated persisted audio.
-			}
-			updatePlan := planner.Plan(tabIDs[tabIndex], fmt.Sprintf("%d:%d", runtimeID, round), tabs[tabIndex], roundPercent, rng)
+			roundPercent := refreshSchedule.Budget.Percent
+			updatePlan := updatePlans[tabIndex]
 			refresh := updatePlan.Selected
-			supplyStats = newRecordingSupplyStats(tenant, room, runtimeID, version.PlanID, round+1, tabIDs[tabIndex], tabs[tabIndex], refresh, desiredPercent, roundPercent)
+			supplyStats = newRecordingSupplyStats(tenant, room, runtimeID, version.PlanID, round+1, tabIDs[tabIndex], tabs[tabIndex], refresh, roundPercent, roundPercent)
+			supplyStats.setSchedule(refreshSchedule)
 			for index := range tabs[tabIndex] {
 				if err := ctx.Err(); err != nil {
 					return err
@@ -265,6 +276,12 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 					return err
 				}
 				state := &tabs[tabIndex][index]
+				if refresh[index] {
+					current, budgetErr := s.liveCostController().Summary(ctx, livecost.Scope{TenantID: tenant, RoomID: room})
+					if !refreshSchedule.admit(tabIndex, index, current, budgetErr) || !planner.BeginAttempt(updatePlan, index) {
+						refresh[index] = false // Valid cache/original supply continues without optional work.
+					}
+				}
 				priority, reason := livecost.PriorityNecessary, "当前事实和音色下缺少可播放声音，补充基础供料"
 				if refresh[index] {
 					priority, reason = livecost.PriorityOptional, "话术优先跨轮更新"
@@ -299,7 +316,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 						err := liveContinuityAttempt(func() error {
 							var err error
 							if refresh[index] {
-								units, err = s.compileRecordingSentence(c, tenant, version, polish, state.Source, tabIndex, &seq)
+								units, err = s.compileRecordingSentence(c, tenant, version, polish, state.Source, tabIndex, &seq, recordingKnownSpokenVersions(state.Source, state.Versions, candidates, polish)...)
 							} else {
 								units, err = s.compileRecordingOriginal(c, tenant, version, polish, state.Source, tabIndex, &seq)
 								if errors.Is(err, errRecordingOriginalRejected) {
@@ -317,6 +334,14 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				if callScope.Events.OptionalDeclined.Load() {
 					result.GenerationErr = errLiveCostOptionalDeclined
 				}
+				if refresh[index] {
+					supplyStats.RefreshAttempts++
+					refreshSchedule.complete(tabIndex, index, callScope.Events)
+					if !result.Generated {
+						supplyStats.ReplacementCandidates += refreshSchedule.replace(&planner, updatePlan, tabIndex, index)
+					}
+				}
+				supplyStats.setSchedule(refreshSchedule)
 				supplyStats.observe(state.Source, refresh[index], result, err)
 				if err != nil {
 					if liveContinuityTerminal(ctx, err) {
@@ -408,7 +433,7 @@ func (s *Server) compileRecordingOriginal(ctx context.Context, tenant int64, ver
 	return s.compileRecordingSpoken(ctx, tenant, version, approved, tabIndex, seq)
 }
 
-func (s *Server) compileRecordingSentence(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, polish *anchorcycle.State, source string, tabIndex int, seq *int) ([]recordingReadyUnit, error) {
+func (s *Server) compileRecordingSentence(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, polish *anchorcycle.State, source string, tabIndex int, seq *int, existing ...string) ([]recordingReadyUnit, error) {
 	// The active planner already chose a rewrite. The retired original-base
 	// switch must not silently veto every optional update forever.
 	spoken := polishRecordingTextLimit(ctx, s, polish, source, 0)
@@ -417,8 +442,8 @@ func (s *Server) compileRecordingSentence(ctx context.Context, tenant int64, ver
 	}
 	// An optional rewrite that failed or echoed the original must reuse the
 	// existing audio instead of buying another identical TTS rendition.
-	if scope, _ := ctx.Value(liveCostScopeKey{}).(liveCostCallScope); scope.Priority == livecost.PriorityOptional && sameSpeechText(source, spoken) {
-		return nil, errors.New("本次改写未产生新表达，保留已有声音")
+	if err := recordingRefreshNoveltyError(ctx, source, spoken, existing...); err != nil {
+		return nil, err
 	}
 	if !sameNumbers(source, spoken) || suspiciousPolish(source, spoken) {
 		return nil, errors.New("改写改变了原文信息，保留已有声音")

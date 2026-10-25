@@ -76,12 +76,15 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 	if err != nil {
 		return out, err
 	}
-	// Subtraction avoids integer overflow while enforcing a shared model+TTS cap.
+	// Optional work shares its own model+TTS soft line, plus the total room
+	// target. Necessary supply never consumes the optional cohort's allowance,
+	// but its charges still protect the overall target from new optional work.
+	// Subtraction avoids overflow when checking either bound.
 	limit := policy.OptionalLimitMicros
 	if limit <= 0 {
 		limit = livecost.DefaultPolicy().OptionalLimitMicros
 	}
-	optionalOver := summary.TotalMicros >= limit || r.EstimatedMicros > limit-summary.TotalMicros
+	optionalOver := summary.OptionalMicros >= limit || r.EstimatedMicros > limit-summary.OptionalMicros
 	target := policy.TotalTargetMicros
 	if target <= 0 {
 		target = livecost.DefaultPolicy().TotalTargetMicros
@@ -89,7 +92,7 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 	over = summary.TotalMicros >= target || r.EstimatedMicros > target-summary.TotalMicros
 	status := livecost.StatusReserved
 	reserved := r.EstimatedMicros
-	if r.Priority == livecost.PriorityOptional && optionalOver {
+	if r.Priority == livecost.PriorityOptional && (optionalOver || over) {
 		status = livecost.StatusDeclined
 		reserved = 0
 	}
@@ -199,12 +202,15 @@ func liveCostSummary(ctx context.Context, q costQuery, scope livecost.Scope, pol
 	 COALESCE(SUM(CASE WHEN in_window AND status IN ('reserved','unknown') THEN 1 ELSE 0 END),0),
 	 COALESCE(SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END),0),
 	 COALESCE(SUM(CASE WHEN is_aged AND status IN ('reserved','unknown') THEN reserved_micros ELSE 0 END),0),
-	 COALESCE(SUM(CASE WHEN is_aged AND status IN ('reserved','unknown') THEN 1 ELSE 0 END),0)
+	 COALESCE(SUM(CASE WHEN is_aged AND status IN ('reserved','unknown') THEN 1 ELSE 0 END),0),
+	 COALESCE(SUM(CASE WHEN in_window AND priority='optional' THEN CASE WHEN status='settled' THEN charged_micros WHEN status IN ('reserved','unknown') THEN reserved_micros ELSE 0 END ELSE 0 END),0),
+	 COALESCE(SUM(CASE WHEN in_window AND priority='optional' AND attribution_source='recording_mainline' THEN CASE WHEN status='settled' THEN charged_micros WHEN status IN ('reserved','unknown') THEN reserved_micros ELSE 0 END ELSE 0 END),0)
 	 FROM (
-	  SELECT kind,status,charged_micros,usage_source,reserved_micros,
+	  SELECT kind,priority,status,charged_micros,usage_source,reserved_micros,
+	   JSON_UNQUOTE(JSON_EXTRACT(request_json,'$.attribution.source')) AS attribution_source,
 	   (requested_at>=? AND requested_at<=?) AS in_window, (requested_at<?) AS is_aged
 	  FROM live_cost_requests WHERE tenant_id=? AND room_id=? AND ((requested_at>=? AND requested_at<=?) OR status IN ('reserved','unknown'))
-	 ) AS scoped_cost_requests`, out.WindowStart, out.WindowEnd, out.WindowStart, scope.TenantID, scope.RoomID, out.WindowStart, out.WindowEnd).Scan(&out.ModelMicros, &out.TTSMicros, &out.EstimatedMicros, &out.SupplierUsageMicros, &out.SupplierInvoiceMicros, &out.ReservedMicros, &out.UnknownMicros, &out.UnresolvedRequests, &out.SettledRequests, &out.AgedUnresolvedMicros, &out.AgedUnresolvedRequests)
+	 ) AS scoped_cost_requests`, out.WindowStart, out.WindowEnd, out.WindowStart, scope.TenantID, scope.RoomID, out.WindowStart, out.WindowEnd).Scan(&out.ModelMicros, &out.TTSMicros, &out.EstimatedMicros, &out.SupplierUsageMicros, &out.SupplierInvoiceMicros, &out.ReservedMicros, &out.UnknownMicros, &out.UnresolvedRequests, &out.SettledRequests, &out.AgedUnresolvedMicros, &out.AgedUnresolvedRequests, &out.OptionalMicros, &out.MainlineOptionalMicros)
 	if err != nil {
 		return out, err
 	}
@@ -212,6 +218,9 @@ func liveCostSummary(ctx context.Context, q costQuery, scope livecost.Scope, pol
 		return out, errors.New("请求费用合计越界")
 	}
 	out.TotalMicros = out.ModelMicros + out.TTSMicros + out.ReservedMicros
+	if out.OptionalMicros < 0 || out.MainlineOptionalMicros < 0 || out.OptionalMicros > out.TotalMicros || out.MainlineOptionalMicros > out.OptionalMicros {
+		return out, errors.New("可选更新费用分项越界")
+	}
 	return out, nil
 }
 
