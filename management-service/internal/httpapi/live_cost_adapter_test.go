@@ -419,7 +419,7 @@ func TestLiveCostExpensiveModelContractReservesBeforePaidCall(t *testing.T) {
 	}
 }
 
-func TestLiveCostTokenTTSWithoutPreflightBoundDefersOptional(t *testing.T) {
+func TestLiveCostTokenTTSUsesSharedEstimateInsteadOfDisablingAllUpdates(t *testing.T) {
 	for _, contract := range []bool{false, true} {
 		t.Run(map[bool]string{false: "unknown_price", true: "configured_tokens"}[contract], func(t *testing.T) {
 			store := &adapterCostStore{}
@@ -432,15 +432,20 @@ func TestLiveCostTokenTTSWithoutPreflightBoundDefersOptional(t *testing.T) {
 			g := ttsgateway.New(provider.Name(), m)
 			g.Register(provider)
 			ctx := s.withLiveCostTTS(t.Context(), liveCostCallScope{TenantID: 14, RoomID: 29, SessionID: 500, Key: "token-optional", Priority: livecost.PriorityOptional})
-			if _, err := g.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{VoiceID: "v", Text: "你好。"}); err == nil || provider.calls.Load() != 0 {
-				t.Fatalf("unbounded optional token TTS sent: %v calls=%d", err, provider.calls.Load())
+			if _, err := g.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{VoiceID: "v", Text: "你好。"}); err != nil || provider.calls.Load() != 1 {
+				t.Fatalf("optional token update permanently blocked: %v calls=%d", err, provider.calls.Load())
 			}
 			ctx = s.withLiveCostTTS(t.Context(), liveCostCallScope{TenantID: 14, RoomID: 29, SessionID: 500, Key: "token-necessary", Priority: livecost.PriorityNecessary, Reason: "必要声音供料"})
-			if _, err := g.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{VoiceID: "v", Text: "你好。"}); err != nil || provider.calls.Load() != 1 {
+			if _, err := g.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{VoiceID: "v", Text: "你好。"}); err != nil || provider.calls.Load() != 2 {
 				t.Fatalf("necessary token TTS blocked: %v calls=%d", err, provider.calls.Load())
 			}
-			if len(store.requests) != 1 || !strings.Contains(store.requests[0].Reason, "Token计费") || store.receipts[0].ActualKnown {
+			if len(store.requests) != 2 || !strings.Contains(store.requests[0].Reason, "Token计费") || store.receipts[0].ActualKnown || store.requests[0].Priority != livecost.PriorityOptional {
 				t.Fatalf("unknown token price not recorded honestly: requests=%+v receipts=%+v", store.requests, store.receipts)
+			}
+			store.deny = true
+			ctx = s.withLiveCostTTS(t.Context(), liveCostCallScope{TenantID: 14, RoomID: 29, SessionID: 500, Key: "token-over-budget", Priority: livecost.PriorityOptional})
+			if _, err := g.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{VoiceID: "v", Text: "你好。"}); err == nil || provider.calls.Load() != 2 {
+				t.Fatalf("token estimate bypassed shared optional budget: %v calls=%d", err, provider.calls.Load())
 			}
 		})
 	}

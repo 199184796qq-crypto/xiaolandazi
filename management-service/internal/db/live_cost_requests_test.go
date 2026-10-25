@@ -164,26 +164,31 @@ func (c *costSQLConn) QueryContext(_ context.Context, query string, named []driv
 		return out, nil
 	}
 	if strings.Contains(query, "COALESCE(SUM(") {
-		if len(args) != 4 || !strings.Contains(query, "OR status IN ('reserved','unknown')") {
-			return nil, errors.New("missing unresolved reservation protection")
+		if len(args) != 7 || !strings.Contains(query, "OR status IN ('reserved','unknown')") || !strings.Contains(query, "WHEN in_window AND status") || !strings.Contains(query, "WHEN is_aged AND status") {
+			return nil, errors.New("missing rolling-window and historical unresolved separation")
 		}
-		var values [9]int64
+		var values [11]int64
 		for _, row := range c.state.rows {
 			e := row.entry
 			r := e.Request
-			if r.TenantID != args[0].(int64) || r.RoomID != args[1].(int64) {
+			if r.TenantID != args[3].(int64) || r.RoomID != args[4].(int64) {
 				continue
 			}
 			pending := e.Status == livecost.StatusReserved || e.Status == livecost.StatusUnknown
-			if !pending && (row.at.Before(args[2].(time.Time)) || row.at.After(args[3].(time.Time))) {
+			inWindow := !row.at.Before(args[0].(time.Time)) && !row.at.After(args[1].(time.Time))
+			if !pending && !inWindow {
 				continue
 			}
-			if pending {
+			if pending && inWindow {
 				values[5] += e.ReservedMicros
 				values[7]++
 				if e.Status == livecost.StatusUnknown {
 					values[6] += e.ReservedMicros
 				}
+			}
+			if pending && row.at.Before(args[2].(time.Time)) {
+				values[9] += e.ReservedMicros
+				values[10]++
 			}
 			if e.Status == livecost.StatusSettled {
 				if r.Kind == livecost.KindModel {
@@ -206,7 +211,7 @@ func (c *costSQLConn) QueryContext(_ context.Context, query string, named []driv
 		for i, value := range values {
 			result[i] = value
 		}
-		return &costSQLRows{columns: []string{"model", "tts", "estimate", "usage", "invoice", "reserved", "unknown", "unresolved", "settled"}, values: [][]driver.Value{result}}, nil
+		return &costSQLRows{columns: []string{"model", "tts", "estimate", "usage", "invoice", "reserved", "unknown", "unresolved", "settled", "aged_unresolved_micros", "aged_unresolved_requests"}, values: [][]driver.Value{result}}, nil
 	}
 	if strings.Contains(query, "SELECT request_key FROM live_cost_requests") {
 		if len(args) != 4 {
@@ -338,7 +343,7 @@ func TestLiveCostUnknownSurvivesWindowAndKnownUnsentReleasesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary, err := store.LiveCostSummary(ctx, scope, policy, now)
-	if err != nil || summary.TotalMicros != 40000 || summary.UnknownMicros != 40000 {
+	if err != nil || summary.TotalMicros != 0 || summary.UnknownMicros != 0 || summary.AgedUnresolvedMicros != 40000 || summary.AgedUnresolvedRequests != 1 {
 		t.Fatal(summary, err)
 	}
 	notSent := livecost.Receipt{TenantID: 14, RoomID: 29, Status: livecost.ReceiptNotSent}
@@ -355,8 +360,86 @@ func TestLiveCostUnknownSurvivesWindowAndKnownUnsentReleasesOnce(t *testing.T) {
 		}
 	}
 	summary, err = store.LiveCostSummary(ctx, scope, policy, now)
-	if err != nil || summary.TotalMicros != 40000 {
+	if err != nil || summary.TotalMicros != 0 || summary.AgedUnresolvedMicros != 40000 || summary.AgedUnresolvedRequests != 1 {
 		t.Fatal(summary, err)
+	}
+}
+
+func TestLiveCostAgedUnknownKeepsFenceWithoutBlockingNewSessionRefresh(t *testing.T) {
+	store, state := newCostSQLStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 25, 13, 0, 0, 0, time.UTC)
+	policy := livecost.DefaultPolicy()
+	scope := livecost.Scope{TenantID: 14, RoomID: 29}
+	request := sqlCostRequest("old-session-unknown")
+	request.SessionID = 479
+	request.EstimatedMicros = policy.OptionalLimitMicros
+	request.Attribution = &livecost.Attribution{Source: "recording_mainline", Round: 2, TabID: "tab-a", SourceIndex: 3}
+	if res, err := store.ReserveLiveCost(ctx, request, policy, now); err != nil || !res.Allowed {
+		t.Fatal(res, err)
+	}
+	if err := store.FinishLiveCost(ctx, scope, request.Key, livecost.Receipt{TenantID: 14, RoomID: 29, Status: livecost.ReceiptUnknown}, now); err != nil {
+		t.Fatal(err)
+	}
+	// The previous request still occupies its actual rolling hour, including
+	// the boundary, rather than being released merely by a new session ID.
+	boundary := now.Add(time.Hour)
+	blocked := sqlCostRequest("new-session-before-expiry")
+	blocked.SessionID = 480
+	if res, err := store.ReserveLiveCost(ctx, blocked, policy, boundary); err != nil || res.Allowed || res.Status != livecost.StatusDeclined {
+		t.Fatal(res, err)
+	}
+	// Only the budget window advances. The old unknown row, its attribution,
+	// reservation amount and its permanent same-key fence remain intact.
+	afterWindow := boundary.Add(time.Microsecond)
+	summary, err := store.LiveCostSummary(ctx, scope, policy, afterWindow)
+	if err != nil || summary.TotalMicros != 0 || summary.ReservedMicros != 0 || summary.UnresolvedRequests != 0 || summary.AgedUnresolvedMicros != policy.OptionalLimitMicros || summary.AgedUnresolvedRequests != 1 {
+		t.Fatal(summary, err)
+	}
+	duplicate, err := store.ReserveLiveCost(ctx, request, policy, afterWindow)
+	if err != nil || duplicate.Allowed || !duplicate.Existing || duplicate.Status != livecost.StatusUnknown {
+		t.Fatal("old request became sendable again", duplicate, err)
+	}
+	stored := state.rows[costSQLKey(request.TenantID, request.RoomID, request.Key)].entry
+	if stored.Status != livecost.StatusUnknown || stored.ReservedMicros != policy.OptionalLimitMicros || stored.Request.Attribution == nil || *stored.Request.Attribution != *request.Attribution {
+		t.Fatal("historical liability or attribution was lost", stored)
+	}
+	fresh := sqlCostRequest("new-session-after-expiry")
+	fresh.SessionID = 480
+	if res, err := store.ReserveLiveCost(ctx, fresh, policy, afterWindow); err != nil || !res.Allowed {
+		t.Fatal("new round stayed blocked by historical unknown", res, err)
+	}
+	summary, err = store.LiveCostSummary(ctx, scope, policy, afterWindow)
+	if err != nil || summary.TotalMicros != fresh.EstimatedMicros || summary.ReservedMicros != fresh.EstimatedMicros || summary.UnresolvedRequests != 1 || summary.AgedUnresolvedMicros != policy.OptionalLimitMicros || summary.AgedUnresolvedRequests != 1 {
+		t.Fatal(summary, err)
+	}
+	if err = store.FinishLiveCost(ctx, scope, request.Key, livecost.Receipt{TenantID: 14, RoomID: 29, Status: livecost.ReceiptNotSent}, afterWindow); !errors.Is(err, livecost.ErrReceiptConflict) {
+		t.Fatal("aging silently allowed an unknown refund", err)
+	}
+}
+
+func TestLiveCostAgedReservedAmountRemainsScopedAndMayBeSettled(t *testing.T) {
+	store, _ := newCostSQLStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	policy := livecost.DefaultPolicy()
+	scope := livecost.Scope{TenantID: 14, RoomID: 29}
+	request := sqlCostRequest("aged-reserved")
+	for _, request := range []livecost.Request{request, func() livecost.Request { r := request; r.TenantID++; return r }(), func() livecost.Request { r := request; r.RoomID++; return r }()} {
+		if _, err := store.ReserveLiveCost(ctx, request, policy, now.Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	summary, err := store.LiveCostSummary(ctx, scope, policy, now)
+	if err != nil || summary.TotalMicros != 0 || summary.AgedUnresolvedMicros != request.EstimatedMicros || summary.AgedUnresolvedRequests != 1 {
+		t.Fatal("historical report crossed tenant or room", summary, err)
+	}
+	if err = store.FinishLiveCost(ctx, scope, request.Key, livecost.Receipt{TenantID: 14, RoomID: 29, Status: livecost.ReceiptSuccess, ProviderRequestID: "late-success"}, now); err != nil {
+		t.Fatal(err)
+	}
+	summary, err = store.LiveCostSummary(ctx, scope, policy, now)
+	if err != nil || summary.TotalMicros != 0 || summary.AgedUnresolvedMicros != 0 || summary.AgedUnresolvedRequests != 0 {
+		t.Fatal("late receipt did not reconcile historical unresolved", summary, err)
 	}
 }
 func TestLiveCostSupplierInvoiceReplacesEstimateWithoutDoubleCharge(t *testing.T) {

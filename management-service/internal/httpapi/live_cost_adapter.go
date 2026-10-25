@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -24,15 +25,19 @@ import (
 )
 
 type liveCostCallScope struct {
-	TenantID  int64
-	RoomID    int64
-	PlanID    int64
-	SessionID int64
-	RunID     string
-	Priority  string
-	Reason    string
-	Key       string
+	TenantID    int64
+	RoomID      int64
+	PlanID      int64
+	SessionID   int64
+	RunID       string
+	Priority    string
+	Reason      string
+	Key         string
+	Attribution *livecost.Attribution
+	Events      *liveCostCallEvents
 }
+
+type liveCostCallEvents struct{ OptionalDeclined atomic.Bool }
 type liveCostScopeKey struct{}
 
 func withLiveCostScope(ctx context.Context, scope liveCostCallScope) context.Context {
@@ -187,6 +192,9 @@ func (s *Server) reserveLiveCost(ctx context.Context, request livecost.Request) 
 		return nil
 	}
 	if request.Priority == livecost.PriorityOptional {
+		if events := liveCostScope(ctx).Events; events != nil {
+			events.OptionalDeclined.Store(true)
+		}
 		return errLiveCostOptionalDeclined
 	}
 	if err != nil {
@@ -235,7 +243,7 @@ func (o liveTTSObserver) BeforeSynthesis(ctx context.Context, attempt ttsgateway
 		Provider, Model, Voice, Text, Instruction string
 		Rate                                      float64
 	}{attempt.Provider, attempt.Model, attempt.VoiceID, attempt.TextSHA, attempt.InstructionSHA, attempt.Rate})
-	request := livecost.Request{Key: key, TenantID: o.scope.TenantID, RoomID: o.scope.RoomID, PlanID: o.scope.PlanID, SessionID: o.scope.SessionID, RunID: o.scope.RunID, Kind: livecost.KindTTS, Provider: attempt.Provider, Model: attempt.Model, Priority: o.scope.Priority, Reason: reason, Fingerprint: fingerprint, EstimatedMicros: estimate, Characters: attempt.SentTextCharacters}
+	request := livecost.Request{Key: key, TenantID: o.scope.TenantID, RoomID: o.scope.RoomID, PlanID: o.scope.PlanID, SessionID: o.scope.SessionID, RunID: o.scope.RunID, Kind: livecost.KindTTS, Provider: attempt.Provider, Model: attempt.Model, Priority: o.scope.Priority, Reason: reason, Fingerprint: fingerprint, EstimatedMicros: estimate, Characters: attempt.SentTextCharacters, Attribution: o.scope.Attribution}
 	if err = o.s.reserveLiveCost(ctx, request); err != nil {
 		return "", err
 	}
@@ -260,12 +268,11 @@ func (s *Server) estimateLiveTTS(attempt ttsgateway.SynthesisAttempt, scope live
 	knownTokenModel := strings.HasPrefix(strings.ToLower(strings.TrimSpace(attempt.Model)), "qwen-audio-3.1-tts-flash")
 	reason := scope.Reason
 	if tokenContract || knownTokenModel {
-		// This API has no preflight output-token quote or hard token limit. An
-		// optional change cannot prove its bounded price before synthesis.
-		if scope.Priority == livecost.PriorityOptional {
-			return 0, reason, errLiveCostOptionalDeclined
-		}
-		reason += "；Token计费声音缺少调用前用量上界，必要供料按保守预算估计执行"
+		// Token output cannot be quoted exactly before synthesis. Reserve the
+		// same conservative estimate for a bounded optional attempt and settle
+		// the returned usage. The shared rolling budget still gates every call;
+		// an uncertain unit price must not permanently disable all refreshes.
+		reason += "；Token计费声音按保守用量预估，实际用量回执后结算，允许必要超用"
 		if tokenContract {
 			if attempt.SentTextCharacters > math.MaxInt64/16 {
 				return 0, reason, errors.New("声音用量预估越界")
@@ -423,7 +430,7 @@ func (s *Server) beginLiveModelCost(ctx context.Context, id int64, stage, profil
 	// Random prompt changes do not create a new paid attempt after an unknown
 	// receipt. A legitimate follow-up requires an explicit new logical key.
 	key := liveCostKey(livecost.KindModel, logical+"\x00"+stage)
-	if err = s.reserveLiveCost(ctx, livecost.Request{Key: key, TenantID: scope.TenantID, RoomID: scope.RoomID, PlanID: scope.PlanID, SessionID: scope.SessionID, RunID: scope.RunID, Kind: livecost.KindModel, Provider: provider, Model: model, Priority: scope.Priority, Reason: scope.Reason, Fingerprint: fingerprint, EstimatedMicros: estimate, InputTokens: input, OutputTokens: output}); err != nil {
+	if err = s.reserveLiveCost(ctx, livecost.Request{Key: key, TenantID: scope.TenantID, RoomID: scope.RoomID, PlanID: scope.PlanID, SessionID: scope.SessionID, RunID: scope.RunID, Kind: livecost.KindModel, Provider: provider, Model: model, Priority: scope.Priority, Reason: scope.Reason, Fingerprint: fingerprint, EstimatedMicros: estimate, InputTokens: input, OutputTokens: output, Attribution: scope.Attribution}); err != nil {
 		return err
 	}
 	s.liveCostMu.Lock()
@@ -519,7 +526,7 @@ func (s *Server) LivePaidContext(ctx context.Context, session model.LiveRuntimeS
 		ctx = withLiveCostScope(ctx, liveCostCallScope{TenantID: -1, RoomID: -1, SessionID: -1})
 		return ttsgateway.WithSynthesisObserver(ctx, nil)
 	}
-	return s.withLiveCostTTS(ctx, liveCostCallScope{TenantID: session.TenantID, RoomID: session.RoomID, PlanID: planID, SessionID: session.ID, RunID: session.ExternalID, Priority: livecost.PriorityNecessary, Reason: "直播必要互动：" + stage, Key: key})
+	return s.withLiveCostTTS(ctx, liveCostCallScope{TenantID: session.TenantID, RoomID: session.RoomID, PlanID: planID, SessionID: session.ID, RunID: session.ExternalID, Priority: livecost.PriorityNecessary, Reason: "直播必要互动：" + stage, Key: key, Attribution: &livecost.Attribution{Source: "interaction"}})
 }
 
 // CompleteLivePaidModel wraps actual worker model transports, without relying
@@ -531,7 +538,7 @@ func (s *Server) CompleteLivePaidModel(ctx context.Context, session model.LiveRu
 	if session.ID <= 0 || s.liveCostController() == nil {
 		return call(ctx, request)
 	}
-	ctx = withLiveCostScope(ctx, liveCostCallScope{TenantID: session.TenantID, RoomID: session.RoomID, PlanID: planID, SessionID: session.ID, RunID: session.ExternalID, Priority: livecost.PriorityNecessary, Reason: "直播必要互动模型调用", Key: key})
+	ctx = withLiveCostScope(ctx, liveCostCallScope{TenantID: session.TenantID, RoomID: session.RoomID, PlanID: planID, SessionID: session.ID, RunID: session.ExternalID, Priority: livecost.PriorityNecessary, Reason: "直播必要互动模型调用", Key: key, Attribution: &livecost.Attribution{Source: "interaction"}})
 	s.liveCostMu.Lock()
 	s.liveModelCostSequence--
 	id := s.liveModelCostSequence

@@ -2,6 +2,7 @@ package livecost
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -138,6 +139,53 @@ func TestPriceIsSentTextEstimateNeverDuration(t *testing.T) {
 	r.Reason = ""
 	if _, e := NormalizeRequest(r); e == nil {
 		t.Fatal("necessary reason missing")
+	}
+}
+
+func TestRequestAttributionPreservesLegacyAndValidatesRoundIdentity(t *testing.T) {
+	legacy, err := NormalizeRequest(costRequest("legacy"))
+	if err != nil || legacy.Attribution != nil {
+		t.Fatal(legacy, err)
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil || strings.Contains(string(raw), "attribution") {
+		t.Fatal("legacy request acquired an attribution identity", string(raw), err)
+	}
+	valid := costRequest("round")
+	valid.Attribution = &Attribution{Source: " recording_mainline ", Round: 2, TabID: " stable-tab ", SourceIndex: 0}
+	normalized, err := NormalizeRequest(valid)
+	if err != nil || normalized.Attribution.Source != "recording_mainline" || normalized.Attribution.TabID != "stable-tab" || valid.Attribution.Source != " recording_mainline " {
+		t.Fatal(normalized, valid, err)
+	}
+	raw, err = json.Marshal(normalized)
+	var restored Request
+	if err != nil || json.Unmarshal(raw, &restored) != nil || restored.Attribution == nil || *restored.Attribution != *normalized.Attribution {
+		t.Fatal("round attribution did not survive durable request JSON", string(raw), err)
+	}
+	for _, attribution := range []Attribution{
+		{Source: "interaction"}, // Real interactions are not forced into a mainline round.
+		{Source: "recording_mainline", Round: 1, TabID: "tab", SourceIndex: 0},
+	} {
+		r := costRequest("valid-attribution")
+		r.Attribution = &attribution
+		if _, err := NormalizeRequest(r); err != nil {
+			t.Fatal(attribution, err)
+		}
+	}
+	for _, attribution := range []Attribution{
+		{},
+		{Source: strings.Repeat("x", 65)},
+		{Source: "interaction", Round: -1},
+		{Source: "interaction", SourceIndex: -1},
+		{Source: "interaction", TabID: strings.Repeat("x", 129)},
+		{Source: "recording_mainline", TabID: "tab"},
+		{Source: "recording_mainline", Round: 1},
+	} {
+		r := costRequest("invalid-attribution")
+		r.Attribution = &attribution
+		if _, err := NormalizeRequest(r); err == nil {
+			t.Fatal("invalid attribution accepted", attribution)
+		}
 	}
 }
 

@@ -185,23 +185,30 @@ func liveCostSummary(ctx context.Context, q costQuery, scope livecost.Scope, pol
 		window = time.Hour
 	}
 	out := livecost.Summary{Scope: scope, WindowStart: at.Add(-window).UTC(), WindowEnd: at.UTC()}
-	// Unresolved reservations deliberately have NO age cutoff. A missing response
-	// is not proof of no charge, including after a process restart or a new live.
+	// A missing response is never a refund: old reservations remain in the
+	// ledger and keep their same-key retry fence. They are reported separately
+	// rather than occupying every future rolling-hour refresh budget forever.
 	err := q.QueryRowContext(ctx, `SELECT
 	 COALESCE(SUM(CASE WHEN status='settled' AND kind='model' THEN charged_micros ELSE 0 END),0),
 	 COALESCE(SUM(CASE WHEN status='settled' AND kind='tts' THEN charged_micros ELSE 0 END),0),
 	 COALESCE(SUM(CASE WHEN status='settled' AND usage_source='sent_text_estimate' THEN charged_micros ELSE 0 END),0),
 	 COALESCE(SUM(CASE WHEN status='settled' AND usage_source='supplier_usage' THEN charged_micros ELSE 0 END),0),
 	 COALESCE(SUM(CASE WHEN status='settled' AND usage_source='supplier_invoice' THEN charged_micros ELSE 0 END),0),
-	 COALESCE(SUM(CASE WHEN status IN ('reserved','unknown') THEN reserved_micros ELSE 0 END),0),
-	 COALESCE(SUM(CASE WHEN status='unknown' THEN reserved_micros ELSE 0 END),0),
-	 COALESCE(SUM(CASE WHEN status IN ('reserved','unknown') THEN 1 ELSE 0 END),0),
-	 COALESCE(SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END),0)
-	 FROM live_cost_requests WHERE tenant_id=? AND room_id=? AND ((requested_at>=? AND requested_at<=?) OR status IN ('reserved','unknown'))`, scope.TenantID, scope.RoomID, out.WindowStart, out.WindowEnd).Scan(&out.ModelMicros, &out.TTSMicros, &out.EstimatedMicros, &out.SupplierUsageMicros, &out.SupplierInvoiceMicros, &out.ReservedMicros, &out.UnknownMicros, &out.UnresolvedRequests, &out.SettledRequests)
+	 COALESCE(SUM(CASE WHEN in_window AND status IN ('reserved','unknown') THEN reserved_micros ELSE 0 END),0),
+	 COALESCE(SUM(CASE WHEN in_window AND status='unknown' THEN reserved_micros ELSE 0 END),0),
+	 COALESCE(SUM(CASE WHEN in_window AND status IN ('reserved','unknown') THEN 1 ELSE 0 END),0),
+	 COALESCE(SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END),0),
+	 COALESCE(SUM(CASE WHEN is_aged AND status IN ('reserved','unknown') THEN reserved_micros ELSE 0 END),0),
+	 COALESCE(SUM(CASE WHEN is_aged AND status IN ('reserved','unknown') THEN 1 ELSE 0 END),0)
+	 FROM (
+	  SELECT kind,status,charged_micros,usage_source,reserved_micros,
+	   (requested_at>=? AND requested_at<=?) AS in_window, (requested_at<?) AS is_aged
+	  FROM live_cost_requests WHERE tenant_id=? AND room_id=? AND ((requested_at>=? AND requested_at<=?) OR status IN ('reserved','unknown'))
+	 ) AS scoped_cost_requests`, out.WindowStart, out.WindowEnd, out.WindowStart, scope.TenantID, scope.RoomID, out.WindowStart, out.WindowEnd).Scan(&out.ModelMicros, &out.TTSMicros, &out.EstimatedMicros, &out.SupplierUsageMicros, &out.SupplierInvoiceMicros, &out.ReservedMicros, &out.UnknownMicros, &out.UnresolvedRequests, &out.SettledRequests, &out.AgedUnresolvedMicros, &out.AgedUnresolvedRequests)
 	if err != nil {
 		return out, err
 	}
-	if out.ModelMicros < 0 || out.TTSMicros < 0 || out.ReservedMicros < 0 || out.ModelMicros > math.MaxInt64-out.TTSMicros || out.ModelMicros+out.TTSMicros > math.MaxInt64-out.ReservedMicros {
+	if out.ModelMicros < 0 || out.TTSMicros < 0 || out.ReservedMicros < 0 || out.AgedUnresolvedMicros < 0 || out.AgedUnresolvedRequests < 0 || out.ModelMicros > math.MaxInt64-out.TTSMicros || out.ModelMicros+out.TTSMicros > math.MaxInt64-out.ReservedMicros {
 		return out, errors.New("请求费用合计越界")
 	}
 	out.TotalMicros = out.ModelMicros + out.TTSMicros + out.ReservedMicros

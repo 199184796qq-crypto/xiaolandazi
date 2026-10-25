@@ -154,6 +154,14 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 	queue.buffer = func(ctx context.Context, program string) error {
 		return waitRecordingStreamBuffer(ctx, s, tenant, room, program, version.ID)
 	}
+	// A cancelled or failed partial tab is reported as partial, never as a
+	// completed playback round. Costs are joined by the attribution below.
+	var supplyStats *recordingSupplyStats
+	defer func() {
+		if supplyStats != nil {
+			supplyStats.write(false)
+		}
+	}()
 
 	// 命中就不润色、不合成，直接复用已有音轨。
 	cacheScope, cacheOK := recordingCacheScopeFor(tenant, room, version.PlanID)
@@ -213,12 +221,15 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		}
 		order := recordingStreamOrder(len(tabs), previousLast, recordingStreamPinned(version), rng)
 		for _, tabIndex := range order {
-			roundPercent := s.recordingBudgetPercent(ctx, tenant, room, recordingUpdatePercent(totalRunes))
+			desiredPercent := recordingUpdatePercent(totalRunes)
+			roundPercent := s.recordingBudgetPercent(ctx, tenant, room, desiredPercent)
 			if round == 0 {
+				desiredPercent = 0
 				roundPercent = 0 // First pass may use original A or validated persisted audio.
 			}
 			updatePlan := planner.Plan(tabIDs[tabIndex], fmt.Sprintf("%d:%d", runtimeID, round), tabs[tabIndex], roundPercent, rng)
 			refresh := updatePlan.Selected
+			supplyStats = newRecordingSupplyStats(tenant, room, runtimeID, version.PlanID, round+1, tabIDs[tabIndex], tabs[tabIndex], refresh, desiredPercent, roundPercent)
 			for index := range tabs[tabIndex] {
 				if err := ctx.Err(); err != nil {
 					return err
@@ -233,7 +244,8 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				}
 				callScope := liveCostCallScope{TenantID: tenant, RoomID: room, PlanID: version.PlanID, SessionID: runtimeID,
 					RunID: fmt.Sprint(runtimeID), Priority: priority, Reason: reason,
-					Key: fmt.Sprintf("recording:%d:%d:%s:%d:%d", runtimeID, version.ID, tabIDs[tabIndex], round, index)}
+					Key:         fmt.Sprintf("recording:%d:%d:%s:%d:%d", runtimeID, version.ID, tabIDs[tabIndex], round, index),
+					Attribution: &livecost.Attribution{Source: "recording_mainline", Round: round + 1, TabID: tabIDs[tabIndex], SourceIndex: index}, Events: &liveCostCallEvents{}}
 				callCtx := withLiveCostScope(ctx, callScope)
 				candidates := hit[state.Source]
 				result, err := resolveRecordingReuse(callCtx, recordingReuseRequest{
@@ -267,6 +279,13 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 						return units, err
 					},
 				})
+				// The text polisher may return the original on a declined model
+				// request. Retain the real cost decision rather than reporting it
+				// as a model-generated unchanged expression.
+				if callScope.Events.OptionalDeclined.Load() {
+					result.GenerationErr = errLiveCostOptionalDeclined
+				}
+				supplyStats.observe(state.Source, refresh[index], result, err)
 				if err != nil {
 					if liveContinuityTerminal(ctx, err) {
 						return err
@@ -309,6 +328,8 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				}
 			}
 			saveCache()
+			supplyStats.write(true)
+			supplyStats = nil
 		}
 		// A short script cannot supply sixty unique seconds. Start its complete
 		// first pass instead of manufacturing repeated startup copies forever.

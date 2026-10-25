@@ -38,23 +38,35 @@ var (
 )
 
 type Request struct {
-	Key               string `json:"key"`
-	TenantID          int64  `json:"tenant_id"`
-	RoomID            int64  `json:"room_id"`
-	PlanID            int64  `json:"plan_id"`
-	SessionID         int64  `json:"session_id"`
-	RunID             string `json:"run_id"`
-	Kind              string `json:"kind"`
-	Provider          string `json:"provider"`
-	Model             string `json:"model"`
-	Priority          string `json:"priority"`
-	Reason            string `json:"reason"`
-	Fingerprint       string `json:"fingerprint"`
-	EstimatedMicros   int64  `json:"estimated_micros"`
-	InputTokens       int64  `json:"input_tokens"`
-	CachedInputTokens int64  `json:"cached_input_tokens"`
-	OutputTokens      int64  `json:"output_tokens"`
-	Characters        int64  `json:"characters"`
+	Key               string       `json:"key"`
+	TenantID          int64        `json:"tenant_id"`
+	RoomID            int64        `json:"room_id"`
+	PlanID            int64        `json:"plan_id"`
+	SessionID         int64        `json:"session_id"`
+	RunID             string       `json:"run_id"`
+	Kind              string       `json:"kind"`
+	Provider          string       `json:"provider"`
+	Model             string       `json:"model"`
+	Priority          string       `json:"priority"`
+	Reason            string       `json:"reason"`
+	Fingerprint       string       `json:"fingerprint"`
+	EstimatedMicros   int64        `json:"estimated_micros"`
+	InputTokens       int64        `json:"input_tokens"`
+	CachedInputTokens int64        `json:"cached_input_tokens"`
+	OutputTokens      int64        `json:"output_tokens"`
+	Characters        int64        `json:"characters"`
+	Attribution       *Attribution `json:"attribution,omitempty"`
+}
+
+// Attribution locates paid work without retaining its text or media URL. Round
+// is one-based for the recording mainline and zero when no round applies;
+// SourceIndex is the zero-based source sentence within TabID.
+// Older requests omit the entire object, preserving their existing identity.
+type Attribution struct {
+	Source      string `json:"source"`
+	Round       int    `json:"round"`
+	TabID       string `json:"tab_id,omitempty"`
+	SourceIndex int    `json:"source_index"`
 }
 
 type Receipt struct {
@@ -98,19 +110,21 @@ type Reservation struct {
 	EstimatedMicros       int64  `json:"estimated_micros"`
 }
 type Summary struct {
-	Scope                 Scope     `json:"scope"`
-	WindowStart           time.Time `json:"window_start"`
-	WindowEnd             time.Time `json:"window_end"`
-	ModelMicros           int64     `json:"model_micros"`
-	TTSMicros             int64     `json:"tts_micros"`
-	EstimatedMicros       int64     `json:"estimated_micros"`
-	SupplierUsageMicros   int64     `json:"supplier_usage_micros"`
-	SupplierInvoiceMicros int64     `json:"supplier_invoice_micros"`
-	ReservedMicros        int64     `json:"reserved_micros"`
-	UnknownMicros         int64     `json:"unknown_micros"`
-	UnresolvedRequests    int64     `json:"unresolved_requests"`
-	SettledRequests       int64     `json:"settled_requests"`
-	TotalMicros           int64     `json:"total_micros"`
+	Scope                  Scope     `json:"scope"`
+	WindowStart            time.Time `json:"window_start"`
+	WindowEnd              time.Time `json:"window_end"`
+	ModelMicros            int64     `json:"model_micros"`
+	TTSMicros              int64     `json:"tts_micros"`
+	EstimatedMicros        int64     `json:"estimated_micros"`
+	SupplierUsageMicros    int64     `json:"supplier_usage_micros"`
+	SupplierInvoiceMicros  int64     `json:"supplier_invoice_micros"`
+	ReservedMicros         int64     `json:"reserved_micros"`
+	UnknownMicros          int64     `json:"unknown_micros"`
+	UnresolvedRequests     int64     `json:"unresolved_requests"`
+	AgedUnresolvedMicros   int64     `json:"aged_unresolved_micros"`
+	AgedUnresolvedRequests int64     `json:"aged_unresolved_requests"`
+	SettledRequests        int64     `json:"settled_requests"`
+	TotalMicros            int64     `json:"total_micros"`
 }
 
 type Store interface {
@@ -232,6 +246,16 @@ func NormalizeRequest(r Request) (Request, error) {
 	r.Provider = strings.TrimSpace(r.Provider)
 	r.Priority = strings.TrimSpace(r.Priority)
 	r.Reason = strings.TrimSpace(r.Reason)
+	if r.Attribution != nil {
+		attribution := *r.Attribution
+		attribution.Source = strings.TrimSpace(attribution.Source)
+		attribution.TabID = strings.TrimSpace(attribution.TabID)
+		if attribution.Source == "" || len(attribution.Source) > 64 || len(attribution.TabID) > 128 || attribution.Round < 0 || attribution.SourceIndex < 0 ||
+			(attribution.Source == "recording_mainline" && (attribution.Round < 1 || attribution.TabID == "")) {
+			return r, errors.New("费用请求轮次归属无效")
+		}
+		r.Attribution = &attribution
+	}
 	if r.Priority == "" {
 		r.Priority = PriorityOptional
 	}
