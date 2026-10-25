@@ -63,10 +63,10 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 	}
 	existing, over, err := readLiveCostEntry(ctx, tx, scope, r.Key)
 	if err == nil {
-		if !reflect.DeepEqual(existing.Request, r) {
+		if !livecost.SameRequestIdentity(existing.Request, r) {
 			return out, livecost.ErrRequestConflict
 		}
-		out = livecost.Reservation{Key: r.Key, Existing: true, Status: existing.Status, OverBudget: over, EstimatedMicros: r.EstimatedMicros}
+		out = livecost.Reservation{Key: r.Key, Existing: true, Status: existing.Status, OverBudget: over, EstimatedMicros: existing.Request.EstimatedMicros}
 		return out, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -81,12 +81,12 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 	// but its charges still protect the overall target from new optional work.
 	// Subtraction avoids overflow when checking either bound.
 	limit := policy.OptionalLimitMicros
-	if limit <= 0 {
+	if !policy.Configured && limit <= 0 {
 		limit = livecost.DefaultPolicy().OptionalLimitMicros
 	}
 	optionalOver := summary.OptionalMicros >= limit || r.EstimatedMicros > limit-summary.OptionalMicros
 	target := policy.TotalTargetMicros
-	if target <= 0 {
+	if !policy.Configured && target <= 0 {
 		target = livecost.DefaultPolicy().TotalTargetMicros
 	}
 	over = summary.TotalMicros >= target || r.EstimatedMicros > target-summary.TotalMicros

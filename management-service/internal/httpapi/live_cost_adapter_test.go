@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,7 +38,7 @@ func (s *adapterCostStore) ReserveLiveCost(_ context.Context, r livecost.Request
 		s.entries = map[string]livecost.Entry{}
 	}
 	if old, ok := s.entries[r.Key]; ok {
-		if !reflect.DeepEqual(old.Request, r) {
+		if !livecost.SameRequestIdentity(old.Request, r) {
 			return livecost.Reservation{}, livecost.ErrRequestConflict
 		}
 		return livecost.Reservation{Existing: true, Status: old.Status}, nil

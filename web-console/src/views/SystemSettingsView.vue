@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import LiveContentPolicyPanel from '../components/LiveContentPolicyPanel.vue'
 import AnchorVoiceCacheSettingsPanel from '../components/AnchorVoiceCacheSettingsPanel.vue'
 import AnchorGenerationSettingsPanel from '../components/AnchorGenerationSettingsPanel.vue'
+import LiveCostSettingsPanel from '../components/LiveCostSettingsPanel.vue'
 import {
   createSystemDictionaryItem,
   createSystemWarehouse,
@@ -1235,6 +1236,7 @@ onMounted(load)
       <div v-else class="panel-loading">正在读取直播策略中心…</div>
     </section>
 
+    <LiveCostSettingsPanel v-if="showLiveSettings && canManageAgentPrompts" />
     <AnchorVoiceCacheSettingsPanel v-if="showLiveSettings && canManageMembershipLimits" />
     <section v-if="showLiveSettings && canViewGlobal" id="live-typography" class="system-settings-card">
       <header>

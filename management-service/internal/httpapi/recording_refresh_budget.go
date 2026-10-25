@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"math"
 	"math/big"
@@ -22,28 +23,34 @@ type recordingRefreshBudget struct {
 	RoundLimitMicros int64
 }
 
-const recordingRefreshTargetMicros int64 = 1_000_000
-
 func recordingDynamicRefreshBudget(summary livecost.Summary, totalRunes int, fullQuoteMicros int64, elapsed time.Duration) recordingRefreshBudget {
+	return recordingDynamicRefreshBudgetWithPolicy(summary, totalRunes, fullQuoteMicros, elapsed, livecost.DefaultPolicy())
+}
+
+func recordingDynamicRefreshBudgetWithPolicy(summary livecost.Summary, totalRunes int, fullQuoteMicros int64, elapsed time.Duration, policy livecost.Policy) recordingRefreshBudget {
 	// Keep the legacy 220-runes/minute estimate exact, including source sizes
 	// too large to represent as a time.Duration.
 	round := new(big.Int).Mul(big.NewInt(int64(totalRunes)), big.NewInt(int64(time.Minute)))
-	return recordingDynamicRefreshBudgetForPeriod(summary, fullQuoteMicros, elapsed, round, 220)
+	return recordingDynamicRefreshBudgetForPeriod(summary, fullQuoteMicros, elapsed, round, 220, policy)
 }
 
 // recordingDynamicRefreshBudgetForDuration uses the measured duration of an
 // entire source round. Duration only paces optional spending; it is never a
 // supplier charge or a replacement for the per-request shared reservation.
 func recordingDynamicRefreshBudgetForDuration(summary livecost.Summary, fullQuoteMicros int64, elapsed, roundDuration time.Duration) recordingRefreshBudget {
-	return recordingDynamicRefreshBudgetForPeriod(summary, fullQuoteMicros, elapsed, big.NewInt(int64(roundDuration)), 1)
+	return recordingDynamicRefreshBudgetForDurationWithPolicy(summary, fullQuoteMicros, elapsed, roundDuration, livecost.DefaultPolicy())
+}
+
+func recordingDynamicRefreshBudgetForDurationWithPolicy(summary livecost.Summary, fullQuoteMicros int64, elapsed, roundDuration time.Duration, policy livecost.Policy) recordingRefreshBudget {
+	return recordingDynamicRefreshBudgetForPeriod(summary, fullQuoteMicros, elapsed, big.NewInt(int64(roundDuration)), 1, policy)
 }
 
 // round/scale represents nanoseconds as a rational, keeping both public
 // scheduling inputs on the same allocation and overflow-safe arithmetic path.
-func recordingDynamicRefreshBudgetForPeriod(summary livecost.Summary, fullQuoteMicros int64, elapsed time.Duration, round *big.Int, scale int64) recordingRefreshBudget {
+func recordingDynamicRefreshBudgetForPeriod(summary livecost.Summary, fullQuoteMicros int64, elapsed time.Duration, round *big.Int, scale int64, policy livecost.Policy) recordingRefreshBudget {
 	var result recordingRefreshBudget
-	policy := livecost.DefaultPolicy()
-	if summary.TotalMicros < 0 || summary.OptionalMicros < 0 || summary.MainlineOptionalMicros < 0 ||
+	policy, err := livecost.NormalizePolicy(policy)
+	if err != nil || policy.MainlineTargetMicros == 0 || summary.TotalMicros < 0 || summary.OptionalMicros < 0 || summary.MainlineOptionalMicros < 0 ||
 		summary.OptionalMicros > summary.TotalMicros || summary.MainlineOptionalMicros > summary.OptionalMicros ||
 		summary.OptionalMicros >= policy.OptionalLimitMicros || summary.TotalMicros >= policy.TotalTargetMicros {
 		return result
@@ -60,8 +67,8 @@ func recordingDynamicRefreshBudgetForPeriod(summary livecost.Summary, fullQuoteM
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	remaining := time.Hour
-	if elapsed < time.Hour {
+	remaining := policy.Window
+	if elapsed < policy.Window {
 		remaining -= elapsed
 	}
 	// Never multiply a time.Duration or monetary value in fixed-width integers.
@@ -69,18 +76,18 @@ func recordingDynamicRefreshBudgetForPeriod(summary livecost.Summary, fullQuoteM
 	if round.Cmp(period) > 0 {
 		period.Set(round)
 	}
-	// The 1.0-yuan target belongs only to optional recording-mainline work,
-	// whereas 1.2 protects all optional work and 1.3 protects the entire room.
+	// Mainline, all-optional and whole-room targets are separate configured
+	// cohorts; each is already inclusive of its unsettled reservations.
 	// Spread any catch-up balance across the remaining allocation period; using
 	// max(base, entire target balance) would spend a whole hour in one short pass.
-	targetRemaining := recordingRefreshTargetMicros - summary.MainlineOptionalMicros
+	targetRemaining := policy.MainlineTargetMicros - summary.MainlineOptionalMicros
 	if targetRemaining < 0 {
 		targetRemaining = 0
 	}
 	allowance := new(big.Int).Mul(big.NewInt(targetRemaining), round)
 	allowance.Quo(allowance, period)
-	base := new(big.Int).Mul(big.NewInt(recordingRefreshTargetMicros), round)
-	base.Quo(base, new(big.Int).Mul(big.NewInt(int64(time.Hour)), big.NewInt(scale)))
+	base := new(big.Int).Mul(big.NewInt(policy.MainlineTargetMicros), round)
+	base.Quo(base, new(big.Int).Mul(big.NewInt(int64(policy.Window)), big.NewInt(scale)))
 	if base.Cmp(allowance) > 0 {
 		allowance.Set(base)
 	}
@@ -102,6 +109,16 @@ func recordingDynamicRefreshBudgetForPeriod(summary livecost.Summary, fullQuoteM
 // sending it. The current model snapshot determines the provider/model price;
 // credentials, prompts, source text and signed URLs never enter diagnostics.
 func (s *Server) recordingRefreshQuote(source string, version model.LiveAgentPlanVersion, polish *anchorcycle.State) (int64, error) {
+	settings, valid := s.liveCostSettingsSnapshot(context.Background())
+	if !valid {
+		return 0, errors.New("更新费用设置暂不可用")
+	}
+	return s.recordingRefreshQuoteWithSettings(source, version, polish, settings)
+}
+
+// One immutable settings value prices the complete pass without a database
+// query per source. Actual request admission still reads the newest budget.
+func (s *Server) recordingRefreshQuoteWithSettings(source string, version model.LiveAgentPlanVersion, polish *anchorcycle.State, settings livecost.Settings) (int64, error) {
 	if s == nil || polish == nil || polish.TextModel == nil {
 		return 0, errors.New("更新费用预估缺少文字模型")
 	}
@@ -110,6 +127,9 @@ func (s *Server) recordingRefreshQuote(source string, version model.LiveAgentPla
 	modelName := strings.TrimSpace(profile.Model)
 	if profileID == "" || modelName == "" || !profile.Enabled || strings.TrimSpace(polish.Config.TextProfileID) != profileID {
 		return 0, errors.New("更新费用预估的文字模型配置不可用")
+	}
+	if err := settings.Validate(); err != nil {
+		return 0, errors.New("更新费用设置无效")
 	}
 	source = strings.TrimSpace(source)
 	if source == "" {
@@ -133,11 +153,12 @@ func (s *Server) recordingRefreshQuote(source string, version model.LiveAgentPla
 	if rate == 0 {
 		rate = 1
 	}
-	ttsQuote, _, err := s.estimateLiveTTS(ttsgateway.SynthesisAttempt{
+	pricing := s.liveCostPricingForSettings(settings, ttsgateway.ProviderForModel(voiceModel), voiceModel)
+	ttsQuote, _, err := s.estimateLiveTTSWithPricing(ttsgateway.SynthesisAttempt{
 		Provider: ttsgateway.ProviderForModel(voiceModel), Model: voiceModel,
 		VoiceID: voice.VoiceID, Rate: rate, SentTextCharacters: sent,
 		BillableCharacters: billable, CharacterRule: ttsgateway.BillableCharacterRule,
-	}, liveCostCallScope{Priority: livecost.PriorityOptional, Reason: "话术优先更新联合预估"})
+	}, liveCostCallScope{Priority: livecost.PriorityOptional, Reason: "话术优先更新联合预估"}, pricing)
 	if err != nil {
 		return 0, err
 	}
@@ -152,19 +173,9 @@ func (s *Server) recordingRefreshQuote(source string, version model.LiveAgentPla
 			output = 32
 		}
 	}
-	inRate, cachedRate, outRate := liveCostReferenceModelRates(modelName, input)
-	modelQuote, err := livecost.EstimateTokens(input, 0, output, inRate, cachedRate, outRate)
+	modelQuote, err := s.quoteLiveModel(s.liveCostPricingForSettings(settings, "anchor:"+profileID, modelName), input, 0, output)
 	if err != nil {
 		return 0, err
-	}
-	if contract, ok := s.liveCostPrice("anchor:"+profileID, modelName, livecost.KindModel, "tokens"); ok {
-		quoted, e := livecost.EstimateTokens(input, 0, output, contract.InputMicrosPerMillion, liveCostCachedRate(contract), contract.OutputMicrosPerMillion)
-		if e != nil {
-			return 0, e
-		}
-		if quoted > modelQuote {
-			modelQuote = quoted
-		}
 	}
 	// Up to three definite returned P0 attempts are permitted by the existing
 	// polisher. This allowance does not authorize retries after an unknown result.

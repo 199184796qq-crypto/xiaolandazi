@@ -147,6 +147,10 @@ func (s *Server) systemUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, item := range input.Settings {
+		if strings.TrimSpace(item.Key) == db.LiveCostSetting {
+			writeError(w, http.StatusBadRequest, "直播计费与小时预算请使用专用配置面板保存")
+			return
+		}
 		if err := validateBrowserTitleSetting(item.Key, item.Value); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

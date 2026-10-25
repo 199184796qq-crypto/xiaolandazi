@@ -165,7 +165,7 @@ func TestRecordingRefreshQuoteUsesWeightedTextAndThreeModelAttempts(t *testing.T
 	}
 }
 
-func TestRecordingRefreshQuoteMatchesExactContractsAndKeepsHigherReference(t *testing.T) {
+func TestRecordingRefreshQuoteMatchesExactContractsAndUsesConfiguredPrice(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		rules []liveCostPriceRule
@@ -173,11 +173,15 @@ func TestRecordingRefreshQuoteMatchesExactContractsAndKeepsHigherReference(t *te
 	}{
 		{"tts_matching_higher", []liveCostPriceRule{{Provider: ttsgateway.ProviderCosyVoice, Model: ttsgateway.CosyVoiceFlash, Kind: livecost.KindTTS, Unit: "characters", CharacterMicros: 100}}, 1240},
 		{"tts_other_provider_ignored", []liveCostPriceRule{{Provider: "other", Model: ttsgateway.CosyVoiceFlash, Kind: livecost.KindTTS, Unit: "characters", CharacterMicros: 100}}, 1100},
-		{"tts_lower_contract_does_not_reduce_allowance", []liveCostPriceRule{{Provider: ttsgateway.ProviderCosyVoice, Model: ttsgateway.CosyVoiceFlash, Kind: livecost.KindTTS, Unit: "characters", CharacterMicros: 1}}, 1100},
+		// Seven expanded weighted characters at one micro each, plus three
+		// ordinary model attempts at ceil(179.8)=180 micro-CNY each.
+		{"tts_lower_contract_reduces_allowance", []liveCostPriceRule{{Provider: ttsgateway.ProviderCosyVoice, Model: ttsgateway.CosyVoiceFlash, Kind: livecost.KindTTS, Unit: "characters", CharacterMicros: 1}}, 7 + 3*180},
 		{"model_matching_higher", []liveCostPriceRule{{Provider: "anchor:profile", Model: "qwen3.7-flash", Kind: livecost.KindModel, Unit: "tokens", InputMicrosPerMillion: 1_000_000, OutputMicrosPerMillion: 2_000_000}}, 3065},
 		{"model_other_profile_ignored", []liveCostPriceRule{{Provider: "anchor:other", Model: "qwen3.7-flash", Kind: livecost.KindModel, Unit: "tokens", InputMicrosPerMillion: 1_000_000, OutputMicrosPerMillion: 2_000_000}}, 1100},
 		{"model_other_model_ignored", []liveCostPriceRule{{Provider: "anchor:profile", Model: "other", Kind: livecost.KindModel, Unit: "tokens", InputMicrosPerMillion: 1_000_000, OutputMicrosPerMillion: 2_000_000}}, 1100},
-		{"model_lower_contract_does_not_reduce_allowance", []liveCostPriceRule{{Provider: "anchor:profile", Model: "qwen3.7-flash", Kind: livecost.KindModel, Unit: "tokens", InputMicrosPerMillion: 1, OutputMicrosPerMillion: 1}}, 1100},
+		// The same seven TTS characters cost 560; each of the three model
+		// attempts costs ceil((771 input + 32 output)/1e6)=1 micro-CNY.
+		{"model_lower_contract_reduces_allowance", []liveCostPriceRule{{Provider: "anchor:profile", Model: "qwen3.7-flash", Kind: livecost.KindModel, Unit: "tokens", InputMicrosPerMillion: 1, OutputMicrosPerMillion: 1}}, 560 + 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, version, state := recordingRefreshQuoteFixture()

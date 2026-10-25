@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"livecompanion/management/internal/livecost"
 	"livecompanion/management/internal/model"
 )
 
@@ -136,6 +137,12 @@ func enrichAuditFromPayload(payload map[string]any, entry *model.AdminAuditLog) 
 	if entry == nil || payload == nil {
 		return
 	}
+	if entry.Action == "system.live_cost.update" {
+		entry.DetailJSON = mustAuditJSON(payload)
+		entry.ObjectType = "system_setting"
+		entry.ObjectID = "live_cost_config"
+		entry.ObjectName = "直播计费与小时预算"
+	}
 	if entry.Action == "liveops.user_voice_cache.update" {
 		entry.DetailJSON = mustAuditJSON(payload)
 		entry.ObjectType = "user_voice_cache"
@@ -203,6 +210,11 @@ func applyAuditSuccessState(entry *model.AdminAuditLog) {
 		return
 	}
 	switch entry.Action {
+	case "system.live_cost.update":
+		if cfg, err := livecost.DecodeSettings(entry.DetailJSON); err == nil {
+			cfg.Revision++
+			entry.AfterState = mustAuditJSON(cfg)
+		}
 	case "room.delete", "room.delete_non_cooperating":
 		entry.AfterState = `{"exists":false}`
 	case "agent.runtime.start", "agent.runtime.resume":
@@ -256,6 +268,9 @@ func shouldAuditRequest(method string, path string) bool {
 }
 
 func auditAction(method string, path string) string {
+	if method == http.MethodPut && path == "/api/v1/system/live-cost-settings" {
+		return "system.live_cost.update"
+	}
 	if method == http.MethodPut && path == "/api/v1/system/voice-models" {
 		return "system.voice_models.update"
 	}
@@ -530,6 +545,11 @@ func (s *Server) fillAuditTarget(
 	r *http.Request,
 	entry *model.AdminAuditLog,
 ) {
+	if entry.Action == "system.live_cost.update" && s.store != nil {
+		if cfg, err := s.store.LiveCostSettings(r.Context()); err == nil {
+			entry.BeforeState = mustAuditJSON(cfg)
+		}
+	}
 	if entry.Action == "liveops.user_voice_cache.update" {
 		value := strings.TrimPrefix(r.URL.Path, "/api/v1/liveops/user-voice-cache-policies/")
 		if tenant, err := strconv.ParseInt(value, 10, 64); err == nil && tenant > 0 {

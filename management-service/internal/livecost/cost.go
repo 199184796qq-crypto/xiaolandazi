@@ -40,26 +40,27 @@ var (
 )
 
 type Request struct {
-	Key                string       `json:"key"`
-	TenantID           int64        `json:"tenant_id"`
-	RoomID             int64        `json:"room_id"`
-	PlanID             int64        `json:"plan_id"`
-	SessionID          int64        `json:"session_id"`
-	RunID              string       `json:"run_id"`
-	Kind               string       `json:"kind"`
-	Provider           string       `json:"provider"`
-	Model              string       `json:"model"`
-	Priority           string       `json:"priority"`
-	Reason             string       `json:"reason"`
-	Fingerprint        string       `json:"fingerprint"`
-	EstimatedMicros    int64        `json:"estimated_micros"`
-	InputTokens        int64        `json:"input_tokens"`
-	CachedInputTokens  int64        `json:"cached_input_tokens"`
-	OutputTokens       int64        `json:"output_tokens"`
-	Characters         int64        `json:"characters"`
-	BillableCharacters int64        `json:"billable_characters,omitempty"`
-	CharacterRule      string       `json:"character_rule,omitempty"`
-	Attribution        *Attribution `json:"attribution,omitempty"`
+	Key                string           `json:"key"`
+	TenantID           int64            `json:"tenant_id"`
+	RoomID             int64            `json:"room_id"`
+	PlanID             int64            `json:"plan_id"`
+	SessionID          int64            `json:"session_id"`
+	RunID              string           `json:"run_id"`
+	Kind               string           `json:"kind"`
+	Provider           string           `json:"provider"`
+	Model              string           `json:"model"`
+	Priority           string           `json:"priority"`
+	Reason             string           `json:"reason"`
+	Fingerprint        string           `json:"fingerprint"`
+	EstimatedMicros    int64            `json:"estimated_micros"`
+	InputTokens        int64            `json:"input_tokens"`
+	CachedInputTokens  int64            `json:"cached_input_tokens"`
+	OutputTokens       int64            `json:"output_tokens"`
+	Characters         int64            `json:"characters"`
+	BillableCharacters int64            `json:"billable_characters,omitempty"`
+	CharacterRule      string           `json:"character_rule,omitempty"`
+	Attribution        *Attribution     `json:"attribution,omitempty"`
+	PricingSnapshot    *PricingSnapshot `json:"pricing_snapshot,omitempty"`
 }
 
 // Attribution locates paid work without retaining its text or media URL. Round
@@ -94,14 +95,16 @@ type Receipt struct {
 }
 
 type Policy struct {
-	Window              time.Duration
-	OptionalLimitMicros int64
-	TotalTargetMicros   int64
-	SpoolDir            string
+	Configured           bool
+	Window               time.Duration
+	MainlineTargetMicros int64
+	OptionalLimitMicros  int64
+	TotalTargetMicros    int64
+	SpoolDir             string
 }
 
 func DefaultPolicy() Policy {
-	return Policy{Window: time.Hour, OptionalLimitMicros: 1200000, TotalTargetMicros: 1300000}
+	return Policy{Window: time.Hour, MainlineTargetMicros: 1000000, OptionalLimitMicros: 1200000, TotalTargetMicros: 1300000}
 }
 
 type Scope struct {
@@ -153,15 +156,8 @@ type Controller struct {
 }
 
 func New(store Store, policy Policy) *Controller {
-	defaults := DefaultPolicy()
-	if policy.Window <= 0 {
-		policy.Window = defaults.Window
-	}
-	if policy.OptionalLimitMicros <= 0 {
-		policy.OptionalLimitMicros = defaults.OptionalLimitMicros
-	}
-	if policy.TotalTargetMicros <= 0 {
-		policy.TotalTargetMicros = defaults.TotalTargetMicros
+	if normalized, err := NormalizePolicy(policy); err == nil {
+		policy = normalized
 	}
 	return &Controller{store: store, policy: policy, now: func() time.Time { return time.Now().UTC() }}
 }
@@ -169,6 +165,10 @@ func (c *Controller) Begin(ctx context.Context, request Request) (Reservation, e
 	r, err := NormalizeRequest(request)
 	if err != nil {
 		return Reservation{}, err
+	}
+	policy, policyErr := c.policyForContext(ctx)
+	if policyErr != nil {
+		err = policyErr
 	}
 	var claimErr error
 	if c != nil {
@@ -191,8 +191,8 @@ func (c *Controller) Begin(ctx context.Context, request Request) (Reservation, e
 			return Reservation{Key: r.Key, Existing: true, Status: StatusUnknown, AccountingUnavailable: true, DegradedRecorded: true, EstimatedMicros: r.EstimatedMicros}, nil
 		}
 	}
-	if c != nil && c.store != nil {
-		reservation, e := c.store.ReserveLiveCost(ctx, r, c.policy, c.now())
+	if c != nil && c.store != nil && policyErr == nil {
+		reservation, e := c.store.ReserveLiveCost(ctx, r, policy, c.now())
 		if e == nil {
 			return reservation, nil
 		}
@@ -251,7 +251,11 @@ func (c *Controller) Summary(ctx context.Context, scope Scope) (Summary, error) 
 	if scope.TenantID <= 0 || scope.RoomID <= 0 {
 		return Summary{}, errors.New("费用统计房间身份无效")
 	}
-	return c.store.LiveCostSummary(ctx, scope, c.policy, c.now())
+	policy, err := c.policyForContext(ctx)
+	if err != nil {
+		return Summary{}, fmt.Errorf("%w: %v", ErrAccountingUnavailable, err)
+	}
+	return c.store.LiveCostSummary(ctx, scope, policy, c.now())
 }
 
 func NormalizeRequest(r Request) (Request, error) {
@@ -259,6 +263,22 @@ func NormalizeRequest(r Request) (Request, error) {
 	r.Provider = strings.TrimSpace(r.Provider)
 	r.Priority = strings.TrimSpace(r.Priority)
 	r.Reason = strings.TrimSpace(r.Reason)
+	if r.PricingSnapshot != nil {
+		if err := r.PricingSnapshot.Validate(); err != nil {
+			return r, err
+		}
+		pricing := *r.PricingSnapshot
+		pricing.ModelTiers = append([]TokenTier(nil), pricing.ModelTiers...)
+		if pricing.Contract != nil {
+			contract := *pricing.Contract
+			pricing.Contract = &contract
+		}
+		if pricing.Config != nil {
+			config := pricing.Config.Clone()
+			pricing.Config = &config
+		}
+		r.PricingSnapshot = &pricing
+	}
 	if r.Attribution != nil {
 		attribution := *r.Attribution
 		attribution.Source = strings.TrimSpace(attribution.Source)
@@ -301,7 +321,11 @@ func NormalizeRequest(r Request) (Request, error) {
 			// TTS boundaries always provide the weighted count and its rule.
 			characters = r.Characters
 		}
-		r.EstimatedMicros, err = EstimateTTS(characters, ReferenceTTSMicrosPerBillableCharacter)
+		if r.PricingSnapshot != nil {
+			r.EstimatedMicros, err = EstimateTTSPer10K(characters, r.PricingSnapshot.TTSPriceMicrosPer10K)
+		} else {
+			r.EstimatedMicros, err = EstimateTTS(characters, ReferenceTTSMicrosPerBillableCharacter)
+		}
 		if err != nil {
 			return r, err
 		}

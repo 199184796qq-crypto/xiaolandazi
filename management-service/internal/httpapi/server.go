@@ -84,6 +84,9 @@ type Server struct {
 	liveCostInitialized    bool
 	liveCostReplayAt       time.Time
 	liveCostPrices         []liveCostPriceRule
+	liveCostConfig         *livecost.Settings
+	liveCostConfigLoader   func(context.Context) (livecost.Settings, error)
+	liveCostConfigWarned   bool
 	liveModelCostTickets   map[int64]liveModelCostAttempt
 	liveModelCostSequence  int64
 	sessionArchiveWatches  sync.Map
@@ -195,6 +198,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tenants", s.listTenants)
 	mux.HandleFunc("GET /api/v1/system/public-config", s.systemPublicConfig)
 	mux.HandleFunc("GET /api/v1/system/settings", s.systemSettingsDashboard)
+	mux.HandleFunc("GET /api/v1/system/live-cost-settings", s.systemLiveCostSettingsGet)
 	mux.HandleFunc("GET /api/v1/system/anchor-voice-cache-policy", s.systemAnchorVoiceCachePolicyGet)
 	mux.HandleFunc("GET /api/v1/system/speech-library-policy", s.speechLibraryPolicyGet)
 	mux.HandleFunc("PUT /api/v1/system/speech-library-policy", s.speechLibraryPolicyPut)
@@ -238,6 +242,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/system/speech-models/test-options", s.systemSpeechModelTestOptions)
 	mux.HandleFunc("POST /api/v1/system/speech-models/models", s.systemSpeechModelsList)
 	mux.HandleFunc("PUT /api/v1/system/settings", s.systemUpdateSettings)
+	mux.HandleFunc("PUT /api/v1/system/live-cost-settings", s.systemLiveCostSettingsPut)
 	mux.HandleFunc("PUT /api/v1/system/agent-prompts", s.systemUpdateAgentPromptConfigs)
 	mux.HandleFunc("POST /api/v1/system/agent-prompts/{key}/publish", s.systemPublishAgentPromptConfig)
 	mux.HandleFunc("GET /api/v1/system/agent-prompts/{key}/history", s.systemAgentPromptHistory)

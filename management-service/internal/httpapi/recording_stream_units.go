@@ -84,16 +84,24 @@ func (s *Server) recordingBudgetPercent(ctx context.Context, tenant, room int64,
 	if s == nil || s.store == nil || desired <= 0 {
 		return desired
 	}
-	cost, err := s.liveCostController().Summary(ctx, livecost.Scope{TenantID: tenant, RoomID: room})
+	settings, valid := s.liveCostSettingsSnapshot(ctx)
+	if !valid || settings.MainlineHourlyMicros == 0 {
+		return 0
+	}
+	policy := settings.Policy()
+	cost, err := s.liveCostController().Summary(livecost.WithPolicy(ctx, policy), livecost.Scope{TenantID: tenant, RoomID: room})
 	if err != nil {
 		log.Printf("recording stream budget unavailable tenant=%d room=%d error=%v; optional updates paused", tenant, room, err)
 		return 0
 	}
 	// The transactional request ledger includes pending/unknown attempts; media
 	// archival duration and a delayed cron snapshot cannot authorize paid work.
-	percent := recordingBudgetPercent(cost.TotalMicros, desired)
+	percent := desired
+	if cost.TotalMicros >= policy.TotalTargetMicros || cost.OptionalMicros >= policy.OptionalLimitMicros {
+		percent = 0
+	}
 	if percent == 0 && desired > 0 {
-		log.Printf("recording stream budget reuse-only tenant=%d room=%d cost_micros=%d target_micros=%d", tenant, room, cost.TotalMicros, recordingBudgetSoftCapMicros)
+		log.Printf("recording stream budget reuse-only tenant=%d room=%d cost_micros=%d target_micros=%d", tenant, room, cost.TotalMicros, policy.TotalTargetMicros)
 	}
 	return percent
 }
@@ -277,8 +285,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				}
 				state := &tabs[tabIndex][index]
 				if refresh[index] {
-					current, budgetErr := s.liveCostController().Summary(ctx, livecost.Scope{TenantID: tenant, RoomID: room})
-					if !refreshSchedule.admit(tabIndex, index, current, budgetErr) || !planner.BeginAttempt(updatePlan, index) {
+					if !s.admitRecordingRefresh(ctx, refreshSchedule, tenant, room, tabIndex, index) || !planner.BeginAttempt(updatePlan, index) {
 						refresh[index] = false // Valid cache/original supply continues without optional work.
 					}
 				}

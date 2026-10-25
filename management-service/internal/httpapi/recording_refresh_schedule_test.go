@@ -359,6 +359,7 @@ type refreshScheduleSummaryStore struct {
 	SummaryValue livecost.Summary
 	SummaryErr   error
 	SummaryCalls int
+	Policies     []livecost.Policy
 }
 
 func (*refreshScheduleSummaryStore) ReserveLiveCost(context.Context, livecost.Request, livecost.Policy, time.Time) (livecost.Reservation, error) {
@@ -369,8 +370,9 @@ func (*refreshScheduleSummaryStore) FinishLiveCost(context.Context, livecost.Sco
 	panic("只读更新规划不得写入费用回执")
 }
 
-func (store *refreshScheduleSummaryStore) LiveCostSummary(context.Context, livecost.Scope, livecost.Policy, time.Time) (livecost.Summary, error) {
+func (store *refreshScheduleSummaryStore) LiveCostSummary(_ context.Context, _ livecost.Scope, policy livecost.Policy, _ time.Time) (livecost.Summary, error) {
 	store.SummaryCalls++
+	store.Policies = append(store.Policies, policy)
 	return store.SummaryValue, store.SummaryErr
 }
 

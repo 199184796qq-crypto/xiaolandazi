@@ -161,6 +161,10 @@ func (s *recordingRefreshSchedule) pendingMicros() int64 {
 func (s *recordingRefreshSchedule) pause(reason string) { s.Paused, s.PauseReason = true, reason }
 
 func (s *recordingRefreshSchedule) admit(tab, index int, current livecost.Summary, err error) bool {
+	return s.admitWithPolicy(tab, index, current, err, livecost.DefaultPolicy())
+}
+
+func (s *recordingRefreshSchedule) admitWithPolicy(tab, index int, current livecost.Summary, err error, policy livecost.Policy) bool {
 	if s.Paused {
 		return false
 	}
@@ -172,12 +176,25 @@ func (s *recordingRefreshSchedule) admit(tab, index int, current livecost.Summar
 	if quote <= 0 {
 		return false
 	}
-	headroom := recordingDynamicRefreshBudget(current, 1, 1, time.Hour).HeadroomMicros
+	headroom := recordingDynamicRefreshBudgetWithPolicy(current, 1, 1, policy.Window, policy).HeadroomMicros
 	if quote > headroom || s.SpentMicros > s.Budget.RoundLimitMicros-s.pendingMicros() {
 		s.pause("可选更新预算暂不足")
 		return false
 	}
 	return true
+}
+
+// A precomputed pass never freezes a room's budget. The next optional source
+// sees a fresh settings read and summary; the request transaction checks again.
+func (s *Server) admitRecordingRefresh(ctx context.Context, schedule *recordingRefreshSchedule, tenant, room int64, tab, index int) bool {
+	settings, valid := s.liveCostSettingsSnapshot(ctx)
+	if !valid || settings.Validate() != nil {
+		schedule.pause("更新费用设置暂不可用")
+		return false
+	}
+	policy := settings.Policy()
+	current, err := s.liveCostController().Summary(livecost.WithPolicy(ctx, policy), livecost.Scope{TenantID: tenant, RoomID: room})
+	return schedule.admitWithPolicy(tab, index, current, err, policy)
 }
 
 func (s *recordingRefreshSchedule) complete(tab, index int, events *liveCostCallEvents) {
@@ -221,13 +238,32 @@ func (s *recordingRefreshSchedule) replace(planner *recordingUpdatePlanner, plan
 // transaction still validates the latest shared-room budget before sending.
 func (s *Server) prepareRecordingRefreshSchedule(ctx context.Context, tenant, room int64, version model.LiveAgentPlanVersion, policy *anchorcycle.State,
 	tabs [][]recordingSentenceState, hitCandidates func(int, int) []recordingcache.Entry, planner *recordingUpdatePlanner, tabIDs []string, key string, elapsed time.Duration, first bool, rng *rand.Rand) (*recordingRefreshSchedule, []*recordingUpdatePlan) {
-	if first {
-		// Baseline supply must not wait on full-library scans or pricing.
+	withoutOptional := func(reason string) (*recordingRefreshSchedule, []*recordingUpdatePlan) {
 		plans := make([]*recordingUpdatePlan, len(tabs))
 		for tab := range tabs {
 			plans[tab] = planner.PlanBounded(tabIDs[tab], key, tabs[tab], 0, 0, rng)
 		}
-		return newRecordingRefreshSchedule(recordingRefreshBudget{}, nil, plans), plans
+		result := newRecordingRefreshSchedule(recordingRefreshBudget{}, nil, plans)
+		if reason != "" {
+			result.pause(reason)
+		}
+		return result, plans
+	}
+	if first {
+		// Baseline supply must not wait on full-library scans or pricing.
+		return withoutOptional("")
+	}
+	settings, settingsValid := s.liveCostSettingsSnapshot(ctx)
+	if !settingsValid || settings.Validate() != nil {
+		return withoutOptional("更新费用设置暂不可用")
+	}
+	budgetPolicy := settings.Policy()
+	if budgetPolicy.MainlineTargetMicros == 0 || budgetPolicy.OptionalLimitMicros == 0 {
+		return withoutOptional("当前可选更新额度不足")
+	}
+	summary, summaryErr := s.liveCostController().Summary(livecost.WithPolicy(ctx, budgetPolicy), livecost.Scope{TenantID: tenant, RoomID: room})
+	if summaryErr != nil {
+		return withoutOptional("更新费用预估或账务暂不可用")
 	}
 	allFull := true
 	var forecast time.Duration
@@ -250,7 +286,6 @@ func (s *Server) prepareRecordingRefreshSchedule(ctx context.Context, tenant, ro
 	}
 	quotes := make([][]int64, len(tabs))
 	var totalQuote int64
-	summary, summaryErr := s.liveCostController().Summary(ctx, livecost.Scope{TenantID: tenant, RoomID: room})
 	for tab := range tabs {
 		quotes[tab] = make([]int64, len(tabs[tab]))
 		for index := range tabs[tab] {
@@ -259,7 +294,7 @@ func (s *Server) prepareRecordingRefreshSchedule(ctx context.Context, tenant, ro
 			if !state.UpdateEligible || summaryErr != nil {
 				continue
 			}
-			quote, err := s.recordingRefreshQuote(state.Source, version, policy)
+			quote, err := s.recordingRefreshQuoteWithSettings(state.Source, version, policy, settings)
 			if err != nil {
 				summaryErr = errors.New("更新费用预估暂不可用")
 				continue
@@ -268,7 +303,7 @@ func (s *Server) prepareRecordingRefreshSchedule(ctx context.Context, tenant, ro
 			totalQuote += quote
 		}
 	}
-	budget := recordingDynamicRefreshBudgetForDuration(summary, totalQuote, elapsed, forecast)
+	budget := recordingDynamicRefreshBudgetForDurationWithPolicy(summary, totalQuote, elapsed, forecast, budgetPolicy)
 	if summaryErr != nil {
 		budget = recordingRefreshBudget{}
 	}

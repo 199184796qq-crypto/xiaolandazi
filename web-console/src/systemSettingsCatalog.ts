@@ -160,6 +160,12 @@ export const systemSettingsCategories: SystemSettingsCategory[] = [
     to: '/system/settings/live',
     groups: [
       {
+        key: 'live-cost',
+        title: '直播成本',
+        description: '统一供应商参考单价和直播间的更新预算。',
+        entries: [{ key: 'live-cost-settings', title: '直播成本设置', description: '配置声音与模型阶梯单价，以及每小时主线、可选工作和总预算目标。', icon: '费', to: '/system/settings/live#live-cost-settings', badge: '平台级', superAdminOnly: true }],
+      },
+      {
         key: 'anchor-voice-cache', title: '声音资产缓存', description: '由后台运维统一管控生成声音缓存的生命周期。',
         entries: [{ key: 'anchor-voice-cache', title: '用户话术与声音缓存', description: '设置平台默认与每个用户的缓存开关、声音保留时间。', icon: '音', to: '/operations/live/user-voice-cache', badge: '运维', viewAny: ['system.settings.liveops.manage'] }],
       },
