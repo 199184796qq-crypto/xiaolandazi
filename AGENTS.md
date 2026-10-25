@@ -1,6 +1,13 @@
 # 项目协作约定
 
-## 当前生产（2026-10-26 07:40）
+## 当前生产（2026-10-26 07:56）
+
+- 用户授权提交部署481预算审计修复；源码75416fe已推送main，北京时间07:56:30—07:56:35上线20261026-recording-budget-fix-75416fe，前驱actual current为live-cost-settings-7f362dc。少版本只作更新排序优先，不再排除全部四版健康句；解意图真实模型调用惰性绑定同一有效session/run及interaction归属，缓存零调用路径保留。
+- 仅替换Management及新增RECORDING-BUDGET-FIX-SOURCE.json；Management1660688/VCS75416fe/dirty=false/SHAf4aafa2772660149655574efb99af20bd9fe54d4320745864284e217a6f44ad5，Core1558558与网关1558559的PID/完整SHA保持。三次锁内空闲守卫，未启停客户直播；2584旧非目标文件、1564前端文件、母版/MANIFEST既有状态、18保护表（含全部系统设置）、Nginx及实际unit/env均保持。
+- 固定干净源码Management50包/2355测试事件通过、108环境跳过；全量vet/Linux构建及20依赖一致，8个离线发布空闲守卫夹具通过。38公网资源/鉴权、8080/8081/8083健康与完整标准生产冒烟通过，完整前端备份与共享latest指针已更新。无真实模型/TTS、新场效果、供应商实付或实机出声验收声明。
+- 481参考费用5.414638元、6小时50分48.122秒；第19—37轮长期低更新缺陷已离线复现并修复，158笔解意图0.038824元仅在报告补核，未改历史账务或预算参数。说明docs/2026-10-26-481场预算审计与库存饥饿修复.md；证据E:/直播伴播-local/recording-budget-fix-release-20261026，服务器回执/opt/xiaolan/deployments/20261026-recording-budget-fix-75416fe.json；回滚前驱/opt/xiaolan/releases/20261025-live-cost-settings-7f362dc，回滚仍须发布锁和空闲守卫。源码与发布登记编辑结束并交接，其它既有差异保留。
+
+## 历史生产（2026-10-26 07:40）
 
 - 用户授权提交部署后台直播计费与小时预算配置；功能76bb202及已上线前端来源继承7f362dc已推送main，07:39:51—07:40:14发布20261025-live-cost-settings-7f362dc，前驱actual P0-exclusions-a6bd676。后台TTS/模型Token/完整输入阶梯与每小时预算可维护，默认0.8元/万计费字符、主线1/可选1.2/总1.3元目标；必要业务可超目标，价格冻结、历史不回算、缓存不清空。
 - Management1658274/VCS7f362dc/dirty=false/SHA51da23996cb9d841e14464188256c0ec9f71ac604caff80c0432e654ad0eac54；仅管理服务重启，Core1558558及网关1558559PID/完整SHA保持。启动仅新增live_cost_config默认种子1行，其余37设置及其它保护表、旧assets/CSV、移动端、提示词/MANIFEST、Nginx及实际unit/env保持；2491旧非目标文件保持。
