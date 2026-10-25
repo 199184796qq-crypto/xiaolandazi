@@ -290,7 +290,10 @@ func (s *Server) prepareRecordingRefreshSchedule(ctx context.Context, tenant, ro
 		quotes[tab] = make([]int64, len(tabs[tab]))
 		for index := range tabs[tab] {
 			state := &tabs[tab][index]
-			state.UpdateEligible = state.VersionCount > 0 && (allFull || state.VersionCount < recordingCacheMaxVersions)
+			// Fewer versions rank first in PlanBounded and across-tab allocation.
+			// They must not exclude full pools: a few duplicate-only tail sources
+			// can otherwise strand the entire round's refresh allowance for hours.
+			state.UpdateEligible = state.VersionCount > 0
 			if !state.UpdateEligible || summaryErr != nil {
 				continue
 			}

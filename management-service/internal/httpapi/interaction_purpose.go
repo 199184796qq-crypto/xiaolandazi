@@ -7,13 +7,41 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"livecompanion/management/internal/agentgateway"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/interactionpurpose"
+	"livecompanion/management/internal/livecost"
+	"livecompanion/management/internal/model"
 )
+
+// Resolve the runtime only when a model is needed. Cache-only resolution stays
+// independent of runtime/accounting availability. Judge and resolution share
+// one immutable identity, even if the room starts another session meanwhile.
+func interactionPurposeCostBinder(lookup func(context.Context, int64, int64) (model.LiveRuntimeSession, error), tenant, room, plan int64) func(context.Context) (context.Context, error) {
+	var once sync.Once
+	var session model.LiveRuntimeSession
+	var loadErr error
+	return func(ctx context.Context) (context.Context, error) {
+		once.Do(func() {
+			session, loadErr = lookup(ctx, tenant, room)
+			if loadErr == nil && (session.ID <= 0 || session.TenantID != tenant || session.RoomID != room ||
+				session.EndedAt != nil || (session.Status != "running" && session.Status != "paused")) {
+				loadErr = fmt.Errorf("active purpose runtime unavailable")
+			}
+		})
+		if loadErr != nil {
+			return nil, fmt.Errorf("purpose billing scope unavailable: %w", loadErr)
+		}
+		ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenant, RoomID: room, PlanID: plan, RunID: session.ExternalID})
+		return withLiveCostScope(ctx, liveCostCallScope{TenantID: tenant, RoomID: room, PlanID: plan, SessionID: session.ID,
+			RunID: session.ExternalID, Priority: livecost.PriorityNecessary, Reason: "直播必要互动解意图",
+			Attribution: &livecost.Attribution{Source: "interaction"}}), nil
+	}
+}
 
 func (s *Server) SetPurposeInternalToken(token string) {
 	s.purposeInternalToken = strings.TrimSpace(token)
@@ -66,14 +94,21 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		writeError(w, 500, "analysis profile unavailable")
 		return
 	}
+	bindCost := interactionPurposeCostBinder(s.store.GetLiveRuntimeByRoom, input.Tenant, input.Room, input.Plan)
 	resolver := interactionpurpose.Resolver{Repo: s.store, Semantic: s.purposeSemantic, Complete: func(ctx context.Context, payload string) (string, error) {
-		ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: input.Tenant, RoomID: input.Room, PlanID: input.Plan})
+		ctx, err := bindCost(ctx)
+		if err != nil {
+			return "", err
+		}
 		result, _, err := s.completeAnchorStyleWorkbench(ctx, settings.SellingPointProfileID, "interaction_purpose_resolution", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: string(prompt)}, {Role: "user", Content: payload}}, 1800, false)
 		return result.Text, err
 	}}
 	if len(judgePrompt) > 0 {
 		resolver.Judge = func(ctx context.Context, payload string) (string, error) {
-			ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: input.Tenant, RoomID: input.Room, PlanID: input.Plan})
+			ctx, err := bindCost(ctx)
+			if err != nil {
+				return "", err
+			}
 			result, _, err := s.completeAnchorStyleWorkbench(ctx, settings.SellingPointProfileID, "interaction_purpose_judge", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: string(judgePrompt)}, {Role: "user", Content: payload}}, 128, false)
 			return result.Text, err
 		}
