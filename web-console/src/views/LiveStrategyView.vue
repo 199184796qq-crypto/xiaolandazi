@@ -2307,6 +2307,8 @@ const customMainlineSaveNotice = ref('')
 const customMainlineError = useFeedbackErrorRef()
 const customMainlineCloneBusy = ref(false)
 const recordingVoiceMode = ref<'original' | 'stream_clone'>('original')
+const recordingScriptHasText = computed(() => recordingTabs.value.some(tab => Boolean(tab.text.trim())))
+const recordingScriptOnlySave = computed(() => isUserAudioContentMode.value && recordingVoiceMode.value === 'stream_clone' && recordingScriptHasText.value)
 const showRecordingOriginalMedia = computed(() => recordingVoiceMode.value === 'original' && Boolean(activeRecordingOriginal.value))
 const recordingOriginalBusy = computed(() => fullShowVersionSaving.value || ['uploading', 'analyzing', 'saving'].includes(customMainlineStage.value))
 let customMainlineCloneRequestNo = 0
@@ -2394,7 +2396,9 @@ const fullShowSaveBlockedReason = computed(() => {
     return error ? `实时声音参数还需要调整哦：${error}。去“生成智能体”改好就能保存啦～` : ''
   }
   if (isUserAudioContentMode.value && (['uploading', 'analyzing', 'saving'].includes(customMainlineStage.value) || customMainlineCloneBusy.value)) return '原始声音正在处理中，完成后再保存方案。'
-  if (isUserAudioContentMode.value && !hasCustomMainlineResult.value) return '还差一段主线录音哦～去“生成智能体”上传并完成处理，就能保存啦。'
+  if (isUserAudioContentMode.value && recordingVoiceMode.value === 'original' && !hasCustomMainlineResult.value) return '还差一段主线录音哦～去“生成智能体”上传并完成处理，就能保存啦。'
+  if (isUserAudioContentMode.value && recordingVoiceMode.value === 'stream_clone' && !recordingScriptHasText.value) return '先在文本框里写入话术，就能用 AI 声音保存啦～'
+  if (recordingScriptOnlySave.value) return ''
   if (!fullShowResult.value) return '先去“生成智能体”生成并核对文稿，再来保存吧～'
   if (!fullShowFormalVariantKeys.value.length) return '选好至少一套正式稿，我们就能保存啦～'
   if (!fullShowAllFormalVoicesReady.value) return '还有正式稿的声音没准备好，完成后就能保存啦～'

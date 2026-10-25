@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 
-type Tab = { id: string; title: string }
+type Tab = { id: string; title: string; pinned?: boolean }
 type DragState = {
   id: string
   pointerId: number
@@ -22,6 +22,7 @@ const emit = defineEmits<{
   add: []
   remove: [id: string]
   reorder: [ids: string[]]
+  togglePin: [id: string]
 }>()
 const root = ref<HTMLElement | null>(null)
 const deleteMode = ref(false)
@@ -46,6 +47,24 @@ const ghostStyle = computed(() => drag.value ? {
 
 function tabName(tab: Tab): string {
   return tab.title || '未命名'
+}
+
+function isPinned(id: string): boolean {
+  return Boolean(props.tabs.find(tab => tab.id === id)?.pinned)
+}
+
+// 钉住的标签位置固定；只允许未钉住的标签在同一段未钉住区间内互换。
+function moveKeepingPinned(ids: string[], from: number, to: number): string[] | null {
+  if (from < 0 || to < 0 || from >= ids.length || to >= ids.length) return null
+  if (isPinned(ids[from]!) || isPinned(ids[to]!)) return null
+  let left = from
+  while (left > 0 && !isPinned(ids[left - 1]!)) left--
+  let right = from
+  while (right < ids.length - 1 && !isPinned(ids[right + 1]!)) right++
+  if (to < left || to > right) return null
+  const next = [...ids]
+  next.splice(to, 0, next.splice(from, 1)[0]!)
+  return next
 }
 
 function onDeleteModeClick(event: MouseEvent): void {
@@ -95,8 +114,9 @@ function onTabKeydown(event: KeyboardEvent, id: string): void {
     const target = index + (event.key === 'ArrowLeft' ? -1 : 1)
     if (target < 0 || target >= props.tabs.length) return
     const ids = props.tabs.map(tab => tab.id)
-    ids.splice(target, 0, ids.splice(index, 1)[0]!)
-    emit('reorder', ids)
+    const next = moveKeepingPinned(ids, index, target)
+    if (!next) return
+    emit('reorder', next)
     announcement.value = `${tabName(props.tabs[index]!)}已移到第${target + 1}位`
     focusTab(id)
     return
@@ -116,7 +136,7 @@ function onTabKeydown(event: KeyboardEvent, id: string): void {
 }
 
 function onPointerDown(event: PointerEvent, id: string): void {
-  if (deleteMode.value || props.disabled || props.tabs.length < 2 || event.button !== 0 || !event.isPrimary) return
+  if (deleteMode.value || props.disabled || props.tabs.length < 2 || event.button !== 0 || !event.isPrimary || isPinned(id)) return
   const button = (event.currentTarget as HTMLElement).closest<HTMLButtonElement>('.recording-script-tab-select')
   if (!button) return
   finishDrag(false)
@@ -150,15 +170,15 @@ function onPointerMove(event: PointerEvent): void {
   if (!target || !root.value?.contains(target)) return
   const targetId = target.dataset.recordingTabId
   const ids = previewOrder.value
-  if (!targetId || targetId === current.id || !ids) return
+  if (!targetId || targetId === current.id || !ids || isPinned(targetId)) return
   const from = ids.indexOf(current.id)
   const to = ids.indexOf(targetId)
   if (from < 0 || to < 0) return
   const bounds = target.getBoundingClientRect()
   const middle = bounds.left + bounds.width / 2
   if ((from < to && event.clientX < middle) || (from > to && event.clientX > middle)) return
-  const next = [...ids]
-  next.splice(to, 0, next.splice(from, 1)[0]!)
+  const next = moveKeepingPinned(ids, from, to)
+  if (!next) return
   previewOrder.value = next
 }
 
@@ -229,6 +249,9 @@ onBeforeUnmount(() => {
           <span class="recording-script-tab-grip" aria-hidden="true" @pointerdown.stop="onPointerDown($event, tab.id)"><svg viewBox="0 0 12 18"><circle v-for="n in 6" :key="n" :cx="n % 2 ? 3 : 9" :cy="3 + Math.floor((n - 1) / 2) * 6" r="1.3" /></svg></span>
           <span class="recording-script-tab-name">{{ tabName(tab) }}</span>
         </button>
+        <button type="button" class="recording-script-tab-pin" :class="{ active: tab.pinned }" :aria-label="tab.pinned ? `取消钉住${tabName(tab)}` : `钉住${tabName(tab)}`" :aria-pressed="Boolean(tab.pinned)" :title="tab.pinned ? '已钉住，位置固定' : '钉住当前顺序'" :disabled="disabled" @pointerdown.stop @click.stop="emit('togglePin', tab.id)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3 6 0-.5 6 3 2v2h-4l-1 8h-2l-1-8H5v-2l3-2L9 3Z" /></svg>
+        </button>
         <button v-if="deleteMode" type="button" class="recording-script-tab-remove" :aria-label="`删除话术：${tabName(tab)}`" :title="tabs.length <= 1 ? '至少保留一个话术标签' : `删除${tabName(tab)}`" :disabled="disabled || tabs.length <= 1" @click.stop="removeTab(tab)">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6m0-6-6 6" /></svg>
         </button>
@@ -240,7 +263,7 @@ onBeforeUnmount(() => {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5m4-5v5" /></svg>
       </button>
     </div>
-    <span :id="instructionsId" class="recording-script-sr-only">按住标签左侧六点把手拖动可排序，点击文字切换标签。按住Alt和左右方向键也可调整顺序。</span>
+    <span :id="instructionsId" class="recording-script-sr-only">按住标签左侧六点把手拖动可排序，点击文字切换标签。钉子可固定标签位置，钉住后不能移动。按住Alt和左右方向键也可调整顺序。</span>
     <span class="recording-script-sr-only" aria-live="polite">{{ announcement }}</span>
     <Teleport to="body">
       <div v-if="drag?.started" class="recording-script-tab-ghost" :style="ghostStyle" aria-hidden="true"><span>⠿</span>{{ draggedTitle }}</div>
@@ -251,7 +274,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .recording-script-tabs{display:flex;flex-wrap:wrap;align-items:center;gap:12px;min-width:0;padding:4px 0}
 .recording-script-tab-list{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:12px;max-width:100%;min-width:0;padding:5px 2px}
-.recording-script-tab-item{position:relative;flex:0 0 auto;max-width:100%}
+.recording-script-tab-item{position:relative;display:flex;align-items:center;flex:0 0 auto;max-width:100%;gap:4px}
 .recording-script-tab-select{display:flex;align-items:center;gap:7px;box-sizing:border-box;min-height:42px;max-width:100%;padding:8px 14px 8px 10px;border:1px solid #d5ddeb;border-radius:12px;background:#fff;color:#536079;font:inherit;font-size:16px;font-weight:800;cursor:pointer;user-select:none;transition:background .18s,border-color .18s,box-shadow .18s}
 .recording-script-tab-select:hover:not(.active):not(:disabled){border-color:#bbc7dc;background:#f8faff;box-shadow:0 4px 12px #344b7810}
 .recording-script-tab-select.active{border-color:#d93842;background:linear-gradient(135deg,#df3b45,#d52d39);color:#fff;box-shadow:0 5px 13px #d4383f2e}
@@ -267,6 +290,11 @@ onBeforeUnmount(() => {
 .recording-script-tab-add{border-style:dashed;font:inherit;font-size:24px;font-weight:750;line-height:1}
 .recording-script-tab-delete-toggle svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .recording-script-tab-add:hover:not(:disabled),.recording-script-tab-delete-toggle:hover:not(:disabled),.recording-script-tab-delete-toggle.active{border-color:#edb7bd;background:#fff1f2;color:#d13240}
+.recording-script-tab-pin{display:grid;flex:0 0 30px;place-items:center;width:30px;height:42px;padding:0;border:1px solid transparent;border-radius:10px;background:transparent;color:#9aa6bd;cursor:pointer;transition:color .18s,background .18s,border-color .18s}
+.recording-script-tab-pin svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linejoin:round}
+.recording-script-tab-pin:hover:not(:disabled){border-color:#e3c5c9;background:#fff4f5;color:#d13240}
+.recording-script-tab-pin.active{border-color:#edb7bd;background:#fff1f2;color:#d13240}
+.recording-script-tab-pin.active svg{fill:currentColor;stroke:currentColor}
 .recording-script-tab-remove{position:absolute;z-index:2;top:-8px;right:-7px;display:grid;box-sizing:border-box;place-items:center;width:23px;height:23px;padding:0;border:2px solid #fff;border-radius:50%;background:#e43b48;color:#fff;box-shadow:0 2px 7px #bf253d3d;cursor:pointer;transition:transform .15s,background .15s}
 .recording-script-tab-remove svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
 .recording-script-tab-remove:hover:not(:disabled){background:#c52333;transform:scale(1.12)}
