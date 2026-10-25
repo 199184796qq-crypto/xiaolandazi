@@ -9,6 +9,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -18,6 +19,9 @@ const (
 	SynthesisUnknown      = "unknown"
 	UsageSupplierResponse = "supplier_response"
 	UsageSentTextEstimate = "sent_text_estimate"
+	// The user's reference billing rule is distinct from a supplier's returned
+	// usage.characters unit. It applies only to the text actually sent to TTS.
+	BillableCharacterRule = "han_2_other_1_v1"
 )
 
 // SynthesisUsage contains only supplier-returned measurements. Nil means absent;
@@ -48,6 +52,8 @@ type SynthesisAttempt struct {
 	VoiceID            string    `json:"voice_id"`
 	Rate               float64   `json:"rate"`
 	SentTextCharacters int64     `json:"sent_text_characters"`
+	BillableCharacters int64     `json:"billable_characters"`
+	CharacterRule      string    `json:"character_rule"`
 	TextSHA            string    `json:"text_sha"`
 	InstructionSHA     string    `json:"instruction_sha"`
 	StartedAt          time.Time `json:"started_at"`
@@ -107,6 +113,21 @@ func digestSynthesisText(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// BillableTextCharacters counts Han as two billing characters and every other
+// transmitted code point (including punctuation) as one. It is a reference
+// count, never a reinterpretation of supplier-returned character/token usage.
+func BillableTextCharacters(text string) int64 {
+	var count int64
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) {
+			count += 2
+		} else {
+			count++
+		}
+	}
+	return count
+}
+
 func observeSynthesis(ctx context.Context, provider Provider, request SynthesizeRequest) (result SynthesizeResponse, err error) {
 	if err := ctx.Err(); err != nil {
 		return result, notSent(err)
@@ -118,6 +139,7 @@ func observeSynthesis(ctx context.Context, provider Provider, request Synthesize
 	attempt := SynthesisAttempt{
 		Provider: request.Provider, Model: request.Model, VoiceID: request.VoiceID,
 		Rate: request.Rate, SentTextCharacters: int64(utf8.RuneCountInString(text)),
+		BillableCharacters: BillableTextCharacters(text), CharacterRule: BillableCharacterRule,
 		TextSHA: digestSynthesisText(text), InstructionSHA: digestSynthesisText(request.Instruction),
 		StartedAt: time.Now().UTC(),
 	}

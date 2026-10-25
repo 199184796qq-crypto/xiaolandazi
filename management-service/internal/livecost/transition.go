@@ -27,6 +27,19 @@ func ApplyReceipt(entry Entry, receipt Receipt) (Entry, error) {
 	if receipt.ProviderRequestID == "" {
 		receipt.ProviderRequestID = oldID
 	}
+	// Keep the actual sent-text reference units when stronger supplier evidence
+	// arrives later. Supplier Characters remains its own distinct measurement.
+	if receipt.CharacterRule == "" && entry.Request.Kind == KindTTS && entry.Request.CharacterRule != "" {
+		receipt.CharacterRule = entry.Request.CharacterRule
+		receipt.BillableCharacters = entry.Request.BillableCharacters
+		receipt.SentTextCharacters = entry.Request.Characters
+	}
+	if receipt.Provider == "" {
+		receipt.Provider = entry.Receipt.Provider
+	}
+	if receipt.Model == "" {
+		receipt.Model = entry.Receipt.Model
+	}
 	switch receipt.Status {
 	case ReceiptUnknown:
 		if entry.Status == StatusReleased || entry.Status == StatusDeclined {

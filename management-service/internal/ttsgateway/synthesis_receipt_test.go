@@ -71,7 +71,7 @@ func TestSynthesisSettlementFailureKeepsSuccessfulAudioWithoutRegeneration(t *te
 			ctx := WithSynthesisObserver(t.Context(), receiptObserver{
 				before: func(_ context.Context, a SynthesisAttempt) (string, error) {
 					before++
-					if a.SentTextCharacters != 4 || a.Rate != 1.2 || a.TextSHA != digestSynthesisText("你好a。") || a.InstructionSHA != digestSynthesisText("慢一点") {
+					if a.SentTextCharacters != 4 || a.BillableCharacters != 6 || a.CharacterRule != BillableCharacterRule || a.Rate != 1.2 || a.TextSHA != digestSynthesisText("你好a。") || a.InstructionSHA != digestSynthesisText("慢一点") {
 						t.Errorf("attempt metadata=%+v", a)
 					}
 					return "ticket-1", nil
@@ -94,6 +94,46 @@ func TestSynthesisSettlementFailureKeepsSuccessfulAudioWithoutRegeneration(t *te
 			out, err := g.SynthesizeURL(ctx, SynthesizeRequest{VoiceID: "voice", Text: "你好a。", Instruction: "慢一点", Rate: 1.2})
 			if err != nil || out.AudioURL == "" || !out.AccountingPending || before != 1 || after != 1 || provider.calls.Load() != 1 {
 				t.Fatalf("out=%+v err=%v before=%d after=%d calls=%d", out, err, before, after, provider.calls.Load())
+			}
+		})
+	}
+}
+
+func TestSynthesisBillingCharactersUseActualTransmittedTextAndKeepSupplierUnit(t *testing.T) {
+	for _, tc := range []struct {
+		text  string
+		count int64
+	}{
+		{"你好，A1！", 8},
+		{"𠀀😀。", 4},
+		{"A e\u0301\n", 5},
+	} {
+		if got := BillableTextCharacters(tc.text); got != tc.count {
+			t.Fatalf("weighted count=%d want=%d for %q", got, tc.count, tc.text)
+		}
+	}
+	for _, providerName := range []string{"receipt_test", ProviderTencent} {
+		t.Run(providerName, func(t *testing.T) {
+			const text = " 你好，A1！ "
+			supplierCount := int64(17)
+			provider := &countedReceiptProvider{run: func(_ context.Context, r SynthesizeRequest) (SynthesizeResponse, error) {
+				if r.Text != text {
+					t.Fatal("observer changed the original provider request")
+				}
+				return SynthesizeResponse{AudioURL: "https://audio.invalid", Usage: SynthesisUsage{Present: true, Characters: &supplierCount}}, nil
+			}}
+			var receipt SynthesisReceipt
+			ctx := WithSynthesisObserver(t.Context(), receiptObserver{
+				before: func(_ context.Context, a SynthesisAttempt) (string, error) { return "ticket", nil },
+				after:  func(_ context.Context, r SynthesisReceipt) error { receipt = r; return nil },
+			})
+			_, err := observeSynthesis(ctx, provider, SynthesizeRequest{Provider: providerName, Model: "m", VoiceID: "v", Text: text})
+			wantUnicode, wantBillable := int64(8), int64(10)
+			if providerName == ProviderTencent {
+				wantUnicode, wantBillable = 6, 8
+			}
+			if err != nil || receipt.SentTextCharacters != wantUnicode || receipt.BillableCharacters != wantBillable || receipt.CharacterRule != BillableCharacterRule || receipt.Usage.Characters == nil || *receipt.Usage.Characters != 17 {
+				t.Fatalf("sent/supplier units mixed: %+v err=%v", receipt, err)
 			}
 		})
 	}

@@ -13,7 +13,7 @@ import (
 )
 
 func costRequest(key string) Request {
-	return Request{Key: key, TenantID: 14, RoomID: 29, Kind: KindTTS, Provider: "test-tts", Priority: PriorityNecessary, Reason: "首声供料", Characters: 20}
+	return Request{Key: key, TenantID: 14, RoomID: 29, Kind: KindTTS, Provider: "test-tts", Priority: PriorityNecessary, Reason: "首声供料", Characters: 20, BillableCharacters: 40, CharacterRule: ReferenceTTSCharacterRule}
 }
 func costReceipt(status string) Receipt { return Receipt{TenantID: 14, RoomID: 29, Status: status} }
 
@@ -125,7 +125,7 @@ func TestPriceIsSentTextEstimateNeverDuration(t *testing.T) {
 	if SentCharacters("中 文，a\n") != 4 {
 		t.Fatal("sent rune count")
 	}
-	if amount, e := EstimateTTS(10000, 160); e != nil || amount != 1600000 {
+	if amount, e := EstimateTTS(10000, ReferenceTTSMicrosPerBillableCharacter); e != nil || amount != 800000 {
 		t.Fatal(amount, e)
 	}
 	if amount, e := EstimateTokens(1000, 500, 100, 800000, 160000, 2000000); e != nil || amount != 680 {
@@ -139,6 +139,42 @@ func TestPriceIsSentTextEstimateNeverDuration(t *testing.T) {
 	r.Reason = ""
 	if _, e := NormalizeRequest(r); e == nil {
 		t.Fatal("necessary reason missing")
+	}
+}
+
+func TestWeightedTTSRequestAndReceiptKeepReferenceUnits(t *testing.T) {
+	r := costRequest("weighted")
+	r.Characters = 6 // 你好，A1！: six Unicode characters, eight billing characters.
+	r.BillableCharacters = 8
+	normalized, err := NormalizeRequest(r)
+	if err != nil || normalized.EstimatedMicros != 640 {
+		t.Fatal(normalized, err)
+	}
+	for _, mutate := range []func(*Request){
+		func(r *Request) { r.BillableCharacters = -1 },
+		func(r *Request) { r.CharacterRule = "" },
+		func(r *Request) { r.CharacterRule = "supplier-unspecified" },
+	} {
+		bad := r
+		mutate(&bad)
+		if _, err := NormalizeRequest(bad); err == nil {
+			t.Fatal("invalid billing character rule accepted", bad)
+		}
+	}
+	cost := int64(640)
+	receipt := costReceipt(ReceiptSuccess)
+	receipt.EstimatedMicros = &cost
+	receipt.UsageSource = SourceSentTextEstimate
+	receipt.SentTextCharacters = 6
+	receipt.BillableCharacters = 8
+	receipt.CharacterRule = ReferenceTTSCharacterRule
+	entry, err := ApplyReceipt(Entry{Request: normalized, Status: StatusReserved, ReservedMicros: normalized.EstimatedMicros}, receipt)
+	if err != nil || entry.Status != StatusSettled || entry.ChargedMicros != 640 || entry.ReservedMicros != 0 || entry.Receipt.Characters != 0 {
+		t.Fatal("API success did not settle independently of downstream use", entry, err)
+	}
+	raw, _ := json.Marshal(entry)
+	if !strings.Contains(string(raw), `"billable_characters":8`) || !strings.Contains(string(raw), ReferenceTTSCharacterRule) {
+		t.Fatal("weighted request/receipt lost durable units", string(raw))
 	}
 }
 

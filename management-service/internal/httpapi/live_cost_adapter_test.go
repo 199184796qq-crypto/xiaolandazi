@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -164,13 +165,7 @@ func TestLiveCostTTSSupplierUsageNeedsExactContractAndZeroRemainsEstimate(t *tes
 				if r.ActualKnown || r.UsageSource != livecost.SourceSentTextEstimate || r.EstimatedMicros == nil {
 					t.Fatalf("estimate mislabelled actual: %+v", r)
 				}
-				want := int64(800)
-				if name == "missing" {
-					want = 480
-				}
-				if name == "zero" {
-					want = 0
-				}
+				want := int64(400) // Two Han plus punctuation: five weighted billing characters.
 				if *r.EstimatedMicros != want {
 					t.Fatalf("estimate=%d want=%d", *r.EstimatedMicros, want)
 				}
@@ -384,8 +379,79 @@ func TestLiveCostExpensiveTTSContractReservesBeforePaidCall(t *testing.T) {
 	if _, err := g.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{VoiceID: "v", Text: "你好。"}); err == nil {
 		t.Fatal("expensive optional synthesis was not deferred")
 	}
-	if provider.calls.Load() != 0 || len(store.requests) != 1 || store.requests[0].EstimatedMicros != 300000 {
+	if provider.calls.Load() != 0 || len(store.requests) != 1 || store.requests[0].EstimatedMicros != 500000 {
 		t.Fatalf("quote missed expensive contract: calls=%d requests=%+v", provider.calls.Load(), store.requests)
+	}
+}
+
+func TestLiveCostTTSSuccessIsChargedBeforeDownstreamUseAndSupplierUnknownUnitDoesNotReprice(t *testing.T) {
+	for _, contract := range []bool{false, true} {
+		t.Run(map[bool]string{false: "reference", true: "contract_without_usage"}[contract], func(t *testing.T) {
+			store := &adapterCostStore{}
+			s := adapterTestServer(t, store)
+			if contract {
+				s.liveCostPrices = []liveCostPriceRule{{Provider: "adapter_tts", Model: "m", Kind: livecost.KindTTS, Unit: "characters", CharacterMicros: 1000}}
+			}
+			provider := &adapterTTSProvider{result: ttsgateway.SynthesizeResponse{AudioURL: "https://audio.invalid", ProviderRequestID: "success-not-adopted"}}
+			g := ttsgateway.New(provider.Name(), "m")
+			g.Register(provider)
+			ctx := s.withLiveCostTTS(t.Context(), liveCostCallScope{TenantID: 14, RoomID: 29, SessionID: 500, Key: "unadopted", Reason: "真实生成声音"})
+			// Deliberately discard the media response: no download, archive,
+			// selection, Core append or playback can be required for settlement.
+			if _, err := g.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{VoiceID: "v", Text: "你好，A1！"}); err != nil {
+				t.Fatal(err)
+			}
+			if provider.calls.Load() != 1 || len(store.entries) != 1 || len(store.requests) != 1 || len(store.receipts) != 1 {
+				t.Fatal(provider.calls.Load(), store.entries)
+			}
+			for _, entry := range store.entries {
+				if entry.Status != livecost.StatusSettled || entry.ChargedMicros != 640 || entry.ReservedMicros != 0 || entry.Receipt.ActualKnown || entry.Request.Characters != 6 || entry.Request.BillableCharacters != 8 || entry.Receipt.SentTextCharacters != 6 || entry.Receipt.BillableCharacters != 8 || entry.Receipt.CharacterRule != livecost.ReferenceTTSCharacterRule || entry.Receipt.Characters != 0 {
+					t.Fatalf("unadopted success omitted/repriced or mixed units: %+v", entry)
+				}
+				if contract && entry.Request.EstimatedMicros != 8000 {
+					t.Fatal("expensive preflight quote lost", entry.Request)
+				}
+			}
+		})
+	}
+}
+
+func TestLiveCostModelReturnedIdentityAndCachedUsagePriceSuccessfulUnadoptedResponse(t *testing.T) {
+	t.Setenv("LIVE_AGENT_MODEL", "fallback-profile")
+	t.Setenv("AGENT_PROVIDER", "unresolved-profile")
+	for _, tc := range []struct {
+		input, cached, output, want int64
+	}{
+		{32000, 31999, 100, 1361},
+		{32001, 32000, 100, 4081},
+		{256000, 255999, 100, 30961},
+		{256001, 256000, 100, 61922},
+	} {
+		t.Run(fmt.Sprint(tc.input), func(t *testing.T) {
+			store := &adapterCostStore{}
+			s := adapterTestServer(t, store)
+			// A contract for the guessed request profile cannot be applied to
+			// a different resolved provider/model in the real gateway response.
+			s.liveCostPrices = []liveCostPriceRule{{Provider: "unresolved-profile", Model: "fallback-profile", Kind: livecost.KindModel, Unit: "tokens", InputMicrosPerMillion: 900000000, CachedInputMicrosPerMillion: 900000000, OutputMicrosPerMillion: 900000000}}
+			session := model.LiveRuntimeSession{ID: 500, TenantID: 14, RoomID: 29, ExternalID: "run"}
+			request := agentgateway.Request{Stage: "answer", Messages: []agentgateway.Message{{Role: "user", Content: "实际模型由配置选定"}}}
+			_, err := s.CompleteLivePaidModel(t.Context(), session, request, 5, "discarded-model-response", func(context.Context, agentgateway.Request) (agentgateway.Response, error) {
+				// Empty/unadopted text still incurred a successful model request.
+				return agentgateway.Response{Provider: "qwen", Model: "qwen3.7-flash", InputTokens: tc.input, CachedInputTokens: tc.cached, OutputTokens: tc.output}, nil
+			})
+			if err != nil || len(store.receipts) != 1 {
+				t.Fatal(err, store.receipts)
+			}
+			r := store.receipts[0]
+			if r.ActualKnown || r.Model != "qwen3.7-flash" || r.Provider != "qwen" || r.CachedInputTokens != tc.cached || r.EstimatedMicros == nil || *r.EstimatedMicros != tc.want || r.UsageSource != livecost.SourceSentTextEstimate {
+				t.Fatalf("actual response identity/cache did not set full-input pricing tier: %+v want=%d", r, tc.want)
+			}
+			for _, entry := range store.entries {
+				if entry.Status != livecost.StatusSettled || entry.ChargedMicros != tc.want || entry.ReservedMicros != 0 {
+					t.Fatal("successful but unadopted model work was not charged", entry)
+				}
+			}
+		})
 	}
 }
 
@@ -463,7 +529,7 @@ func TestLiveCostInvalidPartialTTSUsageCannotReduceEstimate(t *testing.T) {
 		t.Fatalf("successful audio lost: %v %+v", err, out)
 	}
 	r := store.receipts[0]
-	if r.ActualKnown || r.Characters != 3 || r.EstimatedMicros == nil || *r.EstimatedMicros != 480 {
+	if r.ActualKnown || r.Characters != 0 || r.SentTextCharacters != 3 || r.BillableCharacters != 5 || r.CharacterRule != ttsgateway.BillableCharacterRule || r.EstimatedMicros == nil || *r.EstimatedMicros != 400 {
 		t.Fatalf("invalid supplier usage reduced price: %+v", r)
 	}
 }

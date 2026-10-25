@@ -13,21 +13,23 @@ import (
 )
 
 const (
-	PriorityOptional       = "optional"
-	PriorityNecessary      = "necessary"
-	KindModel              = "model"
-	KindTTS                = "tts"
-	StatusReserved         = "reserved"
-	StatusUnknown          = "unknown"
-	StatusSettled          = "settled"
-	StatusReleased         = "released"
-	StatusDeclined         = "declined"
-	ReceiptSuccess         = "success"
-	ReceiptUnknown         = "unknown"
-	ReceiptNotSent         = "not_sent"
-	SourceSentTextEstimate = "sent_text_estimate"
-	SourceSupplierUsage    = "supplier_usage"
-	SourceSupplierInvoice  = "supplier_invoice"
+	PriorityOptional                             = "optional"
+	PriorityNecessary                            = "necessary"
+	KindModel                                    = "model"
+	KindTTS                                      = "tts"
+	StatusReserved                               = "reserved"
+	StatusUnknown                                = "unknown"
+	StatusSettled                                = "settled"
+	StatusReleased                               = "released"
+	StatusDeclined                               = "declined"
+	ReceiptSuccess                               = "success"
+	ReceiptUnknown                               = "unknown"
+	ReceiptNotSent                               = "not_sent"
+	SourceSentTextEstimate                       = "sent_text_estimate"
+	SourceSupplierUsage                          = "supplier_usage"
+	SourceSupplierInvoice                        = "supplier_invoice"
+	ReferenceTTSCharacterRule                    = "han_2_other_1_v1"
+	ReferenceTTSMicrosPerBillableCharacter int64 = 80
 )
 
 var (
@@ -38,24 +40,26 @@ var (
 )
 
 type Request struct {
-	Key               string       `json:"key"`
-	TenantID          int64        `json:"tenant_id"`
-	RoomID            int64        `json:"room_id"`
-	PlanID            int64        `json:"plan_id"`
-	SessionID         int64        `json:"session_id"`
-	RunID             string       `json:"run_id"`
-	Kind              string       `json:"kind"`
-	Provider          string       `json:"provider"`
-	Model             string       `json:"model"`
-	Priority          string       `json:"priority"`
-	Reason            string       `json:"reason"`
-	Fingerprint       string       `json:"fingerprint"`
-	EstimatedMicros   int64        `json:"estimated_micros"`
-	InputTokens       int64        `json:"input_tokens"`
-	CachedInputTokens int64        `json:"cached_input_tokens"`
-	OutputTokens      int64        `json:"output_tokens"`
-	Characters        int64        `json:"characters"`
-	Attribution       *Attribution `json:"attribution,omitempty"`
+	Key                string       `json:"key"`
+	TenantID           int64        `json:"tenant_id"`
+	RoomID             int64        `json:"room_id"`
+	PlanID             int64        `json:"plan_id"`
+	SessionID          int64        `json:"session_id"`
+	RunID              string       `json:"run_id"`
+	Kind               string       `json:"kind"`
+	Provider           string       `json:"provider"`
+	Model              string       `json:"model"`
+	Priority           string       `json:"priority"`
+	Reason             string       `json:"reason"`
+	Fingerprint        string       `json:"fingerprint"`
+	EstimatedMicros    int64        `json:"estimated_micros"`
+	InputTokens        int64        `json:"input_tokens"`
+	CachedInputTokens  int64        `json:"cached_input_tokens"`
+	OutputTokens       int64        `json:"output_tokens"`
+	Characters         int64        `json:"characters"`
+	BillableCharacters int64        `json:"billable_characters,omitempty"`
+	CharacterRule      string       `json:"character_rule,omitempty"`
+	Attribution        *Attribution `json:"attribution,omitempty"`
 }
 
 // Attribution locates paid work without retaining its text or media URL. Round
@@ -70,18 +74,23 @@ type Attribution struct {
 }
 
 type Receipt struct {
-	TenantID          int64  `json:"tenant_id"`
-	RoomID            int64  `json:"room_id"`
-	Status            string `json:"status"`
-	ActualMicros      int64  `json:"actual_micros"`
-	ActualKnown       bool   `json:"actual_known"`
-	EstimatedMicros   *int64 `json:"estimated_micros,omitempty"`
-	ProviderRequestID string `json:"provider_request_id"`
-	UsageSource       string `json:"usage_source"`
-	InputTokens       int64  `json:"input_tokens"`
-	CachedInputTokens int64  `json:"cached_input_tokens"`
-	OutputTokens      int64  `json:"output_tokens"`
-	Characters        int64  `json:"characters"`
+	TenantID           int64  `json:"tenant_id"`
+	RoomID             int64  `json:"room_id"`
+	Status             string `json:"status"`
+	ActualMicros       int64  `json:"actual_micros"`
+	ActualKnown        bool   `json:"actual_known"`
+	EstimatedMicros    *int64 `json:"estimated_micros,omitempty"`
+	ProviderRequestID  string `json:"provider_request_id"`
+	Provider           string `json:"provider,omitempty"`
+	Model              string `json:"model,omitempty"`
+	UsageSource        string `json:"usage_source"`
+	InputTokens        int64  `json:"input_tokens"`
+	CachedInputTokens  int64  `json:"cached_input_tokens"`
+	OutputTokens       int64  `json:"output_tokens"`
+	Characters         int64  `json:"characters"`
+	SentTextCharacters int64  `json:"sent_text_characters,omitempty"`
+	BillableCharacters int64  `json:"billable_characters,omitempty"`
+	CharacterRule      string `json:"character_rule,omitempty"`
 }
 
 type Policy struct {
@@ -276,12 +285,19 @@ func NormalizeRequest(r Request) (Request, error) {
 	if r.Priority == PriorityNecessary && r.Reason == "" {
 		return r, errors.New("必要超用请求必须记录业务原因")
 	}
-	if r.InputTokens < 0 || r.CachedInputTokens < 0 || r.CachedInputTokens > r.InputTokens || r.OutputTokens < 0 || r.Characters < 0 || r.EstimatedMicros < 0 {
+	if r.InputTokens < 0 || r.CachedInputTokens < 0 || r.CachedInputTokens > r.InputTokens || r.OutputTokens < 0 || r.Characters < 0 || r.BillableCharacters < 0 || r.EstimatedMicros < 0 ||
+		(r.CharacterRule != "" && r.CharacterRule != ReferenceTTSCharacterRule) || (r.BillableCharacters > 0 && r.CharacterRule == "") {
 		return r, errors.New("费用请求用量无效")
 	}
-	if r.EstimatedMicros == 0 && r.Kind == KindTTS && r.Characters > 0 {
+	if r.EstimatedMicros == 0 && r.Kind == KindTTS && (r.BillableCharacters > 0 || r.Characters > 0) {
 		var err error
-		r.EstimatedMicros, err = EstimateTTS(r.Characters, 160)
+		characters := r.BillableCharacters
+		if r.CharacterRule == "" {
+			// Legacy callers without a rule supply an explicit unit count. New
+			// TTS boundaries always provide the weighted count and its rule.
+			characters = r.Characters
+		}
+		r.EstimatedMicros, err = EstimateTTS(characters, ReferenceTTSMicrosPerBillableCharacter)
 		if err != nil {
 			return r, err
 		}
@@ -298,7 +314,8 @@ func ValidateReceipt(r Receipt) error {
 	if r.Status != ReceiptSuccess && r.Status != ReceiptUnknown && r.Status != ReceiptNotSent {
 		return errors.New("费用回执状态无效")
 	}
-	if r.ActualMicros < 0 || r.InputTokens < 0 || r.CachedInputTokens < 0 || r.CachedInputTokens > r.InputTokens || r.OutputTokens < 0 || r.Characters < 0 || len(r.ProviderRequestID) > 192 {
+	if r.ActualMicros < 0 || r.InputTokens < 0 || r.CachedInputTokens < 0 || r.CachedInputTokens > r.InputTokens || r.OutputTokens < 0 || r.Characters < 0 || r.SentTextCharacters < 0 || r.BillableCharacters < 0 || len(r.ProviderRequestID) > 192 || len(r.Provider) > 96 || len(r.Model) > 160 ||
+		(r.CharacterRule != "" && r.CharacterRule != ReferenceTTSCharacterRule) || (r.BillableCharacters > 0 && r.CharacterRule == "") {
 		return errors.New("费用回执用量无效")
 	}
 	if r.UsageSource != "" && r.UsageSource != SourceSentTextEstimate && r.UsageSource != SourceSupplierUsage && r.UsageSource != SourceSupplierInvoice {
@@ -336,7 +353,8 @@ func SentCharacters(text string) int64 {
 	return n
 }
 
-// EstimateTTS defaults to the user's 1.6 CNY / 10,000 characters (160 micro-CNY / character).
+// EstimateTTS applies an explicit price to its matching character unit. The
+// default reference is 0.8 CNY / 10,000 weighted billing characters (80 micro-CNY).
 func EstimateTTS(characters, microsPerCharacter int64) (int64, error) {
 	if characters < 0 || microsPerCharacter < 0 || (microsPerCharacter > 0 && characters > math.MaxInt64/microsPerCharacter) {
 		return 0, errors.New("语音费用预估越界")

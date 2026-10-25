@@ -81,7 +81,7 @@ func liveCostScope(ctx context.Context) liveCostCallScope {
 // Contracts are operator-provided reference prices for exactly one provider,
 // model and unit. Defaults below remain estimates, even with supplier usage.
 // Environment format: LIVE_COST_SUPPLIER_PRICE_CONTRACTS=[{"provider":"...",
-// "model":"...","kind":"tts","unit":"characters","character_micros":160}].
+// "model":"...","kind":"tts","unit":"characters","character_micros":80}].
 type liveCostPriceRule struct {
 	Provider                    string `json:"provider"`
 	Model                       string `json:"model"`
@@ -243,7 +243,7 @@ func (o liveTTSObserver) BeforeSynthesis(ctx context.Context, attempt ttsgateway
 		Provider, Model, Voice, Text, Instruction string
 		Rate                                      float64
 	}{attempt.Provider, attempt.Model, attempt.VoiceID, attempt.TextSHA, attempt.InstructionSHA, attempt.Rate})
-	request := livecost.Request{Key: key, TenantID: o.scope.TenantID, RoomID: o.scope.RoomID, PlanID: o.scope.PlanID, SessionID: o.scope.SessionID, RunID: o.scope.RunID, Kind: livecost.KindTTS, Provider: attempt.Provider, Model: attempt.Model, Priority: o.scope.Priority, Reason: reason, Fingerprint: fingerprint, EstimatedMicros: estimate, Characters: attempt.SentTextCharacters, Attribution: o.scope.Attribution}
+	request := livecost.Request{Key: key, TenantID: o.scope.TenantID, RoomID: o.scope.RoomID, PlanID: o.scope.PlanID, SessionID: o.scope.SessionID, RunID: o.scope.RunID, Kind: livecost.KindTTS, Provider: attempt.Provider, Model: attempt.Model, Priority: o.scope.Priority, Reason: reason, Fingerprint: fingerprint, EstimatedMicros: estimate, Characters: attempt.SentTextCharacters, BillableCharacters: attempt.BillableCharacters, CharacterRule: attempt.CharacterRule, Attribution: o.scope.Attribution}
 	if err = o.s.reserveLiveCost(ctx, request); err != nil {
 		return "", err
 	}
@@ -251,12 +251,17 @@ func (o liveTTSObserver) BeforeSynthesis(ctx context.Context, attempt ttsgateway
 }
 
 func (s *Server) estimateLiveTTS(attempt ttsgateway.SynthesisAttempt, scope liveCostCallScope) (int64, string, error) {
-	estimate, err := livecost.EstimateTTS(attempt.SentTextCharacters, 160)
+	if attempt.CharacterRule != ttsgateway.BillableCharacterRule || attempt.BillableCharacters < 0 {
+		return 0, scope.Reason, errors.New("声音费用缺少实际发送文本的计费字符口径")
+	}
+	estimate, err := livecost.EstimateTTS(attempt.BillableCharacters, livecost.ReferenceTTSMicrosPerBillableCharacter)
 	if err != nil {
 		return 0, scope.Reason, err
 	}
 	if rule, ok := s.liveCostPrice(attempt.Provider, attempt.Model, livecost.KindTTS, "characters"); ok {
-		quoted, e := livecost.EstimateTTS(attempt.SentTextCharacters, rule.CharacterMicros)
+		// Before the supplier returns its own units, reserve against the full
+		// weighted reference count. This is a quote, not supplier measurement.
+		quoted, e := livecost.EstimateTTS(attempt.BillableCharacters, rule.CharacterMicros)
 		if e != nil {
 			return 0, scope.Reason, e
 		}
@@ -292,7 +297,7 @@ func (s *Server) estimateLiveTTS(attempt ttsgateway.SynthesisAttempt, scope live
 }
 
 func (o liveTTSObserver) AfterSynthesis(ctx context.Context, r ttsgateway.SynthesisReceipt) error {
-	receipt := livecost.Receipt{TenantID: o.scope.TenantID, RoomID: o.scope.RoomID, Status: livecost.ReceiptUnknown, ProviderRequestID: r.ProviderRequestID, UsageSource: livecost.SourceSentTextEstimate, Characters: r.SentTextCharacters}
+	receipt := livecost.Receipt{TenantID: o.scope.TenantID, RoomID: o.scope.RoomID, Status: livecost.ReceiptUnknown, ProviderRequestID: r.ProviderRequestID, Provider: r.Provider, Model: r.Model, UsageSource: livecost.SourceSentTextEstimate, SentTextCharacters: r.SentTextCharacters, BillableCharacters: r.BillableCharacters, CharacterRule: r.CharacterRule}
 	switch r.Outcome {
 	case ttsgateway.SynthesisSucceeded:
 		receipt.Status = livecost.ReceiptSuccess
@@ -308,15 +313,11 @@ func (o liveTTSObserver) AfterSynthesis(ctx context.Context, r ttsgateway.Synthe
 	if !r.Usage.Invalid && r.Usage.OutputTokens != nil {
 		receipt.OutputTokens = *r.Usage.OutputTokens
 	}
-	if !r.Usage.Invalid && r.Usage.Characters == nil && (r.Usage.InputTokens != nil || r.Usage.OutputTokens != nil) {
-		receipt.Characters = 0
-	}
 	if receipt.Status == livecost.ReceiptSuccess {
-		measured := r.SynthesisAttempt
-		if !r.Usage.Invalid && r.Usage.Characters != nil {
-			measured.SentTextCharacters = *r.Usage.Characters
-		}
-		if estimate, _, err := o.s.estimateLiveTTS(measured, o.scope); err == nil {
+		// Successful API work is payable before download, archive, approval or
+		// playback. An unmatched supplier character unit must never replace the
+		// user's actual sent-text weighted estimate, even when it reports zero.
+		if estimate, err := livecost.EstimateTTS(r.BillableCharacters, livecost.ReferenceTTSMicrosPerBillableCharacter); err == nil {
 			receipt.EstimatedMicros = &estimate
 		}
 	}
@@ -406,7 +407,8 @@ func (s *Server) beginLiveModelCost(ctx context.Context, id int64, stage, profil
 	if output <= 0 {
 		output = 500
 	}
-	estimate, err := livecost.EstimateTokens(input, 0, output, 200000, 40000, 800000)
+	inputRate, cachedRate, outputRate := liveCostReferenceModelRates(model, input)
+	estimate, err := livecost.EstimateTokens(input, 0, output, inputRate, cachedRate, outputRate)
 	if err != nil {
 		return err
 	}
@@ -463,8 +465,13 @@ func (s *Server) finishLiveModelCost(ctx context.Context, id int64, response any
 		receipt.OutputTokens = out
 	}
 	identityKnown := false
+	billingModel := attempt.model
 	if r, ok := response.(agentgateway.Response); ok {
 		identityKnown = r.Provider == attempt.provider && r.Model == attempt.model
+		receipt.Provider, receipt.Model = r.Provider, r.Model
+		if strings.TrimSpace(r.Model) != "" {
+			billingModel = r.Model
+		}
 		if r.CachedInputTokens >= 0 && r.CachedInputTokens <= receipt.InputTokens {
 			receipt.CachedInputTokens = r.CachedInputTokens
 		}
@@ -480,11 +487,12 @@ func (s *Server) finishLiveModelCost(ctx context.Context, id int64, response any
 			outputEstimate = attempt.estimatedOutput
 		}
 		cachedEstimate := int64(0)
-		if identityKnown && receipt.CachedInputTokens > 0 {
+		if receipt.CachedInputTokens > 0 {
 			cachedEstimate = receipt.CachedInputTokens
 		}
-		if estimate, err := livecost.EstimateTokens(inputEstimate, cachedEstimate, outputEstimate, 200000, 40000, 800000); err == nil {
-			if rule, ok := s.liveCostPrice(attempt.provider, attempt.model, livecost.KindModel, "tokens"); ok {
+		inputRate, cachedRate, outputRate := liveCostReferenceModelRates(billingModel, inputEstimate)
+		if estimate, err := livecost.EstimateTokens(inputEstimate, cachedEstimate, outputEstimate, inputRate, cachedRate, outputRate); err == nil {
+			if rule, ok := s.liveCostPrice(attempt.provider, attempt.model, livecost.KindModel, "tokens"); ok && identityKnown {
 				if quoted, e := livecost.EstimateTokens(inputEstimate, cachedEstimate, outputEstimate, rule.InputMicrosPerMillion, liveCostCachedRate(rule), rule.OutputMicrosPerMillion); e == nil && quoted > estimate {
 					estimate = quoted
 				}
