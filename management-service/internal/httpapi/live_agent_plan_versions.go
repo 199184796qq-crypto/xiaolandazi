@@ -86,6 +86,37 @@ func normalizeLiveAgentVoiceIdentity(identity *model.LiveAgentVoiceIdentity) err
 	return nil
 }
 
+// recordingScriptOnlyInput 允许“话术优先 + AI 声音”只用文本框内容保存：
+// 不上传原音，也不需要 CUSTOM 稿；直播间按 recording_script 逐段克隆合成。
+func recordingScriptOnlyInput(input *model.CreateLiveAgentPlanVersionInput) bool {
+	if input == nil {
+		return false
+	}
+	return recordingScriptOnlyContext(input.GenerationContext)
+}
+
+func recordingScriptOnlyVersion(version model.LiveAgentPlanVersion) bool {
+	return recordingScriptOnlyContext(version.GenerationContext)
+}
+
+func recordingScriptOnlyContext(context map[string]any) bool {
+	mode, _ := context["content_mode"].(string)
+	voiceMode, _ := context["recording_voice_mode"].(string)
+	if strings.TrimSpace(mode) != model.LiveContentUserAudio || strings.TrimSpace(voiceMode) != "stream_clone" {
+		return false
+	}
+	script, ok := recordingScriptFromContext(context)
+	if !ok {
+		return false
+	}
+	for _, tab := range script.Tabs {
+		if strings.TrimSpace(tab.Text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func validateLiveAgentPlanVersionInput(input *model.CreateLiveAgentPlanVersionInput) error {
 	if input.RoomID <= 0 {
 		return errors.New("请选择发布直播间")
@@ -103,6 +134,9 @@ func validateLiveAgentPlanVersionInput(input *model.CreateLiveAgentPlanVersionIn
 		if isRealtimeScheme(input.GenerationContext) {
 			_, err := realtimeScheme(input.GenerationContext)
 			return err
+		}
+		if recordingScriptOnlyInput(input) {
+			return nil
 		}
 		return errors.New("版本至少需要一套稿件")
 	}

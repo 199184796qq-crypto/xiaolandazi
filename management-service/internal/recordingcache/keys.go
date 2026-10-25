@@ -21,6 +21,11 @@ func ScriptHash(texts []string) string {
 
 // VoiceKey 是声音指纹：音色、模型、语速、情感开关任何一项变化，
 // 已合成音频都不能再用，所以要一起参与计算。
+// ContentRevisionKey ties the cache to facts/rules instead of the whole script.
+func ContentRevisionKey(revision string) string {
+	return VoiceKey("recording-v2", revision)
+}
+
 func VoiceKey(parts ...string) string {
 	sum := sha256.New()
 	for index, part := range parts {

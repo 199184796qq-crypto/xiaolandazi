@@ -668,7 +668,7 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "当前选择的直播方案没有可用保存内容，请保存当前方案")
 			return
 		}
-		if len(published.Variants) == 0 && !isRealtimeScheme(published.GenerationContext) {
+		if len(published.Variants) == 0 && !isRealtimeScheme(published.GenerationContext) && !recordingScriptOnlyVersion(published) {
 			writeError(w, http.StatusConflict, "已保存智能体方案没有可播放的正式声音")
 			return
 		}
