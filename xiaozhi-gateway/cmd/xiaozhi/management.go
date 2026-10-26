@@ -11,17 +11,18 @@ import (
 )
 
 type provisioning struct {
-	DeviceID    int64      `json:"device_id"`
-	DeviceName  string     `json:"device_name"`
-	TenantID    int64      `json:"tenant_id"`
-	RoomID      int64      `json:"room_id"`
-	BindingRole string     `json:"binding_role"`
-	RoomName    string     `json:"room_name"`
-	RoomNumber  string     `json:"room_number"`
-	State       string     `json:"state"`
-	Message     string     `json:"message"`
-	Code        string     `json:"binding_code"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	DeviceID     int64      `json:"device_id"`
+	DeviceName   string     `json:"device_name"`
+	TenantID     int64      `json:"tenant_id"`
+	RoomID       int64      `json:"room_id"`
+	BindingRole  string     `json:"binding_role"`
+	AudioControl string     `json:"audio_control,omitempty"`
+	RoomName     string     `json:"room_name"`
+	RoomNumber   string     `json:"room_number"`
+	State        string     `json:"state"`
+	Message      string     `json:"message"`
+	Code         string     `json:"binding_code"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 }
 
 func (g *gateway) managementRequest(ctx context.Context, path string, body, out any) error {

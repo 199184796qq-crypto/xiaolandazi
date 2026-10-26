@@ -39,6 +39,8 @@ func decorateLiveDevice(d *model.LiveDevice) {
 		d.DisplayStatus = "设备异常"
 	case d.ConnectionStatus == "connecting":
 		d.DisplayStatus = "连接中"
+	case d.WorkStatus == "disconnected":
+		d.DisplayStatus = "声音已停用"
 	case d.WorkStatus == "working" || d.WorkStatus == "running":
 		d.DisplayStatus = "正常工作"
 	case d.WorkStatus == "paused":

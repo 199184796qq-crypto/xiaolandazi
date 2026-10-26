@@ -1182,7 +1182,7 @@ watch(() => runtimeSnapshot.value, (snapshot) => {
   initialVoiceStage.value = advanceStartupStage(initialVoiceStage.value, snapshot)
 })
 const boundDevice = computed(() => runtimeSnapshot.value?.device || null)
-type DeviceVisualState = 'working' | 'standby' | 'paused' | 'reconnecting' | 'offline'
+type DeviceVisualState = 'working' | 'standby' | 'paused' | 'disabled' | 'reconnecting' | 'offline'
 const deviceControlBusy = ref(false)
 const deviceControlError = useFeedbackErrorRef()
 
@@ -1309,6 +1309,7 @@ const deviceVisualState = computed<DeviceVisualState>(() => {
   const device = boundDevice.value
   if (!device || device.connection_status === 'offline') return 'offline'
   if (device.connection_status === 'connecting') return 'reconnecting'
+  if (device.work_status === 'disconnected') return 'disabled'
   if (aiPaused.value || device.work_status === 'paused') return 'paused'
   if (aiRunning.value) return 'working'
   return 'standby'
@@ -1318,6 +1319,7 @@ const deviceStatusText = computed(() => {
   const prefix = boundDevice.value?.sn || '小蓝盒子'
   if (deviceVisualState.value === 'working') return prefix + ' · 已连接，工作中'
   if (deviceVisualState.value === 'paused') return prefix + ' · 已连接，已暂停'
+  if (deviceVisualState.value === 'disabled') return prefix + ' · 已连接，声音已停用'
   if (deviceVisualState.value === 'standby') return prefix + ' · 已连接，连续待机'
   if (deviceVisualState.value === 'reconnecting') return prefix + ' · 连接波动，正在自动重连'
   return prefix + ' · 离线'
@@ -1326,6 +1328,7 @@ const deviceStatusText = computed(() => {
 const deviceStatusLabel = computed(() => {
   if (deviceVisualState.value === 'working') return '已连接'
   if (deviceVisualState.value === 'paused') return '已暂停'
+  if (deviceVisualState.value === 'disabled') return '声音已停用'
   if (deviceVisualState.value === 'standby') return '连续待机'
   if (deviceVisualState.value === 'reconnecting') return '自动重连中'
   return '离线'
@@ -1874,6 +1877,8 @@ async function controlBoundDevice(action: 'connect' | 'pause' | 'resume' | 'disc
     }
   } catch (err) {
     deviceControlError.value = err instanceof Error ? err.message : '设备控制失败'
+    // A rejected request must not leave a stale green status on the page.
+    await refreshRuntime().catch(() => {})
   } finally {
     deviceControlBusy.value = false
   }
@@ -4792,13 +4797,20 @@ onBeforeUnmount(() => {
               class="connect"
               :disabled="!coreActionsAvailable || deviceControlBusy"
               @click="controlBoundDevice('connect')"
-            >{{ deviceControlBusy ? '连接中…' : '连接' }}</button>
+            >{{ deviceControlBusy ? '正在确认…' : '刷新连接' }}</button>
             <button
               v-else-if="deviceVisualState === 'reconnecting'"
               type="button"
               class="connect"
               disabled
             >正在自动重连…</button>
+            <button
+              v-else-if="deviceVisualState === 'disabled'"
+              type="button"
+              class="connect"
+              :disabled="!coreActionsAvailable || deviceControlBusy"
+              @click="controlBoundDevice('connect')"
+            >{{ deviceControlBusy ? '启用中…' : '启用声音' }}</button>
             <template v-else>
               <button
                 type="button"
@@ -4811,7 +4823,7 @@ onBeforeUnmount(() => {
                 class="close"
                 :disabled="!coreActionsAvailable || deviceControlBusy"
                 @click="controlBoundDevice('disconnect')"
-              >断开</button>
+              >停用声音</button>
             </template>
           </div>
           <small v-if="deviceControlError" class="device-control-error">{{ deviceControlError }}</small>
@@ -8113,6 +8125,8 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 5px rgba(245, 158, 11, .13);
 }
 .xiaozhi-device-card .device-runtime-status.state-paused strong { color: #b7790b; }
+.xiaozhi-device-card .device-runtime-status.state-disabled i { background: #8b95a9; }
+.xiaozhi-device-card .device-runtime-status.state-disabled strong { color: #66758f; }
 .xiaozhi-device-card .device-runtime-status.state-reconnecting i {
   background: #f59e0b;
   box-shadow: 0 0 0 5px rgba(245, 158, 11, .13);

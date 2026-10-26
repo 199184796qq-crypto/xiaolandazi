@@ -155,6 +155,17 @@ func (s *Store) ProvisionDevice(ctx context.Context, rawMAC, secret string) (mod
 		}
 		if out.RoomID > 0 {
 			out.State, out.Message = "bound", "连续待机"
+			var metadata sql.NullString
+			if err := tx.QueryRowContext(ctx, `SELECT metadata_json FROM live_device_runtime_state WHERE tenant_id=? AND device_id=?`, out.TenantID, out.DeviceID).Scan(&metadata); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return out, err
+			}
+			out.AudioControl = deviceAudioControl(deviceConnectionMetadata(metadata))
+			switch out.AudioControl {
+			case "paused":
+				out.Message = "声音已暂停"
+			case "disconnected":
+				out.Message = "声音已停用"
+			}
 		}
 	} else if claimed.Valid {
 		out.State, out.Message = "disabled", "设备归属异常，请联系售后"

@@ -109,6 +109,9 @@ func (s *Store) ObserveHardwareConnection(ctx context.Context, input HardwareCon
 	if workStatus == "" {
 		workStatus = "idle"
 	}
+	// A transport reconnect does not revoke the customer's audio preference.
+	// Its lease and the audio control occupy separate metadata fields.
+	workStatus = deviceAudioWorkStatus(workStatus, metadata)
 	connectionStatus = "online"
 	switch input.Phase {
 	case "disconnect":

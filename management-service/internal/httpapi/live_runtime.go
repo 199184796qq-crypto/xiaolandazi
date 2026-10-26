@@ -262,18 +262,10 @@ func (s *Server) liveDeviceControl(w http.ResponseWriter, r *http.Request) {
 		r.Context(), tenantID, actor.UserID, deviceID, input.RoomID, input.Action,
 	)
 	if err != nil {
-		switch {
-		case errors.Is(err, appdb.ErrLiveDeviceNotBound):
-			writeError(w, http.StatusConflict, "设备没有绑定到该直播间")
-		case errors.Is(err, appdb.ErrLiveDeviceOffline):
-			writeError(w, http.StatusConflict, "设备当前未连接，请先连接")
-		case errors.Is(err, sql.ErrNoRows):
-			writeError(w, http.StatusNotFound, "设备不存在或不属于当前客户")
-		default:
-			writeError(w, http.StatusInternalServerError, "设备控制失败")
-		}
+		writeLiveDeviceControlError(w, err)
 		return
 	}
+
 	writeJSON(w, http.StatusOK, item)
 }
 
@@ -981,6 +973,10 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "当前场次或暂停状态已变化，本次继续操作已取消")
 		case errors.Is(err, appdb.ErrLiveRuntimeNotRunning):
 			writeError(w, http.StatusConflict, "当前直播间AI没有处于暂停状态")
+		case errors.Is(err, appdb.ErrLiveDeviceNotBound):
+			writeError(w, http.StatusConflict, "本场设备已不再绑定该直播间，请检查设备绑定")
+		case errors.Is(err, appdb.ErrLiveDeviceOffline):
+			writeError(w, http.StatusConflict, "尚未收到盒子的有效连接，请设备联网后再继续")
 		case errors.Is(err, appdb.ErrLiveQuotaExhausted):
 			writeError(w, http.StatusPaymentRequired, "AI时长已用完，请先充值时长")
 		default:

@@ -91,10 +91,11 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 				status = displayStatus
 			}
 		}
-		if activeRoom != p.RoomID || p.State != "bound" {
+		audioAllowed := deviceAudioAllowed(p)
+		if activeRoom != p.RoomID || !audioAllowed {
 			stopAudio()
 		}
-		if p.State == "bound" && p.RoomID > 0 && audioCancel == nil && audioDone == nil {
+		if audioAllowed && audioCancel == nil && audioDone == nil {
 			audioCtx, c := context.WithCancel(ctx)
 			audioCancel = c
 			activeRoom = p.RoomID
@@ -102,7 +103,13 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 			audioDone = done
 			go func(room int64) { done <- g.streamRoomAudio(audioCtx, writer, room, sessionID) }(p.RoomID)
 		}
-		payload := map[string]any{"type": "device_status", "state": p.State, "message": strings.ReplaceAll(status, "小蓝直播", "小蓝搭子"), "binding_code": p.Code, "expires_at": p.ExpiresAt, "device_name": p.DeviceName, "room_id": p.RoomID, "binding_role": p.BindingRole, "room_name": p.RoomName, "room_number": p.RoomNumber}
+		switch p.AudioControl {
+		case "paused":
+			status = "已暂停播放"
+		case "disconnected":
+			status = "已停用播放，设备保持连接"
+		}
+		payload := map[string]any{"type": "device_status", "state": p.State, "message": strings.ReplaceAll(status, "小蓝直播", "小蓝搭子"), "binding_code": p.Code, "expires_at": p.ExpiresAt, "device_name": p.DeviceName, "room_id": p.RoomID, "binding_role": p.BindingRole, "room_name": p.RoomName, "room_number": p.RoomNumber, "audio_control": p.AudioControl}
 		raw, _ := json.Marshal(payload)
 		if string(raw) != lastStatus {
 			if writer.json(payload) != nil {
@@ -236,4 +243,8 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 			}
 		}
 	}
+}
+
+func deviceAudioAllowed(p provisioning) bool {
+	return p.State == "bound" && p.RoomID > 0 && (p.AudioControl == "" || p.AudioControl == "playing")
 }

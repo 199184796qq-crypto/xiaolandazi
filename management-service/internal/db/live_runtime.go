@@ -503,6 +503,11 @@ func (s *Store) resumeLiveRuntimeSession(ctx context.Context, tenantID, roomID, 
 	if expectedSessionID > 0 && (session.ID != expectedSessionID || session.Version != expectedVersion) {
 		return model.LiveRuntimeSession{}, ErrLiveRuntimeResumeConflict
 	}
+	if session.DeviceID != nil {
+		if err := requireLiveDeviceConnectionTx(ctx, tx, tenantID, roomID, *session.DeviceID); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+	}
 	buckets, err := ensureLiveQuotaAvailableTx(ctx, tx, tenantID, 1, now)
 	if err != nil {
 		return model.LiveRuntimeSession{}, err
@@ -926,16 +931,16 @@ func (s *Store) ListLiveDevices(ctx context.Context, tenantID int64) ([]model.Li
 		SELECT
 			d.id, d.sn, d.sku_code, d.lifecycle_status, d.current_customer_id,
 			b.room_id, COALESCE(b.binding_role, ''),
-			COALESCE(rs.connection_status, 'offline'),
+			`+liveDeviceConnectionStatusSQL+`,
 			COALESCE(rs.work_status, 'idle'),
 			COALESCE(rs.stop_reason, ''),
-			rs.last_heartbeat_at, COALESCE(p.device_name,'')
+			rs.last_heartbeat_at, COALESCE(p.device_name,''), rs.metadata_json
 		FROM inv_devices d
 		LEFT JOIN device_hardware_profiles p ON p.device_id=d.id
 		LEFT JOIN live_device_room_bindings b
 		  ON b.device_id=d.id AND b.status='active'
 		LEFT JOIN live_device_runtime_state rs
-		  ON rs.device_id=d.id
+		  ON rs.device_id=d.id AND rs.tenant_id=d.current_customer_id
 		WHERE (?=0 OR d.current_customer_id=?)
 		  AND d.current_customer_id IS NOT NULL
 		  AND d.lifecycle_status <> 'SCRAPPED'
@@ -953,6 +958,7 @@ func (s *Store) ListLiveDevices(ctx context.Context, tenantID int64) ([]model.Li
 		var roomID sql.NullInt64
 		var tenant sql.NullInt64
 		var heartbeat sql.NullTime
+		var metadataRaw sql.NullString
 		if err := rows.Scan(
 			&item.ID,
 			&item.SN,
@@ -966,6 +972,7 @@ func (s *Store) ListLiveDevices(ctx context.Context, tenantID int64) ([]model.Li
 			&item.StopReason,
 			&heartbeat,
 			&item.DeviceName,
+			&metadataRaw,
 		); err != nil {
 			return nil, err
 		}
@@ -980,6 +987,7 @@ func (s *Store) ListLiveDevices(ctx context.Context, tenantID int64) ([]model.Li
 			value := heartbeat.Time
 			item.LastHeartbeatAt = &value
 		}
+		applyLiveDeviceAudioControl(&item, deviceConnectionMetadata(metadataRaw))
 		decorateLiveDevice(&item)
 		items = append(items, item)
 	}
@@ -1009,7 +1017,7 @@ func (s *Store) ListPrimaryRoomDeviceOnline(ctx context.Context, tenantIDs []int
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT b.tenant_id, b.room_id,
-		       COALESCE(rs.connection_status, 'offline'), rs.last_heartbeat_at
+		       `+liveDeviceConnectionStatusSQL+`, rs.last_heartbeat_at
 		FROM live_device_room_bindings b
 		INNER JOIN inv_devices d ON d.id=b.device_id AND d.current_customer_id=b.tenant_id
 		LEFT JOIN device_hardware_profiles p ON p.device_id=b.device_id
@@ -1044,20 +1052,21 @@ func (s *Store) GetLiveDevice(ctx context.Context, tenantID, deviceID int64) (mo
 	var item model.LiveDevice
 	var roomID sql.NullInt64
 	var heartbeat sql.NullTime
+	var metadataRaw sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
 			d.id, d.sn, d.sku_code, d.lifecycle_status, d.current_customer_id,
 			b.room_id, COALESCE(b.binding_role, ''),
-			COALESCE(rs.connection_status, 'offline'),
+			`+liveDeviceConnectionStatusSQL+`,
 			COALESCE(rs.work_status, 'idle'),
 			COALESCE(rs.stop_reason, ''),
-			rs.last_heartbeat_at, COALESCE(p.device_name,'')
+			rs.last_heartbeat_at, COALESCE(p.device_name,''), rs.metadata_json
 		FROM inv_devices d
 		LEFT JOIN device_hardware_profiles p ON p.device_id=d.id
 		LEFT JOIN live_device_room_bindings b
 		  ON b.device_id=d.id AND b.status='active'
 		LEFT JOIN live_device_runtime_state rs
-		  ON rs.device_id=d.id
+		  ON rs.device_id=d.id AND rs.tenant_id=d.current_customer_id
 		WHERE d.id=? AND d.current_customer_id=?
 		  AND (p.device_id IS NULL OR p.claimed_tenant_id=d.current_customer_id)
 		LIMIT 1
@@ -1074,6 +1083,7 @@ func (s *Store) GetLiveDevice(ctx context.Context, tenantID, deviceID int64) (mo
 		&item.StopReason,
 		&heartbeat,
 		&item.DeviceName,
+		&metadataRaw,
 	)
 	if err != nil {
 		return model.LiveDevice{}, err
@@ -1086,6 +1096,7 @@ func (s *Store) GetLiveDevice(ctx context.Context, tenantID, deviceID int64) (mo
 		value := heartbeat.Time
 		item.LastHeartbeatAt = &value
 	}
+	applyLiveDeviceAudioControl(&item, deviceConnectionMetadata(metadataRaw))
 	decorateLiveDevice(&item)
 	return item, nil
 }
@@ -1093,18 +1104,19 @@ func (s *Store) GetLiveDevice(ctx context.Context, tenantID, deviceID int64) (mo
 func (s *Store) GetBoundLiveDeviceByRoom(ctx context.Context, tenantID, roomID int64) (model.LiveDevice, error) {
 	var item model.LiveDevice
 	var heartbeat sql.NullTime
+	var metadataRaw sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
 			d.id, d.sn, d.sku_code, d.lifecycle_status, d.current_customer_id,
 			b.room_id, b.binding_role,
-			COALESCE(rs.connection_status, 'offline'),
+			`+liveDeviceConnectionStatusSQL+`,
 			COALESCE(rs.work_status, 'idle'),
 			COALESCE(rs.stop_reason, ''),
-			rs.last_heartbeat_at, COALESCE(p.device_name,'')
+			rs.last_heartbeat_at, COALESCE(p.device_name,''), rs.metadata_json
 		FROM live_device_room_bindings b
 		INNER JOIN inv_devices d ON d.id=b.device_id
 		LEFT JOIN device_hardware_profiles p ON p.device_id=d.id
-		LEFT JOIN live_device_runtime_state rs ON rs.device_id=b.device_id
+		LEFT JOIN live_device_runtime_state rs ON rs.device_id=b.device_id AND rs.tenant_id=b.tenant_id
 		WHERE b.tenant_id=? AND b.room_id=? AND b.status='active'
 		  AND b.binding_role='primary'
 		  AND d.current_customer_id=?
@@ -1124,6 +1136,7 @@ func (s *Store) GetBoundLiveDeviceByRoom(ctx context.Context, tenantID, roomID i
 		&item.StopReason,
 		&heartbeat,
 		&item.DeviceName,
+		&metadataRaw,
 	)
 	if err != nil {
 		return model.LiveDevice{}, err
@@ -1132,6 +1145,7 @@ func (s *Store) GetBoundLiveDeviceByRoom(ctx context.Context, tenantID, roomID i
 		value := heartbeat.Time
 		item.LastHeartbeatAt = &value
 	}
+	applyLiveDeviceAudioControl(&item, deviceConnectionMetadata(metadataRaw))
 	decorateLiveDevice(&item)
 	return item, nil
 }
@@ -1386,93 +1400,22 @@ func resolveLiveBindingRole(requestedRole string, hasPrimary, primaryIsDevice, s
 	return requestedRole
 }
 
+// HeartbeatLiveDevice is a compatibility read for older browser clients.
+// Customer requests cannot prove that a physical WebSocket is alive.
 func (s *Store) HeartbeatLiveDevice(
 	ctx context.Context,
 	tenantID, deviceID int64,
 	roomID *int64,
-	metadata map[string]any,
+	_ map[string]any,
 ) (model.LiveDevice, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	item, err := s.GetLiveDevice(ctx, tenantID, deviceID)
 	if err != nil {
 		return model.LiveDevice{}, err
 	}
-	defer tx.Rollback()
-
-	var customerID sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `
-		SELECT current_customer_id
-		FROM inv_devices
-		WHERE id=?
-		FOR UPDATE
-	`, deviceID).Scan(&customerID); err != nil {
-		return model.LiveDevice{}, err
+	if roomID != nil && (item.RoomID == nil || *item.RoomID != *roomID) {
+		return model.LiveDevice{}, ErrLiveDeviceNotBound
 	}
-	if !customerID.Valid || customerID.Int64 != tenantID {
-		return model.LiveDevice{}, sql.ErrNoRows
-	}
-
-	var activeRoom sql.NullInt64
-	_ = tx.QueryRowContext(ctx, `
-		SELECT room_id
-		FROM live_device_room_bindings
-		WHERE tenant_id=? AND device_id=? AND status='active'
-		ORDER BY id DESC
-		LIMIT 1
-	`, tenantID, deviceID).Scan(&activeRoom)
-	if roomID != nil {
-		if !activeRoom.Valid || activeRoom.Int64 != *roomID {
-			return model.LiveDevice{}, ErrLiveDeviceNotBound
-		}
-	} else if activeRoom.Valid {
-		value := activeRoom.Int64
-		roomID = &value
-	}
-
-	var previous string
-	err = tx.QueryRowContext(ctx, `
-		SELECT connection_status
-		FROM live_device_runtime_state
-		WHERE device_id=?
-		FOR UPDATE
-	`, deviceID).Scan(&previous)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return model.LiveDevice{}, err
-	}
-
-	now := time.Now().UTC()
-	metaJSON, _ := json.Marshal(metadata)
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO live_device_runtime_state (
-			device_id, tenant_id, current_room_id, connection_status,
-			work_status, stop_reason, last_heartbeat_at, metadata_json,
-			created_at, updated_at
-		) VALUES (?, ?, ?, 'online', 'idle', '', ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-			tenant_id=VALUES(tenant_id),
-			current_room_id=COALESCE(VALUES(current_room_id), current_room_id),
-			connection_status='online',
-			last_heartbeat_at=VALUES(last_heartbeat_at),
-			metadata_json=VALUES(metadata_json),
-			updated_at=VALUES(updated_at)
-	`, deviceID, tenantID, roomID, now, nullableJSON(metaJSON), now, now); err != nil {
-		return model.LiveDevice{}, err
-	}
-
-	if previous != "online" {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO live_runtime_events (
-				tenant_id, room_id, device_id, actor_type,
-				event_code, title, detail_json, occurred_at
-			) VALUES (?, ?, ?, 'device', 'DEVICE_CONNECTED', '设备已上线', ?, ?)
-		`, tenantID, roomID, deviceID, nullableJSON(metaJSON), now); err != nil {
-			return model.LiveDevice{}, err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return model.LiveDevice{}, err
-	}
-	return s.GetLiveDevice(ctx, tenantID, deviceID)
+	return item, nil
 }
 
 func (s *Store) ControlLiveDevice(
@@ -1503,81 +1446,59 @@ func (s *Store) ControlLiveDevice(
 		return model.LiveDevice{}, err
 	}
 
-	previousConnection := "offline"
-	previousWork := "idle"
+	var previousConnection, previousWork string
+	var heartbeat sql.NullTime
+	var metadataRaw sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT connection_status, work_status
+		SELECT connection_status, work_status, last_heartbeat_at, metadata_json
 		FROM live_device_runtime_state
 		WHERE device_id=? AND tenant_id=?
 		FOR UPDATE
-	`, deviceID, tenantID).Scan(&previousConnection, &previousWork)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	`, deviceID, tenantID).Scan(&previousConnection, &previousWork, &heartbeat, &metadataRaw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.LiveDevice{}, ErrLiveDeviceOffline
+	}
+	if err != nil {
 		return model.LiveDevice{}, err
 	}
 
 	now := time.Now().UTC()
-	connectionStatus := previousConnection
-	workStatus := previousWork
-	stopReason := ""
-	var currentRoom any = roomID
-	var heartbeatAt any = now
-	eventCode := ""
-	title := ""
+	metadata := deviceConnectionMetadata(metadataRaw)
+	if action != "disconnect" && !deviceHasFreshConnection(previousConnection, heartbeat, metadata, now) {
+		return model.LiveDevice{}, ErrLiveDeviceOffline
+	}
+	workStatus, audioControl, eventCode, title := "", "", "", ""
 	switch action {
 	case "connect":
-		connectionStatus = "online"
-		workStatus = "working"
-		eventCode = "DEVICE_CONNECTED"
-		title = "设备握手成功"
+		workStatus, audioControl = "working", "playing"
+		eventCode, title = "DEVICE_AUDIO_ENABLED", "设备声音已启用"
 	case "pause":
-		if previousConnection != "online" {
-			return model.LiveDevice{}, ErrLiveDeviceOffline
-		}
-		connectionStatus = "online"
-		workStatus = "paused"
-		eventCode = "DEVICE_PAUSED"
-		title = "设备已暂停"
+		workStatus, audioControl = "paused", "paused"
+		eventCode, title = "DEVICE_PAUSED", "设备声音已暂停"
 	case "resume":
-		if previousConnection != "online" {
-			return model.LiveDevice{}, ErrLiveDeviceOffline
-		}
-		connectionStatus = "online"
-		workStatus = "working"
-		eventCode = "DEVICE_RESUMED"
-		title = "设备已继续工作"
+		workStatus, audioControl = "working", "playing"
+		eventCode, title = "DEVICE_RESUMED", "设备声音已继续"
 	case "disconnect":
-		connectionStatus = "offline"
-		workStatus = "idle"
-		stopReason = "manual_disconnect"
-		currentRoom = nil
-		heartbeatAt = nil
-		eventCode = "DEVICE_DISCONNECTED"
-		title = "设备已断开"
+		workStatus, audioControl = "disconnected", "disconnected"
+		eventCode, title = "DEVICE_AUDIO_DISABLED", "设备声音已停用"
 	default:
 		return model.LiveDevice{}, fmt.Errorf("unsupported device control action %q", action)
 	}
-
-	metadata, _ := json.Marshal(map[string]any{
-		"control_action": action,
-		"transport":      "development_control",
-		"handshake":      action == "connect",
-	})
+	metadata["audio_control"] = audioControl
+	metadata["control_action"] = action
+	metadata["control_requested_at"] = now.Format(time.RFC3339Nano)
+	metadata["control_requested_by"] = userID
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return model.LiveDevice{}, err
+	}
+	// Preserve the current socket lease and heartbeat byte-for-byte. The
+	// gateway consumes audio_control separately from transport liveness.
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO live_device_runtime_state (
-			device_id, tenant_id, current_room_id, connection_status,
-			work_status, stop_reason, last_heartbeat_at, metadata_json,
-			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-			tenant_id=VALUES(tenant_id),
-			current_room_id=VALUES(current_room_id),
-			connection_status=VALUES(connection_status),
-			work_status=VALUES(work_status),
-			stop_reason=VALUES(stop_reason),
-			last_heartbeat_at=VALUES(last_heartbeat_at),
-			metadata_json=VALUES(metadata_json),
-			updated_at=VALUES(updated_at)
-	`, deviceID, tenantID, currentRoom, connectionStatus, workStatus, stopReason, heartbeatAt, nullableJSON(metadata), now, now); err != nil {
+		UPDATE live_device_runtime_state
+		SET work_status=?, metadata_json=?, updated_at=?
+		WHERE device_id=? AND tenant_id=?
+	`, workStatus, encoded, now, deviceID, tenantID); err != nil {
 		return model.LiveDevice{}, err
 	}
 
@@ -1634,33 +1555,12 @@ func (s *Store) StartLiveRuntimeSession(
 		return model.LiveRuntimeSession{}, err
 	}
 
-	// Device is optional for rooms that intentionally have no hardware endpoint.
-	// Once a device is selected, it becomes a hard runtime dependency: startup
-	// requires a recent heartbeat and a 60-second disconnect stops the Agent.
+	// Rooms without a selected hardware endpoint keep their web/mobile path.
+	// A selected box must have a current, recently confirmed gateway lease;
+	// browser controls and historical development state cannot satisfy startup.
 	if deviceID != nil {
-		var found int64
-		var connection string
-		var heartbeat sql.NullTime
-		err = tx.QueryRowContext(ctx, `
-			SELECT b.device_id, COALESCE(rs.connection_status, 'offline'), rs.last_heartbeat_at
-			FROM live_device_room_bindings b
-			INNER JOIN inv_devices d ON d.id=b.device_id
-			LEFT JOIN live_device_runtime_state rs
-			  ON rs.device_id=b.device_id AND rs.tenant_id=b.tenant_id
-			WHERE b.tenant_id=? AND b.room_id=? AND b.device_id=?
-			  AND b.status='active' AND b.binding_role='primary' AND d.current_customer_id=?
-			LIMIT 1
-			FOR UPDATE
-		`, tenantID, roomID, *deviceID, tenantID).Scan(&found, &connection, &heartbeat)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return model.LiveRuntimeSession{}, ErrLiveDeviceNotBound
-			}
+		if err := requireLiveDeviceConnectionTx(ctx, tx, tenantID, roomID, *deviceID); err != nil {
 			return model.LiveRuntimeSession{}, err
-		}
-		if !strings.EqualFold(strings.TrimSpace(connection), "online") ||
-			!heartbeat.Valid || heartbeat.Time.Before(now.Add(-liveDeviceAgentStopTimeout)) {
-			return model.LiveRuntimeSession{}, ErrLiveDeviceOffline
 		}
 	}
 

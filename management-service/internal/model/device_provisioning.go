@@ -51,17 +51,18 @@ func DeviceDefaultNameSequence(name string) (int64, bool) {
 }
 
 type DeviceProvisioning struct {
-	DeviceID    int64      `json:"device_id,omitempty"`
-	DeviceName  string     `json:"device_name,omitempty"`
-	TenantID    int64      `json:"tenant_id,omitempty"`
-	RoomID      int64      `json:"room_id,omitempty"`
-	BindingRole string     `json:"binding_role,omitempty"`
-	RoomName    string     `json:"room_name,omitempty"`
-	RoomNumber  string     `json:"room_number,omitempty"`
-	State       string     `json:"state"`
-	Message     string     `json:"message"`
-	Code        string     `json:"binding_code,omitempty"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	DeviceID     int64      `json:"device_id,omitempty"`
+	DeviceName   string     `json:"device_name,omitempty"`
+	TenantID     int64      `json:"tenant_id,omitempty"`
+	RoomID       int64      `json:"room_id,omitempty"`
+	BindingRole  string     `json:"binding_role,omitempty"`
+	AudioControl string     `json:"audio_control,omitempty"`
+	RoomName     string     `json:"room_name,omitempty"`
+	RoomNumber   string     `json:"room_number,omitempty"`
+	State        string     `json:"state"`
+	Message      string     `json:"message"`
+	Code         string     `json:"binding_code,omitempty"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 }
 
 type ClaimDeviceInput struct {
