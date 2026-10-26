@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"strings"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 
 // An unclaimed device keeps a limited connection for displaying its code. Only
 // the management service's current room binding can start an audio stream.
-func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, mac, clientID, sessionID string, p provisioning, sampleRate int, commandsEnabled, cameraEnabled, feedbackEnabled bool) {
+func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, mac, clientID, sessionID string, p provisioning, sampleRate int, commandsEnabled, cameraEnabled, feedbackEnabled bool, profiles ...*deviceMaintenanceProfile) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	presence := newDevicePresence(time.Now())
@@ -42,6 +43,12 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 	}
 	defer stopAudio()
 	var registered provisioning
+	var maintenanceCancel context.CancelFunc
+	defer func() {
+		if maintenanceCancel != nil {
+			maintenanceCancel()
+		}
+	}()
 	var lastReported time.Time
 	var displayStatus string
 	defer func() {
@@ -71,6 +78,14 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 				}
 				registered = p
 				lastReported = seen
+				if maintenanceCancel != nil {
+					maintenanceCancel()
+				}
+				if len(profiles) > 0 && validMaintenanceProfile(profiles[0]) {
+					maintenanceCtx, stop := context.WithCancel(ctx)
+					maintenanceCancel = stop
+					go g.runDeviceMaintenance(maintenanceCtx, writer, mac, sessionID, profiles[0])
+				}
 			}
 			if p.RoomID > 0 {
 				status = displayStatus
@@ -101,6 +116,7 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 		return
 	}
 	if writer.ping(presence.challenge(sessionID)) != nil {
+		log.Printf("xiaozhi connection ended connection_id=%s reason=ping_write_failed", sessionID)
 		return
 	}
 	for {
@@ -109,13 +125,16 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 			return
 		case <-ticker.C:
 			if time.Since(presence.seen()) >= deviceResponseTimeout {
+				log.Printf("xiaozhi connection ended connection_id=%s reason=pong_timeout heartbeat_age_ms=%d", sessionID, time.Since(presence.seen()).Milliseconds())
 				return
 			}
 			if writer.ping(presence.challenge(sessionID)) != nil {
+				log.Printf("xiaozhi connection ended connection_id=%s reason=ping_write_failed", sessionID)
 				return
 			}
 			next, err := g.provision(ctx, mac)
 			if err != nil {
+				log.Printf("xiaozhi connection ended connection_id=%s reason=provision_unavailable", sessionID)
 				stopAudio()
 				return
 			}
@@ -128,6 +147,7 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 			if registered.TenantID > 0 && seen.After(lastReported) {
 				status, applied, err := g.reportConnection(ctx, mac, sessionID, registered, "heartbeat", seen)
 				if err != nil || !applied {
+					log.Printf("xiaozhi connection ended connection_id=%s reason=heartbeat_update_failed", sessionID)
 					return
 				}
 				displayStatus = status
@@ -162,6 +182,9 @@ func (g *gateway) managedDeviceSession(ctx context.Context, writer *lockedConn, 
 			control.committed(result)
 		case read, open := <-reads:
 			if !open || read.err != nil {
+				// Keep the close code, never the peer's arbitrary reason text.
+				reason, code := deviceReadEnd(read.err)
+				log.Printf("xiaozhi connection ended connection_id=%s reason=%s close_code=%d heartbeat_age_ms=%d", sessionID, reason, code, time.Since(presence.seen()).Milliseconds())
 				return
 			}
 			if read.messageType == websocket.BinaryMessage {

@@ -92,6 +92,7 @@ func (g *gateway) otaPost(w http.ResponseWriter, r *http.Request) {
 		Application struct {
 			Version string `json:"version"`
 		} `json:"application"`
+		DeviceProfile *deviceMaintenanceProfile `json:"device_profile,omitempty"`
 	}
 	_ = json.NewDecoder(io.LimitReader(r.Body, 256<<10)).Decode(&input)
 	version := strings.TrimSpace(input.Application.Version)
@@ -109,15 +110,16 @@ func (g *gateway) otaPost(w http.ResponseWriter, r *http.Request) {
 		business = map[string]any{"device_id": deviceID, "room_id": roomID, "bound": bound}
 	}
 	log.Printf("xiaozhi ota device_id=%s client_id=%s bound=%t room=%d firmware=%s", deviceID, clientID, bound, roomID, version)
+	var firmware any = map[string]any{"version": version, "url": ""}
+	if offer := g.startupFirmwareOffer(r.Context(), deviceID, input.DeviceProfile); offer != nil {
+		firmware = offer
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"server_time": map[string]any{
 			"timestamp":       time.Now().UnixMilli(),
 			"timezone_offset": 8 * 60,
 		},
-		"firmware": map[string]any{
-			"version": version,
-			"url":     "",
-		},
+		"firmware": firmware,
 		"websocket": map[string]any{
 			"url":     g.cfg.publicWSURL,
 			"token":   g.deviceToken(deviceID, clientID),

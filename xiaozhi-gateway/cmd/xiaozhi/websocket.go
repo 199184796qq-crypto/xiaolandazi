@@ -24,6 +24,7 @@ type lockedConn struct {
 	audioPaused    bool
 	roomPaused     bool
 	feedbackPaused bool
+	lastAudioWrite time.Time
 }
 
 func (c *lockedConn) json(value any) error {
@@ -43,7 +44,11 @@ func (c *lockedConn) binary(payload []byte) error {
 		return nil
 	}
 	_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	return c.conn.WriteMessage(websocket.BinaryMessage, payload)
+	err := c.conn.WriteMessage(websocket.BinaryMessage, payload)
+	if err == nil {
+		c.lastAudioWrite = time.Now()
+	}
+	return err
 }
 
 // Keep consuming Core's room PCM timeline while suppressing delivery only to
@@ -150,10 +155,11 @@ func (g *gateway) websocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var hello struct {
-		Type        string `json:"type"`
-		Version     int    `json:"version"`
-		Transport   string `json:"transport"`
-		AudioParams struct {
+		Type          string                    `json:"type"`
+		Version       int                       `json:"version"`
+		Transport     string                    `json:"transport"`
+		DeviceProfile *deviceMaintenanceProfile `json:"device_profile,omitempty"`
+		AudioParams   struct {
 			Format     string `json:"format"`
 			SampleRate int    `json:"sample_rate"`
 			Channels   int    `json:"channels"`
@@ -205,7 +211,7 @@ func (g *gateway) websocket(w http.ResponseWriter, r *http.Request) {
 		if hello.AudioParams.Channels != 0 && hello.AudioParams.Channels != 1 {
 			hello.Features.DeviceControl = false
 		}
-		g.managedDeviceSession(ctx, writer, deviceID, clientID, sessionID, p, micRate, hello.Features.DeviceControl, hello.Features.CameraCapture, hello.Features.DeviceFeedback)
+		g.managedDeviceSession(ctx, writer, deviceID, clientID, sessionID, p, micRate, hello.Features.DeviceControl, hello.Features.CameraCapture, hello.Features.DeviceFeedback, hello.DeviceProfile)
 		return
 	}
 	audioDone := make(chan error, 1)

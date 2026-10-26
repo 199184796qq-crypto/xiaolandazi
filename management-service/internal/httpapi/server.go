@@ -68,6 +68,7 @@ type Server struct {
 	speechMissions         SpeechMissionReader
 	semanticMetrics        SemanticMetricsReader
 	xiaozhiInternalToken   string
+	deviceMaintenance      *deviceMaintenanceState
 	deviceClaims           deviceClaimLimiter
 	deviceBusinessLimits   deviceBusinessLimiter
 	wechatPay              WechatPaymentProvider
@@ -166,6 +167,7 @@ func (s *Server) invalidateBenefit(tenantID, planID int64) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.registerDeviceProvisioningRoutes(mux)
+	s.registerDeviceMaintenanceRoutes(mux)
 	s.registerWorkInboxRoutes(mux)
 	s.registerLiveContentPolicyRoutes(mux)
 	s.registerLiveAgentPlanStyleOverlayRoutes(mux)

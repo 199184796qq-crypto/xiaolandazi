@@ -140,6 +140,9 @@ func main() {
 	if err := store.MigrateLiveRuntime(ctx); err != nil {
 		log.Fatalf("migrate live runtime database: %v", err)
 	}
+	if err := store.MigrateDeviceDiagnostics(ctx); err != nil {
+		log.Fatalf("migrate device diagnostics: %v", err)
+	}
 	if err := store.MigrateLiveCostRequests(ctx); err != nil {
 		log.Fatalf("migrate live request cost ledger: %v", err)
 	}
@@ -277,6 +280,9 @@ func main() {
 	go api.RunWechatPaymentReconciliation(appCtx)
 	go api.RunWechatRefundReconciliation(appCtx)
 	api.SetXiaozhiInternalToken(cfg.XiaozhiInternalToken)
+	if err := api.InitDeviceMaintenance(cfg.MediaRoot); err != nil {
+		log.Printf("device maintenance disabled: %v", err)
+	}
 	api.SetPurposeInternalToken(cfg.CoreToken)
 	api.SetExecutionRealm(cfg.RuntimeExecutionRealm)
 	cycleRedis := redis.NewClient(anchorcycle.RedisOptions(net.JoinHostPort(cfg.RedisHost, cfg.RedisPort), cfg.RedisPassword, cfg.RedisDB, cfg.AnchorCycleRedisTimeoutMS))
