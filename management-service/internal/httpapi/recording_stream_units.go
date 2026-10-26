@@ -443,7 +443,7 @@ func (s *Server) compileRecordingOriginal(ctx context.Context, tenant int64, ver
 func (s *Server) compileRecordingSentence(ctx context.Context, tenant int64, version model.LiveAgentPlanVersion, polish *anchorcycle.State, source string, tabIndex int, seq *int, existing ...string) ([]recordingReadyUnit, error) {
 	// The active planner already chose a rewrite. The retired original-base
 	// switch must not silently veto every optional update forever.
-	spoken := polishRecordingTextLimit(ctx, s, polish, source, 0)
+	spoken := s.polishRecordingRefreshText(ctx, polish, source, existing...)
 	if strings.TrimSpace(spoken) == "" {
 		spoken = source
 	}

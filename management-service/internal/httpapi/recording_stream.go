@@ -546,6 +546,14 @@ func recordingOriginalBase() bool {
 	return false
 }
 
+var recordingPolishSkeletons = []string{
+	"把结论放到最前面，再补原因",
+	"先描述场景或对象，再说做法",
+	"拆成两个短句，第二句补充条件",
+	"改成对观众直接说话的问句加回答",
+	"把原来的主谓宾顺序倒过来表达",
+}
+
 func polishRecordingText(ctx context.Context, server *Server, state *anchorcycle.State, text string) string {
 	if recordingOriginalBase() {
 		return text
@@ -564,15 +572,12 @@ func polishRecordingTextLimit(ctx context.Context, server *Server, state *anchor
 	source := text
 	// 换句式而不是换同义词：同一句话的多个版本要有不同的句子骨架，
 	// 否则四个版本听起来只是换了几个词。骨架由程序轮换，信息边界不变。
-	skeletons := []string{
-		"把结论放到最前面，再补原因",
-		"先描述场景或对象，再说做法",
-		"拆成两个短句，第二句补充条件",
-		"改成对观众直接说话的问句加回答",
-		"把原来的主谓宾顺序倒过来表达",
-	}
+	skeletons := recordingPolishSkeletons
 	skeleton := ""
-	if len(skeletons) > 0 {
+	if forced, ok := ctx.Value(recordingPolishSkeletonKey{}).(string); ok {
+		skeleton = forced
+	}
+	if skeleton == "" && len(skeletons) > 0 {
 		skeleton = skeletons[rand.Intn(len(skeletons))]
 	}
 	// 语气词按概率放行：每句都带语气词听起来很腻，控制在四成左右。
@@ -629,6 +634,41 @@ func polishRecordingTextLimit(ctx context.Context, server *Server, state *anchor
 		}
 	}
 	// A repair instruction must never become spoken content after exhaustion.
+	return source
+}
+
+type recordingPolishSkeletonKey struct{}
+
+// polishRecordingRefreshText retries a duplicate/echoed rewrite with a
+// different sentence skeleton. The per-attempt cost key is unique so a
+// duplicate response cannot be mistaken for an idempotent retry.
+func (s *Server) polishRecordingRefreshText(ctx context.Context, state *anchorcycle.State, source string, existing ...string) string {
+	if state == nil || s == nil || strings.TrimSpace(source) == "" {
+		return source
+	}
+	order := rand.Perm(len(recordingPolishSkeletons))
+	if len(order) > 3 {
+		order = order[:3]
+	}
+	for variant, pick := range order {
+		attemptCtx := ctx
+		if scope := liveCostScope(ctx); scope.Key != "" {
+			scope.Key += fmt.Sprintf(":skeleton-variant:%d", variant)
+			attemptCtx = withLiveCostScope(ctx, scope)
+		}
+		attemptCtx = context.WithValue(attemptCtx, recordingPolishSkeletonKey{}, recordingPolishSkeletons[pick])
+		spoken := polishRecordingTextLimit(attemptCtx, s, state, source, 0)
+		if strings.TrimSpace(spoken) == "" || sameSpeechText(source, spoken) {
+			continue
+		}
+		if err := recordingRefreshNoveltyError(ctx, source, spoken, existing...); err != nil {
+			continue
+		}
+		if !sameNumbers(source, spoken) || suspiciousPolish(source, spoken) {
+			continue
+		}
+		return spoken
+	}
 	return source
 }
 
