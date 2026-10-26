@@ -1,6 +1,14 @@
 # 项目协作约定
 
-## 当前生产（2026-10-26 10:10）
+## 当前生产（2026-10-26 11:12）
+
+- 用户明确授权修复跨场首轮缓存更新后上线；源码c1815d3已推送main，北京时间11:12:25—11:12:45发布20261026-recording-first-pass-c1815d3，前驱actual current为device-maintenance-6935fff。新场首轮按有效逐句库存参与整轮更新预算，旧场只完成部分基础声音也能继承；真正全冷首轮仍只补基础声音。
+- 仅替换Management与新增RECORDING-FIRST-PASS-SOURCE.json；Management1672116/VCSc1815d3/dirty=false/SHA3a83e98e2b2d9837f527f65a770480ba186fdf02c50570e1b7706e334c42c3d4，Core1558558与6935fff网关1666043的PID/完整SHA保持。三次锁内全场及Core空闲检查通过，未开停直播、刷机或请求真实模型/TTS。
+- 2586旧非目标文件、1564完整前端文件及母版既有状态、18保护表（含全部费用配置/模型池/方案/媒体）、Nginx和实际unit/env保持。无新增数据库迁移，已有跨场缓存与更新余额不重置、历史账务不回算；必要补声与可选更新仍按真实请求分开记账和准入。
+- 固定干净源码Management51包/2380测试事件通过、108环境跳过，新增部分首轮落盘重开/预算失败复用/1版4版后置库存/失效P0缓存回归通过，全量vet/Linux构建及20依赖与无修改树继承、8空闲守卫夹具、42公网资源/鉴权和完整标准冒烟通过。完整前端备份latest已更新；没有真实新场更新率、实付费用或盒子完整出声验收声明。
+- 说明docs/2026-10-26-跨场首轮按缓存规划更新.md；证据E:/直播伴播-local/recording-first-pass-release-20261026，服务器回执/opt/xiaolan/deployments/20261026-recording-first-pass-c1815d3.json。回滚须持发布锁并空闲，前驱6935fff；本轮源码与发布记录编辑结束并已交接，其他既有差异原样保留。
+
+## 历史生产（2026-10-26 10:10）
 
 - 用户授权部署ESP32-S3摄像头16MB盒子兼容服务端；源码6935fff已推送main，北京时间10:10:16—10:10:22上线20261026-device-maintenance-6935fff，前驱actual current为recording-budget-fix-75416fe。新增受控OTA协议与用户隔离故障日志服务，升级清单保持缺省关闭，未向盒子发布固件或刷机。
 - 仅替换Management与xiaozhi网关及新增DEVICE-MAINTENANCE-SOURCE.json；Management1666033/VCS6935fff/dirty=false/SHAe33561dc61799e7b3d1a9c7ed7213ac49edc1d8fb11d7db6ed4d4756f5b1b78f，网关1666043/VCS6935fff/dirty=false/SHA7ad03a458ecc389a8c856beb4355ea6b8dfa2a29d4a886f5aa084c2bdeb9cded；Core1558558及完整SHA保持。旧dirty网关源码已独立重建，SHA与生产和历史原件完全一致，真实心跳/当前连接/关机指令逻辑保留。
