@@ -1,6 +1,14 @@
 # 项目协作约定
 
-## 当前生产（2026-10-26 07:56）
+## 当前生产（2026-10-26 10:10）
+
+- 用户授权部署ESP32-S3摄像头16MB盒子兼容服务端；源码6935fff已推送main，北京时间10:10:16—10:10:22上线20261026-device-maintenance-6935fff，前驱actual current为recording-budget-fix-75416fe。新增受控OTA协议与用户隔离故障日志服务，升级清单保持缺省关闭，未向盒子发布固件或刷机。
+- 仅替换Management与xiaozhi网关及新增DEVICE-MAINTENANCE-SOURCE.json；Management1666033/VCS6935fff/dirty=false/SHAe33561dc61799e7b3d1a9c7ed7213ac49edc1d8fb11d7db6ed4d4756f5b1b78f，网关1666043/VCS6935fff/dirty=false/SHA7ad03a458ecc389a8c856beb4355ea6b8dfa2a29d4a886f5aa084c2bdeb9cded；Core1558558及完整SHA保持。旧dirty网关源码已独立重建，SHA与生产和历史原件完全一致，真实心跳/当前连接/关机指令逻辑保留。
+- 锁内三次全场及Core空闲检查；2584旧非目标文件、1564前端文件、母版/MANIFEST既有状态、18保护表（含方案/系统设置/模型池）、Nginx及实际unit/env均保持。MySQL8启动唯一新增device_diagnostic_batches，17列/10条索引明细/0行核验通过；私有根位于MEDIA_ROOT同级发布树外，0700、服务用户所有且可写。无维护初始化禁用/迁移失败日志，catalog与固件bin均未发布；回滚保留新表及私有日志。
+- 固定干净源码Management51包/2367测试事件通过、108环境跳过，网关129事件及两模块全量vet/Linux构建通过，20依赖与无修改树继承、56项独立核验及8空闲守卫夹具通过。42公网字节/鉴权、三服务健康及完整标准生产冒烟通过，完整前端备份latest已更新。网关恢复1台设备连接只证连接；无新固件实机音频/日志上传/断电回滚验收，不称掉线物理根因已治愈。
+- 说明docs/2026-10-26-小蓝盒子网络升级与故障日志.md；证据E:/直播伴播-local/device-maintenance-release-20261026，服务器回执/opt/xiaolan/deployments/20261026-device-maintenance-6935fff.json。首次USB安装新固件后才具备维护协议；激活未来OTA前须完成实机验收与下载授权日志保护。源码及本轮发布登记编辑结束并交接，其它已有文档/提示词差异原样保留。
+
+## 历史生产（2026-10-26 07:56）
 
 - 用户授权提交部署481预算审计修复；源码75416fe已推送main，北京时间07:56:30—07:56:35上线20261026-recording-budget-fix-75416fe，前驱actual current为live-cost-settings-7f362dc。少版本只作更新排序优先，不再排除全部四版健康句；解意图真实模型调用惰性绑定同一有效session/run及interaction归属，缓存零调用路径保留。
 - 仅替换Management及新增RECORDING-BUDGET-FIX-SOURCE.json；Management1660688/VCS75416fe/dirty=false/SHAf4aafa2772660149655574efb99af20bd9fe54d4320745864284e217a6f44ad5，Core1558558与网关1558559的PID/完整SHA保持。三次锁内空闲守卫，未启停客户直播；2584旧非目标文件、1564前端文件、母版/MANIFEST既有状态、18保护表（含全部系统设置）、Nginx及实际unit/env均保持。
