@@ -249,9 +249,42 @@ func (s *Server) prepareRecordingRefreshSchedule(ctx context.Context, tenant, ro
 		}
 		return result, plans
 	}
+	allFull, anyWarm, inventoryScanned := true, false, false
+	var forecast time.Duration
+	snapshotInventory := func() {
+		if inventoryScanned {
+			return
+		}
+		inventoryScanned = true
+		for tab := range tabs {
+			for index := range tabs[tab] {
+				state := &tabs[tab][index]
+				cached := hitCandidates(tab, index)
+				state.VersionCount = recordingEffectiveVersionCount(state.Source, state.Versions, cached, policy)
+				state.InventoryKnown = true
+				state.UpdateEligible = state.VersionCount > 0
+				anyWarm = anyWarm || state.UpdateEligible
+				if state.VersionCount > 0 && state.VersionCount < recordingCacheMaxVersions {
+					allFull = false
+				}
+				duration := recordingRefreshSourceDuration(state.Source, state.Versions, cached, policy)
+				if duration > time.Duration(1<<63-1)-forecast {
+					forecast = time.Duration(1<<63 - 1)
+				} else {
+					forecast += duration
+				}
+			}
+		}
+	}
 	if first {
-		// Baseline supply must not wait on full-library scans or pricing.
-		return withoutOptional("")
+		// A new session can inherit an unfinished baseline pass. Only a truly
+		// cold library skips optional planning; warm sources join the normal
+		// whole-pass budget immediately, while missing audio stays necessary.
+		// This inspects scoped metadata only, without pricing or asset I/O.
+		snapshotInventory()
+		if !anyWarm {
+			return withoutOptional("")
+		}
 	}
 	settings, settingsValid := s.liveCostSettingsSnapshot(ctx)
 	if !settingsValid || settings.Validate() != nil {
@@ -265,25 +298,7 @@ func (s *Server) prepareRecordingRefreshSchedule(ctx context.Context, tenant, ro
 	if summaryErr != nil {
 		return withoutOptional("更新费用预估或账务暂不可用")
 	}
-	allFull := true
-	var forecast time.Duration
-	for tab := range tabs {
-		for index := range tabs[tab] {
-			state := &tabs[tab][index]
-			cached := hitCandidates(tab, index)
-			state.VersionCount = recordingEffectiveVersionCount(state.Source, state.Versions, cached, policy)
-			state.InventoryKnown = true
-			if state.VersionCount > 0 && state.VersionCount < recordingCacheMaxVersions {
-				allFull = false
-			}
-			duration := recordingRefreshSourceDuration(state.Source, state.Versions, cached, policy)
-			if duration > time.Duration(1<<63-1)-forecast {
-				forecast = time.Duration(1<<63 - 1)
-			} else {
-				forecast += duration
-			}
-		}
-	}
+	snapshotInventory()
 	quotes := make([][]int64, len(tabs))
 	var totalQuote int64
 	for tab := range tabs {
@@ -293,7 +308,6 @@ func (s *Server) prepareRecordingRefreshSchedule(ctx context.Context, tenant, ro
 			// Fewer versions rank first in PlanBounded and across-tab allocation.
 			// They must not exclude full pools: a few duplicate-only tail sources
 			// can otherwise strand the entire round's refresh allowance for hours.
-			state.UpdateEligible = state.VersionCount > 0
 			if !state.UpdateEligible || summaryErr != nil {
 				continue
 			}

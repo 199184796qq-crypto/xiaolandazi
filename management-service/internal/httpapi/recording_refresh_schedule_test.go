@@ -376,7 +376,7 @@ func (store *refreshScheduleSummaryStore) LiveCostSummary(_ context.Context, _ l
 	return store.SummaryValue, store.SummaryErr
 }
 
-func TestRecordingRefreshSchedulePrepareFirstPassSkipsInventoryAndAccounting(t *testing.T) {
+func TestRecordingRefreshScheduleColdFirstPassSkipsPricingAndAccounting(t *testing.T) {
 	for _, name := range []string{"nil_server", "summary_unavailable"} {
 		t.Run(name, func(t *testing.T) {
 			var server *Server
@@ -388,14 +388,15 @@ func TestRecordingRefreshSchedulePrepareFirstPassSkipsInventoryAndAccounting(t *
 			planner := &recordingUpdatePlanner{}
 			planner.PlanBounded("first", "old:4", states[0], 100, 100, nil)
 			credit := planner.Tabs["first"].CreditMicros
+			reads := 0
 			schedule, plans := server.prepareRecordingRefreshSchedule(context.Background(), 14, 29, model.LiveAgentPlanVersion{}, nil,
 				states, func(int, int) []recordingcache.Entry {
-					t.Fatal("first-pass baseline supply scanned the complete inventory")
+					reads++
 					return nil
 				}, planner, []string{"first"}, "481:1", 0, true, nil)
 			if store.SummaryCalls != 0 || len(schedule.Pending) != 0 || schedule.Budget != (recordingRefreshBudget{}) ||
-				len(plans) != 1 || plans[0].Selected[0] || states[0][0].InventoryKnown || planner.Tabs["first"].CreditMicros != credit {
-				t.Fatal("first pass depended on pricing, inventory or optional refresh despite its zero-update contract", schedule, plans, store)
+				len(plans) != 1 || plans[0].Selected[0] || !states[0][0].InventoryKnown || reads != 1 || planner.Tabs["first"].CreditMicros != credit {
+				t.Fatal("truly cold first pass depended on pricing/accounting or accrued optional credit", schedule, plans, store)
 			}
 		})
 	}
