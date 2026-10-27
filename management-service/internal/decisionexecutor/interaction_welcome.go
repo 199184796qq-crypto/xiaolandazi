@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"strings"
 	"time"
 
@@ -280,15 +281,21 @@ func welcomeIntroProblem(text string) error { return factbound.ValidateIntro(tex
 // welcomeBaseConstraints 拼装欢迎话术公用的「不提/改写」层（P0 + pUser 拆进四层）。
 func (w *Worker) welcomeBaseConstraints(ctx context.Context, session model.LiveRuntimeSession) (notMention, rewrite string) {
 	notMention = speechbase.FourLayerNotMentionText
-	if p0Forbidden := renderP0Forbidden(); p0Forbidden != "" {
+	if p0PromptMetaMode() {
+		// The full P0 list is enforced after generation by the sentence guard; the
+		// prompt only carries the requirement.
+		notMention += "\n\n不承诺、不绝对化（最/第一/100%/保证）、不宣称功效；没把握就如实说还没核实。"
+	} else if p0Forbidden := renderP0Forbidden(); p0Forbidden != "" {
 		notMention += "\n\n红线词（本段一律不出现）：\n" + p0Forbidden
 	}
 	if puserForbidden := w.renderPUserForbidden(ctx, session); puserForbidden != "" {
 		notMention += "\n\n用户确认的表达限制（本段一律不出现）：\n" + puserForbidden
 	}
 
-	if p0Rewrite := renderP0Rewrite(); p0Rewrite != "" {
-		rewrite += p0Rewrite
+	if !p0PromptMetaMode() {
+		if p0Rewrite := renderP0Rewrite(); p0Rewrite != "" {
+			rewrite += p0Rewrite
+		}
 	}
 	if puserRewrite := w.renderPUserRewrite(ctx, session); puserRewrite != "" {
 		if rewrite != "" {
@@ -297,6 +304,13 @@ func (w *Worker) welcomeBaseConstraints(ctx context.Context, session model.LiveR
 		rewrite += "用户确认的展开指导：\n" + puserRewrite
 	}
 	return notMention, rewrite
+}
+
+// p0PromptMetaMode keeps the full P0 word list out of the prompt: the model gets
+// a one-line requirement and the post-generation guard rewrites hits. Set
+// P0_PROMPT_MODE=full to restore the old front-loaded word list.
+func p0PromptMetaMode() bool {
+	return !strings.EqualFold(strings.TrimSpace(os.Getenv("P0_PROMPT_MODE")), "full")
 }
 
 // welcomeVoiceCard 取当前直播间的主播腔调卡（动态，每个直播间不同、可能没配）。

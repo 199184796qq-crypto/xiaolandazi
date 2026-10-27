@@ -1,6 +1,12 @@
 package decisionexecutor
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"livecompanion/management/internal/model"
+)
 
 func TestWelcomeProfileNeverRepeatsInARow(t *testing.T) {
 	worker := &Worker{}
@@ -31,5 +37,19 @@ func TestWelcomeProfileParts(t *testing.T) {
 		if !profileNeeds(full, part) {
 			t.Fatalf("rich shape missing %s", part)
 		}
+	}
+}
+
+func TestWelcomeConstraintsUseMetaP0ByDefault(t *testing.T) {
+	w := &Worker{}
+	notMention, rewrite := w.welcomeBaseConstraints(context.Background(), model.LiveRuntimeSession{})
+	if strings.Contains(notMention, "红线词") {
+		t.Fatalf("meta mode should not carry the full P0 list: %q", notMention)
+	}
+	if !strings.Contains(notMention, "不绝对化") {
+		t.Fatalf("meta mode should state the requirement: %q", notMention)
+	}
+	if strings.Contains(rewrite, "照着换") {
+		t.Fatalf("meta mode should not carry the P0 rewrite table: %q", rewrite)
 	}
 }
