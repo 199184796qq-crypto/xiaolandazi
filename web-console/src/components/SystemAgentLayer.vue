@@ -269,6 +269,11 @@ const drawerResizeHandles: { edge: DrawerResizeEdge; label: string }[] = [
 const enterSend = useAgentEnterSend()
 const composerComposing = ref(false)
 watch(() => [session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id], resetDrawerPosition)
+function startDrawerHeaderDrag(event: PointerEvent) {
+  const target = event.target
+  if (!(target instanceof Element) || target.closest('button, input, textarea, select, label, a, [contenteditable], [role="button"], [role="combobox"]')) return
+  startDrawerDrag(event)
+}
 function collapseDrawerAfterClick() { if (!consumeDrawerDragClick()) drawerOpen.value = false }
 function setDrawerElement(value: unknown) { drawerEl.value = value as HTMLElement | null }
 const drawerPreferenceReady = ref(false)
@@ -7341,7 +7346,7 @@ async function copyCredential(credential?: InitialCredential) {
           @pointerdown="startDrawerDrag"
           @click="collapseDrawerAfterClick"
         >›</button>
-        <header>
+        <header class="agent-drawer-header" @pointerdown="startDrawerHeaderDrag">
           <div>
             <span v-if="!isTerminalCustomer" class="section-kicker">AI COPILOT · {{ contextLabel }}</span>
             <h3>{{ assistantName }}</h3>
@@ -8070,6 +8075,9 @@ async function copyCredential(credential?: InitialCredential) {
 .agent-drawer-resize-handle[data-resize-edge=se]{bottom:0;right:0;cursor:nwse-resize}.agent-drawer-resize-handle[data-resize-edge=sw]{bottom:0;left:0;cursor:nesw-resize}
 .agent-drawer-resize-handle[data-resize-edge=se]::after{content:'';position:absolute;right:5px;bottom:5px;width:10px;height:10px;background:repeating-linear-gradient(135deg,transparent 0 3px,#8a98c9 3px 5px);clip-path:polygon(100% 0,100% 100%,0 100%)}
 .agent-drawer-resize-handle:focus-visible{outline:2px solid #788cf0;outline-offset:0;border-radius:4px}
+.system-agent-drawer>.agent-drawer-header{cursor:grab;touch-action:none;user-select:none}
+.system-agent-drawer.dragging>.agent-drawer-header{cursor:grabbing}
+.agent-drawer-header :is(input,textarea,select,label,a,[contenteditable]){cursor:auto}
 .agent-drawer-window-controls{display:flex;flex-direction:column;align-items:center;gap:8px;flex:0 0 56px}
 .agent-drawer-drag-handle{display:flex;align-items:center;justify-content:center;gap:4px;width:56px;min-height:30px;padding:4px;border:1px solid #dce3f6;border-radius:8px;background:#f5f7ff;color:#7382b4;font:inherit;font-size:11px;cursor:grab;touch-action:none;user-select:none}
 .agent-drawer-drag-handle>span{font-size:19px;line-height:1}
