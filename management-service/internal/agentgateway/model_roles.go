@@ -58,7 +58,7 @@ func UsesReviewModel(stage string) bool {
 // outside the model pool and use the operator's own profile and key.
 func UsesInteractionAnswerModel(stage string) bool {
 	switch stage {
-	case "interaction_single_direct_answer", "interaction_single_greet", "interaction_single_answer", "interaction_no_fact_boundary", "interaction_boundary_line", "interaction_covered_facts", "interaction_welcome_intro", "interaction_welcome_humanize", "interaction_welcome_highlight":
+	case "interaction_single_direct_answer", "interaction_single_greet", "interaction_single_answer", "interaction_no_fact_boundary", "interaction_boundary_line", "interaction_covered_facts", "interaction_welcome_intro", "interaction_welcome_humanize", "interaction_welcome_highlight", "interaction_welcome_greeting", "interaction_welcome_hook", "interaction_p0_sentence_rewrite", "interaction_order_thanks", "interaction_order_fulfillment":
 		return true
 	default:
 		return false
