@@ -443,6 +443,29 @@ func IntroGrounded(text, facts string) bool {
 	return product != "" && strings.Contains(text, product)
 }
 
+// PlacesIn returns the canonical place names a text mentions, matched through
+// the same alias table the boundary check uses.
+func PlacesIn(text string) []string {
+	config, _, err := Load()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, place := range config.Places {
+		matched := false
+		for _, alias := range append([]string{place.Name}, place.Aliases...) {
+			if strings.TrimSpace(alias) != "" && strings.Contains(text, alias) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			out = append(out, place.Name)
+		}
+	}
+	return out
+}
+
 // ValidateIntroFor checks an intro against the configured forbid words and,
 // cross-category, against the room's dominant product name.
 func ValidateIntroFor(text, facts string) error {

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"livecompanion/management/internal/factbound"
+	"livecompanion/management/internal/factselect"
 	"livecompanion/management/internal/model"
 )
 
@@ -369,8 +370,23 @@ func (w *Worker) singleAnswerFacts(item decisionItem) string {
 	if item.SelectedContentPlan == nil || len(item.SelectedContentPlan.Facts) == 0 {
 		return ""
 	}
-	var b strings.Builder
+	facts := make([]factselect.Fact, 0, len(item.SelectedContentPlan.Facts))
 	for _, f := range item.SelectedContentPlan.Facts {
+		facts = append(facts, factselect.Fact{ID: f.ID, Text: f.Text})
+	}
+	angleIDs := make(map[string]bool, len(facts))
+	angleTexts := make([]string, 0, len(item.IntentAngles))
+	for _, row := range item.IntentAngles {
+		angleTexts = append(angleTexts, strings.TrimSpace(row.Angle+" "+row.Task))
+		for _, id := range row.FactIDs {
+			angleIDs[id] = true
+		}
+	}
+	// Narrow the selection to what the question actually asks: angle facts and
+	// lexical matches only, never a fact about another region.
+	picked := factselect.Select(primaryQuestion(item), angleTexts, angleIDs, facts, 3)
+	var b strings.Builder
+	for _, f := range picked {
 		if strings.TrimSpace(f.ID) == "" || strings.TrimSpace(f.Text) == "" {
 			continue
 		}
