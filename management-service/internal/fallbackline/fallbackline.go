@@ -46,6 +46,8 @@ func Prompt(req Request) (string, string, string) {
 	b.WriteString("要求：\n")
 	b.WriteString("- 只输出一句话，十五到四十个字，口语，像真人随口说的；\n")
 	b.WriteString("- 句子不要太工整，可以有停顿、语气词、口头禅；\n")
+	b.WriteString("- 越像跟熟人发语音越好：可以自嘲、可以夸张、可以损自己一句，但马上收住；\n")
+	b.WriteString("- 不要成语堆砌、不要书面语、不要播音腔、不要一本正经解释；\n")
 	b.WriteString("- 不要客服腔、不要官腔、不要播音腔，不要“亲”“尊敬的观众”；\n")
 	b.WriteString("- 不要解释规则、系统、资料、页面，不要说“以实际为准”；\n")
 	b.WriteString("- 不要编造名字、身份、数字、价格、时效、承诺；\n")
@@ -130,6 +132,8 @@ var (
 	metaphorMarkers     = []string{"像", "似的", "好比", "就跟", "跟问", "跟考试"}
 	selfMockMarkers     = []string{"我这脑子", "记性", "嘴笨", "笨", "没记住", "挠头", "犯迷糊", "漏勺"}
 	serviceToneMarkers  = []string{"亲", "尊敬", "为您", "请您", "感谢您的", "稍等", "马上"}
+	humorMarkers        = []string{"哈哈", "笑死", "离谱", "绝了", "好家伙", "绷不住", "裂开", "拍胸脯", "嘴瓢", "整不会", "抓瞎", "两眼一黑", "怂", "翻车", "挠头"}
+	writtenToneMarkers  = []string{"因此", "然而", "此外", "综上所述", "建议您", "特此", "敬请", "务必"}
 )
 
 func humanScore(text string) (float64, []string) {
@@ -163,6 +167,14 @@ func humanScore(text string) (float64, []string) {
 	if mentionsAny(text, serviceToneMarkers) {
 		score -= 0.5
 		features = append(features, "客服腔")
+	}
+	if mentionsAny(text, humorMarkers) {
+		score += 0.25
+		features = append(features, "有梗")
+	}
+	if mentionsAny(text, writtenToneMarkers) {
+		score -= 0.3
+		features = append(features, "书面语")
 	}
 	if strings.ContainsAny(text, "，…") && strings.Count(text, "，") >= 2 {
 		score += 0.1
