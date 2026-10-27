@@ -118,6 +118,49 @@ func TestDecodeRoomUserSeq(t *testing.T) {
 	}
 }
 
+func TestDecodeRoomUserSeqZeroOnline(t *testing.T) {
+	common := protoMessage(
+		protoString(1, "WebcastRoomUserSeqMessage"),
+		protoVarint(2, 902),
+		protoVarint(3, 888),
+	)
+
+	// total=0 是当前在线 0；total_user=76 是累计观看。
+	// 房间没人时不能把累计值回退成在线人数。
+	roomUserSeq := protoMessage(
+		protoBytes(1, common),
+		protoVarint(3, 0),
+		protoVarint(6, 0),
+		protoVarint(7, 76),
+	)
+
+	message := protoMessage(
+		protoString(1, "WebcastRoomUserSeqMessage"),
+		protoBytes(2, roomUserSeq),
+		protoVarint(3, 902),
+	)
+
+	response := protoMessage(protoBytes(1, message))
+	frame := protoMessage(protoBytes(8, response))
+
+	result, err := DecodePushFrame(frame)
+	if err != nil {
+		t.Fatalf("DecodePushFrame() error = %v", err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events = %d, want 1", len(result.Events))
+	}
+	if got := result.Events[0].Content; got != "当前在线 0" {
+		t.Fatalf("content = %q, want 当前在线 0", got)
+	}
+	if !bytes.Contains(result.Events[0].Payload, []byte(`"online_count":0`)) {
+		t.Fatalf("payload = %s", result.Events[0].Payload)
+	}
+	if !bytes.Contains(result.Events[0].Payload, []byte(`"cumulative_viewers":76`)) {
+		t.Fatalf("payload = %s", result.Events[0].Payload)
+	}
+}
+
 func gzipBytes(t *testing.T, data []byte) []byte {
 	t.Helper()
 

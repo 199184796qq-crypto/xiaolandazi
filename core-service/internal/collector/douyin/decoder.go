@@ -311,15 +311,11 @@ func decodeRoomUserSeq(message webcastMessage) (model.CreateEventInput, bool) {
 	popularity := fieldVarint(fields, 6)
 	totalUser := fieldVarint(fields, 7)
 
+	// 字段 3 total 是当前在线人数，0 是合法值（房间没人）。
+	// 字段 7 total_user 是累计观看/场观；房间空了它仍会保留历史值，
+	// 因此不能用它回退“当前在线”，否则 0 人会显示成几十人。
 	onlineCount := total
-	if onlineCount == 0 {
-		onlineCount = totalUser
-	}
-
-	content := "房间人数更新"
-	if onlineCount > 0 {
-		content = "当前在线 " + strconv.FormatUint(onlineCount, 10)
-	}
+	content := "当前在线 " + strconv.FormatUint(onlineCount, 10)
 
 	return newEvent(
 		"room",
@@ -328,10 +324,11 @@ func decodeRoomUserSeq(message webcastMessage) (model.CreateEventInput, bool) {
 		user{},
 		content,
 		map[string]any{
-			"online_count": onlineCount,
-			"total":        total,
-			"popularity":   popularity,
-			"total_user":   totalUser,
+			"online_count":       onlineCount,
+			"total":              total,
+			"popularity":         popularity,
+			"total_user":         totalUser,
+			"cumulative_viewers": totalUser,
 		},
 	), true
 }
