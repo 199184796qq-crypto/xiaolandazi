@@ -1847,12 +1847,14 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	// TTS 前只处理命中 P0 的句子：能换就换，换不掉就丢这一句，其余原样组装。
 	// 不整段重生成，避免一句违规把整段口播和 token 全部重来。
 	if !strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
+		text = sanitizeSpokenText(text)
 		if sanitized, rewritten, dropped := w.rewriteTTSP0Sentences(ctx, session, text); rewritten > 0 || dropped > 0 {
 			text = sanitized
 			// 只记录计数，不把正文或命中词写进日志。
 			w.transitionMission(item, speechmission.StateSynthesizingTTS, "p0_sentence_rewrite",
 				fmt.Sprintf("TTS前按句处理P0：改写%d句，丢弃%d句", rewritten, dropped))
 		}
+		text = sanitizeSpokenText(text)
 	}
 	if strings.TrimSpace(text) == "" {
 		err := fmt.Errorf("TTS前正文被P0全部拦截，未生成语音")
