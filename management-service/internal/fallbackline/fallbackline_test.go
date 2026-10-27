@@ -106,3 +106,17 @@ func TestLocationPromptTalksAboutLocation(t *testing.T) {
 		t.Fatalf("location prompt missing guidance: %s", system)
 	}
 }
+
+func TestComplaintClassNeverJokes(t *testing.T) {
+	_, system, _ := Prompt(Request{Class: "complaint", Question: "怎么已抢光了"})
+	if !strings.Contains(system, "严禁打比方") {
+		t.Fatalf("complaint prompt must ban metaphors: %s", system)
+	}
+	request := Request{Class: "complaint", Question: "怎么已抢光了"}
+	if Validate("我懂你着急，这事儿像隔着毛玻璃看东西，暂时说不好。", request) == nil {
+		t.Fatal("metaphor accepted for an upset viewer")
+	}
+	if err := Validate("理解你着急，这个我确实说不好，先不给你准话。", request); err != nil {
+		t.Fatalf("plain empathetic line rejected: %v", err)
+	}
+}

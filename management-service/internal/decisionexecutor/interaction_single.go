@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"livecompanion/management/internal/contentstrategy"
 	"livecompanion/management/internal/factbound"
 	"livecompanion/management/internal/factguard"
 	"livecompanion/management/internal/factselect"
@@ -18,6 +19,10 @@ var identityQuestionPattern = regexp.MustCompile(`名字|叫什么|你是谁|怎
 // locationQuestionPattern catches "在哪里/地址/位置" style questions so the
 // fallback line talks about location instead of joking about memory.
 var locationQuestionPattern = regexp.MustCompile(`在哪|哪里|哪儿|地址|位置|哪个城市|什么地方|哪座城市`)
+
+// upsetQuestionPattern catches complaints and anxiety (sold out, missing, angry).
+// These must never get a joke or a metaphor: it reads as disrespect.
+var upsetQuestionPattern = regexp.MustCompile(`抢光|卖完|没了|没抢到|缺货|断货|怎么(没|已|都)|失望|生气|投诉|骗|坑|着急|等不及|错过`)
 
 // singleInteractionStrategy 是「单一互动」的独立策略（骨架阶段）。
 //
@@ -161,10 +166,42 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 		// identity class bans self-introduced names inside the prompt and in the
 		// program-side validator.
 		class = "identity"
+	} else if upsetQuestionPattern.MatchString(question) {
+		class = "complaint"
 	} else if locationQuestionPattern.MatchString(question) {
 		class = "location"
 	}
 	return w.boundaryLine(ctx, session, class, question, nil)
+}
+
+// retrievedAnswerFacts is the last-chance retrieval when the selected plan has no
+// facts: pick the closest facts from the room package and let the boundary check
+// decide. It never invents anything.
+func (w *Worker) retrievedAnswerFacts(ctx context.Context, session model.LiveRuntimeSession, question string) string {
+	if w == nil || w.store == nil || strings.TrimSpace(question) == "" {
+		return ""
+	}
+	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
+	if err != nil || plan.ID <= 0 {
+		return ""
+	}
+	_, facts, err := w.interactionApprovedFacts(ctx, session, plan.ID)
+	if err != nil || strings.TrimSpace(facts) == "" {
+		return ""
+	}
+	all := make([]factselect.Fact, 0, 32)
+	for _, fact := range contentstrategy.Facts(facts) {
+		all = append(all, factselect.Fact{ID: fact.ID, Text: fact.Text})
+	}
+	picked := factselect.Select(question, nil, nil, all, 3)
+	var b strings.Builder
+	for _, fact := range picked {
+		b.WriteString(fact.ID)
+		b.WriteString(" ")
+		b.WriteString(fact.Text)
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
@@ -175,11 +212,16 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	if address == "" {
 		address = "朋友"
 	}
+	question := strings.TrimSpace(primaryQuestion(item))
 	answerText := w.singleAnswerFacts(item)
+	if strings.TrimSpace(answerText) == "" {
+		// The selected plan may be empty even though the room has facts (a new
+		// purpose, a stale snapshot). Try one retrieval pass before giving up.
+		answerText = w.retrievedAnswerFacts(ctx, session, question)
+	}
 	if strings.TrimSpace(answerText) == "" {
 		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
 	}
-	question := strings.TrimSpace(primaryQuestion(item))
 	// The program owns the three-state fact check; the model only phrases it.
 	bound := factbound.Evaluate(question, answerText, true)
 	// A yes/no question can presume something the facts never say ("是当天发货吗").

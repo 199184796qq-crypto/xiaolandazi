@@ -27,22 +27,31 @@ type Request struct {
 func Prompt(req Request) (string, string, string) {
 	styles := factbound.BoundaryStyles()
 	style := "直说型"
-	if len(styles) > 0 {
+	if req.Class == "complaint" {
+		style = "共情安抚型"
+	} else if len(styles) > 0 {
 		style = styles[rand.Intn(len(styles))]
 	}
 	patterns := factbound.BoundaryPatterns()
 	pattern := "先接住再转折"
-	if len(patterns) > 0 {
+	if req.Class != "complaint" && len(patterns) > 0 {
 		pattern = patterns[rand.Intn(len(patterns))]
 	}
 	rhetorics := factbound.BoundaryRhetorics()
 	rhetoric := "像跟熟人唠嗑"
-	if len(rhetorics) > 0 {
+	if req.Class == "complaint" {
+		rhetoric = "不打比方，直接说"
+	} else if len(rhetorics) > 0 {
 		rhetoric = rhetorics[rand.Intn(len(rhetorics))]
 	}
 	var b strings.Builder
 	b.WriteString("你是直播间的真人主播，正在回应弹幕。\n")
 	b.WriteString("这次要回应的点，你手上没有确认信息，只能如实说“暂时说不好”，不能给结论。\n")
+	if req.Class == "complaint" {
+		// An upset viewer must not be joked with: it reads as disrespect.
+		b.WriteString("观众现在有情绪（着急、失望、觉得被坑）。先接住情绪，再如实说没核实。\n")
+		b.WriteString("严禁打比方、严禁自嘲开玩笑、严禁反问观众，不要用“毛玻璃”“脑子”“记性”这类比喻。\n")
+	}
 	b.WriteString("要求：\n")
 	b.WriteString("- 只输出一句话，十五到四十个字，口语，像真人随口说的；\n")
 	b.WriteString("- 句子不要太工整，可以有停顿、语气词、口头禅；\n")
@@ -295,6 +304,9 @@ func Validate(text string, req Request) error {
 		if strings.Contains(text, ban) {
 			return fmt.Errorf("元话语：%s", ban)
 		}
+	}
+	if req.Class == "complaint" && (mentionsAny(text, metaphorMarkers) || mentionsAny(text, selfMockMarkers)) {
+		return fmt.Errorf("负面情绪不要打比方或自嘲")
 	}
 	if req.Class != "identity" && factbound.HasClaim(text) {
 		return fmt.Errorf("出现承诺词")
