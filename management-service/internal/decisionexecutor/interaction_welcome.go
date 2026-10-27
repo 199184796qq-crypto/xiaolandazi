@@ -11,6 +11,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/contentpools"
+	"livecompanion/management/internal/contentstrategy"
 	"livecompanion/management/internal/factbound"
 	"livecompanion/management/internal/fallbackline"
 	"livecompanion/management/internal/interactionpolicy"
@@ -142,23 +143,37 @@ func (w *Worker) generateWelcomeText(ctx context.Context, session model.LiveRunt
 	// 标准三句、丰富四句，避免每次都念同一段。
 	profile := w.pickWelcomeProfile(session.RoomID)
 
+	// 介绍/福利/亮点只跟事实和方案有关，与进来的是谁无关：一场生成一次，之后
+	// 复用缓存，每次欢迎只重新生成称呼（和人名强相关）。
+	introFacts, cacheKey := w.welcomeContentFacts(ctx, session)
+	cached := w.welcomeContentGet(ctx, cacheKey)
+
 	greeting := w.generateWelcomeGreeting(ctx, session, item)
 	intro := ""
 	if profileNeeds(profile, "intro") {
-		if introFacts := w.roomIntroFacts(ctx, session); introFacts != "" {
+		intro = strings.TrimSpace(cached.Intro)
+		if intro == "" && introFacts != "" {
 			intro = w.generateWelcomeIntro(ctx, session, introFacts)
+			cached.Intro = strings.TrimSpace(intro)
 		}
 	}
 	hook := ""
 	if profileNeeds(profile, "hook") {
-		hook = w.generateWelcomeHook(ctx, session, benefitText)
+		hook = strings.TrimSpace(cached.Hook)
+		if hook == "" {
+			hook = w.generateWelcomeHook(ctx, session, benefitText)
+			cached.Hook = strings.TrimSpace(hook)
+		}
 	}
 	highlight := ""
 	if profileNeeds(profile, "highlight") {
-		if introFacts := w.roomIntroFacts(ctx, session); introFacts != "" {
+		highlight = strings.TrimSpace(cached.Highlight)
+		if highlight == "" && introFacts != "" {
 			highlight = w.generateWelcomeHighlight(ctx, session, introFacts)
+			cached.Highlight = strings.TrimSpace(highlight)
 		}
 	}
+	w.welcomeContentSet(ctx, cacheKey, cached)
 
 	// 任一成功就播；全失败返回空触发降级。
 	greeting = strings.TrimSpace(greeting)
@@ -198,6 +213,62 @@ func (w *Worker) generateWelcomeText(ctx context.Context, session model.LiveRunt
 		}
 	}
 	return text
+}
+
+// welcomeContent 是与人无关的欢迎内容（介绍/福利/亮点），一场生成一次后复用。
+type welcomeContent struct {
+	Intro     string `json:"intro"`
+	Hook      string `json:"hook"`
+	Highlight string `json:"highlight"`
+}
+
+const welcomeContentCachePrefix = "livecompanion:welcome-content:v1:"
+const welcomeContentCacheTTL = 8 * time.Hour
+
+// welcomeContentFacts returns the speakable fact package and a cache key bound to
+// room, plan and facts: any fact change invalidates the cached welcome content.
+func (w *Worker) welcomeContentFacts(ctx context.Context, session model.LiveRuntimeSession) (string, string) {
+	if w == nil || w.store == nil {
+		return "", ""
+	}
+	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
+	if err != nil || plan.ID <= 0 {
+		return "", ""
+	}
+	_, facts, err := w.interactionApprovedFacts(ctx, session, plan.ID)
+	if err != nil || strings.TrimSpace(facts) == "" {
+		return "", ""
+	}
+	speakable := factbound.SpeakableFacts(facts)
+	key := fmt.Sprintf("%s%d:%d:%s", welcomeContentCachePrefix, session.TenantID, plan.ID, contentstrategy.SHA(speakable)[:16])
+	return speakable, key
+}
+
+func (w *Worker) welcomeContentGet(ctx context.Context, key string) welcomeContent {
+	var out welcomeContent
+	if key == "" || w == nil || w.benefitRedis == nil {
+		return out
+	}
+	raw, err := w.benefitRedis.Get(ctx, key).Bytes()
+	if err != nil {
+		return out
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out
+}
+
+func (w *Worker) welcomeContentSet(ctx context.Context, key string, value welcomeContent) {
+	if key == "" || w == nil || w.benefitRedis == nil {
+		return
+	}
+	if value.Intro == "" && value.Hook == "" && value.Highlight == "" {
+		return
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	_ = w.benefitRedis.Set(ctx, key, raw, welcomeContentCacheTTL).Err()
 }
 
 // dedupeWelcomeParts removes a later part that says almost the same thing as an
