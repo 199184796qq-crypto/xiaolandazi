@@ -313,8 +313,7 @@ func TooSimilar(text string, recent []string) bool {
 	return false
 }
 
-func similarity(a, b string) float64 {
-	left, right := bigrams(a), bigrams(b)
+func similarity(a, b string) float64 {	left, right := bigrams(a), bigrams(b)
 	if len(left) == 0 || len(right) == 0 {
 		return 0
 	}
@@ -388,3 +387,6 @@ func ValidateHumanized(original, polished string) error {
 	}
 	return nil
 }
+
+// Similar reports how alike two spoken lines are, for de-duplicating welcome parts.
+func Similar(a, b string) float64 { return similarity(a, b) }

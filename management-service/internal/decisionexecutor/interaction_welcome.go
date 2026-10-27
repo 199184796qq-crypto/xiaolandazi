@@ -171,6 +171,8 @@ func (w *Worker) generateWelcomeText(ctx context.Context, session model.LiveRunt
 			parts = append(parts, part)
 		}
 	}
+	// Drop a part that repeats another (intro and benefit often both say 包邮).
+	parts = dedupeWelcomeParts(parts)
 	text := strings.Join(parts, "\n")
 	// 两句以上才做整段口语化；极短欢迎保持原样，避免被改写拉长。
 	if len(parts) >= 2 {
@@ -183,6 +185,25 @@ func (w *Worker) generateWelcomeText(ctx context.Context, session model.LiveRunt
 		}
 	}
 	return text
+}
+
+// dedupeWelcomeParts removes a later part that says almost the same thing as an
+// earlier one, so intro and benefit do not both repeat the same promise.
+func dedupeWelcomeParts(parts []string) []string {
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		duplicate := false
+		for _, existing := range kept {
+			if fallbackline.Similar(part, existing) >= 0.7 {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			kept = append(kept, part)
+		}
+	}
+	return kept
 }
 
 // generateWelcomeHighlight adds one product highlight (craft, taste, how to eat)

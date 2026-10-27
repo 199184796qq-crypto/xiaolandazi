@@ -329,6 +329,24 @@ func BoundaryStyles() []string {
 	return config.BoundaryStyles
 }
 
+// ClaimWords is the configured promise vocabulary.
+func ClaimWords() []string {
+	config, _, err := Load()
+	if err != nil {
+		return nil
+	}
+	return config.ClaimWords
+}
+
+// TimeWords is the configured time vocabulary.
+func TimeWords() []string {
+	config, _, err := Load()
+	if err != nil {
+		return nil
+	}
+	return config.TimeWords
+}
+
 // MetaBans are phrases that must never be spoken: they explain the system
 // instead of answering the viewer.
 func MetaBans() []string {
