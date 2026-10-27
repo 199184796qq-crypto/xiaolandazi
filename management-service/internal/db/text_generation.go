@@ -6,6 +6,19 @@ import (
 )
 
 func (s *Store) ResolveTextRole(ctx context.Context, stage string) (string, error) {
+	// Interaction answers can be pinned to the operator's own role. Resolve them
+	// before the room model pool collapses every role onto the leased 口播 model;
+	// the matching model call then bypasses the pool through
+	// ResolveOperatorSpeechModel (see agentgateway OperatorModelResolver).
+	if agentgateway.UsesOperatorPinnedModel(stage) {
+		models, err := s.operatorSpeechModels(ctx)
+		if err != nil {
+			return "", err
+		}
+		if models.ReviewDefaultID != "" {
+			return models.ReviewDefaultID, nil
+		}
+	}
 	models, err := s.SpeechModels(ctx)
 	if err != nil {
 		return "", err

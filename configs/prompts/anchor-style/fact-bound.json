@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "description": "事实边界判定词表：只放通用值域，不放任何具体问题。新增品类时补 places/units/time_words 即可，不改代码。",
+  "places": [
+    {"name": "西藏", "aliases": ["西藏", "藏区", "拉萨"], "remote": true},
+    {"name": "新疆", "aliases": ["新疆", "乌鲁木齐"], "remote": true},
+    {"name": "内蒙古", "aliases": ["内蒙古", "内蒙", "呼和浩特"], "remote": true},
+    {"name": "宁夏", "aliases": ["宁夏", "银川"], "remote": true},
+    {"name": "青海", "aliases": ["青海", "西宁"], "remote": true},
+    {"name": "甘肃", "aliases": ["甘肃", "兰州"], "remote": true},
+    {"name": "云南", "aliases": ["云南", "昆明"], "remote": false},
+    {"name": "贵州", "aliases": ["贵州", "贵阳"], "remote": false},
+    {"name": "海南", "aliases": ["海南", "三亚", "海口"], "remote": true},
+    {"name": "广西", "aliases": ["广西", "南宁"], "remote": false},
+    {"name": "黑龙江", "aliases": ["黑龙江", "哈尔滨"], "remote": false},
+    {"name": "吉林", "aliases": ["吉林", "长春"], "remote": false},
+    {"name": "辽宁", "aliases": ["辽宁", "沈阳", "大连"], "remote": false},
+    {"name": "四川", "aliases": ["四川", "成都", "川渝"], "remote": false},
+    {"name": "重庆", "aliases": ["重庆", "渝"], "remote": false},
+    {"name": "北京", "aliases": ["北京"], "remote": false},
+    {"name": "上海", "aliases": ["上海"], "remote": false},
+    {"name": "天津", "aliases": ["天津"], "remote": false},
+    {"name": "河北", "aliases": ["河北", "石家庄"], "remote": false},
+    {"name": "河南", "aliases": ["河南", "郑州"], "remote": false},
+    {"name": "山东", "aliases": ["山东", "济南", "青岛"], "remote": false},
+    {"name": "山西", "aliases": ["山西", "太原"], "remote": false},
+    {"name": "陕西", "aliases": ["陕西", "西安"], "remote": false},
+    {"name": "湖北", "aliases": ["湖北", "武汉"], "remote": false},
+    {"name": "湖南", "aliases": ["湖南", "长沙"], "remote": false},
+    {"name": "江西", "aliases": ["江西", "南昌"], "remote": false},
+    {"name": "安徽", "aliases": ["安徽", "合肥"], "remote": false},
+    {"name": "江苏", "aliases": ["江苏", "南京", "苏州"], "remote": false},
+    {"name": "浙江", "aliases": ["浙江", "杭州"], "remote": false},
+    {"name": "福建", "aliases": ["福建", "厦门", "福州"], "remote": false},
+    {"name": "广东", "aliases": ["广东", "广州", "深圳"], "remote": false},
+    {"name": "台湾", "aliases": ["台湾", "台北"], "remote": true},
+    {"name": "香港", "aliases": ["香港"], "remote": true},
+    {"name": "澳门", "aliases": ["澳门"], "remote": true},
+    {"name": "偏远地区", "aliases": ["偏远"], "remote": true},
+    {"name": "港澳台", "aliases": ["港澳台"], "remote": true},
+    {"name": "海外", "aliases": ["海外", "国外", "境外"], "remote": true}
+  ],
+  "nationwide": ["全国", "全国各地", "不限地区", "各地包邮", "全国包邮"],
+  "exclusions": ["不含", "不包邮", "除外", "不发货", "不支持配送"],
+  "units": ["人", "份", "斤", "公斤", "千克", "克", "箱", "袋", "件", "盒", "瓶", "套", "个", "天", "小时", "分钟", "岁"],
+  "time_words": ["当天", "当日", "次日", "隔天", "第二天", "上午", "下午", "晚上", "今天", "明天"],
+  "claim_words": ["包邮", "免邮", "包退", "包换", "保证", "绝对", "当天发货", "次日达"],
+  "boundary_styles": ["抱歉老实型", "幽默自嘲型", "干脆直说型", "共情安抚型", "俏皮打岔型", "认真补一句型"],
+  "boundary_patterns": ["先接住再转折", "自问自答", "短句连打", "对比着说", "举例说明", "先调侃再收住"],
+  "boundary_rhetorics": ["打个比方", "用反问收尾", "自嘲一句", "俏皮谐音", "像跟熟人唠嗑"],
+  "boundary_templates": {
+    "identity": [
+      "名字这块我就不单独说了，叫我主播就行。",
+      "叫主播就好，名字咱们不细说。",
+      "称呼上随意点，喊我主播就行。"
+    ],
+    "no_dimension": [
+      "这个我还没确认，先不跟你说死。",
+      "这点我真不敢乱讲，等我弄清楚了再说。",
+      "这个暂时说不好，别让我瞎猜。",
+      "这块我还没核实，先不给你准话。"
+    ],
+    "partial_value": [
+      "不过{c}这边我还没确认到，先不跟你说死。",
+      "至于{c}，我这会儿真不敢给你准话。",
+      "{c}这块我还没核实，别嫌我啰嗦。"
+    ]
+  },
+  "meta_bans": ["别弄混", "以实际为准", "按规则", "系统", "数据", "页面", "资料", "核实一下"],
+  "intro_rules": {
+    "category_words": ["美食", "卤味", "熟食", "特产", "零食", "小吃", "食品", "开袋即食", "卤鸭", "酱鸭"],
+    "forbid_words": ["活鸭", "活禽", "活鸡", "卖鸭"],
+    "material_words": ["土麻鸭", "麻鸭", "鸭坯", "鸭苗"],
+    "lead_runes": 12
+  },
+  "hedges": ["没确认", "未确认", "没核实", "未核实", "不确定", "还不清楚", "再确认", "核实一下", "以实际", "不敢保证", "不跟你说死", "先不确认"]
+}

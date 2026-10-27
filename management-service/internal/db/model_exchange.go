@@ -26,7 +26,9 @@ func (s *Store) BeginModelExchange(ctx context.Context, scope ModelExchangeScope
 		return 0, err
 	}
 	entry, lease, account := "", "", ""
-	if s.modelPoolReady && scope.TenantID > 0 && scope.RoomID > 0 && !strings.Contains(stage, "tts") {
+	// Pinned interaction answers bypass the room pool, so they must not claim a
+	// pool slot or inherit the pooled 口播 model's identity in the ledger.
+	if s.modelPoolReady && scope.TenantID > 0 && scope.RoomID > 0 && !strings.Contains(stage, "tts") && !agentgateway.UsesOperatorPinnedModel(stage) {
 		var runtime int64
 		err = s.db.QueryRowContext(ctx, `SELECT entry_id,lease_id,account_name,runtime_id FROM mgmt_model_pool_leases WHERE tenant_id=? AND room_id=? AND status='active'`, scope.TenantID, scope.RoomID).Scan(&entry, &lease, &account, &runtime)
 		room := agentgateway.ContextRoomModelScope(ctx)

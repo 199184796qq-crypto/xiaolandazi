@@ -77,7 +77,7 @@ func TestIndependentReviewModelRolesMySQL(t *testing.T) {
 	if err := s.SaveSpeechModels(ctx, input, 1); err != nil {
 		t.Fatal(err)
 	}
-	for stage, want := range map[string]string{"mainline_text": "writing", "speech_generation": "writing", "mainline_angle_plan": "planning", "system_agent": "planning", "mainline_p0_context": "review", "speech_review": "review"} {
+	for stage, want := range map[string]string{"mainline_text": "writing", "speech_generation": "writing", "mainline_angle_plan": "planning", "system_agent": "planning", "mainline_p0_context": "review", "speech_review": "review", "interaction_single_direct_answer": "review", "interaction_single_greet": "review", "interaction_single_answer": "review", "interaction_no_fact_boundary": "review"} {
 		if got, err := s.ResolveTextRole(ctx, stage); err != nil || got != want {
 			t.Fatalf("stage=%s got=%s err=%v", stage, got, err)
 		}

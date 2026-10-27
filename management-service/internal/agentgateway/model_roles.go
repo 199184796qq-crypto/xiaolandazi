@@ -20,7 +20,7 @@ func (g *Gateway) ModelRoleIdentity(ctx context.Context, stage string) (string, 
 			return "", err
 		}
 	}
-	p, err := g.speechModels.ResolveSpeechModel(ctx, id)
+	p, err := g.resolveStageProfile(ctx, stage, id)
 	if err != nil {
 		return "", err
 	}
@@ -51,6 +51,49 @@ func UsesReviewModel(stage string) bool {
 	default:
 		return false
 	}
+}
+
+// Interaction answers are spoken to viewers. The operator may pin them to a
+// named role instead of the room's leased 口播 model, so these stages resolve
+// outside the model pool and use the operator's own profile and key.
+func UsesInteractionAnswerModel(stage string) bool {
+	switch stage {
+	case "interaction_single_direct_answer", "interaction_single_greet", "interaction_single_answer", "interaction_no_fact_boundary", "interaction_boundary_line", "interaction_covered_facts", "interaction_welcome_intro", "interaction_welcome_humanize", "interaction_welcome_highlight":
+		return true
+	default:
+		return false
+	}
+}
+
+// Intent mining for interaction questions is pinned the same way: the operator
+// answers viewers with the review role, without the room pool taking over.
+func UsesInteractionPurposeModel(stage string) bool {
+	switch stage {
+	case "interaction_purpose_resolution", "interaction_purpose_judge":
+		return true
+	default:
+		return false
+	}
+}
+
+// UsesOperatorPinnedModel reports stages that must resolve outside the room
+// model pool and use the operator's own profile.
+func UsesOperatorPinnedModel(stage string) bool {
+	return UsesInteractionAnswerModel(stage) || UsesInteractionPurposeModel(stage)
+}
+
+// OperatorModelResolver bypasses the room model pool for pinned stages.
+type OperatorModelResolver interface {
+	ResolveOperatorSpeechModel(context.Context, string) (*SpeechModel, error)
+}
+
+func (g *Gateway) resolveStageProfile(ctx context.Context, stage, id string) (*SpeechModel, error) {
+	if UsesOperatorPinnedModel(stage) {
+		if pinned, ok := g.speechModels.(OperatorModelResolver); ok {
+			return pinned.ResolveOperatorSpeechModel(ctx, id)
+		}
+	}
+	return g.speechModels.ResolveSpeechModel(ctx, id)
 }
 
 func WithModelResolver(ctx context.Context, resolver SpeechModelResolver) context.Context {

@@ -2,10 +2,16 @@ package decisionexecutor
 
 import (
 	"context"
+	"regexp"
 	"strings"
 
+	"livecompanion/management/internal/factbound"
 	"livecompanion/management/internal/model"
 )
+
+// Identity questions are answered by the program, never improvised: a made-up
+// anchor name is worse than an honest boundary.
+var identityQuestionPattern = regexp.MustCompile(`名字|叫什么|你是谁|怎么称呼|贵姓|哪位`)
 
 // singleInteractionStrategy 是「单一互动」的独立策略（骨架阶段）。
 //
@@ -137,23 +143,17 @@ const interactionNoFactBoundary = "这个我还没确认，先不跟你说死。
 // 没有事实时，让模型只针对当前这句话说“哪一点还没确认”，程序负责兜底和拦截承诺。
 func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
 	question := strings.TrimSpace(primaryQuestion(item))
-	if w == nil || w.agent == nil || question == "" {
+	if question == "" {
 		return interactionNoFactBoundary
 	}
-	system := "你是直播间主播。观众问了一个你目前没有确认答案的问题。只回一句到两句口播：" +
-		"\n- 直接回应对方实际问的点；" +
-		"\n- 明确说这一点还没确认/现在确定不了；" +
-		"\n- 不编事实、数字、价格、规格、承诺；" +
-		"\n- 不说“资料未提供、不能乱说、以页面为准”；" +
-		"\n- 不假装查过，不承诺稍后回复；" +
-		"\n- 不用固定模板，像真人说话，能短就短。"
-	user := "观众问题：" + question
-	text := strings.TrimSpace(w.completeWelcome(ctx, session, "interaction_no_fact_boundary", system, user, 80))
-	text = stripAwkwardAnswerLead(text)
-	if text == "" || strings.Contains(text, "页面") || strings.Contains(text, "资料未提供") || strings.Contains(text, "不能乱说") || strings.Contains(text, "没有依据") || strings.Contains(text, "保证") || strings.Contains(text, "绝对") || strings.Contains(text, "帮您确认") || strings.Contains(text, "稍后") || strings.Contains(text, "马上") {
-		return interactionNoFactBoundary
+	class := "no_dimension"
+	if identityQuestionPattern.MatchString(question) {
+		// No facts can name the anchor, so the model must not invent one; the
+		// identity class bans self-introduced names inside the prompt and in the
+		// program-side validator.
+		class = "identity"
 	}
-	return text
+	return w.boundaryLine(ctx, session, class, question, nil)
 }
 
 func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
@@ -168,6 +168,9 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	if strings.TrimSpace(answerText) == "" {
 		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
 	}
+	question := strings.TrimSpace(primaryQuestion(item))
+	// The program owns the three-state fact check; the model only phrases it.
+	bound := factbound.Evaluate(question, answerText, true)
 	voiceCard, _ := w.welcomeVoiceCard(ctx, session)
 	system := "你是直播口播合成器。根据答案事实直接回答观众，第一句必须给出答案，不要先评价问题，也不要宣布“我这就讲/确认”。"
 	if voiceCard != "" {
@@ -180,13 +183,37 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		"\n【可说】只使用下方答案事实，不编造事实里没有的信息；有直接相关且不造成确认的保存、工艺信息可以补，没有就停。" +
 		"\n【不提】不要用“新鲜、品质有保障”等话绕开未知，不暗示已经核实，不假装查过，不承诺稍后回复；不要输出内部标题、策略名称、字段名或分析过程。" +
 		"\n【改写】答案用口语自然表达，通常一两句；事实里的价格、规格、时效不得改动；回答到位就结束，不主动转商品、问需求、催下单。"
-	question := strings.TrimSpace(primaryQuestion(item))
-	user := "观众问题：" + question + "\n【当前答案事实】\n" + answerText +
+	uncoveredTexts := make([]string, 0, len(bound.Uncovered))
+	for _, value := range bound.Uncovered {
+		uncoveredTexts = append(uncoveredTexts, value.Text)
+	}
+	if instruction := factbound.BoundaryInstruction(bound.Uncovered); instruction != "" {
+		// Only answer the covered part here; the unconfirmed part gets its own
+		// separately generated line so the wording can vary.
+		system += "\n【只答已确认】只回答答案事实里已确认的部分，不要提及、不要确认：" + strings.Join(uncoveredTexts, "、") + "。" +
+			"\n禁止出现“没核实、没确认、说不好、不确定”这些词；没确认的部分下一句单独说。"
+	}
+	user := "观众问题：" + question + "\n【当前答案事实】\n" + factbound.SpeakableFacts(answerText) +
 		"\n\n请直接输出一句自然、简短、可播出的回答（称呼 + 答案，不要再称呼第二次）。"
 	text := w.completeWelcome(ctx, session, "interaction_single_direct_answer", system, user, 100)
 	text = stripAwkwardAnswerLead(strings.TrimSpace(text))
 	if text == "" || text == address || text == address+"。" {
 		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
+	}
+	if bound.NeedsBoundary() {
+		// The covered part must not confirm the missing scope; the separately
+		// generated line below is the only place it is named.
+		text = softenTerms(text, uncoveredTexts)
+		text = stripHedges(text)
+		if strings.TrimSpace(text) == "" {
+			// The whole covered sentence was hedging; ask once for facts only.
+			text = w.coveredFactsLine(ctx, session, answerText, uncoveredTexts)
+		}
+		line := w.boundaryLine(ctx, session, "partial_value", question, uncoveredTexts)
+		if strings.TrimSpace(text) == "" {
+			return address + "，" + line
+		}
+		text = strings.TrimRight(text, "。！？!?；; ") + "。" + line
 	}
 	if !strings.HasPrefix(text, address) {
 		text = address + "，" + text
@@ -336,10 +363,11 @@ func (w *Worker) generateSingleInteractionAnswer(ctx context.Context, session mo
 // 无事实返回空（对应「相关但缺事实」与「夸赞闲聊无答案」两种情形，
 // 由 generateSingleInteractionAnswer 返回空 → 只出接住句）。
 func (w *Worker) singleAnswerFacts(item decisionItem) string {
-	// 选中事实优先；只有选材为空时才用全量事实兜底。
-	// 全量事实是证据池，不是每次都塞给模型的答案素材。
+	// Only the facts selected for this question count as answer evidence. The
+	// full package is a fact pool, never a fallback: handing it to the model is
+	// exactly how an unconfirmed region becomes "包邮".
 	if item.SelectedContentPlan == nil || len(item.SelectedContentPlan.Facts) == 0 {
-		return strings.TrimSpace(item.FullFacts)
+		return ""
 	}
 	var b strings.Builder
 	for _, f := range item.SelectedContentPlan.Facts {

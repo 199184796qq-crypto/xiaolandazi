@@ -1225,11 +1225,25 @@ func (s *Server) completeAnchorStyleWorkbench(ctx context.Context, profileID, st
 		return agentgateway.Response{}, messages, configErr
 	}
 	profileID = workbenchProfileForStage(ctx, configured, profileID, stage)
+	// Interaction intent mining is pinned to the operator's review role and must
+	// not be captured by the room model pool. Thinking stays off for these calls.
+	pinned := agentgateway.UsesOperatorPinnedModel(stage)
+	if pinned {
+		if operator, opErr := s.store.OperatorSpeechModels(ctx); opErr == nil && operator.ReviewDefaultID != "" {
+			profileID = operator.ReviewDefaultID
+		}
+	}
 	// Speech generation always uses the configured profile transport, including
 	// its visible system prompt. A named compiler profile does the same. Leaving
 	// the compiler blank uses the operator-owned analysis route.
 	if profileID != "" || stage == "speech_generation" {
-		profile, err := s.store.ResolveSpeechModel(ctx, profileID)
+		var profile *agentgateway.SpeechModel
+		var err error
+		if pinned {
+			profile, err = s.store.ResolveOperatorSpeechModel(ctx, profileID)
+		} else {
+			profile, err = s.store.ResolveSpeechModel(ctx, profileID)
+		}
 		if err != nil || profile == nil {
 			if err == nil {
 				err = fmt.Errorf("未配置可用模型")

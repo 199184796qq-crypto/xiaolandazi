@@ -103,7 +103,7 @@ func TestDirectQuestionWithoutFactsUsesBoundaryNotGreeting(t *testing.T) {
 	}
 }
 
-func TestSingleAnswerFactsPrefersSelectedAndFallsBackToFull(t *testing.T) {
+func TestSingleAnswerFactsUsesSelectionOnly(t *testing.T) {
 	worker := &Worker{}
 	selected := decisionItem{
 		SelectedContentPlan: &contentstrategy.Selection{Facts: []contentstrategy.Fact{{ID: "F1", Text: "选中事实"}}},
@@ -112,9 +112,10 @@ func TestSingleAnswerFactsPrefersSelectedAndFallsBackToFull(t *testing.T) {
 	if got := worker.singleAnswerFacts(selected); !strings.Contains(got, "F1 选中事实") || strings.Contains(got, "全量事实") {
 		t.Fatalf("selected facts should win: %q", got)
 	}
-	empty := decisionItem{FullFacts: "全量事实"}
-	if got := worker.singleAnswerFacts(empty); got != "全量事实" {
-		t.Fatalf("empty selection should fall back to full facts: %q", got)
+	// The full package is evidence, never a fallback: an empty selection must
+	// reach the no-fact boundary instead of confirming something unselected.
+	if got := worker.singleAnswerFacts(decisionItem{FullFacts: "全量事实"}); got != "" {
+		t.Fatalf("empty selection must not fall back to the full package: %q", got)
 	}
 }
 

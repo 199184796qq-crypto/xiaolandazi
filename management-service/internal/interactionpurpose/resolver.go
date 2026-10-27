@@ -146,23 +146,44 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 			return Result{}, fmt.Errorf("目的返回字段无效：%s", name)
 		}
 	}
-	if err = contentstrategy.Decode(raw, &result); err != nil {
-		return Result{}, fmt.Errorf("目的返回协议无效：%w", err)
+	result, decodeErr := decodeIntentResult(raw, input.Facts)
+	if decodeErr != nil {
+		return Result{}, fmt.Errorf("目的返回协议无效：%w", decodeErr)
 	}
 	if result.Confidence < 0 || result.Confidence > 1 || len([]rune(result.Purpose)) > 80 || len([]rune(result.Scope)) > 120 || len(result.Angles) > 3 {
 		return Result{}, fmt.Errorf("目的返回字段越界")
 	}
-	known := false
-	for _, p := range input.Purposes {
-		if p.ID == result.PurposeID {
-			known = true
+	known := purposeKnown(input.Purposes, result.PurposeID)
+	uncertain := result.Purpose == "" || result.Confidence < .75 || (result.PurposeID != "" && !known)
+	if result.Question && result.Relevant && !known && uncertain {
+		// One repair attempt with an explicit requirement. A low-confidence guess
+		// must not throw the viewer's question away.
+		if retryRaw, retryErr := r.Complete(ctx, string(payload)+"\n\n"+purposeRetryInstruction); retryErr == nil {
+			if again, againErr := decodeIntentResult(retryRaw, input.Facts); againErr == nil &&
+				again.Confidence >= 0 && again.Confidence <= 1 && len([]rune(again.Purpose)) <= 80 && len(again.Angles) <= 3 {
+				result = again
+				known = purposeKnown(input.Purposes, result.PurposeID)
+				uncertain = result.Purpose == "" || result.Confidence < .75 || (result.PurposeID != "" && !known)
+			}
 		}
 	}
-	if result.PurposeID != "" && !known {
-		return Result{}, fmt.Errorf("目的编号未来自当前方案")
+	if result.Question && result.Relevant && !known && uncertain {
+		// Still unsure: keep it a question, but answer from the boundary instead
+		// of guessing a purpose or trusting an invented id.
+		result.Relevant = false
+		result.PurposeID = ""
+		result.Purpose = ""
+		result.Angles = nil
 	}
-	if result.Question && result.Relevant && (result.Purpose == "" || result.Confidence < .75) {
-		return Result{}, fmt.Errorf("问题目的不确定，保留确定性入口")
+	if result.PurposeID != "" && !purposeKnown(input.Purposes, result.PurposeID) {
+		result.PurposeID = ""
+	}
+	if known && strings.TrimSpace(result.Purpose) == "" {
+		for _, purpose := range input.Purposes {
+			if purpose.ID == result.PurposeID {
+				result.Purpose = purpose.Name
+			}
+		}
 	}
 	// relevant=false（超出事实包范围/与当前直播无关）时，目的编号没有意义：
 	// 不该有 purpose_id，也不该触发 L 兜底生成假 ID。直接清空，让下游走「缺事实兜底」。
@@ -189,6 +210,9 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 		for _, f := range contentstrategy.Facts(input.Facts) {
 			knownFacts[f.ID] = true
 		}
+		// Angle rows are advisory: drop the unusable ones instead of failing the
+		// whole question, which would silently lose the viewer's intent.
+		result.Angles = pruneAngles(result.Angles, knownFacts)
 		for _, row := range result.Angles {
 			if err = contentstrategy.ValidateRowPolicy(row, false); err != nil {
 				return Result{}, err
@@ -204,7 +228,7 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	}
 	result.FactsSHA, result.Input, result.Source = factsSHA, input.Text, "model"
 	result.Topic = "PURPOSE:" + contentstrategy.SHA(result.PurposeID + "/" + preciseFamily(input.Text) + "/" + result.Scope)[:24]
-	if result.Confidence >= .85 {
+	if result.Relevant && result.Purpose != "" && result.Confidence >= .85 {
 		if err = r.save(ctx, input, id, result); err != nil {
 			return Result{}, fmt.Errorf("保存目的知识失败：%w", err)
 		}

@@ -119,11 +119,25 @@ func TestSemanticReuseRequiresConfidenceMarginAndPrecisePurposeFamily(t *testing
 	}
 }
 func TestMalformedAndLowConfidencePurposesAreNotPersisted(t *testing.T) {
-	for _, raw := range []string{`{"question":true,"relevant":true,"confidence":0.4,"purpose":"快递","purpose_id":"","scope":"","task_angles":[]}`, `{"question":true,"relevant":true,"confidence":1,"purpose":"快递","purpose_id":"unknown","scope":"","task_angles":[]}`, `{"question":true,"relevant":true,"confidence":1,"purpose":"快递","purpose_id":"","scope":"","task_angles":[],"invented":1}`} {
+	uncertain := []string{
+		`{"question":true,"relevant":true,"confidence":0.4,"purpose":"快递","purpose_id":"","scope":"","task_angles":[]}`,
+		`{"question":true,"relevant":true,"confidence":1,"purpose":"快递","purpose_id":"unknown","scope":"","task_angles":[]}`,
+	}
+	for _, raw := range uncertain {
 		repo := &memoryRepo{documents: map[string]semantic.StoredDocument{}}
 		resolver := Resolver{Repo: repo, Complete: func(context.Context, string) (string, error) { return raw, nil }}
-		if _, err := resolver.Resolve(context.Background(), Input{Tenant: 1, Room: 1, Plan: 1, Text: "快递？", Facts: "- [物流] 京东"}); err == nil || len(repo.documents) > 0 {
-			t.Fatal("invalid knowledge saved", raw, err)
+		got, err := resolver.Resolve(context.Background(), Input{Tenant: 1, Room: 1, Plan: 1, Text: "快递？", Facts: "- [物流] 京东"})
+		if err != nil {
+			t.Fatalf("uncertain intent must degrade, not fail: %v", err)
 		}
+		if got.Relevant || got.Purpose != "" || len(repo.documents) > 0 {
+			t.Fatalf("uncertain knowledge saved or kept: %+v docs=%d", got, len(repo.documents))
+		}
+	}
+	raw := `{"question":true,"relevant":true,"confidence":1,"purpose":"快递","purpose_id":"","scope":"","task_angles":[],"invented":1}`
+	repo := &memoryRepo{documents: map[string]semantic.StoredDocument{}}
+	resolver := Resolver{Repo: repo, Complete: func(context.Context, string) (string, error) { return raw, nil }}
+	if _, err := resolver.Resolve(context.Background(), Input{Tenant: 1, Room: 1, Plan: 1, Text: "快递？", Facts: "- [物流] 京东"}); err == nil || len(repo.documents) > 0 {
+		t.Fatal("invalid knowledge saved", raw, err)
 	}
 }

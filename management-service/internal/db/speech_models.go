@@ -52,11 +52,26 @@ func (s *Store) SpeechModels(ctx context.Context) (agentgateway.SpeechModels, er
 		p.APIKey = ""
 		return agentgateway.SpeechModels{Profiles: []agentgateway.SpeechModel{*p}, DefaultID: p.ID, SystemDefaultID: p.ID, ReviewDefaultID: p.ID}, nil
 	}
+	return s.operatorSpeechModels(ctx)
+}
+
+// OperatorSpeechModels exposes the operator's role selection without letting an
+// active room lease collapse it onto the pooled 口播 model.
+func (s *Store) OperatorSpeechModels(ctx context.Context) (agentgateway.SpeechModels, error) {
+	return s.operatorSpeechModels(ctx)
+}
+
+// operatorSpeechModels reads the operator's configured roles without letting an
+// active room lease collapse them onto the pooled 口播 model.
+func (s *Store) operatorSpeechModels(ctx context.Context) (agentgateway.SpeechModels, error) {
 	config, _, err := s.readSpeechModels(ctx)
+	if err != nil {
+		return agentgateway.SpeechModels{}, err
+	}
 	if config.ReviewDefaultID == "" {
 		config.ReviewDefaultID = config.DefaultID
 	}
-	return config, err
+	return config, nil
 }
 
 // Empty ID means resolve the shared default for mainline and realtime speech.
@@ -68,6 +83,17 @@ func (s *Store) ResolveSpeechModel(ctx context.Context, id string) (*agentgatewa
 	if strings.HasPrefix(id, "pool-") {
 		return nil, ErrModelPoolLeaseMissing
 	}
+	return s.resolveConfiguredProfile(ctx, id)
+}
+
+// ResolveOperatorSpeechModel resolves a configured profile directly, ignoring
+// any active room model-pool lease. Interaction answers are pinned this way so
+// the operator's chosen role answers viewers instead of the leased 口播 model.
+func (s *Store) ResolveOperatorSpeechModel(ctx context.Context, id string) (*agentgateway.SpeechModel, error) {
+	return s.resolveConfiguredProfile(ctx, id)
+}
+
+func (s *Store) resolveConfiguredProfile(ctx context.Context, id string) (*agentgateway.SpeechModel, error) {
 	config, keys, err := s.readSpeechModels(ctx)
 	if err != nil {
 		return nil, err

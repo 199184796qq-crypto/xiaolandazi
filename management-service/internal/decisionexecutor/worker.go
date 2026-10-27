@@ -111,13 +111,15 @@ type Worker struct {
 	inFlight   map[int64]time.Time
 	retryAfter map[int64]time.Time
 
-	addressMu       sync.Mutex
-	recentNamed     map[int64]map[string]time.Time
-	recentGreeting  map[int64][]string
-	recentBridge    map[int64][]string
-	nicknameAliases map[string]nicknameAliasCacheEntry
-	benefitRedis    *redis.Client
-	prepared        map[preparedInteractionKey]preparedInteraction
+	addressMu            sync.Mutex
+	recentNamed          map[int64]map[string]time.Time
+	recentGreeting       map[int64][]string
+	recentBridge         map[int64][]string
+	recentBoundary       map[int64][]string
+	recentWelcomeProfile map[int64]string
+	nicknameAliases      map[string]nicknameAliasCacheEntry
+	benefitRedis         *redis.Client
+	prepared             map[preparedInteractionKey]preparedInteraction
 }
 
 type decisionItem struct {

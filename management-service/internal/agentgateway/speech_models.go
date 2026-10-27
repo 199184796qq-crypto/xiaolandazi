@@ -168,7 +168,7 @@ func (g *Gateway) completeSpeechModel(ctx context.Context, request Request) (Res
 			return Response{}, false, nil
 		}
 	}
-	p, err := g.speechModels.ResolveSpeechModel(ctx, id)
+	p, err := g.resolveStageProfile(ctx, request.Stage, id)
 	if err != nil {
 		return Response{}, true, errors.New("读取主播模型配置失败")
 	}

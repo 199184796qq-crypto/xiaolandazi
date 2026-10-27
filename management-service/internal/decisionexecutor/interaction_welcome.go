@@ -10,6 +10,8 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/contentpools"
+	"livecompanion/management/internal/factbound"
+	"livecompanion/management/internal/fallbackline"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/speechbase"
@@ -42,7 +44,71 @@ func (m modelWelcomeStrategy) Respond(ctx context.Context, session model.LiveRun
 	return text
 }
 
-// welcomeBenefit 是模型识别出的、或程序筛出的单条活动/福利。
+type welcomeProfile struct {
+	Name  string
+	Parts []string // greeting | intro | hook | highlight
+}
+
+var welcomeProfiles = []welcomeProfile{
+	{Name: "极短", Parts: []string{"greeting"}},
+	{Name: "短-福利", Parts: []string{"greeting", "hook"}},
+	{Name: "短-介绍", Parts: []string{"greeting", "intro"}},
+	{Name: "标准", Parts: []string{"greeting", "intro", "hook"}},
+	{Name: "丰富", Parts: []string{"greeting", "intro", "hook", "highlight"}},
+}
+
+var welcomeProfileWeights = []int{20, 25, 15, 28, 12}
+
+// pickWelcomeProfile rotates the welcome length and focus so every newcomer gets
+// a welcome, but not always the same shape, and never the same as last time.
+func (w *Worker) pickWelcomeProfile(roomID int64) welcomeProfile {
+	w.addressMu.Lock()
+	last := ""
+	if w.recentWelcomeProfile != nil {
+		last = w.recentWelcomeProfile[roomID]
+	}
+	total := 0
+	for _, weight := range welcomeProfileWeights {
+		total += weight
+	}
+	pick := rand.IntN(total)
+	chosen := welcomeProfiles[0]
+	for i, profile := range welcomeProfiles {
+		if pick < welcomeProfileWeights[i] {
+			chosen = profile
+			break
+		}
+		pick -= welcomeProfileWeights[i]
+	}
+	if chosen.Name == last && len(welcomeProfiles) > 1 {
+		chosen = welcomeProfiles[(indexOfProfile(chosen)+1)%len(welcomeProfiles)]
+	}
+	if w.recentWelcomeProfile == nil {
+		w.recentWelcomeProfile = map[int64]string{}
+	}
+	w.recentWelcomeProfile[roomID] = chosen.Name
+	w.addressMu.Unlock()
+	return chosen
+}
+
+func indexOfProfile(profile welcomeProfile) int {
+	for i, item := range welcomeProfiles {
+		if item.Name == profile.Name {
+			return i
+		}
+	}
+	return 0
+}
+
+func profileNeeds(profile welcomeProfile, part string) bool {
+	for _, item := range profile.Parts {
+		if item == part {
+			return true
+		}
+	}
+	return false
+}
+
 type welcomeBenefit struct {
 	Type    string `json:"type"`    // 优惠类型：团购价/原价对比、优惠券、赠品、包邮、价格对比等
 	Content string `json:"content"` // 可播出的优惠内容（已按事实审核，不含星号隐藏部分）
@@ -69,23 +135,114 @@ func (w *Worker) generateWelcomeText(ctx context.Context, session model.LiveRunt
 	benefits = pickTopBenefits(benefits)
 	benefitText := renderBenefitText(benefits)
 
-	greeting := w.generateWelcomeGreeting(ctx, session, item)
-	hook := w.generateWelcomeHook(ctx, session, benefitText)
+	// 每个进来的观众都要欢迎，但长短和重点轮换：极短、只讲福利、只讲介绍、
+	// 标准三句、丰富四句，避免每次都念同一段。
+	profile := w.pickWelcomeProfile(session.RoomID)
 
-	// 两句都成功才拼；任一失败则尽量返回成功的那句，全失败返回空触发降级。
+	greeting := w.generateWelcomeGreeting(ctx, session, item)
+	intro := ""
+	if profileNeeds(profile, "intro") {
+		if introFacts := w.roomIntroFacts(ctx, session); introFacts != "" {
+			intro = w.generateWelcomeIntro(ctx, session, introFacts)
+		}
+	}
+	hook := ""
+	if profileNeeds(profile, "hook") {
+		hook = w.generateWelcomeHook(ctx, session, benefitText)
+	}
+	highlight := ""
+	if profileNeeds(profile, "highlight") {
+		if introFacts := w.roomIntroFacts(ctx, session); introFacts != "" {
+			highlight = w.generateWelcomeHighlight(ctx, session, introFacts)
+		}
+	}
+
+	// 任一成功就播；全失败返回空触发降级。
 	greeting = strings.TrimSpace(greeting)
+	intro = strings.TrimSpace(intro)
 	hook = strings.TrimSpace(hook)
-	if greeting == "" && hook == "" {
+	highlight = strings.TrimSpace(highlight)
+	if greeting == "" && hook == "" && intro == "" && highlight == "" {
 		return ""
 	}
-	if greeting == "" {
-		return hook
+	parts := make([]string, 0, 4)
+	for _, part := range []string{greeting, intro, hook, highlight} {
+		if part != "" {
+			parts = append(parts, part)
+		}
 	}
-	if hook == "" {
-		return greeting
+	text := strings.Join(parts, "\n")
+	// 两句以上才做整段口语化；极短欢迎保持原样，避免被改写拉长。
+	if len(parts) >= 2 {
+		if system, user := fallbackline.HumanizePrompt(text); system != "" {
+			if polished := strings.TrimSpace(w.completeWelcome(ctx, session, "interaction_welcome_humanize", system, user, 240)); polished != "" {
+				if fallbackline.ValidateHumanized(text, polished) == nil {
+					return polished
+				}
+			}
+		}
 	}
-	return greeting + "\n" + hook
+	return text
 }
+
+// generateWelcomeHighlight adds one product highlight (craft, taste, how to eat)
+// for the richest welcome shape.
+func (w *Worker) generateWelcomeHighlight(ctx context.Context, session model.LiveRuntimeSession, facts string) string {
+	if w == nil || w.agent == nil || strings.TrimSpace(facts) == "" {
+		return ""
+	}
+	system := "你是直播间的真人主播。从下面事实里挑一个产品亮点（工艺、口感、吃法、保质期任选其一），" +
+		"用一句话讲给刚进来的朋友，25到45字。只能用事实，不编造，不讲价格和福利，不要称呼，不要客服腔。只输出这句话。"
+	user := "已确认事实：\n" + facts
+	return strings.TrimSpace(w.completeWelcome(ctx, session, "interaction_welcome_highlight", system, user, 100))
+}
+
+// roomIntroFacts returns the whole approved fact package: the intro summary has
+// to be condensed by the model from everything, not from three pre-picked lines.
+func (w *Worker) roomIntroFacts(ctx context.Context, session model.LiveRuntimeSession) string {
+	if w == nil || w.store == nil {
+		return ""
+	}
+	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
+	if err != nil || plan.ID <= 0 {
+		return ""
+	}
+	_, facts, err := w.interactionApprovedFacts(ctx, session, plan.ID)
+	if err != nil || strings.TrimSpace(facts) == "" {
+		return ""
+	}
+	return factbound.SpeakableFacts(facts)
+}
+
+// generateWelcomeIntro tells a newcomer what the room is about, using only the
+// approved facts, then the assembled welcome gets the human rewrite.
+func (w *Worker) generateWelcomeIntro(ctx context.Context, session model.LiveRuntimeSession, introFacts string) string {
+	if w == nil || w.agent == nil || strings.TrimSpace(introFacts) == "" {
+		return ""
+	}
+	base := "你是直播间的真人主播。根据下面全部已确认事实，用一句话高度概括这个直播间是干什么的：" +
+		"卖什么、给谁、有什么特点。要求：不超过45字；口语；只能使用事实，不编造；不要罗列商品和价格；不要称呼；不要客服腔。" +
+		"\n必须说成“卖XX（产品名）+ 品类”，例如“卖四川特色美食绸都杨鸭子，卤味熟食”；" +
+		"原料（土麻鸭、鸭坯）只能作为工艺补充放在后面，绝不能当商品说；禁止“活鸭、活禽、卖鸭”。" +
+		"\n只输出这句话本身。"
+	user := "已确认事实：\n" + introFacts
+	for attempt := 0; attempt < 2; attempt++ {
+		system := base
+		if attempt > 0 {
+			system += "\n上一次没有说清品类；这次必须出现本行业的品类词，明确是在卖做好的产品。"
+		}
+		text := strings.TrimSpace(w.completeWelcome(ctx, session, "interaction_welcome_intro", system, user, 100))
+		if factbound.ValidateIntroFor(text, introFacts) == nil {
+			return text
+		}
+	}
+	return ""
+}
+
+// welcomeIntroProblem rejects an intro that sounds like selling live animals or
+// never says which category of product the room sells. The word lists live in
+// fact-bound.json, not in code.
+func welcomeIntroProblem(text string) error { return factbound.ValidateIntro(text) }
 
 // welcomeBaseConstraints 拼装欢迎话术公用的「不提/改写」层（P0 + pUser 拆进四层）。
 func (w *Worker) welcomeBaseConstraints(ctx context.Context, session model.LiveRuntimeSession) (notMention, rewrite string) {
