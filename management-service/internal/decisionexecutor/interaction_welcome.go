@@ -57,7 +57,9 @@ var welcomeProfiles = []welcomeProfile{
 	{Name: "丰富", Parts: []string{"greeting", "intro", "hook", "highlight"}},
 }
 
-var welcomeProfileWeights = []int{20, 25, 15, 28, 12}
+// Most welcomes must carry some content (intro or benefit); the bare greeting
+// shape is kept rare and never allowed twice in a row.
+var welcomeProfileWeights = []int{8, 28, 18, 34, 12}
 
 // pickWelcomeProfile rotates the welcome length and focus so every newcomer gets
 // a welcome, but not always the same shape, and never the same as last time.
@@ -173,6 +175,16 @@ func (w *Worker) generateWelcomeText(ctx context.Context, session model.LiveRunt
 	}
 	// Drop a part that repeats another (intro and benefit often both say 包邮).
 	parts = dedupeWelcomeParts(parts)
+	// A shape that should carry content must not end up as a bare greeting: try
+	// the benefit once more, then fall back to a safe generic line.
+	if profile.Name != "极短" && len(parts) == 1 && strings.TrimSpace(hook) == "" && benefitText != "" {
+		if late := strings.TrimSpace(w.generateWelcomeHook(ctx, session, benefitText)); late != "" {
+			parts = append(parts, late)
+		}
+	}
+	if profile.Name != "极短" && len(parts) == 1 {
+		parts = append(parts, "现在下单还有活动福利，具体可以看链接。")
+	}
 	text := strings.Join(parts, "\n")
 	// 两句以上才做整段口语化；极短欢迎保持原样，避免被改写拉长。
 	if len(parts) >= 2 {

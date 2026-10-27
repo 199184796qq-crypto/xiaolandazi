@@ -9,12 +9,12 @@ import (
 	"livecompanion/management/internal/model"
 )
 
-// TestSingleInteractionStrategySkeleton 验证「单一互动」骨架阶段三兄弟的占位输出。
+// TestSingleInteractionStrategySkeleton 验证「单一互动」骨架阶段的占位输出。
 //
 // 骨架阶段（singleInteractionStrategy）不调模型，按 mission_kind 给三种占位回应：
-//   - complaint：安抚 + 交代（"别着急...处理"）
-//   - reply_chat：有内容回显、无内容极简
-//   - reply_question：回显确认（"帮您确认一下"）
+//   - complaint：安抚 + 记下，不承诺“马上处理”
+//   - reply_chat：不重复观众原话
+//   - reply_question：如实说没核实，不回显问题、不承诺“帮您确认”
 func TestSingleInteractionStrategySkeleton(t *testing.T) {
 	ctx := context.Background()
 	session := model.LiveRuntimeSession{}
@@ -26,15 +26,18 @@ func TestSingleInteractionStrategySkeleton(t *testing.T) {
 			resolvedAddress: "小陈",
 		}
 		got := s.Respond(ctx, session, item)
-		if !strings.Contains(got, "小陈") || !strings.Contains(got, "处理") {
-			t.Fatalf("投诉骨架应点昵称+安抚交代，实际：%q", got)
+		if !strings.Contains(got, "小陈") || !strings.Contains(got, "别着急") {
+			t.Fatalf("投诉骨架应点昵称+安抚，实际：%q", got)
+		}
+		if strings.Contains(got, "马上帮您处理") {
+			t.Fatalf("投诉骨架不得承诺马上处理，实际：%q", got)
 		}
 	})
 
 	t.Run("投诉无昵称用群称", func(t *testing.T) {
 		got := s.Respond(ctx, session, decisionItem{MissionKind: "complaint"})
-		if !strings.Contains(got, "处理") {
-			t.Fatalf("投诉无昵称也应给交代，实际：%q", got)
+		if !strings.Contains(got, "别着急") {
+			t.Fatalf("投诉无昵称也应安抚，实际：%q", got)
 		}
 	})
 
@@ -48,34 +51,43 @@ func TestSingleInteractionStrategySkeleton(t *testing.T) {
 		}
 	})
 
-	t.Run("弹幕有内容回显", func(t *testing.T) {
+	t.Run("弹幕有内容不回显原话", func(t *testing.T) {
 		item := decisionItem{
 			MissionKind:     "reply_chat",
 			resolvedAddress: "阿芳",
 			SampleQuestions: []string{"主播今天几点下播"},
 		}
 		got := s.Respond(ctx, session, item)
-		if !strings.Contains(got, "阿芳") || !strings.Contains(got, "几点下播") {
-			t.Fatalf("有内容弹幕应点昵称+回显原话，实际：%q", got)
+		if strings.Contains(got, "几点下播") {
+			t.Fatalf("弹幕骨架不应回声原话，实际：%q", got)
+		}
+		if strings.TrimSpace(got) == "" {
+			t.Fatalf("有内容弹幕不能为空")
 		}
 	})
 
-	t.Run("提问带昵称回显确认", func(t *testing.T) {
+	t.Run("提问不回显不承诺确认", func(t *testing.T) {
 		item := decisionItem{
 			MissionKind:     "reply_question",
 			resolvedAddress: "老周",
 			SampleQuestions: []string{"这个油多少钱"},
 		}
 		got := s.Respond(ctx, session, item)
-		if !strings.Contains(got, "老周") || !strings.Contains(got, "确认") || !strings.Contains(got, "多少钱") {
-			t.Fatalf("提问骨架应点昵称+确认+回显，实际：%q", got)
+		if strings.Contains(got, "多少钱") || strings.Contains(got, "确认") || strings.Contains(got, "帮您") {
+			t.Fatalf("提问骨架不应回声/承诺确认，实际：%q", got)
+		}
+		if !strings.Contains(got, "没核实") {
+			t.Fatalf("提问骨架应如实说没核实，实际：%q", got)
 		}
 	})
 
 	t.Run("提问无内容兜底", func(t *testing.T) {
 		got := s.Respond(ctx, session, decisionItem{MissionKind: "reply_question"})
-		if !strings.Contains(got, "确认") {
-			t.Fatalf("提问无内容也应给确认兜底，实际：%q", got)
+		if strings.TrimSpace(got) == "" {
+			t.Fatalf("提问无内容也要有兜底，实际：%q", got)
+		}
+		if strings.Contains(got, "确认") || strings.Contains(got, "帮您") {
+			t.Fatalf("兜底不得承诺确认，实际：%q", got)
 		}
 	})
 }
@@ -161,9 +173,9 @@ func TestDispatchSingleInteraction(t *testing.T) {
 		question string
 		wantSub  string
 	}{
-		{"投诉走骨架", "complaint", "", "处理"},
-		{"提问走骨架", "reply_question", "这个油多少钱", "确认"},
-		{"弹幕走骨架", "reply_chat", "主播好", "主播好"},
+		{"投诉走骨架", "complaint", "", "记下"},
+		{"提问走骨架", "reply_question", "这个油多少钱", "没核实"},
+		{"弹幕走骨架", "reply_chat", "主播好", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

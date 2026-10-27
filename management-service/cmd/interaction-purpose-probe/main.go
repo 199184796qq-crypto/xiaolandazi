@@ -131,6 +131,9 @@ func main() {
 	answer := flag.Bool("answer", false, "also generate the spoken answer with the review model")
 	welcome := flag.Bool("welcome", false, "generate the welcome package (greeting + intro + benefit + human rewrite)")
 	summary := flag.Bool("summary", false, "ask the review model to summarise what the room sells from the full facts")
+	systemFile := flag.String("system-file", "", "send this system prompt verbatim to the review model")
+	userFile := flag.String("user-file", "", "send this user prompt verbatim to the review model")
+	repeats := flag.Int("repeats", 1, "how many times to repeat the verbatim call")
 	flag.Parse()
 	if *tenant <= 0 || *room <= 0 || *text == "" {
 		fmt.Println("usage: -tenant N -room N -text 观众原话")
@@ -174,6 +177,39 @@ func main() {
 	profile, err := store.ResolveOperatorSpeechModel(ctx, roleID)
 	if err != nil || profile == nil || !profile.Enabled || profile.APIKey == "" {
 		panic("intent model connection unavailable")
+	}
+
+	if *systemFile != "" || *userFile != "" {
+		system, _ := os.ReadFile(*systemFile)
+		user, _ := os.ReadFile(*userFile)
+		var texts []string
+		var tokensIn, tokensOut int64
+		for i := 0; i < *repeats; i++ {
+			out, callErr := agentgateway.CompleteSpeechEndpoint(ctx, *profile, agentgateway.Request{
+				Stage:          "interaction_single_direct_answer",
+				Model:          profile.Model,
+				Messages:       []agentgateway.Message{{Role: "system", Content: string(system)}, {Role: "user", Content: string(user)}},
+				MaxTokens:      200,
+				ResponseFormat: agentgateway.ResponseText,
+			})
+			if callErr != nil {
+				fmt.Printf("AB ERROR: %v\n", callErr)
+				os.Exit(1)
+			}
+			texts = append(texts, strings.TrimSpace(out.Text))
+			tokensIn += out.InputTokens
+			tokensOut += out.OutputTokens
+		}
+		n := int64(*repeats)
+		if n < 1 {
+			n = 1
+		}
+		payload, _ := json.MarshalIndent(map[string]any{
+			"model": profile.Model, "system_chars": len(system), "user_chars": len(user),
+			"avg_input_tokens": tokensIn / n, "avg_output_tokens": tokensOut / n, "outputs": texts,
+		}, "", "  ")
+		fmt.Println(string(payload))
+		return
 	}
 
 	query := interactionpurpose.Input{Tenant: *tenant, Room: *room, Plan: plan.ID, Text: *text, Facts: asset.SafeFacts}

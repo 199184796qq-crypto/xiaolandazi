@@ -41,33 +41,25 @@ func (singleInteractionStrategy) Respond(ctx context.Context, session model.Live
 
 	switch kind {
 	case "complaint":
-		// 投诉：先安抚情绪，再给交代（骨架阶段先接住，不带具体解决）。
+		// 投诉：先接住情绪，不承诺“马上处理”。
 		if address != "" && address != "家人们" {
-			return address + "别着急，您说的这个问题我记下了，马上帮您处理。"
+			return address + "别着急，您说的这个我记下了。"
 		}
-		return "别着急，您说的问题我记下了，马上帮您处理。"
+		return "别着急，您说的问题我记下了。"
 
 	case "reply_chat":
-		// 弹幕：性质混杂，骨架阶段按有无内容给两种兜底。
+		// 弹幕：不重复观众原话，也不承诺去查。
 		if question == "" {
-			// 无意义刷屏/无内容：极简回应或不回显。
 			return "收到。"
 		}
-		// 有内容：暂按真提问处理（后续接模型细分「真提问/夸赞闲聊/无意义」）。
-		if address != "" && address != "家人们" {
-			return address + "您说的这个问题我帮您看看：" + question
-		}
-		return "您说的这个问题我帮您看看：" + question
+		return "您说的这个我听着呢，咱们接着聊。"
 
 	default:
-		// reply_question 及兜底：真提问，查事实组织答案（骨架先回显确认）。
+		// 真提问但没生成出答案：如实说没核实，不承诺“帮您确认”。
 		if question != "" {
-			if address != "" && address != "家人们" {
-				return address + "您问的这个问题我帮您确认一下：" + question
-			}
-			return "您问的这个问题我帮您确认一下：" + question
+			return "这个我还真没核实到，先不跟您说死。"
 		}
-		return "收到，我帮您确认一下。"
+		return "这个我暂时还说不好。"
 	}
 }
 
@@ -92,6 +84,17 @@ func (m modelSingleInteractionStrategy) Respond(ctx context.Context, session mod
 	}
 	text := m.worker.generateSingleInteractionText(ctx, session, item)
 	if strings.TrimSpace(text) == "" {
+		// A real question that failed to render still deserves an honest, human
+		// boundary — never an echo of the question plus "我帮您确认一下".
+		if strings.EqualFold(strings.TrimSpace(item.MissionKind), "reply_question") {
+			if boundary := strings.TrimSpace(m.worker.generateNoFactBoundary(ctx, session, item)); boundary != "" {
+				address := strings.TrimSpace(resolvedAddress(item))
+				if address == "" || address == "家人们" {
+					return boundary
+				}
+				return address + "，" + boundary
+			}
+		}
 		return (singleInteractionStrategy{}).Respond(ctx, session, item)
 	}
 	return text
@@ -354,7 +357,7 @@ func (w *Worker) generateSingleInteractionAnswer(ctx context.Context, session mo
 		"\n【必说】这是承接上一句回应的第二句，语气与上一句保持一致、自然衔接；不要再称呼观众、不要再点任何名字、不要用「哥哥姐姐们」「家人们」等群称（上一句已经招呼过了）。" +
 		"\n· 先说一个自然的承接句过渡，再带出答案，不要一开口就干巴巴报答案。承接句要口语、自然、随机变化。" +
 		"\n· 答案必须严格按下方「当前答案事实」里的写，不得编造、不得改口。事实里【必说】的内容必须原样保留语义，【可说】的内容可用你的语气自然润色。" +
-		"\n· 只从「当前答案事实」里取材，事实里没有的信息一律不许现编；如果事实不足以正面回答，就把事实里有的先说出来、并自然引导观众（如「这个我再帮您确认下」），绝不编造答案。" +
+		"\n· 只从「当前答案事实」里取材，事实里没有的信息一律不许现编；如果事实不足以正面回答，就把事实里有的先说出来，剩下的如实说这块还没核实——不要承诺去确认、不要说稍后回复、不要重复观众的问题当答案。" +
 		"\n【可说】可自然带出下方「当前答案事实」，但不得编造事实里没有的信息。" +
 		"\n【不提】" + notMention +
 		"\n【改写】" + rewrite +

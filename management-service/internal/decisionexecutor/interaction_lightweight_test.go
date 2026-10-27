@@ -94,10 +94,10 @@ func TestLightweightInteractionText(t *testing.T) {
 		{"点赞关注", "reply_follow", "", "关注"},
 		{"下单", "conversion_signal", "", "安排"},
 		{"暖场", "warmup", "", "欢迎"},
-		{"投诉", "complaint", "", "处理"},
-		{"闲聊带原话", "reply_chat", "主播今天几点下播", "几点下播"},
-		{"商品提问带原话", "reply_question", "这个油多少钱", "多少钱"},
-		{"未知场景带原话", "unknown_kind", "随便问问", "随便问问"},
+		{"投诉", "complaint", "", "记下"},
+		{"闲聊带原话", "reply_chat", "主播今天几点下播", ""},
+		{"商品提问带原话", "reply_question", "这个油多少钱", "没核实"},
+		{"未知场景带原话", "unknown_kind", "随便问问", "没核实"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
