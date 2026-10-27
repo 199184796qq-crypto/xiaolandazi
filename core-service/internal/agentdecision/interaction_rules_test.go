@@ -74,3 +74,16 @@ func TestNewDuplicatesDoNotExtendShortEventTTL(t *testing.T) {
 		t.Fatal("stale welcome retained")
 	}
 }
+
+func TestManualQuickGetsDefaultMissionKind(t *testing.T) {
+	now := time.Now().UTC()
+	q := NewWithClock(func() time.Time { return now }, time.Minute, time.Minute, 24)
+	withQuestion := q.Enqueue(9, Candidate{Source: SourceManual, Topic: "manual-q", Question: "团购不都是这样", ManualAction: "quick"})
+	if withQuestion.Item.MissionKind != "reply_question" {
+		t.Fatalf("manual question kind=%q want reply_question", withQuestion.Item.MissionKind)
+	}
+	chatOnly := q.Enqueue(9, Candidate{Source: SourceManual, Topic: "manual-c", ManualAction: "quick"})
+	if chatOnly.Item.MissionKind != "reply_chat" {
+		t.Fatalf("manual chat kind=%q want reply_chat", chatOnly.Item.MissionKind)
+	}
+}

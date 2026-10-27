@@ -2,6 +2,7 @@ package decisionexecutor
 
 import (
 	"context"
+	"log"
 	"strings"
 
 	"livecompanion/management/internal/model"
@@ -86,6 +87,9 @@ func (w *Worker) lightweightInteractionText(ctx context.Context, session model.L
 	// 第一档（事实应答 reply_question/complaint）与第三档（聊天兜底 reply_chat）
 	// 都收进「单一互动」独立策略，由策略内部按 mission_kind 细分。
 	// 第二档（礼仪回应 welcome/follow/like/order）走 dispatchLightInteraction。
+	if strings.TrimSpace(item.MissionKind) == "" {
+		log.Printf("interaction mission kind empty decision=%s origin=%s", item.ID, item.ManualOrigin)
+	}
 	tier := classifyInteraction(item)
 
 	switch tier {

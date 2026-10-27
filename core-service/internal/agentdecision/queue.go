@@ -344,6 +344,16 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 		} else {
 			input.ManualAction = "answer"
 		}
+		// Manual quick answers never pass through danmaku classification, so they
+		// arrive without a mission kind. Fill one here so the interaction strategy
+		// machine routes them like any other answer instead of guessing.
+		if strings.TrimSpace(input.MissionKind) == "" {
+			if strings.TrimSpace(input.Question) != "" {
+				input.MissionKind = "reply_question"
+			} else {
+				input.MissionKind = "reply_chat"
+			}
+		}
 	} else {
 		input.ManualAction = ""
 	}

@@ -146,6 +146,7 @@ func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.R
 		ForceReopen   bool     `json:"force_reopen"`
 		ManualAction  string `json:"manual_action"`
 		ManualOrigin  string `json:"manual_origin"`
+		MissionKind   string `json:"mission_kind"`
 		ExecutionMode string `json:"execution_mode"`
 		FixedText     string `json:"fixed_text"`
 		TTLSeconds    int    `json:"ttl_seconds"`
@@ -182,6 +183,16 @@ func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.R
 	}
 	if input.ManualAction != "quick" {
 		input.ManualAction = "answer"
+	}
+	// Manual quick answers bypass danmaku classification, so no kind arrives with
+	// them. Fill one here: a chosen question is a question, anything else is chat.
+	input.MissionKind = strings.ToLower(strings.TrimSpace(input.MissionKind))
+	if input.MissionKind == "" {
+		if input.Question != "" {
+			input.MissionKind = "reply_question"
+		} else {
+			input.MissionKind = "reply_chat"
+		}
 	}
 	if input.Question == "" && input.Topic == "" {
 		writeError(w, http.StatusBadRequest, "请选择问题或问题桶")
