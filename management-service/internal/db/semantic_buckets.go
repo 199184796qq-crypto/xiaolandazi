@@ -86,6 +86,19 @@ func (s *Store) UpsertPurposeBucket(ctx context.Context, tenant, room, plan int6
 	return nil
 }
 
+// ClearPurposeBuckets retires all active purpose buckets for one room. It is
+// used when a resumed live is auto-promoted to a fresh session after the
+// operator does not choose merge/fresh in time: unanswered questions from the
+// previous session must not be reused as history for the new one.
+func (s *Store) ClearPurposeBuckets(ctx context.Context, tenant, room int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE semantic_documents
+		SET status='inactive', updated_at=CURRENT_TIMESTAMP(3)
+		WHERE tenant_id=? AND room_id=? AND content_type='purpose_bucket' AND status='active'`,
+		tenant, room)
+	return err
+}
+
 // GetPurposeBucketConclusion returns the conclusion JSON for a matched bucket,
 // so the judge-model hit can reuse the full purpose result without re-running
 // the resolution model.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -33,6 +34,9 @@ type Reconciler struct {
 	batchSize              int
 	executionRealm         string
 	legacyLeaseCleanupDone bool
+
+	resumePendingMu    sync.Mutex
+	resumePendingSince map[stateKey]time.Time
 }
 
 func (r *Reconciler) SetDeviceStopCleanup(cleanup func(context.Context, int64, int64) error) {
@@ -72,6 +76,7 @@ const (
 	liveRuntimeReconcileTimeout = 8 * time.Second
 	liveRuntimeTenantTimeout    = 6 * time.Second
 	liveRuntimeDeviceStopAfter  = 60 * time.Second
+	liveResumePendingTimeout    = 120 * time.Second
 )
 
 type coreAgentRuntimeState struct {
@@ -98,12 +103,13 @@ func NewReconciler(
 		batchSize = 500
 	}
 	result := &Reconciler{
-		store:          store,
-		core:           core,
-		interval:       5 * time.Second,
-		workers:        workers,
-		batchSize:      batchSize,
-		executionRealm: "prod",
+		store:              store,
+		core:               core,
+		interval:           5 * time.Second,
+		workers:            workers,
+		batchSize:          batchSize,
+		executionRealm:     "prod",
+		resumePendingSince: make(map[stateKey]time.Time),
 	}
 	if len(leaders) > 0 {
 		result.leader = leaders[0]
@@ -409,6 +415,43 @@ func (r *Reconciler) cleanupDeviceRoom(ctx context.Context, session model.LiveRu
 	return nil
 }
 
+// autoFreshAfterResumeTimeout promotes an unresolved reopened live to a fresh
+// session. Without this, a missing operator choice blocks every interaction
+// endpoint indefinitely while chat keeps arriving. It also retires the room's
+// purpose buckets so unanswered questions from the previous session cannot be
+// reused as history by the purpose judge.
+func (r *Reconciler) autoFreshAfterResumeTimeout(ctx context.Context, session model.LiveRuntimeSession) error {
+	if r == nil || r.core == nil {
+		return errors.New("core client unavailable")
+	}
+	query := url.Values{}
+	query.Set("tenant_id", strconv.FormatInt(session.TenantID, 10))
+	resp, err := r.core.DoRoom(
+		ctx,
+		session.TenantID,
+		session.RoomID,
+		http.MethodPost,
+		fmt.Sprintf("/internal/v1/rooms/%d/session-decision", session.RoomID),
+		query,
+		map[string]any{"action": "fresh"},
+	)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("session decision http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if err := r.store.ClearPurposeBuckets(ctx, session.TenantID, session.RoomID); err != nil {
+		return fmt.Errorf("clear purpose buckets: %w", err)
+	}
+	r.recordSystemAudit(ctx, session, "session.resume.auto_fresh", "resume_pending_timeout_120s", "", 0)
+	log.Printf("billing manager auto fresh tenant=%d room=%d session=%d: resume pending exceeded %s", session.TenantID, session.RoomID, session.ID, liveResumePendingTimeout)
+	return nil
+}
+
 // reconcileTenant is the account-level billing manager. The durable
 // live_runtime_sessions rows are the registration table: running means the
 // room is registered for metering, paused/stopped means it is not. Core only
@@ -574,10 +617,31 @@ func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 		}
 
 		if job.State.SessionResumePending {
-			// The live-session identity is unresolved; do not invent paid usage
-			// until the operator chooses merge/fresh semantics.
+			key := stateKey{TenantID: session.TenantID, RoomID: session.RoomID}
+			r.resumePendingMu.Lock()
+			since, seen := r.resumePendingSince[key]
+			if !seen {
+				since = now
+				r.resumePendingSince[key] = now
+			}
+			r.resumePendingMu.Unlock()
+			if now.Sub(since) < liveResumePendingTimeout {
+				// The operator still has time to choose merge/fresh. Do not
+				// invent paid usage or answer against an unresolved session.
+				continue
+			}
+			if err := r.autoFreshAfterResumeTimeout(ctx, session); err != nil {
+				log.Printf("billing manager auto fresh tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, session.ID, err)
+				continue
+			}
+			r.resumePendingMu.Lock()
+			delete(r.resumePendingSince, key)
+			r.resumePendingMu.Unlock()
 			continue
 		}
+		r.resumePendingMu.Lock()
+		delete(r.resumePendingSince, stateKey{TenantID: session.TenantID, RoomID: session.RoomID})
+		r.resumePendingMu.Unlock()
 
 		metered, meterErr := r.store.ReconcileLiveRuntimeMeter(
 			ctx,
@@ -735,6 +799,10 @@ func (r *Reconciler) recordSystemAudit(
 	if action == "room.runtime.cleanup_missing" {
 		beforeState = `{"runtime_session":"open"}`
 		afterState = `{"runtime_session":"closed","room_exists":false}`
+	}
+	if action == "session.resume.auto_fresh" {
+		beforeState = `{"session":"resume_pending"}`
+		afterState = `{"session":"fresh","reason":"timeout_120s"}`
 	}
 	roomName := ""
 	if action != "room.runtime.cleanup_missing" {
