@@ -55,6 +55,9 @@ func Prompt(req Request) (string, string, string) {
 	if req.Class == "identity" {
 		b.WriteString("- 观众在问主播的名字，主播不公开名字；可以让他喊“主播”，但绝对不能给自己起名字。\n")
 	}
+	if req.Class == "location" {
+		b.WriteString("- 观众在问位置（店在哪、发货地、地址），你手上没有确认的位置信息；直接说位置这块还没核实，不要拿自己的记性开玩笑，也不要绕开。\n")
+	}
 	if req.Class == "partial_value" && len(req.Uncovered) > 0 {
 		b.WriteString("- 一定要提到「" + strings.Join(req.Uncovered, "、") + "」，让观众知道是这一点没确认。\n")
 		b.WriteString("- 但不要出现“包邮、免邮、能到、能发、送到”这些词，用“这个范围”“这块”来说。\n")

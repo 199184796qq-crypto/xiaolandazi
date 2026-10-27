@@ -99,3 +99,10 @@ func TestPromptCarriesToneAndBans(t *testing.T) {
 		t.Fatalf("question missing from payload: %s", user)
 	}
 }
+
+func TestLocationPromptTalksAboutLocation(t *testing.T) {
+	_, system, _ := Prompt(Request{Class: "location", Question: "在哪里"})
+	if !strings.Contains(system, "位置") {
+		t.Fatalf("location prompt missing guidance: %s", system)
+	}
+}

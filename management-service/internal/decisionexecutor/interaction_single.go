@@ -15,6 +15,10 @@ import (
 // anchor name is worse than an honest boundary.
 var identityQuestionPattern = regexp.MustCompile(`名字|叫什么|你是谁|怎么称呼|贵姓|哪位`)
 
+// locationQuestionPattern catches "在哪里/地址/位置" style questions so the
+// fallback line talks about location instead of joking about memory.
+var locationQuestionPattern = regexp.MustCompile(`在哪|哪里|哪儿|地址|位置|哪个城市|什么地方|哪座城市`)
+
 // singleInteractionStrategy 是「单一互动」的独立策略（骨架阶段）。
 //
 // 承接旧链路「问答三兄弟」：
@@ -157,6 +161,8 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 		// identity class bans self-introduced names inside the prompt and in the
 		// program-side validator.
 		class = "identity"
+	} else if locationQuestionPattern.MatchString(question) {
+		class = "location"
 	}
 	return w.boundaryLine(ctx, session, class, question, nil)
 }

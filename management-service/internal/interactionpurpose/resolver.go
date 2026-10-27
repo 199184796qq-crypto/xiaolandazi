@@ -268,6 +268,24 @@ func assignAngleFacts(input Input, result Result) []contentstrategy.Row {
 		}
 		return out
 	}
+	if len(result.Angles) == 0 && input.Text != "" {
+		// The model may return no angle at all (a vague "在哪里"). Do not give up:
+		// retrieve by the viewer's words plus the purpose it named, then let the
+		// fact boundary decide.
+		query := strings.TrimSpace(input.Text + " " + result.Purpose)
+		picked := factselect.Select(query, nil, nil, all, 3)
+		if len(picked) > 0 {
+			row := contentstrategy.Row{
+				PurposeID: result.PurposeID,
+				Angle:     "按观众原话回答",
+				Task:      input.Text,
+			}
+			for _, fact := range picked {
+				row.FactIDs = append(row.FactIDs, fact.ID)
+			}
+			result.Angles = []contentstrategy.Row{row}
+		}
+	}
 	if len(result.Angles) == 0 && purpose != nil && len(purpose.FactIDs) > 0 {
 		task := strings.TrimSpace(purpose.Concern)
 		if task == "" {
