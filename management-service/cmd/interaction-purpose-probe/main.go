@@ -18,6 +18,7 @@ import (
 	"livecompanion/management/internal/contentstrategy"
 	"livecompanion/management/internal/db"
 	"livecompanion/management/internal/factbound"
+	"livecompanion/management/internal/factselect"
 	"livecompanion/management/internal/fallbackline"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/interactionpurpose"
@@ -292,11 +293,28 @@ func main() {
 		for _, row := range result.Angles {
 			ids = append(ids, row.FactIDs...)
 		}
-		var b strings.Builder
+		// Mirror production: narrow the selected facts to the question.
+		seen := map[string]bool{}
+		var factList []factselect.Fact
 		for _, id := range ids {
-			if body, ok := factMap[id]; ok {
-				fmt.Fprintf(&b, "%s %s\n", id, body)
+			body, ok := factMap[id]
+			if !ok || seen[id] {
+				continue
 			}
+			seen[id] = true
+			factList = append(factList, factselect.Fact{ID: id, Text: body})
+		}
+		angleIDs := map[string]bool{}
+		var angleTexts []string
+		for _, row := range result.Angles {
+			angleTexts = append(angleTexts, strings.TrimSpace(row.Angle+" "+row.Task))
+			for _, id := range row.FactIDs {
+				angleIDs[id] = true
+			}
+		}
+		var b strings.Builder
+		for _, f := range factselect.Select(*text, angleTexts, angleIDs, factList, 3) {
+			fmt.Fprintf(&b, "%s %s\n", f.ID, f.Text)
 		}
 		facts := strings.TrimSpace(b.String())
 		hasFacts := facts != ""

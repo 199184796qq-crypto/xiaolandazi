@@ -36,3 +36,24 @@ func TestPruneAnglesDropsUnusableRowsOnly(t *testing.T) {
 		t.Fatalf("unexpected kept rows: %+v", kept)
 	}
 }
+
+// The model no longer names facts; the purpose's configured facts must fill in.
+func TestAssignAngleFactsFromPurpose(t *testing.T) {
+	input := Input{
+		Facts: "- [brand/官方身份] 本直播间是四川绸都杨鸭子官方直播间。\n- [price/售价] 整只装900g日常价87.6元。",
+		Purposes: []contentstrategy.Purpose{
+			{ID: "P01", Name: "了解售价", FactIDs: []string{"F002"}},
+		},
+	}
+	result := Result{
+		PurposeID: "P01",
+		Angles:    []contentstrategy.Row{{Angle: "直接说明售价", Task: "回答价格"}},
+	}
+	got := assignAngleFacts(input, result)
+	if len(got) != 1 {
+		t.Fatalf("angle should survive with program-assigned facts: %+v", got)
+	}
+	if len(got[0].FactIDs) != 1 || got[0].FactIDs[0] != "F002" {
+		t.Fatalf("fact ids not taken from purpose: %+v", got[0].FactIDs)
+	}
+}

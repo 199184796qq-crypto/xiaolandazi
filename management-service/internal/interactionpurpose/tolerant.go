@@ -112,9 +112,8 @@ func decodeTolerantResult(raw string, knownFacts map[string]bool) (Result, error
 				facts = append(facts, strings.TrimSpace(id))
 			}
 		}
-		if len(facts) == 0 {
-			continue
-		}
+		// Facts are optional now: the program assigns them from the purpose or
+		// by retrieval, so the model only has to name the angle and the task.
 		result.Angles = append(result.Angles, contentstrategy.Row{
 			PurposeID:  result.PurposeID,
 			Angle:      row.Angle,

@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"livecompanion/management/internal/contentstrategy"
+	"livecompanion/management/internal/factselect"
 	"livecompanion/management/internal/semantic"
 )
 
@@ -127,7 +128,9 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 			}
 		}
 	}
-	payload, _ := json.Marshal(map[string]any{"观众原话": input.Text, "完整已发布事实": input.Facts, "事实编号": contentstrategy.Facts(input.Facts), "已有目的": input.Purposes})
+	// The model no longer sees the fact package: it only says why the viewer
+	// asks. Facts are assigned on the program side, which keeps the prompt small.
+	payload, _ := json.Marshal(map[string]any{"观众原话": input.Text, "已有目的": input.Purposes})
 	raw, err := r.Complete(ctx, string(payload))
 	if err != nil {
 		return Result{}, err
@@ -198,6 +201,7 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	for i := range result.Angles {
 		result.Angles[i].PurposeID = result.PurposeID
 	}
+	result.Angles = assignAngleFacts(input, result)
 	if len(result.Angles) > 0 {
 		// 解意图的 task_angles 是「轻量角度」，模型只输出「角度/讲述任务/关联事实」，
 		// 不输出快照专属的「优先级/任务类型/适用条件」。这里只校验解意图真正要求的：
@@ -236,6 +240,86 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	}
 	return result, nil
 }
+// assignAngleFacts fills each angle's fact references on the program side: the
+// configured purpose's facts first, then a retrieval pass over the fact package.
+// The model is no longer asked for fact ids, so a wrong or invented id cannot
+// leak in.
+func assignAngleFacts(input Input, result Result) []contentstrategy.Row {
+	known := map[string]bool{}
+	facts := contentstrategy.Facts(input.Facts)
+	all := make([]factselect.Fact, 0, len(facts))
+	for _, fact := range facts {
+		known[fact.ID] = true
+		all = append(all, factselect.Fact{ID: fact.ID, Text: fact.Text})
+	}
+	var purpose *contentstrategy.Purpose
+	for i := range input.Purposes {
+		if input.Purposes[i].ID == result.PurposeID {
+			purpose = &input.Purposes[i]
+			break
+		}
+	}
+	filterKnown := func(ids []string) []string {
+		out := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if known[strings.TrimSpace(id)] {
+				out = append(out, strings.TrimSpace(id))
+			}
+		}
+		return out
+	}
+	if len(result.Angles) == 0 && purpose != nil && len(purpose.FactIDs) > 0 {
+		task := strings.TrimSpace(purpose.Concern)
+		if task == "" {
+			task = "按目的回答观众关心的问题"
+		}
+		result.Angles = []contentstrategy.Row{{
+			PurposeID: result.PurposeID,
+			Angle:     purpose.Name,
+			Task:      task,
+			FactIDs:   filterKnown(purpose.FactIDs),
+		}}
+	}
+	kept := make([]contentstrategy.Row, 0, len(result.Angles))
+	for _, row := range result.Angles {
+		base := make([]string, 0, len(row.FactIDs)+8)
+		base = append(base, row.FactIDs...)
+		if len(base) == 0 && purpose != nil {
+			base = append(base, filterKnown(purpose.FactIDs)...)
+		}
+		// Always add retrieval candidates: a purpose's configured facts may be
+		// partial (e.g. shipping policy without the 包邮 benefit).
+		angleTexts := []string{row.Angle, row.Task, result.Purpose}
+		for _, fact := range factselect.Select(input.Text, angleTexts, nil, all, 5) {
+			base = append(base, fact.ID)
+		}
+		candidates := make([]factselect.Fact, 0, len(base))
+		seen := map[string]bool{}
+		for _, id := range base {
+			if !known[id] || seen[id] {
+				continue
+			}
+			seen[id] = true
+			for _, fact := range all {
+				if fact.ID == id {
+					candidates = append(candidates, fact)
+					break
+				}
+			}
+		}
+		picked := factselect.Select(input.Text, angleTexts, nil, candidates, 3)
+		row.FactIDs = row.FactIDs[:0]
+		for _, fact := range picked {
+			row.FactIDs = append(row.FactIDs, fact.ID)
+		}
+		if len(row.FactIDs) == 0 {
+			continue
+		}
+		kept = append(kept, row)
+	}
+	return kept
+}
+
 func (r *Resolver) save(ctx context.Context, input Input, id string, result Result) error {
 	raw, _ := json.Marshal(result)
 	doc := semantic.Document{TenantID: input.Tenant, RoomID: input.Room, PlanID: input.Plan, ContentType: ContentType, SourceID: id, SourceVersion: 1, Status: "active", Text: string(raw)}
