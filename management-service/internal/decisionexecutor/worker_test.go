@@ -60,33 +60,6 @@ func TestOpeningIntentSeparatesSimpleAndComplexQuestions(t *testing.T) {
 	}
 }
 
-func TestAddressingModeUsesMissionScopeWithoutForcingNames(t *testing.T) {
-	tests := []struct {
-		name      string
-		item      decisionItem
-		candidate string
-		want      string
-	}{
-		{name: "none without candidate", item: decisionItem{MissionKind: "reply_chat"}, candidate: "", want: "NONE"},
-		{name: "single welcome", item: decisionItem{MissionKind: "welcome_named", MissionEventCount: 1}, candidate: "朋友", want: "SINGLE"},
-		{name: "batch welcome", item: decisionItem{MissionKind: "welcome_batch", MissionEventCount: 12}, candidate: "朋友们", want: "GROUP"},
-		{name: "batched chat", item: decisionItem{MissionKind: "reply_chat", MissionEventCount: 3}, candidate: "大家", want: "GROUP"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := addressingModeForMission(tt.item, tt.candidate); got != tt.want {
-				t.Fatalf("mode=%q want=%q", got, tt.want)
-			}
-		})
-	}
-
-	if guidance := addressingGuidance("NONE", ""); !strings.Contains(guidance, "不要裸奔") {
-		t.Fatalf("NONE guidance must avoid bare addressing: %s", guidance)
-	}
-	if guidance := addressingGuidance("GROUP", "朋友们"); !strings.Contains(guidance, "不要逐个报名字") {
-		t.Fatalf("GROUP guidance must suppress name listing: %s", guidance)
-	}
-}
 
 func TestOpeningPlanIsFrozenIntoSpeechMission(t *testing.T) {
 	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
@@ -174,114 +147,10 @@ func TestNormalizePlayableNicknameFiltersUnsafeOrUnreadableNames(t *testing.T) {
 	}
 }
 
-func TestBuildAddressingPlanUsesMixedForBatchWelcome(t *testing.T) {
-	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
-	worker.now = func() time.Time { return time.Date(2026, 9, 29, 18, 40, 0, 0, time.UTC) }
-	plan := worker.buildAddressingPlan(11, decisionItem{
-		MissionKind:       "welcome_batch",
-		MissionEventCount: 12,
-		Nicknames:         []string{"小陈", "阿芳", "老周"},
-		PromptNicknames:   []string{"小陈", "阿芳", "老周"},
-	}, "friend", "朋友们", model.RoomAddressingPreferences{NamingPreference: "natural"}, nil)
-	if plan.Mode != "MIXED" {
-		t.Fatalf("mode=%q want MIXED, plan=%#v", plan.Mode, plan)
-	}
-	if len(plan.SelectedNames) != 3 || plan.SelectedNames[0] != "小陈" || plan.SelectedNames[1] != "阿芳" || plan.SelectedNames[2] != "老周" {
-		t.Fatalf("selected names=%v want first three playable names", plan.SelectedNames)
-	}
-	if plan.MaxNamedCount != 3 || plan.GroupLabel != "朋友们" {
-		t.Fatalf("unexpected addressing bounds: %#v", plan)
-	}
-	if guidance := addressingPlanGuidance(plan); !strings.Contains(guidance, "小陈、阿芳、老周") || !strings.Contains(guidance, "朋友们") {
-		t.Fatalf("mixed guidance missing selected names/group: %s", guidance)
-	}
-}
 
-func TestAddressingPreferenceLessAvoidsNamesForAggregateMission(t *testing.T) {
-	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
-	plan := worker.buildAddressingPlan(11, decisionItem{
-		MissionKind:       "welcome_batch",
-		MissionEventCount: 8,
-		Nicknames:         []string{"小陈", "阿芳"},
-	}, "friend", "朋友们", model.RoomAddressingPreferences{NamingPreference: "less"}, nil)
-	if plan.Mode != "GROUP" || len(plan.SelectedNames) != 0 || plan.MaxNamedCount != 1 {
-		t.Fatalf("less preference should reduce naming: %#v", plan)
-	}
-}
 
-func TestAddressingPreferenceMoreUsesMixedWhenAggregateQuestionHasNames(t *testing.T) {
-	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
-	plan := worker.buildAddressingPlan(11, decisionItem{
-		MissionKind:       "reply_chat",
-		MissionEventCount: 3,
-		Nicknames:         []string{"小陈", "阿芳"},
-		PromptNicknames:   []string{"小陈", "阿芳"},
-		SampleQuestions:   []string{"多少钱", "怎么发货"},
-	}, "friends", "朋友们", model.RoomAddressingPreferences{NamingPreference: "more"}, nil)
-	if plan.Mode != "MIXED" || len(plan.SelectedNames) != 2 {
-		t.Fatalf("more preference should use safe mixed addressing: %#v", plan)
-	}
-}
 
-func TestAddressingFrequencyDistribution(t *testing.T) {
-	cases := []struct {
-		preference string
-		minCount   int
-		maxCount   int
-	}{
-		{preference: "less", minCount: 5, maxCount: 25},
-		{preference: "natural", minCount: 25, maxCount: 45},
-		{preference: "more", minCount: 60, maxCount: 80},
-	}
-	for _, tc := range cases {
-		count := 0
-		for i := 0; i < 100; i++ {
-			plan := speechmission.AddressingPlan{
-				Mode:       "SINGLE",
-				Candidate:  "老哥",
-				GroupLabel: "老哥",
-				Preference: tc.preference,
-				Optional:   true,
-			}
-			item := decisionItem{
-				ID:          fmt.Sprintf("decision-%03d", i),
-				MissionKind: "reply_chat",
-			}
-			got := applyAddressingFrequency(plan, item, fmt.Sprintf("seed-%03d", i))
-			if got.SelectedByRate {
-				count++
-				if got.Optional || got.Mode == "NONE" {
-					t.Fatalf("%s selected round must be required: %#v", tc.preference, got)
-				}
-			}
-		}
-		t.Logf("addressing frequency %s: %d/100", tc.preference, count)
-		if count < tc.minCount || count > tc.maxCount {
-			t.Fatalf("%s frequency count=%d want within [%d,%d]", tc.preference, count, tc.minCount, tc.maxCount)
-		}
-	}
-}
 
-func TestPreferredAddressingTermsOverrideSystemCandidate(t *testing.T) {
-	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
-	plan := worker.buildAddressingPlan(11, decisionItem{
-		ID:          "decision-preferred-term",
-		MissionKind: "reply_chat",
-	}, "friend", "朋友", model.RoomAddressingPreferences{
-		NamingPreference: "more",
-		PreferredTerms:   []string{"老哥", "朋友", "姐妹", "老妹"},
-		BlockedTerms:     []string{"老板", "宝子"},
-	}, nil)
-	if plan.Candidate == "" {
-		t.Fatal("preferred addressing candidate should not be empty")
-	}
-	if !containsString([]string{"老哥", "朋友", "姐妹", "老妹"}, plan.Candidate) {
-		t.Fatalf("candidate=%q not selected from preferred terms", plan.Candidate)
-	}
-	if plan.Key != "preferred" {
-		t.Fatalf("preferred term should mark key=preferred, got %q", plan.Key)
-	}
-}
 
 func containsString(values []string, target string) bool {
 	for _, value := range values {
@@ -292,26 +161,6 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-func TestRoomAddressingPreferencesIgnoreBlockedBackendCandidate(t *testing.T) {
-	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
-	plan := worker.buildAddressingPlan(11, decisionItem{
-		ID:                "dynamic-room-addressing",
-		MissionKind:       "welcome_batch",
-		MissionEventCount: 3,
-		Nicknames:         []string{"小陈"},
-	}, "backend_babies", "宝子们", model.RoomAddressingPreferences{
-		NamingPreference: "natural",
-		PreferredTerms:   []string{"朋友"},
-		BlockedTerms:     []string{"宝子"},
-	}, nil)
-	if plan.Candidate != "朋友" || plan.Key != "preferred" {
-		t.Fatalf("room preference must replace backend candidate: %#v", plan)
-	}
-	guidance := addressingPlanGuidance(plan)
-	if !strings.Contains(guidance, "朋友") || !strings.Contains(guidance, "禁止使用") || !strings.Contains(guidance, "宝子") {
-		t.Fatalf("guidance must carry room preferred and blocked terms: %s", guidance)
-	}
-}
 
 func TestAddressingPreferredTermIsAudienceOnlyGuidance(t *testing.T) {
 	guidance := addressingPlanGuidance(speechmission.AddressingPlan{
@@ -1166,22 +1015,6 @@ func TestTTSInstructionIncludesHostStateAndTTSStyleReaction(t *testing.T) {
 	}
 }
 
-func TestMergedNamedWelcomeCoversGroupInsteadOfSingleViewer(t *testing.T) {
-	w := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
-	item := decisionItem{ID: "merged", MissionKind: "welcome_named", MissionEventCount: 7, Nicknames: []string{"星夜", "一期", "秀丽江山"}, PromptNicknames: []string{"星夜", "一期", "秀丽江山"}}
-	plan := w.buildAddressingPlan(11, item, "", "", model.RoomAddressingPreferences{}, nil)
-	if plan.Mode == "SINGLE" || len(plan.SelectedNames) < 2 || len(plan.SelectedNames) > 3 {
-		t.Fatal("merged welcome collapsed into one named viewer", plan)
-	}
-	single := item
-	single.MissionEventCount = 1
-	single.Nicknames = []string{"星夜"}
-	single.PromptNicknames = []string{"星夜"}
-	plan = w.buildAddressingPlan(11, single, "", "", model.RoomAddressingPreferences{}, nil)
-	if plan.Mode != "SINGLE" || len(plan.SelectedNames) != 1 {
-		t.Fatal("single viewer changed unnecessarily", plan)
-	}
-}
 
 func TestEmotionEnabledReadsPublishedVersionFlag(t *testing.T) {
 	store := readyVoiceStore()

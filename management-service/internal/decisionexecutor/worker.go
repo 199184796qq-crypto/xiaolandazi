@@ -440,51 +440,6 @@ func openingIntentForMission(item decisionItem) (string, string, string) {
 	}
 }
 
-func (w *Worker) applyAddressingStrategyStage(
-	ctx context.Context,
-	session model.LiveRuntimeSession,
-	seed string,
-	item *decisionItem,
-) {
-	if item == nil {
-		return
-	}
-
-	// Dynamic room interaction uses the room-level "称呼习惯" only.
-	// The backend strategy-center addressing pool belongs to scripted/mainline copy generation
-	// and must not leak into real-time replies, welcomes, likes or follow acknowledgements.
-	preferences, prefErr := w.store.GetRoomAddressingPreferences(ctx, session.TenantID, session.RoomID)
-	if prefErr != nil {
-		preferences = model.RoomAddressingPreferences{NamingPreference: "natural"}
-	}
-
-	// 主播风格主力称呼（每个直播间不同，动态获取）；综合用户 PreferredTerms 与中性托底，见 buildAddressingPlan。
-	anchorTerms := w.fetchAnchorAddressTerms(ctx, session)
-	plan := w.buildAddressingPlan(session.RoomID, *item, "room_preference", "", preferences, anchorTerms)
-	plan = applyAddressingFrequency(plan, *item, seed)
-	item.SelectedAddressing = plan.Candidate
-
-	guidance := addressingPlanGuidance(plan)
-	// 打招呼句式方向：按场景分池 + 严格避重（跳过最近用过的方向），避免机械重复。
-	if phrase := w.pickGreetingPhrase(session.RoomID, seed, interactionScene(item.MissionKind)); phrase != "" {
-		guidance += " " + phrase
-	}
-	item.addStrategyConstraint(strategyConstraint{
-		Stage:    "addressing",
-		Key:      plan.Key,
-		Name:     plan.Mode,
-		Guidance: guidance,
-		Required: !plan.Optional && !strings.EqualFold(plan.Mode, "NONE"),
-	})
-	w.updateMission(item, func(m *speechmission.Mission) {
-		m.Addressing = plan
-	})
-	log.Printf(
-		"decision dynamic addressing tenant=%d room=%d decision=%s source=room_preference mode=%s candidate=%s names=%s recent_penalty=%.2f optional=%t target_rate=%d selected_by_rate=%t",
-		session.TenantID, session.RoomID, item.ID, plan.Mode, plan.Candidate,
-		strings.Join(plan.SelectedNames, ","), plan.RecentNamePenalty, plan.Optional, plan.TargetRate, plan.SelectedByRate,
-	)
-}
 
 func addressingModeForMission(item decisionItem, candidate string) string {
 	if strings.TrimSpace(candidate) == "" {
@@ -537,129 +492,7 @@ func choosePreferredAddressingTerm(preferredTerms, blockedTerms []string, seed s
 	return candidates[int(binary.BigEndian.Uint32(sum[:4])%uint32(len(candidates)))]
 }
 
-func applyAddressingFrequency(plan speechmission.AddressingPlan, item decisionItem, seed string) speechmission.AddressingPlan {
-	// NONE（无合规昵称也无群称词）：保持 NONE，但 addressingPlanGuidance 的 NONE 分支
-	// 已改为"用主播主力称呼群称"，配合 answerSystemPrompt 硬约束，不裸奔。
-	if strings.EqualFold(strings.TrimSpace(plan.Mode), "NONE") {
-		plan.Optional = false
-		plan.TargetRate = 0
-		plan.SelectedByRate = false
-		return plan
-	}
-	rate := addressingTargetRate(plan.Preference)
-	// 点名必带场景：点名欢迎/暖场/产品问答必须点名，不降级群称。
-	if strings.EqualFold(strings.TrimSpace(item.MissionKind), "welcome_named") ||
-		strings.EqualFold(strings.TrimSpace(item.MissionKind), "warmup") ||
-		strings.EqualFold(strings.TrimSpace(item.MissionKind), "reply_question") {
-		rate = 100
-	}
-	plan.TargetRate = rate
-	bucketSeed := strings.Join([]string{
-		strings.TrimSpace(seed),
-		strings.TrimSpace(item.ID),
-		strings.TrimSpace(item.MissionKind),
-		strings.TrimSpace(plan.Candidate),
-	}, "|")
-	selected := stableAddressingBucket(bucketSeed) < rate
-	plan.SelectedByRate = selected
-	plan.Optional = !selected
-	if selected {
-		return plan
-	}
-	// 频率未命中：不裸奔，降级为群称（GROUP），保留 candidate 作群称词，清空点名名单。
-	// candidate 为空时，addressingPlanGuidance 的 GROUP 空词分支 + answerSystemPrompt 硬约束用主力称呼兜底。
-	plan.Mode = "GROUP"
-	plan.SelectedNames = nil
-	plan.OriginalSelectedNames = nil
-	plan.Optional = true
-	return plan
-}
 
-func (w *Worker) buildAddressingPlan(roomID int64, item decisionItem, key, candidate string, preferences model.RoomAddressingPreferences, anchorTerms []string) speechmission.AddressingPlan {
-	eligibleNames, recentPenalty := w.playableAddressingNames(roomID, item.promptNicknames(), item.Nicknames)
-	selectedNames := append([]string(nil), eligibleNames...)
-	preference := strings.ToLower(strings.TrimSpace(preferences.NamingPreference))
-	if preference != "less" && preference != "more" {
-		preference = "natural"
-	}
-	preferredTerms := cleanAddressingTerms(preferences.PreferredTerms)
-	blockedTerms := cleanAddressingTerms(preferences.BlockedTerms)
-	candidate = strings.TrimSpace(candidate)
-	// 称谓词优先级：主播风格主力称呼 + 用户 PreferredTerms（综合）
-	// → 传入的 candidate（后端候选）→ 中性托底（都为空时兜底）。
-	addressPool := cleanAddressingTerms(normalizeAddressPool(append(append([]string(nil), anchorTerms...), preferredTerms...)))
-	if len(addressPool) == 0 && candidate == "" {
-		addressPool = normalizeAddressPool(neutralAddressTerms)
-	}
-	// 不再固定偏向 anchorTerms[0]：调用方每次已打乱同类称呼顺序，
-	// 所有候选等权参与选择，避免长期只出现“朋友们”。
-	if preferred := choosePreferredAddressingTerm(addressPool, blockedTerms, item.ID); preferred != "" {
-		candidate = preferred
-		key = "preferred"
-	} else if addressingTermBlocked(candidate, blockedTerms) {
-		candidate = ""
-	}
-	if len(selectedNames) > 3 {
-		selectedNames = selectedNames[:3]
-	}
-	mode := addressingModeForPlan(item, candidate, selectedNames)
-	if preference == "less" && isAggregateAddressingMission(item) {
-		selectedNames = nil
-		if candidate != "" {
-			mode = "GROUP"
-		} else {
-			mode = "NONE"
-		}
-	}
-	if preference == "more" && len(selectedNames) > 0 && isAggregateAddressingMission(item) {
-		if candidate != "" {
-			mode = "MIXED"
-		} else {
-			mode = "SAMPLE"
-		}
-	}
-	switch mode {
-	case "NONE", "GROUP":
-		selectedNames = nil
-	case "SINGLE":
-		if len(selectedNames) > 1 {
-			selectedNames = selectedNames[:1]
-		}
-	}
-	maxNamedCount := 3
-	if preference == "less" {
-		maxNamedCount = 1
-	}
-	if key = strings.TrimSpace(key); key == "" {
-		key = strings.ToLower(mode)
-	}
-	originals := []string{}
-	for _, alias := range selectedNames {
-		original := alias
-		for i, n := range item.promptNicknames() {
-			if n == alias && i < len(item.Nicknames) {
-				original = item.Nicknames[i]
-				break
-			}
-		}
-		originals = append(originals, original)
-	}
-	return speechmission.AddressingPlan{
-		Mode:                  mode,
-		Candidate:             candidate,
-		Key:                   key,
-		Preference:            preference,
-		NamedCandidates:       eligibleNames,
-		SelectedNames:         selectedNames,
-		OriginalSelectedNames: originals,
-		PreferredTerms:        preferredTerms,
-		BlockedTerms:          blockedTerms,
-		GroupLabel:            candidate,
-		MaxNamedCount:         maxNamedCount,
-		RecentNamePenalty:     recentPenalty,
-		Optional:              true,
-	}
-}
 
 // anchorStyleAddressTerms 从主播风格评分基准解析主力/辅助/候选称呼。
 // 每个直播间的主播风格不同，主力称呼也不同，不能写死。
@@ -720,36 +553,6 @@ func (w *Worker) fetchAnchorAddressTerms(ctx context.Context, session model.Live
 	return anchorStyleAddressTerms(style.Profile)
 }
 
-// pickGreetingPhrase 按场景选打招呼句式方向，并严格避重（跳过最近用过的方向）。
-func (w *Worker) pickGreetingPhrase(roomID int64, seed, scene string) string {
-	pool := greetingScenePool(scene)
-	if len(pool) == 0 {
-		return ""
-	}
-	recent := w.recentGreetingPhrases(roomID)
-	candidates := make([]int, 0, len(pool))
-	for i, phrase := range pool {
-		used := false
-		for _, r := range recent {
-			if r == phrase {
-				used = true
-				break
-			}
-		}
-		if !used {
-			candidates = append(candidates, i)
-		}
-	}
-	if len(candidates) == 0 {
-		for i := range pool {
-			candidates = append(candidates, i)
-		}
-	}
-	sum := sha256.Sum256([]byte(strings.TrimSpace(seed)))
-	phrase := pool[candidates[int(binary.BigEndian.Uint32(sum[:4])%uint32(len(candidates)))]]
-	w.recordGreetingPhrase(roomID, phrase)
-	return phrase
-}
 
 func (w *Worker) recentGreetingPhrases(roomID int64) []string {
 	if w == nil {

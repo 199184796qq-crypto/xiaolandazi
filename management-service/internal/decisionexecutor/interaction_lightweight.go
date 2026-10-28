@@ -2,6 +2,7 @@ package decisionexecutor
 
 import (
 	"context"
+	"livecompanion/management/internal/addressing"
 	"log"
 	"strings"
 
@@ -349,32 +350,52 @@ func (w *Worker) resolveInteractionAddressing(ctx context.Context, session model
 		return phrase, phrase
 	}
 
-	// ② 房间称呼偏好 + 主播主力称呼。
+	// 没有模型（预览/测试）时用程序兜底串句；旧的 buildAddressingPlan 链路已整体移除。
 	preferences := model.RoomAddressingPreferences{NamingPreference: "natural"}
 	if w != nil && w.store != nil {
 		if p, err := w.store.GetRoomAddressingPreferences(ctx, session.TenantID, session.RoomID); err == nil {
 			preferences = p
 		}
 	}
-	var anchorTerms []string
-	if w != nil {
-		anchorTerms = w.fetchAnchorAddressTerms(ctx, session)
+	terms, _ := addressing.AddressTermSources{Room: preferences.PreferredTerms}.Resolve()
+	var forms []addressing.FormSet
+	for i, name := range item.promptNicknames() {
+		if name == "" || name == "这位朋友" {
+			continue
+		}
+		short := ""
+		if i < len(item.PromptShortNames) {
+			short = item.PromptShortNames[i]
+		}
+		forms = append(forms, addressing.FormsFor(name, short, terms))
 	}
-
-	// ③ 单/多人模式判定 + 渲染。
-	plan := w.buildAddressingPlan(session.RoomID, *item, "room_preference", "", preferences, anchorTerms)
-	guidance = addressingPlanGuidance(plan)
-
-	// 提取可播称呼：优先点名名单，其次群称词，最后主力称呼/「家人们」兜底。
-	address = playableAddressFromPlan(plan)
-
-
-
-	item.resolvedAddress = address
-	item.addressingGuidance = guidance
+	mode := "multi"
+	switch len(forms) {
+	case 0:
+		mode = "group"
+	case 1:
+		mode = "single"
+	}
+	kind := strings.ToLower(strings.TrimSpace(item.MissionKind))
+	scene := "answer"
+	switch {
+	case strings.HasPrefix(kind, "welcome"):
+		scene = "greeting"
+	case kind == "reply_like" || kind == "reply_follow" || kind == "conversion_signal":
+		if len(forms) > 1 {
+			scene = "thanks"
+		}
+	}
+	phrase := addressing.FallbackPhrase(addressing.PhraseInput{
+		Mode: mode, Scene: scene, People: forms, Terms: terms, GroupLabels: addressing.GroupLabelsFrom(terms),
+	})
+	plan := frozenAddressingPlan(*item)
+	item.PromptAddressPhrase = phrase
+	item.resolvedAddress = phrase
+	item.addressingGuidance = phrase
 	item.resolvedAddressingPlan = plan
 	w.updateMission(item, func(m *speechmission.Mission) { m.Addressing = plan })
-	return address, guidance
+	return phrase, phrase
 }
 
 // frozenAddressingPlan projects the frozen phrase back into the legacy plan
@@ -403,16 +424,4 @@ func frozenAddressingPlan(item decisionItem) speechmission.AddressingPlan {
 	return plan
 }
 
-// playableAddressFromPlan 从称呼计划里取一个可直接拼进话术的称呼字符串。
-func playableAddressFromPlan(plan speechmission.AddressingPlan) string {
-	if len(plan.SelectedNames) > 0 {
-		return plan.SelectedNames[0]
-	}
-	if g := strings.TrimSpace(plan.GroupLabel); g != "" {
-		return g
-	}
-	if strings.TrimSpace(plan.Candidate) != "" {
-		return strings.TrimSpace(plan.Candidate)
-	}
-	return "家人们"
-}
+
