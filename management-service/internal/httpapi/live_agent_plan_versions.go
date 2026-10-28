@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"livecompanion/management/internal/atomicfacts"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
@@ -438,7 +439,15 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 	// Build the invisible per-plan domain card from the same fact snapshot that
 	// this version will publish. Failure is non-fatal: retrieval falls back to
 	// the old fact path rather than blocking a save.
-	if card := s.buildPlanDomainCard(r.Context(), safety); card != nil {
+	// The answer path uses one-attribute facts; the mainline keeps SafeFacts.
+	// Building atomic facts here means the card, intent context and answer all
+	// reference the same IDs.
+	atomicText, _ := atomicfacts.Build(safety.SafeFacts)
+	if strings.TrimSpace(atomicText) == "" {
+		atomicText = safety.SafeFacts
+	}
+	input.GenerationContext["atomic_facts"] = atomicText
+	if card := s.buildPlanDomainCard(r.Context(), safety, atomicText); card != nil {
 		input.GenerationContext["domain_card"] = card
 	}
 	// 保存只做基础校验与资产生成；方案级匹配核对（validateRealtimeScheme）不卡保存入口，

@@ -114,6 +114,9 @@ func (w *Worker) interactionApprovedFacts(ctx context.Context, session model.Liv
 	if err != nil || strings.TrimSpace(asset.SafeFacts) == "" {
 		return published, "", fmt.Errorf("本场审核事实不可用，停止生成商品回答")
 	}
+	if atomic, ok := published.GenerationContext["atomic_facts"].(string); ok && strings.TrimSpace(atomic) != "" {
+		return published, atomic, nil
+	}
 	return published, asset.SafeFacts, nil
 }
 

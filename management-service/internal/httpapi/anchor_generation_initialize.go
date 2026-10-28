@@ -8,6 +8,7 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/anchorstylescore"
+	"livecompanion/management/internal/atomicfacts"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/stylecontract"
@@ -202,6 +203,9 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 	if err != nil {
 		return 0, 0, err
 	}
+	if atomic, _ := atomicfacts.Build(source.Facts); atomic != "" {
+		source.AtomicFacts = atomic
+	}
 	prompt, promptSource, err := loadSellingPointExtractionPrompt()
 	if err != nil {
 		return 0, 0, err
@@ -271,7 +275,11 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 	}
 	reportAnchorAnalysis(ctx, 40, "正在为你梳理商品讲解要点和讲解角度")
 	ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenant, PlanID: plan})
-	user, _ := json.Marshal(map[string]string{"fact_package": source.Facts})
+	poolFacts := source.Facts
+	if strings.TrimSpace(source.AtomicFacts) != "" {
+		poolFacts = source.AtomicFacts
+	}
+	user, _ := json.Marshal(map[string]string{"fact_package": poolFacts})
 	result, actual, err := s.completeAnchorStyleWorkbench(ctx, cfg.SellingPointProfileID, "selling_point_extraction", agentgateway.ResponseJSON, []agentgateway.Message{{Role: "system", Content: strings.ReplaceAll(prompt, "{{FACT_PACKAGE}}", "")}, {Role: "user", Content: string(user)}}, 7000, false)
 	if err != nil {
 		return 0, 0, err
@@ -448,7 +456,11 @@ func (s *Server) syncProductSellingPointPools(ctx context.Context, tenant, plan,
 	if len(active) == 0 {
 		return nil
 	}
-	scopedFacts, err := s.resolveProductCommonFacts(ctx, tenant, plan, source.Facts, active, profileID)
+	poolFacts := source.Facts
+	if strings.TrimSpace(source.AtomicFacts) != "" {
+		poolFacts = source.AtomicFacts
+	}
+	scopedFacts, err := s.resolveProductCommonFacts(ctx, tenant, plan, poolFacts, active, profileID)
 	if err != nil {
 		return err
 	}

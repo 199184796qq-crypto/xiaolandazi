@@ -33,17 +33,18 @@ type derivedField struct {
 	reviewSubjects map[string]string
 }
 type derivedInput struct {
-	Facts     string
-	WheelJSON string
-	lines     []string
-	factLines []derivedFactLine
-	wheel     anchorStyleSellingPointWheel
-	Fields    []derivedField
-	Reviews   []model.LiveRiskReview
-	Statuses  map[string]model.LiveRiskReview
-	Hashes    map[string]string
-	SourceSHA string
-	rewritten map[string]bool
+	Facts       string
+	AtomicFacts string
+	WheelJSON   string
+	lines       []string
+	factLines   []derivedFactLine
+	wheel       anchorStyleSellingPointWheel
+	Fields      []derivedField
+	Reviews     []model.LiveRiskReview
+	Statuses    map[string]model.LiveRiskReview
+	Hashes      map[string]string
+	SourceSHA   string
+	rewritten   map[string]bool
 }
 type derivedFactLine struct {
 	index      int

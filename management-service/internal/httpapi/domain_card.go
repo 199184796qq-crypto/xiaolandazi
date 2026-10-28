@@ -15,11 +15,14 @@ import (
 // buildPlanDomainCard turns the approved facts into an invisible, versioned
 // map from audience question dimensions to fact IDs. It is best-effort: a
 // model/parse failure returns nil and leaves the old retrieval path untouched.
-func (s *Server) buildPlanDomainCard(ctx context.Context, safety model.LiveDerivedSafetyAsset) *domaincard.Card {
-	if s == nil || s.store == nil || strings.TrimSpace(safety.SafeFacts) == "" {
+func (s *Server) buildPlanDomainCard(ctx context.Context, safety model.LiveDerivedSafetyAsset, factsText string) *domaincard.Card {
+	if s == nil || s.store == nil || strings.TrimSpace(factsText) == "" {
+		factsText = safety.SafeFacts
+	}
+	if strings.TrimSpace(factsText) == "" {
 		return nil
 	}
-	parsed := contentstrategy.Facts(safety.SafeFacts)
+	parsed := contentstrategy.Facts(factsText)
 	if len(parsed) < 2 {
 		return nil
 	}
