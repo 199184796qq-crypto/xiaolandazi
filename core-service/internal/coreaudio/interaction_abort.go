@@ -38,6 +38,17 @@ func (c *Client) AbortProgramInteraction(ctx context.Context, roomID int64, inte
 		c.mu.Unlock()
 		return audioout.RoomProgramSnapshot{}, ErrInteractionNotActive
 	}
+	programID, sessionID, controlRevision := program.ID, program.SessionID, program.ControlRevision
+	returnToken := ""
+	if state := program.InteractionReturn; state != nil {
+		returnToken = strings.TrimSpace(state.snapshot.Token)
+	}
+	if returnToken != "" {
+		if state := program.InteractionReturn; state == nil || strings.TrimSpace(state.snapshot.Token) != returnToken {
+			c.mu.Unlock()
+			return audioout.RoomProgramSnapshot{}, ErrInteractionNotActive
+		}
+	}
 	if program.ManualPaused {
 		// The operator owns the pause. Remove the dead interaction state but do
 		// not start audio behind their back.
@@ -114,6 +125,21 @@ func (c *Client) AbortProgramInteraction(ctx context.Context, roomID int64, inte
 	resumeSegmentID := ""
 	if program.TrackIndex >= 0 && program.TrackIndex < len(program.Tracks) {
 		resumeSegmentID = roomAudioSegmentAt(program.Tracks[program.TrackIndex].Timeline, resumeMS)
+	}
+	c.mu.Unlock()
+
+	// Revalidate the exact generation before any external side effect. A pause,
+	// program replacement or newer interaction that landed while preparing the
+	// resume must win over this recovery.
+	c.mu.Lock()
+	current := c.programs[roomID]
+	if current != program || current == nil || current.ID != programID || current.SessionID != sessionID || current.ControlRevision != controlRevision || current.CurrentTaskID != interactionTaskID || current.ManualPaused {
+		snapshot := audioout.RoomProgramSnapshot{RoomID: roomID, ServerTime: c.now().UTC()}
+		if current != nil {
+			snapshot = c.programSnapshotLocked(current, c.now().UTC())
+		}
+		c.mu.Unlock()
+		return snapshot, ErrInteractionNotActive
 	}
 	c.mu.Unlock()
 
