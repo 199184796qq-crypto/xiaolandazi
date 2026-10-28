@@ -58,6 +58,7 @@ func main() {
 		status addressing.Status
 		reason string
 		text   string
+		short  string
 	}
 	var rows []row
 	for scanner.Scan() {
@@ -70,7 +71,7 @@ func main() {
 			userID, name = parts[0], parts[1]
 		}
 		decision := rules.Check(name)
-		rows = append(rows, row{userID: userID, raw: name, status: decision.Status, reason: decision.Reason, text: decision.Text})
+		rows = append(rows, row{userID: userID, raw: name, status: decision.Status, reason: decision.Reason, text: decision.Text, short: decision.Short})
 		if decision.Status == addressing.StatusGrey {
 			items = append(items, addressing.GreyCandidate{Viewer: addressing.Viewer{UserID: userID, RawName: name}, Candidate: decision.Text})
 		}
@@ -110,9 +111,9 @@ func main() {
 	}
 
 	greyIndex := 0
-	fmt.Printf("%-3s %-30s %-10s %-14s %s\n", "#", "原昵称", "判定", "原因", "基础昵称")
+	fmt.Printf("%-3s %-30s %-10s %-14s %-24s %s\n", "#", "原昵称", "判定", "原因", "基础昵称", "简称")
 	for i, r := range rows {
-		base, reason := "", r.reason
+		base, short, reason := "", r.short, r.reason
 		status := string(r.status)
 		switch r.status {
 		case addressing.StatusSafe, addressing.StatusRewritten:
@@ -121,7 +122,7 @@ func main() {
 			if greyIndex < len(decisions) {
 				d := decisions[greyIndex]
 				if d.OK {
-					base = d.Base
+					base, short = d.Base, d.Short
 					reason = "model_ok"
 					status = "grey->ok"
 				} else {
@@ -134,7 +135,7 @@ func main() {
 		if base == "" {
 			base = "（集体称呼）"
 		}
-		fmt.Printf("%-3d %-30s %-10s %-14s %s\n", i+1, r.raw, status, reason, base)
+		fmt.Printf("%-3d %-30s %-10s %-14s %-24s %s\n", i+1, r.raw, status, reason, base, short)
 	}
 }
 

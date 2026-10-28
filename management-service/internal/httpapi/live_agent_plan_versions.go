@@ -476,6 +476,7 @@ func (s *Server) liveAgentPlanVersionList(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "读取直播智能体版本失败")
 		return
 	}
+	_, _ = s.store.BuildPlanPurposes(r.Context(), tenantID, planID)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
