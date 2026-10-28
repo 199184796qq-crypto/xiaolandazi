@@ -370,11 +370,6 @@ func (s *Store) GetLiveAgentPlanForRoom(ctx context.Context, tenantID, roomID in
 	err := s.db.QueryRowContext(ctx, `
 		SELECT selection.plan_id
 		FROM live_agent_room_plan_selections selection
-		INNER JOIN live_agent_plan_room_bindings binding
-			ON binding.tenant_id=selection.tenant_id
-			AND binding.room_id=selection.room_id
-			AND binding.plan_id=selection.plan_id
-			AND binding.status='active'
 		INNER JOIN live_agent_plans plan
 			ON plan.id=selection.plan_id AND plan.tenant_id=selection.tenant_id AND plan.status='active'
 		WHERE selection.tenant_id=? AND selection.room_id=?
@@ -460,26 +455,21 @@ func (s *Store) ListLiveAgentPlansForRoom(ctx context.Context, tenantID, roomID 
 func (s *Store) ListPublishedLiveAgentPlansForRoom(ctx context.Context, tenantID, roomID int64) ([]model.LiveAgentPlan, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT plan.id
-		FROM live_agent_plan_room_bindings binding
-		INNER JOIN live_agent_plans plan ON plan.id=binding.plan_id AND plan.tenant_id=binding.tenant_id
-		WHERE binding.tenant_id=? AND binding.room_id=?
-			AND binding.status='active' AND plan.status='active'
+		FROM live_agent_plans plan
+		WHERE plan.tenant_id=? AND plan.status='active'
 			AND EXISTS (
-				SELECT 1
-				FROM live_agent_plan_versions version
-				WHERE version.tenant_id=binding.tenant_id
-					AND version.plan_id=binding.plan_id
+				SELECT 1 FROM live_agent_plan_versions version
+				WHERE version.tenant_id=plan.tenant_id
+					AND version.plan_id=plan.id
 					AND version.lifecycle_status IN ('draft','published','superseded')
 			)
 		ORDER BY
-			CASE WHEN binding.plan_id=(
-				SELECT selection.plan_id
-				FROM live_agent_room_plan_selections selection
-				WHERE selection.tenant_id=binding.tenant_id AND selection.room_id=binding.room_id
-				LIMIT 1
+			CASE WHEN plan.id=(
+				SELECT selection.plan_id FROM live_agent_room_plan_selections selection
+				WHERE selection.tenant_id=? AND selection.room_id=? LIMIT 1
 			) THEN 0 ELSE 1 END,
-			binding.bound_at DESC, binding.id DESC
-	`, tenantID, roomID)
+			plan.updated_at DESC, plan.id DESC
+	`, tenantID, tenantID, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -548,13 +538,6 @@ func (s *Store) IsRoomBoundToLiveAgentPlan(ctx context.Context, tenantID, roomID
 }
 
 func (s *Store) SelectLiveAgentPlanForRoom(ctx context.Context, tenantID, planID, roomID, actorUserID int64) (model.LiveAgentPlan, error) {
-	bound, err := s.IsRoomBoundToLiveAgentPlan(ctx, tenantID, roomID, planID)
-	if err != nil {
-		return model.LiveAgentPlan{}, err
-	}
-	if !bound {
-		return model.LiveAgentPlan{}, ErrLiveAgentPlanNotFound
-	}
 	published, err := s.IsLiveAgentPlanPublishedForRoom(ctx, tenantID, roomID, planID)
 	if err != nil {
 		return model.LiveAgentPlan{}, err

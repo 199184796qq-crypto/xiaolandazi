@@ -75,7 +75,7 @@ func (c *planSaveConn) QueryContext(_ context.Context, q string, a []driver.Name
 		return &contentPolicyTestRows{columns: []string{"id", "mode"}, values: [][]driver.Value{{int64(48), "ai_dynamic"}, {int64(47), "ai_dynamic"}, {int64(46), "ai_dynamic"}, {int64(45), "ai_dynamic"}, {int64(44), "ai_dynamic"}, {int64(43), "user_audio"}, {int64(42), "ai_dynamic"}}}, nil
 	}
 	if strings.Contains(q, "selection.tenant_id=?") {
-		if strings.Contains(q, "published_at IS NOT NULL") || strings.Contains(q, "publication.version_id=") || !strings.Contains(q, "ORDER BY live_agent_plan_versions.id DESC") || strings.Contains(q, "selection.room_id=live_agent_plan_versions.room_id") || !strings.Contains(q, "binding.status='active'") || !strings.Contains(q, "access.selected_mode") {
+		if strings.Contains(q, "published_at IS NOT NULL") || strings.Contains(q, "publication.version_id=") || !strings.Contains(q, "ORDER BY live_agent_plan_versions.id DESC") || strings.Contains(q, "selection.room_id=live_agent_plan_versions.room_id") || !strings.Contains(q, "access.selected_mode") {
 			return nil, errors.New("not latest scoped saved version")
 		}
 	}

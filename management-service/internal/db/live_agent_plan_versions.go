@@ -400,9 +400,6 @@ func (s *Store) GetPublishedLiveAgentPlanVersionForRoom(
 		INNER JOIN live_agent_room_plan_selections selection
 		        ON selection.tenant_id=live_agent_plan_versions.tenant_id
 		       AND selection.plan_id=live_agent_plan_versions.plan_id
-		INNER JOIN live_agent_plan_room_bindings binding
-		       ON binding.tenant_id=selection.tenant_id AND binding.room_id=selection.room_id
-		      AND binding.plan_id=selection.plan_id AND binding.status='active'
 		LEFT JOIN live_room_content_access access
 		       ON access.tenant_id=live_agent_plan_versions.tenant_id
 		      AND access.room_id=selection.room_id
