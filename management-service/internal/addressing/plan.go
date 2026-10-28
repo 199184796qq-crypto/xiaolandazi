@@ -126,7 +126,45 @@ func Build(viewers []Viewer, rules *Rules, r *rand.Rand) Plan {
 	default:
 		plan.Mode = "mixed"
 	}
+	resolveDuplicateAddresses(&plan, rules)
 	return plan
+}
+
+// resolveDuplicateAddresses extends the spoken digits when two auto-generated
+// accounts would otherwise answer to the same address in one batch.
+func resolveDuplicateAddresses(plan *Plan, rules *Rules) {
+	counts := make(map[string]int, len(plan.Picked))
+	for _, picked := range plan.Picked {
+		counts[picked.Text]++
+	}
+	for i := range plan.Picked {
+		picked := &plan.Picked[i]
+		if counts[picked.Text] <= 1 {
+			continue
+		}
+		if picked.Decision.Reason != "generic_account_digits" && picked.Decision.Reason != "digits_only" {
+			continue
+		}
+		for n := 4; n <= 12; n++ {
+			var candidate string
+			var ok bool
+			if picked.Decision.Reason == "digits_only" {
+				candidate, ok = DigitsAddress(picked.RawName, n)
+			} else {
+				candidate, ok = rules.HardBlock.AccountAddress(picked.RawName, n)
+			}
+			if !ok {
+				break
+			}
+			if counts[candidate] > 0 {
+				continue
+			}
+			counts[picked.Text]--
+			picked.Text = candidate
+			counts[candidate] = 1
+			break
+		}
+	}
 }
 
 func dedupeViewers(viewers []Viewer) []Viewer {

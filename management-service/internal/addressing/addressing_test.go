@@ -1,4 +1,4 @@
-﻿package addressing
+package addressing
 
 import (
 	"math/rand"
@@ -38,7 +38,7 @@ func TestCheckHardRules(t *testing.T) {
 		{"微信abc123", StatusDropped, ""},
 		{"我是你爸爸", StatusGrey, "我是你爸爸"},
 		{"叫我老板", StatusDropped, ""},
-		{"12345678", StatusDropped, ""},
+		{"12345678", StatusRewritten, "一二三四"},{"8412836552", StatusRewritten, "八四一二"},{"用户6008101088461梅梅", StatusRewritten, "梅梅"},
 		{"小林12345678", StatusRewritten, "小林"},
 		{"小陈***隐藏部分", StatusRewritten, "小陈"},
 		{"***隐藏部分", StatusDropped, ""},
@@ -113,7 +113,7 @@ func TestBuildNeverNamesDroppedOnlyBatch(t *testing.T) {
 	rules := testRules(t)
 	viewers := []Viewer{
 		{UserID: "1", RawName: "微信加我"},
-		{UserID: "2", RawName: "123456"},
+		{UserID: "2", RawName: "滚"},
 	}
 	plan := Build(viewers, rules, rand.New(rand.NewSource(3)))
 	if plan.Mode != "group" || len(plan.Picked) != 0 {
@@ -131,5 +131,20 @@ func TestShortenKeepsSuffixTitle(t *testing.T) {
 	}
 	if got := Shorten("小明", *rules); got != "小明" {
 		t.Fatalf("Shorten=%q", got)
+	}
+}
+
+func TestDuplicateAccountAddressesAreExtended(t *testing.T) {
+	rules := testRules(t)
+	plan := Plan{Picked: []Picked{
+		{Viewer: Viewer{UserID: "1", RawName: "用户2616106374192"}, Decision: Decision{Reason: "generic_account_digits"}, Text: "用户二六一"},
+		{Viewer: Viewer{UserID: "2", RawName: "用户2613503868174"}, Decision: Decision{Reason: "generic_account_digits"}, Text: "用户二六一"},
+	}}
+	resolveDuplicateAddresses(&plan, rules)
+	if plan.Picked[0].Text == plan.Picked[1].Text {
+		t.Fatalf("collision kept: %s", plan.Picked[0].Text)
+	}
+	if !strings.HasPrefix(plan.Picked[0].Text, "用户二六一") {
+		t.Fatalf("address changed base: %s", plan.Picked[0].Text)
 	}
 }

@@ -166,26 +166,27 @@ func (r Rules) Check(raw string) Decision {
 	if containsAny(name, r.HardBlock.CommandTerms) {
 		return Decision{Status: StatusDropped, Reason: "command"}
 	}
+	// A pure-digit nickname keeps its first four digits as spoken numerals, so it
+	// is still a usable, distinguishable address instead of being dropped.
 	if allDigits(name) {
-		return Decision{Status: StatusDropped, Reason: "digits_only"}
+		return Decision{Status: StatusRewritten, Text: chineseDigits(firstDigits(name, 4)), Reason: "digits_only"}
 	}
-	// "用户4001612171583" is an auto-generated account. Keep the account prefix
-	// plus the first three digits after it as spoken Chinese numerals, so TTS
-	// reads a short name instead of a long number string.
-	if prefix, digits, ok := r.HardBlock.splitGenericAccount(name); ok {
-		if len(digits) == 0 {
+	// Auto-generated accounts: "用户4001612171583" becomes 用户+前三位; a trailing
+	// real name ("用户6008101088461梅梅") keeps only 梅梅.
+	if prefix, digits, rest, ok := r.HardBlock.parseGenericAccount(name); ok {
+		switch {
+		case digits == "" && rest == "":
 			return Decision{Status: StatusDropped, Reason: "generic_account"}
+		case digits != "" && rest != "":
+			name = rest
+		case digits != "":
+			return Decision{Status: StatusRewritten, Text: prefix + chineseDigits(firstDigits(digits, 3)), Reason: "generic_account_digits"}
 		}
-		head := digits
-		if utf8.RuneCountInString(head) > 3 {
-			head = string([]rune(head)[:3])
-		}
-		return Decision{Status: StatusRewritten, Text: prefix + chineseDigits(head), Reason: "generic_account_digits"}
 	}
 	if longestDigits(name) >= r.HardBlock.MaxContinuousDigits {
 		name = stripDigits(name)
 		if strings.TrimSpace(name) == "" {
-			return Decision{Status: StatusDropped, Reason: "digits_only"}
+			return Decision{Status: StatusRewritten, Text: chineseDigits(firstDigits(stripDigits(raw), 4)), Reason: "digits_only"}
 		}
 	}
 	name = stripSymbols(name)
@@ -308,9 +309,10 @@ func (h HardBlock) isGenericAccount(name string) bool {
 	return false
 }
 
-// splitGenericAccount reports an auto-generated account prefix followed only by
-// digits ("用户4001612171583"); an ordinary name like "用户小王" is not one.
-func (h HardBlock) splitGenericAccount(name string) (string, string, bool) {
+// parseGenericAccount splits an auto-generated account name into its prefix,
+// leading digit run and any trailing text ("用户4001612171583" →
+// 用户/4001612171583/"" ; "用户6008101088461梅梅" → 用户/6008101088461/梅梅).
+func (h HardBlock) parseGenericAccount(name string) (string, string, string, bool) {
 	name = strings.TrimSpace(name)
 	for _, prefix := range h.GenericPrefixes {
 		if prefix == "" || !strings.HasPrefix(name, prefix) {
@@ -318,14 +320,46 @@ func (h HardBlock) splitGenericAccount(name string) (string, string, bool) {
 		}
 		rest := strings.TrimSpace(strings.TrimPrefix(name, prefix))
 		if rest == "" {
-			return prefix, "", true
+			return prefix, "", "", true
 		}
-		if allDigits(rest) {
-			return prefix, rest, true
+		runes := []rune(rest)
+		cut := 0
+		for cut < len(runes) && unicode.IsDigit(runes[cut]) {
+			cut++
 		}
-		return "", "", false
+		if cut == 0 {
+			// 用户小王 is an ordinary name, not an account.
+			return "", "", "", false
+		}
+		return prefix, string(runes[:cut]), string(runes[cut:]), true
 	}
-	return "", "", false
+	return "", "", "", false
+}
+
+// AccountAddress returns the account prefix plus its first n digits as spoken
+// numerals, used to break collisions inside one batch.
+func (h HardBlock) AccountAddress(raw string, n int) (string, bool) {
+	prefix, digits, rest, ok := h.parseGenericAccount(raw)
+	if !ok || digits == "" || rest != "" || n <= 0 {
+		return "", false
+	}
+	return prefix + chineseDigits(firstDigits(digits, n)), true
+}
+
+// DigitsAddress spells the first n digits of a pure-digit nickname.
+func DigitsAddress(raw string, n int) (string, bool) {
+	if !allDigits(raw) || n <= 0 {
+		return "", false
+	}
+	return chineseDigits(firstDigits(raw, n)), true
+}
+
+func firstDigits(digits string, n int) string {
+	runes := []rune(digits)
+	if n > len(runes) {
+		n = len(runes)
+	}
+	return string(runes[:n])
 }
 
 // chineseDigits spells an account suffix digit by digit so TTS never reads it
