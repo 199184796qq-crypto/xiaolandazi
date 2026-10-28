@@ -198,6 +198,13 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "mainline_unavailable", "item": queue[0]})
 		return
 	}
+	// Do not start an ordinary interaction on the last few seconds of mainline.
+	// The old path could start a 13s answer while only 5s of mainline remained,
+	// then exhaust the queue and strand the engine in interrupt.
+	if queue[0].ManualAction != "quick" && (program.WaitingForContent || program.BufferedMainlineMS < 15000) {
+		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "mainline_low_buffer", "item": queue[0], "buffered_mainline_ms": program.BufferedMainlineMS})
+		return
+	}
 	plannedSwitchMS := 0
 	currentMainline := ""
 	resumeMainline := ""
