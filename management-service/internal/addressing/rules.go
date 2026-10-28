@@ -31,6 +31,7 @@ type DiceRules struct {
 
 type HardBlock struct {
 	ContactTerms        []string `json:"contact_terms"`
+	GenericPrefixes     []string `json:"generic_prefixes"`
 	InsultTerms         []string `json:"insult_terms"`
 	SemanticTerms       []string `json:"semantic_terms"`
 	CommandTerms        []string `json:"command_terms"`
@@ -51,7 +52,8 @@ func DefaultRules() Rules {
 		Version: 1,
 		Dice:    DiceRules{Max: 5, Pick: "recent"},
 		HardBlock: HardBlock{
-			ContactTerms:        []string{"微信", "加v", "vx", "手机", "电话", "qq"},
+			ContactTerms:        []string{"微信", "加v", "vx", "手机", "电话", "qq", "联系我", "专卖店", "出租"},
+			GenericPrefixes:     []string{"用户", "抖音用户", "游客", "访客"},
 			InsultTerms:         []string{"滚", "骗子", "假货", "垃圾"},
 			SemanticTerms:       []string{"爸爸", "妈妈", "老公", "老婆", "主人"},
 			CommandTerms:        []string{"叫我", "喊我", "命令", "必须"},
@@ -155,7 +157,9 @@ func (r Rules) Check(raw string) Decision {
 	if containsAny(name, r.HardBlock.InsultTerms) {
 		return Decision{Status: StatusDropped, Reason: "insult"}
 	}
-	if containsAny(name, r.HardBlock.SemanticTerms) {
+	// A name that contains a kinship term ("二楠妈妈") is still a person; only a
+	// name that IS the term ("妈妈") asks to be called that.
+	if r.HardBlock.isSemanticName(name) {
 		return Decision{Status: StatusDropped, Reason: "semantic_relation"}
 	}
 	if containsAny(name, r.HardBlock.CommandTerms) {
@@ -173,6 +177,10 @@ func (r Rules) Check(raw string) Decision {
 	name = stripSymbols(name)
 	if strings.TrimSpace(name) == "" {
 		return Decision{Status: StatusDropped, Reason: "symbols_only"}
+	}
+	// "用户4001612171583" is an auto-generated account, not a person's name.
+	if r.HardBlock.isGenericAccount(name) {
+		return Decision{Status: StatusDropped, Reason: "generic_account"}
 	}
 	if hasHan(name) && hasLatin(name) {
 		return Decision{Status: StatusGrey, Text: name, Reason: "mixed_script"}
@@ -241,17 +249,40 @@ func stripDigits(name string) string {
 	return strings.TrimSpace(b.String())
 }
 
-// stripSymbols keeps letters, Han characters, digits and spaces; decoration and
-// emoji never reach speech.
+// stripSymbols keeps Han characters, Latin letters, digits and spaces; kana,
+// emoji and decoration never reach speech.
 func stripSymbols(name string) string {
 	var b strings.Builder
 	for _, ch := range name {
 		switch {
-		case unicode.IsLetter(ch), unicode.IsDigit(ch), unicode.Is(unicode.Han, ch), ch == ' ':
+		case unicode.Is(unicode.Han, ch), unicode.Is(unicode.Latin, ch), unicode.IsDigit(ch), ch == ' ':
 			b.WriteRune(ch)
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// isSemanticName matches only a name that is exactly a kinship/relationship
+// term; "二楠妈妈" stays a person's name.
+func (h HardBlock) isSemanticName(name string) bool {
+	name = strings.TrimSpace(name)
+	for _, term := range h.SemanticTerms {
+		if term != "" && name == term {
+			return true
+		}
+	}
+	return false
+}
+
+// isGenericAccount matches auto-generated account names such as "用户".
+func (h HardBlock) isGenericAccount(name string) bool {
+	name = strings.TrimSpace(name)
+	for _, prefix := range h.GenericPrefixes {
+		if prefix != "" && name == prefix {
+			return true
+		}
+	}
+	return false
 }
 
 func hasHan(name string) bool {

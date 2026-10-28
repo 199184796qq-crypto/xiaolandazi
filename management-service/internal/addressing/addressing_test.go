@@ -46,6 +46,13 @@ func TestCheckHardRules(t *testing.T) {
 		{"小陈🎉", StatusRewritten, "小陈"},
 		{"超级爱吃苹果的人", StatusGrey, "超级爱吃苹果的人"},
 		{"Ann Lee", StatusSafe, "Ann Lee"},
+		// Real production names that exposed rule gaps on 2026-10-28.
+		{"二楠妈妈", StatusSafe, "二楠妈妈"},
+		{"妈妈", StatusDropped, ""},
+		{"用户4001612171583", StatusDropped, ""},
+		{"卟过如此ヤ", StatusRewritten, "卟过如此"},
+		{"雅迪电动车(丰收路专卖店)", StatusDropped, ""},
+		{"拖拉机出租，需要起箱，打田打地联系我", StatusDropped, ""},
 	}
 	for _, tc := range cases {
 		got := rules.Check(tc.raw)
