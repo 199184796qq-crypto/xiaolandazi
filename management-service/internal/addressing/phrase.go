@@ -23,6 +23,7 @@ type PhraseInput struct {
 	Terms       []string // 称谓词：老乡、朋友、家人们…
 	GroupLabels []string // 集体称呼
 	Style       string   // 热情 / 俏皮 / 接地气
+	Recent      []string // 最近用过的话术，避免重复
 }
 
 // StyleHints are rotated so consecutive welcomes do not sound identical.
@@ -100,7 +101,8 @@ func PhrasePrompt(in PhraseInput, r *rand.Rand) (string, string) {
 4. 昵称本身已带称谓（哥/姐/老板/师傅）时不要再叠加；性别称谓必须成对（哥姐、哥哥姐姐），禁止单独用“哥”或“姐”。
 5. 只能用一个集体称呼，不要同时用“老乡们”和“几位朋友”。
 6. %s
-7. 不要输出解释、不要引号外的内容。
+7. 不要与 recent 里给出的话术雷同，换个开头、句式和称谓组合。
+8. 不要输出解释、不要引号外的内容。
 
 示例：
 %s`, title, sceneRule, examples)
@@ -114,6 +116,7 @@ func PhrasePrompt(in PhraseInput, r *rand.Rand) (string, string) {
 		"terms":        in.Terms,
 		"group_labels": in.GroupLabels,
 		"style":        style,
+		"recent":       in.Recent,
 	})
 	return system, string(payload)
 }

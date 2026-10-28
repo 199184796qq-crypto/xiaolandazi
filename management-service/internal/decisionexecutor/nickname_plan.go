@@ -431,8 +431,18 @@ func (w *Worker) phraseAddress(ctx context.Context, s model.LiveRuntimeSession, 
 			scene = "thanks"
 		}
 	}
-	in := addressing.PhraseInput{Mode: mode, Scene: scene, People: forms, Terms: resolvedTerms, GroupLabels: groupLabels}
-	system, user := addressing.PhrasePrompt(in, nil)
+	var recent []string
+	w.addressMu.Lock()
+	if w.recentPhrases != nil {
+		recent = append([]string(nil), w.recentPhrases[s.RoomID]...)
+	}
+	w.addressMu.Unlock()
+	in := addressing.PhraseInput{Mode: mode, Scene: scene, People: forms, Terms: resolvedTerms, GroupLabels: groupLabels, Recent: recent}
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	if w.nicknameRandSeed != 0 {
+		r = rand.New(rand.NewSource(w.nicknameRandSeed))
+	}
+	system, user := addressing.PhrasePrompt(in, r)
 	response, err := w.completePaidModel(ctx, s, agentgateway.Request{
 		Stage:          "interaction_addressing_plan",
 		Messages:       []agentgateway.Message{{Role: "system", Content: system}, {Role: "user", Content: user}},
@@ -443,10 +453,31 @@ func (w *Worker) phraseAddress(ctx context.Context, s model.LiveRuntimeSession, 
 	if err == nil {
 		if phrase, parseErr := addressing.ParsePhrase(response.Text, in); parseErr == nil {
 			item.PromptAddressPhrase = phrase
+			w.rememberPhrase(s.RoomID, phrase)
 			return
 		}
 	}
 	item.PromptAddressPhrase = fallbackAddressPhrase(in)
+	w.rememberPhrase(s.RoomID, item.PromptAddressPhrase)
+}
+
+// rememberPhrase keeps the last few spoken addresses per room so the next one
+// can avoid repeating the same wording.
+func (w *Worker) rememberPhrase(roomID int64, phrase string) {
+	phrase = strings.TrimSpace(phrase)
+	if roomID <= 0 || phrase == "" {
+		return
+	}
+	w.addressMu.Lock()
+	defer w.addressMu.Unlock()
+	if w.recentPhrases == nil {
+		w.recentPhrases = map[int64][]string{}
+	}
+	list := append(w.recentPhrases[roomID], phrase)
+	if len(list) > 5 {
+		list = list[len(list)-5:]
+	}
+	w.recentPhrases[roomID] = list
 }
 
 // fallbackAddressPhrase delegates to the shared addressing fallback.
