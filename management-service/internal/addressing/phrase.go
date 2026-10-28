@@ -95,8 +95,8 @@ func PhrasePrompt(in PhraseInput, r *rand.Rand) (string, string) {
 
 规则（所有场景一致）：
 1. 只能用给定的人名形式和集体称呼，不能编造、不能改字、不能加数字。
-2. 单人时只叫这一个人，不出现集体称呼；多人时点 1-2 个人名，其余用集体称呼或“你们”覆盖。
-3. 同一条里称谓词统一，不重复；同一个人名不出现两次。
+2. 单人时只叫这一个人，不出现集体称呼；多人时点 1-3 个人名，每个名字后面可带同一个称谓（如“平安无事老乡、jk老乡”），其余用集体称呼覆盖。
+3. 同一条里称谓词统一，可以给每个点名的人重复同一个称谓；同一个人名不出现两次。
 4. 昵称本身已带称谓（哥/姐/老板/师傅）时不要再叠加；性别称谓必须成对（哥姐、哥哥姐姐），禁止单独用“哥”或“姐”。
 5. 只能用一个集体称呼，不要同时用“老乡们”和“几位朋友”。
 6. %s
@@ -195,13 +195,8 @@ func ValidatePhrase(address string, in PhraseInput) error {
 				}
 			}
 		}
-		if mentioned > 2 {
-			return fmt.Errorf("多人称呼点名超过 2 人")
-		}
-	}
-	for _, term := range in.Terms {
-		if term != "" && strings.Count(address, term) > 1 {
-			return fmt.Errorf("称谓词重复：%s", term)
+		if mentioned > 3 {
+			return fmt.Errorf("多人称呼点名超过 3 人")
 		}
 	}
 	if err := validateGenderPairs(address, in); err != nil {

@@ -36,6 +36,7 @@ func scenarios() []scenario {
 		{ID: "9", Desc: "问候·全部不合规 只用集体", In: addressing.PhraseInput{Mode: "group", People: nil, Terms: terms, GroupLabels: labels}},
 		{ID: "10", Desc: "问候·多人 余哥/芝士小宝贝", In: addressing.PhraseInput{Mode: "multi", People: []addressing.FormSet{person("余哥", "余哥"), person("芝士小宝贝", "芝士")}, Terms: terms, GroupLabels: labels}},
 		{ID: "11", Desc: "问答·提问者 小斌", In: addressing.PhraseInput{Mode: "single", Scene: "answer", People: []addressing.FormSet{person("小斌", "小斌")}, Terms: terms, GroupLabels: labels}},
+		{ID: "13", Desc: "多人·三人逐个带称谓", In: addressing.PhraseInput{Mode: "multi", People: []addressing.FormSet{person("平安无事", "平安"), person("jk", "jk"), person("绿色之光", "绿色")}, Terms: terms, GroupLabels: labels}},
 		{ID: "12", Desc: "问答·提问者 挖坑不会埋", In: addressing.PhraseInput{Mode: "single", Scene: "answer", People: []addressing.FormSet{person("挖坑不会埋", "挖坑")}, Terms: terms, GroupLabels: labels}},
 	}
 }
