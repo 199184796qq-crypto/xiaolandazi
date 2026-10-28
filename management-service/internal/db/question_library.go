@@ -89,9 +89,6 @@ func (s *Store) AppendQuestionGap(ctx context.Context, tenantID, roomID, planID 
 	}
 	normalized := normalizeGapQuestion(question)
 	for _, item := range existing {
-		if item.QuestionType != questionType {
-			continue
-		}
 		other := normalizeGapQuestion(item.Question)
 		if other == "" {
 			continue
