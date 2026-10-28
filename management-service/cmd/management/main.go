@@ -311,6 +311,7 @@ func main() {
 	runtimeReconciler.SetDeviceStopCleanup(api.StopHardwareRoomAudio)
 	go runtimeReconciler.Run(appCtx)
 	agentGateway := agentgateway.NewFromEnv().WithSpeechModels(store)
+	api.SetAgentGateway(agentGateway)
 	semanticEmbedder := semantic.NewFromEnv()
 	semanticService := semantic.NewService(semanticEmbedder, store)
 	api.SetSemanticMetricsReader(semanticService)

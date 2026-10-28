@@ -629,7 +629,11 @@ func (s *Server) CompleteLivePaidModel(ctx context.Context, session model.LiveRu
 	// the environment default.
 	billingRequest := request
 	if strings.TrimSpace(billingRequest.Model) == "" {
-		if provider, model, resolveErr := agentgateway.NewFromContext(ctx).ResolveStageModel(ctx, request.Stage); resolveErr == nil && model != "" {
+		resolver := agentgateway.NewFromContext(ctx)
+		if s.agentGateway != nil {
+			resolver = s.agentGateway
+		}
+		if provider, model, resolveErr := resolver.ResolveStageModel(ctx, request.Stage); resolveErr == nil && model != "" {
 			billingRequest.Provider, billingRequest.Model = provider, model
 		}
 	}

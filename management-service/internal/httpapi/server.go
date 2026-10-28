@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/anchorvoicecache"
 	auditlog "livecompanion/management/internal/audit"
@@ -45,6 +46,7 @@ type SemanticMetricsReader interface {
 }
 
 type Server struct {
+	agentGateway         *agentgateway.Gateway
 	purposeInternalToken string
 	purposeSemantic      *semantic.Service
 	inbox                *workinbox.Service
@@ -1622,4 +1624,10 @@ func requestLogger(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		fmt.Printf("[management] %s %s %s\n", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
 	})
+}
+
+// SetAgentGateway wires the production model resolver so paid records name the
+// model that actually answers, not the environment default.
+func (s *Server) SetAgentGateway(gateway *agentgateway.Gateway) {
+	s.agentGateway = gateway
 }
