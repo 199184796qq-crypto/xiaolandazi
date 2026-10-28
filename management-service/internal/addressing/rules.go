@@ -170,18 +170,17 @@ func (r Rules) Check(raw string) Decision {
 		return Decision{Status: StatusDropped, Reason: "digits_only"}
 	}
 	// "用户4001612171583" is an auto-generated account. Keep the account prefix
-	// plus the last three digits as spoken Chinese numerals, so TTS reads it as a
-	// name instead of a long number string.
+	// plus the first three digits after it as spoken Chinese numerals, so TTS
+	// reads a short name instead of a long number string.
 	if prefix, digits, ok := r.HardBlock.splitGenericAccount(name); ok {
 		if len(digits) == 0 {
 			return Decision{Status: StatusDropped, Reason: "generic_account"}
 		}
-		tail := digits
-		if utf8.RuneCountInString(tail) > 3 {
-			runes := []rune(tail)
-			tail = string(runes[len(runes)-3:])
+		head := digits
+		if utf8.RuneCountInString(head) > 3 {
+			head = string([]rune(head)[:3])
 		}
-		return Decision{Status: StatusRewritten, Text: prefix + chineseDigits(tail), Reason: "generic_account_digits"}
+		return Decision{Status: StatusRewritten, Text: prefix + chineseDigits(head), Reason: "generic_account_digits"}
 	}
 	if longestDigits(name) >= r.HardBlock.MaxContinuousDigits {
 		name = stripDigits(name)
