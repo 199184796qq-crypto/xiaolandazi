@@ -27,6 +27,9 @@ func ensureAddressPunctuation(text, address string) string {
 		switch runes[next] {
 		case '，', '。', '！', '？', '、', '；', '：', ' ', '\n', '~', '～', '…':
 			return text
+		case '的', '了', '啊', '呀', '吧', '吗', '呢', '么', '着', '过':
+			// 称呼后直接跟助词时不能断句（「等等的点赞」）。
+			return text
 		}
 		out := make([]rune, 0, len(runes)+1)
 		out = append(out, runes[:next]...)
