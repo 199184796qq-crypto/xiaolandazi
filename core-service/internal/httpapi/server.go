@@ -404,6 +404,10 @@ func (s *Server) batchRoomRuntimeStates(w http.ResponseWriter, r *http.Request) 
 		AgentLeaseUntil            *time.Time           `json:"agent_lease_until,omitempty"`
 		AgentUpdatedAt             time.Time            `json:"agent_updated_at"`
 		SessionResumePending       bool                 `json:"session_resume_pending"`
+		AudioPhase                 string               `json:"audio_phase,omitempty"`
+		AudioActiveSource          string               `json:"audio_active_source,omitempty"`
+		AudioOutputPTSMS           int64                `json:"audio_output_pts_ms,omitempty"`
+		AudioUpdatedAt             time.Time            `json:"audio_updated_at,omitempty"`
 	}
 	items := make([]stateItem, 0, len(rooms))
 	for _, room := range rooms {
@@ -417,6 +421,10 @@ func (s *Server) batchRoomRuntimeStates(w http.ResponseWriter, r *http.Request) 
 			if stats, statsErr := s.events.GetSessionStats(r.Context(), room.ID); statsErr == nil {
 				resumePending = stats.ResumePending
 			}
+		}
+		var audio roomaudio.Snapshot
+		if s.roomAudio != nil {
+			audio = s.roomAudio.Snapshot(room.ID)
 		}
 		items = append(items, stateItem{
 			CoreBootID:                 agent.BootID,
@@ -433,6 +441,10 @@ func (s *Server) batchRoomRuntimeStates(w http.ResponseWriter, r *http.Request) 
 			AgentLeaseUntil:            agent.LeaseUntil,
 			AgentUpdatedAt:             agent.UpdatedAt,
 			SessionResumePending:       resumePending,
+			AudioPhase:                 string(audio.Phase),
+			AudioActiveSource:          string(audio.ActiveSource),
+			AudioOutputPTSMS:           audio.OutputPTSMS,
+			AudioUpdatedAt:             audio.UpdatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})

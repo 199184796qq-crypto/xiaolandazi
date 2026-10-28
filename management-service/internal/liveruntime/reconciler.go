@@ -37,6 +37,9 @@ type Reconciler struct {
 
 	resumePendingMu    sync.Mutex
 	resumePendingSince map[stateKey]time.Time
+	audioStallMu       sync.Mutex
+	audioStallSince    map[stateKey]time.Time
+	audioStallPTS      map[stateKey]int64
 }
 
 func (r *Reconciler) SetDeviceStopCleanup(cleanup func(context.Context, int64, int64) error) {
@@ -58,6 +61,10 @@ type coreRoomState struct {
 	AgentLeaseUntil            *time.Time `json:"agent_lease_until,omitempty"`
 	AgentUpdatedAt             time.Time  `json:"agent_updated_at"`
 	SessionResumePending       bool       `json:"session_resume_pending"`
+	AudioPhase                 string     `json:"audio_phase"`
+	AudioActiveSource          string     `json:"audio_active_source"`
+	AudioOutputPTSMS           int64      `json:"audio_output_pts_ms"`
+	AudioUpdatedAt             time.Time  `json:"audio_updated_at"`
 }
 
 type stateKey struct {
@@ -110,6 +117,8 @@ func NewReconciler(
 		batchSize:          batchSize,
 		executionRealm:     "prod",
 		resumePendingSince: make(map[stateKey]time.Time),
+		audioStallSince:    make(map[stateKey]time.Time),
+		audioStallPTS:      make(map[stateKey]int64),
 	}
 	if len(leaders) > 0 {
 		result.leader = leaders[0]
@@ -452,6 +461,55 @@ func (r *Reconciler) autoFreshAfterResumeTimeout(ctx context.Context, session mo
 	return nil
 }
 
+// stopForAudioStall prevents a silent running session from consuming paid
+// duration forever. Core reports the room audio output PTS; if it is non-zero
+// but has not advanced for 15 seconds after the startup grace period, stop the
+// durable meter without catch-up. A normal TTS answer advances the PTS, so this
+// is not a 15-second cap on answer length.
+func (r *Reconciler) stopForAudioStall(ctx context.Context, session model.LiveRuntimeSession, state coreRoomState, now time.Time) bool {
+	key := stateKey{TenantID: session.TenantID, RoomID: session.RoomID}
+	if state.AudioOutputPTSMS <= 0 || state.AudioUpdatedAt.IsZero() || now.Sub(session.StartedAt) < liveRuntimeStartGracePeriod {
+		r.audioStallMu.Lock()
+		delete(r.audioStallSince, key)
+		delete(r.audioStallPTS, key)
+		r.audioStallMu.Unlock()
+		return false
+	}
+	r.audioStallMu.Lock()
+	last, seen := r.audioStallPTS[key]
+	if !seen || last != state.AudioOutputPTSMS {
+		r.audioStallPTS[key] = state.AudioOutputPTSMS
+		r.audioStallSince[key] = now
+		r.audioStallMu.Unlock()
+		return false
+	}
+	since := r.audioStallSince[key]
+	if since.IsZero() {
+		r.audioStallSince[key] = now
+		r.audioStallMu.Unlock()
+		return false
+	}
+	r.audioStallMu.Unlock()
+	if now.Sub(since) < 15*time.Second {
+		return false
+	}
+	stopped, err := r.store.StopLiveRuntimeSessionMeterSystem(ctx, session.ID, "audio_stalled", state.AgentWorkingSeconds, now)
+	if err != nil {
+		log.Printf("billing manager audio stall stop tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, session.ID, err)
+		return false
+	}
+	r.audioStallMu.Lock()
+	delete(r.audioStallSince, key)
+	delete(r.audioStallPTS, key)
+	r.audioStallMu.Unlock()
+	r.recordSystemAudit(ctx, session, "audio.stall.auto_stop", "audio_stalled", state.CoreBootID, state.AgentWorkingSeconds)
+	log.Printf(
+		"billing manager audio stall stopped tenant=%d room=%d session=%d phase=%s source=%s pts=%d billed=%d",
+		session.TenantID, session.RoomID, session.ID, state.AudioPhase, state.AudioActiveSource, state.AudioOutputPTSMS, stopped.TotalBilledSeconds,
+	)
+	return true
+}
+
 // reconcileTenant is the account-level billing manager. The durable
 // live_runtime_sessions rows are the registration table: running means the
 // room is registered for metering, paused/stopped means it is not. Core only
@@ -642,6 +700,10 @@ func (r *Reconciler) reconcileTenant(ctx context.Context, jobs []reconcileJob) {
 		r.resumePendingMu.Lock()
 		delete(r.resumePendingSince, stateKey{TenantID: session.TenantID, RoomID: session.RoomID})
 		r.resumePendingMu.Unlock()
+
+		if r.stopForAudioStall(ctx, session, job.State, now) {
+			continue
+		}
 
 		metered, meterErr := r.store.ReconcileLiveRuntimeMeter(
 			ctx,

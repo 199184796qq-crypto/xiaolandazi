@@ -6,7 +6,8 @@ param(
   [string]$ReleaseId = '',
   [switch]$AllowDirty,
   [switch]$SkipTests,
-  [switch]$SkipSalesSmoke
+  [switch]$SkipSalesSmoke,
+  [switch]$ForceLive
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,12 +39,13 @@ if ($LASTEXITCODE -ne 0) { throw "SSH authentication failed for $Remote" }
 
 $RemoteArchive = "/tmp/xiaolan-$ReleaseId.tar.gz"
 $RemoteDeploy = '/tmp/xiaolan-deploy-release.sh'
+$ForceLiveEnv = if ($ForceLive) { 'XIAOLAN_ALLOW_LIVE_DEPLOY=1 ' } else { '' }
 & scp @SshCommon $ArchivePath ($Remote + ':' + $RemoteArchive)
 if ($LASTEXITCODE -ne 0) { throw 'Release upload failed.' }
 & scp @SshCommon (Join-Path $PSScriptRoot 'server\deploy-release.sh') ($Remote + ':' + $RemoteDeploy)
 if ($LASTEXITCODE -ne 0) { throw 'Deploy script upload failed.' }
 
-& ssh @SshCommon $Remote "sudo -n bash $RemoteDeploy $RemoteArchive $ReleaseId"
+& ssh @SshCommon $Remote "sudo -n env ${ForceLiveEnv}bash $RemoteDeploy $RemoteArchive $ReleaseId"
 if ($LASTEXITCODE -ne 0) {
   & ssh @SshCommon $Remote "sudo -n journalctl -u xiaolan-core.service -u xiaolan-management.service -n 120 --no-pager"
   throw 'Server deployment failed.'

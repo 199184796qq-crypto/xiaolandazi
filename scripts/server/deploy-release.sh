@@ -27,6 +27,30 @@ STAGING="$RELEASES/.staging-$RELEASE_ID-$$"
 CURRENT="$ROOT/current"
 PREVIOUS="$(readlink -f "$CURRENT" 2>/dev/null || true)"
 
+# Release gate: changing the running tree or restarting services while a live
+# session is active causes the exact 2026-10-28 supply interruption we are
+# fixing. The check is deliberately server-side, after sudo, and fails closed if
+# the database cannot be queried. --force-live is an explicit operator override.
+MANAGEMENT_ENV=/etc/xiaolan/management.env
+if [[ -f "$MANAGEMENT_ENV" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$MANAGEMENT_ENV"
+  set +a
+  if [[ -n "${DB_HOST:-}" && -n "${DB_USER:-}" && -n "${DB_NAME:-}" ]]; then
+    RUNNING_SESSIONS="$(MYSQL_PWD="${DB_PASSWORD:-}" mysql --default-character-set=utf8mb4 \
+      -h "$DB_HOST" -P "${DB_PORT:-3306}" -u "$DB_USER" "$DB_NAME" -N -B \
+      -e "select count(*) from live_runtime_sessions where status='running';" 2>/dev/null || true)"
+    if [[ -z "$RUNNING_SESSIONS" ]]; then
+      echo "release gate: cannot verify live sessions; refusing to deploy without --force-live" >&2
+      [[ "${XIAOLAN_ALLOW_LIVE_DEPLOY:-0}" == "1" ]] || exit 7
+    elif [[ "$RUNNING_SESSIONS" != "0" && "${XIAOLAN_ALLOW_LIVE_DEPLOY:-0}" != "1" ]]; then
+      echo "release gate: $RUNNING_SESSIONS live session(s) running; stop the live or pass --force-live" >&2
+      exit 7
+    fi
+  fi
+fi
+
 mkdir -p "$RELEASES" "$ROOT/deployments"
 if [[ -e "$TARGET" ]]; then
   echo "release already exists: $TARGET" >&2
