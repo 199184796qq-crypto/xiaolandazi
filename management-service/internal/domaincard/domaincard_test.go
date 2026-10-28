@@ -96,7 +96,6 @@ func TestExpandSharedFactsAddsConditionRuleToSecondDimension(t *testing.T) {
 	if err := NormalizeAndValidate(card, facts); err != nil {
 		t.Fatal(err)
 	}
-	ExpandSharedFacts(card, facts)
 	got := Match("上海抽真空吗", card, facts)
 	ids := make([]string, 0, len(got))
 	for _, fact := range got {

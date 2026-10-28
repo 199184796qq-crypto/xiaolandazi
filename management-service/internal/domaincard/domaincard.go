@@ -220,6 +220,9 @@ func Match(question string, card *Card, facts []Fact) []Fact {
 	if card == nil || len(card.Dimensions) == 0 {
 		return nil
 	}
+	// Old saved cards predate shared-fact expansion; expand in memory so a
+	// condition rule filed under shipping still follows a packaging question.
+	ExpandSharedFacts(card, facts)
 	q := normalize(question)
 	if q == "" {
 		return nil
