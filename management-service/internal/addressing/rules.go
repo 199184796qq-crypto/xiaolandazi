@@ -169,6 +169,20 @@ func (r Rules) Check(raw string) Decision {
 	if allDigits(name) {
 		return Decision{Status: StatusDropped, Reason: "digits_only"}
 	}
+	// "用户4001612171583" is an auto-generated account. Keep the account prefix
+	// plus the last three digits as spoken Chinese numerals, so TTS reads it as a
+	// name instead of a long number string.
+	if prefix, digits, ok := r.HardBlock.splitGenericAccount(name); ok {
+		if len(digits) == 0 {
+			return Decision{Status: StatusDropped, Reason: "generic_account"}
+		}
+		tail := digits
+		if utf8.RuneCountInString(tail) > 3 {
+			runes := []rune(tail)
+			tail = string(runes[len(runes)-3:])
+		}
+		return Decision{Status: StatusRewritten, Text: prefix + chineseDigits(tail), Reason: "generic_account_digits"}
+	}
 	if longestDigits(name) >= r.HardBlock.MaxContinuousDigits {
 		name = stripDigits(name)
 		if strings.TrimSpace(name) == "" {
@@ -293,6 +307,45 @@ func (h HardBlock) isGenericAccount(name string) bool {
 		}
 	}
 	return false
+}
+
+// splitGenericAccount reports an auto-generated account prefix followed only by
+// digits ("用户4001612171583"); an ordinary name like "用户小王" is not one.
+func (h HardBlock) splitGenericAccount(name string) (string, string, bool) {
+	name = strings.TrimSpace(name)
+	for _, prefix := range h.GenericPrefixes {
+		if prefix == "" || !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(name, prefix))
+		if rest == "" {
+			return prefix, "", true
+		}
+		if allDigits(rest) {
+			return prefix, rest, true
+		}
+		return "", "", false
+	}
+	return "", "", false
+}
+
+// chineseDigits spells an account suffix digit by digit so TTS never reads it
+// as a quantity, phone number or order number.
+func chineseDigits(digits string) string {
+	var b strings.Builder
+	for _, ch := range digits {
+		if mapped, ok := chineseDigitRunes[ch]; ok {
+			b.WriteRune(mapped)
+			continue
+		}
+		b.WriteRune(ch)
+	}
+	return b.String()
+}
+
+var chineseDigitRunes = map[rune]rune{
+	'0': '零', '1': '一', '2': '二', '3': '三', '4': '四',
+	'5': '五', '6': '六', '7': '七', '8': '八', '9': '九',
 }
 
 func hasHan(name string) bool {

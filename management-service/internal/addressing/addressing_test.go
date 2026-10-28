@@ -51,7 +51,7 @@ func TestCheckHardRules(t *testing.T) {
 		{"爸爸", StatusGrey, "爸爸"},
 		{"老公", StatusGrey, "老公"},
 		{"二楠妈妈", StatusSafe, "二楠妈妈"},
-		{"用户4001612171583", StatusDropped, ""},
+		{"用户4001612171583", StatusRewritten, "用户五八三"},{"用户7141435402865", StatusRewritten, "用户八六五"},
 		{"卟过如此ヤ", StatusRewritten, "卟过如此"},
 		{"雅迪电动车(丰收路专卖店)", StatusDropped, ""},
 		{"拖拉机出租，需要起箱，打田打地联系我", StatusDropped, ""},
