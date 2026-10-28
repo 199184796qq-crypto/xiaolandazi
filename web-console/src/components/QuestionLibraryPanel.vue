@@ -66,8 +66,8 @@ async function saveRow(row: Row) {
     error.value = '请先选择直播间'
     return
   }
-  if (!row.question.trim() || !row.answer.trim()) {
-    error.value = '问题和回答都要填'
+  if (!row.question.trim()) {
+    error.value = '问题要填'
     return
   }
   row.saving = true
@@ -148,7 +148,7 @@ watch(() => props.roomId, load, { immediate: true })
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in rows" :key="row.id || row.question">
+        <tr v-for="row in rows" :key="row.id || row.question" :class="{ unanswered: !row.answer.trim() }">
           <td>
             <select v-model="row.question_type">
               <option v-for="option in typeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -163,7 +163,8 @@ watch(() => props.roomId, load, { immediate: true })
             />
           </td>
           <td>
-            <textarea v-model="row.answer" rows="2" placeholder="直接写要说的话；池内/池外写一条即可" />
+            <span v-if="!row.answer.trim()" class="ql-chip">待回答</span>
+            <textarea v-model="row.answer" rows="2" placeholder="直接写要说的话；留空则标红，系统自动追加的问题先空着" />
           </td>
           <td class="ql-row-actions">
             <button type="button" class="primary" :disabled="row.saving" @click="saveRow(row)">{{ row.saving ? '保存中…' : '保存' }}</button>
@@ -184,11 +185,13 @@ watch(() => props.roomId, load, { immediate: true })
 .question-library{display:grid;gap:12px;padding:16px;border:1px solid #e1e6ef;border-radius:12px;background:#fff}
 .ql-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
 .ql-head h4{margin:0 0 4px;font-size:15px}
-.ql-head p{margin:0;color:#5b6472;font-size:13px;line-height:1.6}
+.ql-head p{margin:0;color:#5b6472;font-size:16px;line-height:1.6}
 .ql-actions{display:flex;gap:8px}
-.ql-table{width:100%;border-collapse:collapse;font-size:13px}
+.ql-table{width:100%;border-collapse:collapse;font-size:16px}
+.ql-table tr.unanswered td{background:#fff5f5}
+.ql-chip{display:inline-block;margin-bottom:4px;padding:1px 8px;border-radius:10px;background:#fde2e1;color:#c62828;font-size:13px}
 .ql-table th,.ql-table td{border-bottom:1px solid #eef1f6;padding:8px 6px;text-align:left;vertical-align:top}
-.ql-table th{color:#6b7484;font-weight:600;font-size:12px}
+.ql-table th{color:#6b7484;font-weight:600;font-size:15px}
 .ql-table input,.ql-table select,.ql-table textarea{width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #d9e0ea;border-radius:6px;font:inherit;background:#fff}
 .ql-table textarea{resize:vertical}
 .ql-row-actions{display:flex;gap:6px}

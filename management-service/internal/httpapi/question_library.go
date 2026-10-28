@@ -39,8 +39,8 @@ func (s *Server) roomQuestionLibrary(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "问题库格式错误")
 			return
 		}
-		if strings.TrimSpace(input.Question) == "" || strings.TrimSpace(input.Answer) == "" {
-			writeError(w, http.StatusBadRequest, "问题和回答不能为空")
+		if strings.TrimSpace(input.Question) == "" {
+			writeError(w, http.StatusBadRequest, "问题不能为空")
 			return
 		}
 		id := int64(0)

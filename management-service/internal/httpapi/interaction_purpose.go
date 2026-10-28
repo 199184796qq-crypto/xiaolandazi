@@ -127,6 +127,10 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		writeError(w, 502, fmt.Sprintf("purpose resolution failed: %v", err))
 		return
 	}
+	// 未覆盖问题自动进问题库：只记分类和问题，答案留空等运营补。
+	if strings.TrimSpace(result.PurposeID) == "" {
+		_, _ = s.store.AppendQuestionGap(ctx, input.Tenant, input.Room, input.Plan, inferGapType(result), refineGapQuestion(result))
+	}
 	current, err := s.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, input.Tenant, input.Room)
 	if err != nil || current.ID != published.ID {
 		writeError(w, 409, "published facts changed during analysis")
@@ -134,4 +138,46 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 	}
 	knowledge, _ := json.Marshal(result)
 	writeJSON(w, 200, map[string]any{"question": result.Question, "relevant": result.Relevant, "topic": result.Topic, "purpose_id": result.PurposeID, "source": result.Source, "knowledge": json.RawMessage(knowledge)})
+}
+
+// refineGapQuestion turns an intent result into a short, reusable question.
+func refineGapQuestion(result interactionpurpose.Result) string {
+	text := ""
+	if len(result.Angles) > 0 {
+		text = strings.TrimSpace(result.Angles[0].Angle)
+	}
+	if text == "" {
+		text = strings.TrimSpace(result.Purpose)
+	}
+	for _, prefix := range []string{"询问", "了解", "确认", "想知道", "问一下", "在问"} {
+		text = strings.TrimPrefix(text, prefix)
+	}
+	text = strings.TrimSpace(text)
+	text = strings.TrimSuffix(text, "的")
+	if len([]rune(text)) > 40 {
+		text = string([]rune(text)[:40])
+	}
+	if text == "" {
+		text = strings.TrimSpace(result.Purpose)
+	}
+	return text
+}
+
+// inferGapType maps an uncovered question to a question-library type.
+func inferGapType(result interactionpurpose.Result) string {
+	text := result.Purpose
+	for _, angle := range result.Angles {
+		text += angle.Angle
+	}
+	switch {
+	case strings.Contains(text, "地区"), strings.Contains(text, "包邮"), strings.Contains(text, "运费"), strings.Contains(text, "真空"):
+		return "pool_in_out"
+	case strings.Contains(text, "能否"), strings.Contains(text, "可以"), strings.Contains(text, "是否"), strings.Contains(text, "能不能"):
+		return "yes_no"
+	case strings.Contains(text, "多久"), strings.Contains(text, "几天"), strings.Contains(text, "多重"):
+		return "number"
+	case strings.Contains(text, "怎么"), strings.Contains(text, "如何"):
+		return "process"
+	}
+	return "fact"
 }

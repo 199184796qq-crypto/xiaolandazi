@@ -1888,6 +1888,7 @@ CREATE TABLE IF NOT EXISTS live_agent_question_library (
     question_type VARCHAR(32) NOT NULL DEFAULT 'fact',
     question VARCHAR(255) NOT NULL,
     answer TEXT NOT NULL,
+    keywords_json TEXT NOT NULL,
     status VARCHAR(16) NOT NULL DEFAULT 'active',
     created_by_user_id BIGINT UNSIGNED NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
