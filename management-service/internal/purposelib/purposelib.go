@@ -3,6 +3,8 @@ package purposelib
 import (
 	"sort"
 	"strings"
+
+	"livecompanion/management/internal/contentstrategy"
 )
 
 // Spec is one auto-generated purpose derived from a plan's facts, links and
@@ -141,6 +143,23 @@ func bigrams(label string) []string {
 	}
 	if len(out) > 4 {
 		out = out[:4]
+	}
+	return out
+}
+
+// ToContentPurposes adapts generated purposes to the intent resolver shape.
+func ToContentPurposes(specs []Spec) []contentstrategy.Purpose {
+	out := make([]contentstrategy.Purpose, 0, len(specs))
+	for _, spec := range specs {
+		concern := ""
+		if len(spec.Keywords) > 0 {
+			limit := len(spec.Keywords)
+			if limit > 4 {
+				limit = 4
+			}
+			concern = "常见问法：" + strings.Join(spec.Keywords[:limit], "、")
+		}
+		out = append(out, contentstrategy.Purpose{ID: spec.Key, Name: spec.Name, Concern: concern})
 	}
 	return out
 }

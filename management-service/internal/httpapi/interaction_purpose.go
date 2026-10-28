@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"livecompanion/management/internal/purposelib"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -116,6 +117,10 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 	query := interactionpurpose.Input{Tenant: input.Tenant, Room: input.Room, Plan: input.Plan, Text: input.Text, Facts: asset.SafeFacts, Prompt: string(prompt)}
 	if snapshot := s.loadContentStrategy(ctx, input.Tenant, input.Plan, asset.SafeFacts); snapshot != nil {
 		query.Purposes = snapshot.Purposes
+	}
+	// 自动生成的目的清单优先：它带关键词，覆盖旧快照目的。
+	if stored, err := s.store.ListPlanPurposes(ctx, input.Tenant, input.Plan); err == nil && len(stored) > 0 {
+		query.Purposes = purposelib.ToContentPurposes(stored)
 	}
 	result, err := resolver.Resolve(ctx, query)
 	if err != nil {
