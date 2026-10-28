@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "dice": {
+    "max": 5,
+    "pick": "recent"
+  },
+  "hard_block": {
+    "contact_terms": ["微信", "加v", "加V", "vx", "VX", "wx", "WX", "手机", "电话", "qq", "QQ", "公众号", "扫码", "加好友", "抖音号", "快手号"],
+    "insult_terms": ["滚", "骗子", "假货", "垃圾", "拉黑", "滚出"],
+    "semantic_terms": ["爸爸", "妈妈", "爷爷", "奶奶", "外公", "外婆", "老公", "老婆", "主人"],
+    "command_terms": ["叫我", "喊我", "命令", "必须", "我是你"],
+    "max_continuous_digits": 4,
+    "max_name_chars": 10
+  },
+  "rewrite": {
+    "long_name_max": 4,
+    "english_keep_words": 2,
+    "keep_suffix_titles": ["老板", "老师", "师傅", "朋友", "同学", "美女", "帅哥", "哥", "姐", "弟", "妹", "叔", "姨", "爷", "婆", "嫂", "伯", "婶", "总", "导"]
+  },
+  "group_labels": ["几位朋友", "几位老乡", "刚来的几位"],
+  "grey_hints": ["long_name", "mixed_script", "symbols"]
+}

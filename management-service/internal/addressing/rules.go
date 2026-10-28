@@ -1,0 +1,287 @@
+// Package addressing owns viewer identity, nickname compliance and the single
+// frozen address plan for one interaction. The program decides who is named and
+// which forms are allowed; the model only phrases an address inside those bounds.
+package addressing
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
+
+// Rules is global, operator-maintained configuration. One file governs every
+// room so a rule change never needs a code release.
+type Rules struct {
+	Version    int       `json:"version"`
+	Dice       DiceRules `json:"dice"`
+	HardBlock  HardBlock `json:"hard_block"`
+	Rewrite    Rewrite   `json:"rewrite"`
+	GroupLabel []string  `json:"group_labels"`
+	GreyHints  []string  `json:"grey_hints"`
+}
+
+type DiceRules struct {
+	Max  int    `json:"max"`
+	Pick string `json:"pick"` // recent | random
+}
+
+type HardBlock struct {
+	ContactTerms        []string `json:"contact_terms"`
+	InsultTerms         []string `json:"insult_terms"`
+	SemanticTerms       []string `json:"semantic_terms"`
+	CommandTerms        []string `json:"command_terms"`
+	MaxContinuousDigits int      `json:"max_continuous_digits"`
+	MaxNameChars        int      `json:"max_name_chars"`
+}
+
+type Rewrite struct {
+	LongNameMax      int      `json:"long_name_max"`
+	EnglishKeepWords int      `json:"english_keep_words"`
+	KeepSuffixTitles []string `json:"keep_suffix_titles"`
+}
+
+// DefaultRules returns a usable fallback so a missing file never blocks a live
+// room; the shipped JSON stays the source of truth.
+func DefaultRules() Rules {
+	return Rules{
+		Version: 1,
+		Dice:    DiceRules{Max: 5, Pick: "recent"},
+		HardBlock: HardBlock{
+			ContactTerms:        []string{"微信", "加v", "vx", "手机", "电话", "qq"},
+			InsultTerms:         []string{"滚", "骗子", "假货", "垃圾"},
+			SemanticTerms:       []string{"爸爸", "妈妈", "老公", "老婆", "主人"},
+			CommandTerms:        []string{"叫我", "喊我", "命令", "必须"},
+			MaxContinuousDigits: 4,
+			MaxNameChars:        10,
+		},
+		Rewrite: Rewrite{
+			LongNameMax:      4,
+			EnglishKeepWords: 2,
+			KeepSuffixTitles: []string{"老板", "老师", "师傅", "哥", "姐", "弟", "妹"},
+		},
+		GroupLabel: []string{"几位朋友", "几位老乡"},
+	}
+}
+
+// Load reads the rules file at path.
+func Load(path string) (*Rules, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var rules Rules
+	if err := json.Unmarshal(raw, &rules); err != nil {
+		return nil, fmt.Errorf("昵称规则配置格式错误: %w", err)
+	}
+	if err := rules.Validate(); err != nil {
+		return nil, err
+	}
+	return &rules, nil
+}
+
+// LoadDefault resolves the operator file, then falls back to built-in rules.
+func LoadDefault() *Rules {
+	if path := strings.TrimSpace(os.Getenv("NICKNAME_RULES_CONFIG")); path != "" {
+		if rules, err := Load(path); err == nil {
+			return rules
+		}
+	}
+	if dir := strings.TrimSpace(os.Getenv("ANCHOR_STYLE_PROMPT_DIR")); dir != "" {
+		if rules, err := Load(filepath.Join(dir, "nickname-rules.json")); err == nil {
+			return rules
+		}
+	}
+	defaults := DefaultRules()
+	return &defaults
+}
+
+func (r Rules) Validate() error {
+	if r.Dice.Max <= 0 || r.Dice.Max > 32 {
+		return fmt.Errorf("昵称掷骰子上限无效")
+	}
+	if r.HardBlock.MaxContinuousDigits <= 0 {
+		return fmt.Errorf("昵称连续数字上限无效")
+	}
+	if r.HardBlock.MaxNameChars <= 0 {
+		return fmt.Errorf("昵称长度上限无效")
+	}
+	if r.Rewrite.LongNameMax <= 0 || r.Rewrite.EnglishKeepWords <= 0 {
+		return fmt.Errorf("昵称改写规则无效")
+	}
+	return nil
+}
+
+// Status is the program's verdict for one viewer's name.
+type Status string
+
+const (
+	// StatusSafe needs no rewrite: the raw name is speakable as-is.
+	StatusSafe Status = "safe"
+	// StatusRewritten carries a program-made safe form.
+	StatusRewritten Status = "rewritten"
+	// StatusGrey needs semantic judgement; it is sent to the model in one batch.
+	StatusGrey Status = "grey"
+	// StatusDropped must not be named; the viewer joins the group address.
+	StatusDropped Status = "dropped"
+)
+
+// Decision is the compliance result for one viewer.
+type Decision struct {
+	Status Status
+	Text   string // speakable form for safe/rewritten; candidate for grey
+	Reason string
+}
+
+// Check applies the global hard rules first, then program rewrites, and only
+// leaves genuinely ambiguous names for the model.
+func (r Rules) Check(raw string) Decision {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return Decision{Status: StatusDropped, Reason: "empty"}
+	}
+	if at := strings.IndexAny(name, "*＊"); at >= 0 {
+		name = strings.TrimSpace(name[:at])
+		if name == "" {
+			return Decision{Status: StatusDropped, Reason: "masked_without_prefix"}
+		}
+	}
+	if containsAny(name, r.HardBlock.ContactTerms) {
+		return Decision{Status: StatusDropped, Reason: "contact"}
+	}
+	if containsAny(name, r.HardBlock.InsultTerms) {
+		return Decision{Status: StatusDropped, Reason: "insult"}
+	}
+	if containsAny(name, r.HardBlock.SemanticTerms) {
+		return Decision{Status: StatusDropped, Reason: "semantic_relation"}
+	}
+	if containsAny(name, r.HardBlock.CommandTerms) {
+		return Decision{Status: StatusDropped, Reason: "command"}
+	}
+	if allDigits(name) {
+		return Decision{Status: StatusDropped, Reason: "digits_only"}
+	}
+	if longestDigits(name) >= r.HardBlock.MaxContinuousDigits {
+		name = stripDigits(name)
+		if strings.TrimSpace(name) == "" {
+			return Decision{Status: StatusDropped, Reason: "digits_only"}
+		}
+	}
+	name = stripSymbols(name)
+	if strings.TrimSpace(name) == "" {
+		return Decision{Status: StatusDropped, Reason: "symbols_only"}
+	}
+	if hasHan(name) && hasLatin(name) {
+		return Decision{Status: StatusGrey, Text: name, Reason: "mixed_script"}
+	}
+	if allLatin(name) {
+		words := strings.Fields(name)
+		trimmed := words
+		if len(trimmed) > r.Rewrite.EnglishKeepWords {
+			trimmed = trimmed[:r.Rewrite.EnglishKeepWords]
+		}
+		form := strings.Join(trimmed, " ")
+		if form != name {
+			return Decision{Status: StatusRewritten, Text: form, Reason: "english_name"}
+		}
+		return Decision{Status: StatusSafe, Text: form, Reason: "english_name"}
+	}
+	if utf8.RuneCountInString(name) > r.Rewrite.LongNameMax {
+		return Decision{Status: StatusGrey, Text: name, Reason: "long_name"}
+	}
+	if name == strings.TrimSpace(raw) {
+		return Decision{Status: StatusSafe, Text: name, Reason: "safe"}
+	}
+	return Decision{Status: StatusRewritten, Text: name, Reason: "rewritten"}
+}
+
+func containsAny(text string, terms []string) bool {
+	for _, term := range terms {
+		if term != "" && strings.Contains(text, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func longestDigits(name string) int {
+	longest, run := 0, 0
+	for _, ch := range name {
+		if unicode.IsDigit(ch) {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	return longest
+}
+
+func allDigits(name string) bool {
+	for _, ch := range name {
+		if !unicode.IsDigit(ch) {
+			return false
+		}
+	}
+	return name != ""
+}
+
+func stripDigits(name string) string {
+	var b strings.Builder
+	for _, ch := range name {
+		if !unicode.IsDigit(ch) {
+			b.WriteRune(ch)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// stripSymbols keeps letters, Han characters, digits and spaces; decoration and
+// emoji never reach speech.
+func stripSymbols(name string) string {
+	var b strings.Builder
+	for _, ch := range name {
+		switch {
+		case unicode.IsLetter(ch), unicode.IsDigit(ch), unicode.Is(unicode.Han, ch), ch == ' ':
+			b.WriteRune(ch)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func hasHan(name string) bool {
+	for _, ch := range name {
+		if unicode.Is(unicode.Han, ch) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLatin(name string) bool {
+	for _, ch := range name {
+		if unicode.Is(unicode.Latin, ch) {
+			return true
+		}
+	}
+	return false
+}
+
+func allLatin(name string) bool {
+	hasLetter := false
+	for _, ch := range name {
+		switch {
+		case unicode.Is(unicode.Latin, ch):
+			hasLetter = true
+		case ch == ' ':
+		default:
+			return false
+		}
+	}
+	return hasLetter
+}
