@@ -747,6 +747,7 @@ func (s *Server) liveAgentPlanPublishRoomEmotion(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusInternalServerError, "发布新的实时情感版本失败")
 		return
 	}
+	_, _ = s.store.BuildPlanPurposes(r.Context(), tenantID, result.PlanID)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -890,6 +891,7 @@ func (s *Server) liveAgentPlanPublishRoomVoiceBinding(w http.ResponseWriter, r *
 		writeError(w, http.StatusInternalServerError, "发布新的实时声音版本失败")
 		return
 	}
+	_, _ = s.store.BuildPlanPurposes(r.Context(), tenantID, result.PlanID)
 	writeJSON(w, http.StatusOK, result)
 }
 func (s *Server) liveAgentPlanPublishedVersionForRoom(w http.ResponseWriter, r *http.Request) {

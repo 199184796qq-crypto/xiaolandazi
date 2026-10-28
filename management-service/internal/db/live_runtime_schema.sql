@@ -1895,3 +1895,17 @@ CREATE TABLE IF NOT EXISTS live_agent_question_library (
     PRIMARY KEY (id),
     KEY idx_question_library_room (tenant_id, room_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_purposes (
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    purpose_key VARCHAR(64) NOT NULL,
+    name VARCHAR(64) NOT NULL,
+    keywords_json TEXT NOT NULL,
+    sources_json TEXT NOT NULL,
+    in_out TINYINT NOT NULL DEFAULT 0,
+    facts_sha VARCHAR(64) NOT NULL DEFAULT '',
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (tenant_id, plan_id, purpose_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
