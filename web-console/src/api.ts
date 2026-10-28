@@ -4736,9 +4736,9 @@ export function updateRoomReadingRules(roomId: number, rulesText: string) {
   })
 }
 
-export function getPlanPurposes(roomId: number, query?: string) {
+export function getPlanPurposes(roomId: number, query?: string, init?: APIRequestInit) {
   const suffix = query ? '?q=' + encodeURIComponent(query) : ''
-  return request<{ plan_id: number; items?: { key: string; name: string; keywords: string[]; in_out: boolean }[]; suggestions?: { key: string; name: string; keywords: string[]; in_out: boolean; score: number; suggested_excludes: string[] }[] }>('/api/v1/rooms/' + roomId + '/purposes' + suffix)
+  return request<{ plan_id: number; items?: { key: string; name: string; keywords: string[]; in_out: boolean }[]; suggestions?: { key: string; name: string; keywords: string[]; in_out: boolean; score: number; suggested_excludes: string[] }[] }>('/api/v1/rooms/' + roomId + '/purposes' + suffix, init)
 }
 
 export function listQuestionLibrary(roomId: number) {
