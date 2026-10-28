@@ -1045,7 +1045,7 @@ onBeforeUnmount(stopInbox)
 
   <GlobalFeedback />
 
-  <SystemAgentLayer v-if="!isAuthPage && !mustChangePassword && !mustCompleteContact" />
+  <SystemAgentLayer v-if="showAuthenticatedShell && !mustChangePassword && !mustCompleteContact" />
 
   <Teleport to="body">
     <div

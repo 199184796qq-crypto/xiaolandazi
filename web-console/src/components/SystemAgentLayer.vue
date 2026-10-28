@@ -4206,14 +4206,19 @@ async function loadSystemAgentContext() {
   }
 }
 
+let tenantPlanLoadSequence = 0
 async function loadTenantPlanName() {
-  if (isInternalAgentProfile.value) {
-    tenantPlans.value = []
-    tenantPlanName.value = ''
-    return
-  }
+  const sequence = ++tenantPlanLoadSequence
+  const userID = actor.value?.user_id
+  const tenantID = actor.value?.tenant_id
+  tenantPlans.value = []
+  tenantPlanName.value = ''
+  if (!isTerminalCustomer.value || !userID || !tenantID) return
+  const isCurrentAccount = () => sequence === tenantPlanLoadSequence &&
+    isTerminalCustomer.value && actor.value?.user_id === userID && actor.value?.tenant_id === tenantID
   try {
     const result = await getLiveAgentPlans()
+    if (!isCurrentAccount()) return
     tenantPlans.value = (result.items || [])
       .filter((item) => item.status === 'active')
       .map((item) => ({ id: item.id, name: item.name }))
@@ -4224,6 +4229,7 @@ async function loadTenantPlanName() {
     const matched = tenantPlans.value.find((item) => item.id === liveStrategyPlanId.value)
     tenantPlanName.value = matched?.name || ''
   } catch {
+    if (!isCurrentAccount()) return
     tenantPlans.value = []
     tenantPlanName.value = ''
   }
@@ -4248,12 +4254,12 @@ onMounted(() => {
   window.addEventListener('resize', handleDockViewportResize)
   void loadAgentBranding()
   void loadSystemAgentContext()
-  void loadTenantPlanName()
 })
 
 watch(
-  () => [liveStrategyPlanId.value, isInternalAgentProfile.value] as const,
+  () => [liveStrategyPlanId.value, actor.value?.user_id, actor.value?.tenant_id, actor.value?.role] as const,
   () => { void loadTenantPlanName() },
+  { immediate: true },
 )
 
 watch(
@@ -4264,7 +4270,6 @@ watch(
     imagePreview.value = null
     imageAttachmentError.value = ''
     restoreAgentChatHistory(userId)
-    void loadTenantPlanName()
   },
   { immediate: true },
 )
@@ -4365,6 +4370,7 @@ watch(currentDomain, (domain) => {
 })
 
 onBeforeUnmount(() => {
+  tenantPlanLoadSequence++
   if (actor.value?.user_id) persistAgentChatHistory(actor.value.user_id)
   stopDockDrag()
   window.removeEventListener('system-agent:prefill', handleExternalPrefill)
