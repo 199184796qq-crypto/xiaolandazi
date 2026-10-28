@@ -54,8 +54,13 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [result, purposeResult] = await Promise.all([listQuestionLibrary(props.roomId), getPlanPurposes(props.roomId)])
-    purposes.value = (purposeResult.items || []).map(item => ({ key: item.key, name: item.name }))
+    const result = await listQuestionLibrary(props.roomId)
+    try {
+      const purposeResult = await getPlanPurposes(props.roomId)
+      purposes.value = (purposeResult.items || []).map(item => ({ key: item.key, name: item.name }))
+    } catch {
+      purposes.value = []
+    }
     rows.value = (result.items || []).map((item: QuestionLibraryEntry) => ({
       id: item.id,
       question_type: item.question_type || 'fact',

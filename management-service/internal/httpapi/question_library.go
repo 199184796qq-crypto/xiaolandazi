@@ -32,6 +32,12 @@ func (s *Server) roomQuestionLibrary(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "读取问题库失败")
 			return
 		}
+		// 房间还没有条目时，回落到同方案共享条目，避免新直播间看起来是空的。
+		if len(items) == 0 {
+			if plan, planErr := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID); planErr == nil && plan.ID > 0 {
+				items, _ = s.store.ListQuestionLibraryByPlan(r.Context(), tenantID, plan.ID)
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	case http.MethodPost, http.MethodPut:
 		var input model.QuestionLibraryInput

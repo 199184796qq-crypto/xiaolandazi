@@ -149,3 +149,28 @@ func excludeJSON(values []string) string {
 	raw, _ := json.Marshal(clean)
 	return string(raw)
 }
+
+// ListQuestionLibraryByPlan returns plan-level entries shared by every room
+// bound to the plan, used when the room itself has no rows yet.
+func (s *Store) ListQuestionLibraryByPlan(ctx context.Context, tenantID, planID int64) ([]model.QuestionLibraryEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, tenant_id, room_id, plan_id, question_type, question, answer, sense_key, sense_name, exclude_json, status, updated_at
+FROM live_agent_question_library
+WHERE tenant_id = ? AND plan_id = ? AND status = 'active'
+ORDER BY id`, tenantID, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]model.QuestionLibraryEntry, 0, 16)
+	for rows.Next() {
+		var item model.QuestionLibraryEntry
+		var exclude string
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.RoomID, &item.PlanID, &item.QuestionType, &item.Question, &item.Answer, &item.SenseKey, &item.SenseName, &exclude, &item.Status, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(exclude), &item.ExcludeWords)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
