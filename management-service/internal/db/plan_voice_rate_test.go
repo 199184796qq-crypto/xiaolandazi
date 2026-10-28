@@ -35,7 +35,7 @@ func TestPlanVoiceRateMySQLMigrationPersistenceAndIsolation(t *testing.T) {
 			t.Fatal("default/legacy rate", got, err)
 		}
 	}
-	if _, err := s.SetPlanVoiceRate(ctx, 14, 4, 1.2); err != nil {
+	if _, err := s.SetPlanVoiceRate(ctx, 14, 4, 1.01); err != nil {
 		t.Fatal(err)
 	}
 	// A later save from a stale tab must not replace the independent plan rate.
@@ -44,10 +44,10 @@ func TestPlanVoiceRateMySQLMigrationPersistenceAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := (&Store{db: s.db}).GetPlanVoiceRate(ctx, 14, 4)
-	if err != nil || got.Rate != 1.2 {
+	if err != nil || got.Rate != 1.01 {
 		t.Fatal("not persisted", got, err)
 	}
-	for _, rate := range []float64{0.8, 0.9, 1, 1.1, 1.2, 1.2} {
+	for _, rate := range []float64{0.8, 0.81, 0.9, 0.99, 1, 1.01, 1.02, 1.1, 1.2, 1.2} {
 		if got, err = s.SetPlanVoiceRate(ctx, 14, 5, rate); err != nil || got.Rate != rate {
 			t.Fatal("new plan write/idempotence", got, err)
 		}
@@ -60,7 +60,7 @@ func TestPlanVoiceRateMySQLMigrationPersistenceAndIsolation(t *testing.T) {
 			t.Fatal("cross-scope write", err)
 		}
 	}
-	if _, err = s.SetPlanVoiceRate(ctx, 14, 4, 1.15); !errors.Is(err, ErrInvalidPlanVoiceRate) {
+	if _, err = s.SetPlanVoiceRate(ctx, 14, 4, 1.015); !errors.Is(err, ErrInvalidPlanVoiceRate) {
 		t.Fatal("invalid rate accepted", err)
 	}
 	exec(`UPDATE live_agent_plans SET status='deleted' WHERE id=7`)
@@ -105,11 +105,11 @@ func TestPlanVoiceRateMySQLSavedSnapshotAndRuntimeProjection(t *testing.T) {
 	if err != nil || first.VoiceIdentity.Rate != 1 {
 		t.Fatal("new plan inherited room rate", first, err)
 	}
-	if _, err = s.SetPlanVoiceRate(ctx, 14, 4, 1.1); err != nil {
+	if _, err = s.SetPlanVoiceRate(ctx, 14, 4, 1.02); err != nil {
 		t.Fatal(err)
 	}
 	current, err := s.GetPublishedLiveAgentPlanVersionForRoom(ctx, 14, 26)
-	if err != nil || current.VoiceIdentity.Rate != 1.1 {
+	if err != nil || current.VoiceIdentity.Rate != 1.02 {
 		t.Fatal("runtime ignores plan setting", current, err)
 	}
 	archived, err := s.GetLiveAgentPlanVersion(ctx, 14, 4, first.ID)
@@ -118,7 +118,7 @@ func TestPlanVoiceRateMySQLSavedSnapshotAndRuntimeProjection(t *testing.T) {
 	}
 	input.VoiceIdentity.Rate = 0.8
 	second, err := s.CreateLiveAgentPlanVersion(ctx, 14, 4, 8, input)
-	if err != nil || second.VoiceIdentity.Rate != 1.1 {
+	if err != nil || second.VoiceIdentity.Rate != 1.02 {
 		t.Fatal("stale save replaced plan preference", second, err)
 	}
 }

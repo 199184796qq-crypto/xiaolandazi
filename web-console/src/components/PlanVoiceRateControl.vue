@@ -5,7 +5,7 @@ const emit = defineEmits<{ change: [rate: number]; retry: [] }>()
 </script>
 <template>
   <section class="plan-voice-rate-setting" aria-label="方案声音语速">
-    <label><span>声音语速</span><select aria-label="声音语速" :value="value" :disabled="busy || loading || !ready" @change="emit('change', Number(($event.target as HTMLSelectElement).value))"><option v-for="rate in planVoiceRateOptions" :key="rate" :value="rate">{{ rate.toFixed(1) }}</option></select></label>
+    <label><span>声音语速</span><select aria-label="声音语速" :value="value" :disabled="busy || loading || !ready" @change="emit('change', Number(($event.target as HTMLSelectElement).value))"><option v-for="rate in planVoiceRateOptions" :key="rate" :value="rate">{{ rate.toFixed(2) }}</option></select></label>
     <span v-if="loading" role="status">读取中…</span><span v-else-if="busy" role="status">保存中…</span><span v-else-if="ready && !error" role="status">自动保存 · 下次开播使用</span>
     <span v-if="error" class="plan-voice-rate-error" role="alert">{{ error }}</span>
     <button v-if="error && !ready" type="button" :disabled="loading" @click="emit('retry')">重新读取</button>

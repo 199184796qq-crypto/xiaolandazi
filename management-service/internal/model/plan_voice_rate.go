@@ -9,10 +9,12 @@ type PlanVoiceRate struct {
 }
 
 func NormalizePlanVoiceRate(rate float64) (float64, bool) {
-	for _, allowed := range []float64{0.8, 0.9, 1, 1.1, 1.2} {
-		if math.Abs(rate-allowed) < 0.0001 {
-			return allowed, true
-		}
+	if math.IsNaN(rate) || math.IsInf(rate, 0) {
+		return 0, false
 	}
-	return 0, false
+	normalized := math.Round(rate*100) / 100
+	if normalized < 0.8 || normalized > 1.2 || math.Abs(rate-normalized) > 1e-9 {
+		return 0, false
+	}
+	return normalized, true
 }

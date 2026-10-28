@@ -17,6 +17,8 @@ func TestContentRefreshVoiceIdentityRejectsMixedOrUnknownAudio(t *testing.T) {
 		wantError bool
 	}{
 		{"matching archive", func(map[string]any, *model.LiveAgentVoiceIdentity) {}, false},
+		{"matching hundredth rate", func(m map[string]any, v *model.LiveAgentVoiceIdentity) { m["voice_rate"] = 1.01; v.Rate = 1.01 }, false},
+		{"adjacent hundredth rate", func(m map[string]any, v *model.LiveAgentVoiceIdentity) { m["voice_rate"] = 1.01; v.Rate = 1.02 }, true},
 		{"different voice", func(m map[string]any, _ *model.LiveAgentVoiceIdentity) { m["voice_id"] = "old-voice" }, true},
 		{"different model", func(m map[string]any, _ *model.LiveAgentVoiceIdentity) { m["tts_model"] = "old-model" }, true},
 		{"different rate", func(m map[string]any, _ *model.LiveAgentVoiceIdentity) { m["voice_rate"] = 1.0 }, true},

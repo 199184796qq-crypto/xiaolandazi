@@ -5030,7 +5030,7 @@ onBeforeUnmount(() => {
           <label v-if="canConfigureRoomStrategy" class="speech-rate-control">
             <span>语速</span>
             <select aria-label="声音语速" v-model.number="liveSpeechRate" :disabled="liveSpeechRateBusy || planVoiceRate.loading.value || !planVoiceRate.ready.value" @change="changeLiveSpeechRate">
-              <option v-for="rate in liveSpeechRateOptions" :key="rate" :value="rate">{{ rate.toFixed(1) }}</option>
+              <option v-for="rate in liveSpeechRateOptions" :key="rate" :value="rate">{{ rate.toFixed(2) }}</option>
             </select>
           </label>
           <small v-if="canConfigureRoomStrategy && (planVoiceRate.loading.value || liveSpeechRateBusy)" class="speech-rate-status" role="status">{{ liveSpeechRateBusy ? '语速保存中…' : '语速读取中…' }}</small>

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -753,12 +752,7 @@ type publishRoomVoiceRateInput struct {
 }
 
 func normalizePublishedVoiceRate(rate float64) (float64, bool) {
-	for _, allowed := range []float64{0.8, 0.9, 1.0, 1.1, 1.2} {
-		if math.Abs(rate-allowed) < 0.0001 {
-			return allowed, true
-		}
-	}
-	return 0, false
+	return model.NormalizePlanVoiceRate(rate)
 }
 
 func (s *Server) liveAgentPlanPublishRoomVoiceRate(w http.ResponseWriter, r *http.Request) {
@@ -784,7 +778,7 @@ func (s *Server) liveAgentPlanPublishRoomVoiceRate(w http.ResponseWriter, r *htt
 	}
 	rate, valid := normalizePublishedVoiceRate(input.Rate)
 	if !valid {
-		writeError(w, http.StatusBadRequest, "语速仅支持 0.8、0.9、1.0、1.1、1.2")
+		writeError(w, http.StatusBadRequest, appdb.ErrInvalidPlanVoiceRate.Error())
 		return
 	}
 	published, err := s.store.GetPublishedLiveAgentPlanVersionForRoom(r.Context(), tenantID, roomID)
