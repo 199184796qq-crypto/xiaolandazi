@@ -14,8 +14,6 @@ import (
 
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
-	"livecompanion/management/internal/ttsgateway"
-	"livecompanion/management/internal/voicecatalog"
 )
 
 func liveAgentPlanVersionPathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
@@ -119,8 +117,8 @@ func recordingScriptOnlyContext(context map[string]any) bool {
 }
 
 func validateLiveAgentPlanVersionInput(input *model.CreateLiveAgentPlanVersionInput) error {
-	if input.RoomID < 0 {
-		return errors.New("room_id 不能为负数")
+	if input.RoomID <= 0 {
+		return errors.New("请选择发布直播间")
 	}
 	if input.DurationMinutes < 30 || input.DurationMinutes > 120 || input.DurationMinutes%30 != 0 {
 		return errors.New("生成内容时长必须为 30、60、90 或 120 分钟")
@@ -326,35 +324,33 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "保存智能体版本格式错误")
 		return
 	}
-
+	// 允许「仅保存、不绑定房间」：RoomID<=0 表示只存档方案内容、不投送任何直播间。
+	// 此时跳过房间访问与房间级内容模式校验，content_mode 采用默认值；绑定到具体房间
+	// 再发布时走 publish 链路的房间级校验。
+	boundRoom := input.RoomID > 0
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, true)
 	if !ok {
 		return
 	}
-	input.RoomID = 0
-	if input.GenerationContext == nil {
-		input.GenerationContext = map[string]any{}
+	if boundRoom {
+		if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
+			return
+		}
 	}
-	delete(input.GenerationContext, "content_policy")
-	delete(input.GenerationContext, "dynamic_authorized")
-	settings, err := s.store.GetPlanAssetSettings(r.Context(), tenantID, planID)
-	if err != nil {
-		writeError(w, 404, "方案不存在或配置读取失败")
-		return
-	}
-	input.GenerationContext["content_mode"] = settings.ContentMode
 	w, r = anchorAnalysisStream(w, r)
 	reportAnchorAnalysis(r.Context(), 5, "正在核对方案参数与主播声音")
-	if err := s.validateContentModeAssets(r.Context(), tenantID, settings.ContentMode, input.Variants); err != nil {
-		writeError(w, 409, err.Error())
-		return
+	if boundRoom {
+		if err := s.applyLiveContentModeVersion(r.Context(), tenantID, input.RoomID, &input); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+	} else {
+		// 不绑房间：清掉可能由调用方注入的 content_mode，统一落为默认预生成模式。
+		// 内容模式本质是房间级策略，方案级存档不持有它；待绑定房间发布时再按该房间模式校验。
+		delete(input.GenerationContext, "content_policy")
+		delete(input.GenerationContext, "dynamic_authorized")
+		delete(input.GenerationContext, "content_mode")
 	}
-	if err := s.validatePlanVoiceIdentity(r.Context(), tenantID, &input.VoiceIdentity); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	input.GenerationContext["reading_rules"] = settings.ReadingRules
-
 	if err := s.captureRealtimeScheme(r.Context(), tenantID, planID, &input); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -473,12 +469,16 @@ func (s *Server) liveAgentPlanVersionList(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-
+	roomID, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("room_id")), 10, 64)
+	if err != nil || roomID <= 0 {
+		writeError(w, http.StatusBadRequest, "请选择直播间")
+		return
+	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), false)
 	if !ok {
 		return
 	}
-	items, err := s.store.ListLiveAgentPlanVersionsForPlan(r.Context(), tenantID, planID)
+	items, err := s.store.ListLiveAgentPlanVersions(r.Context(), tenantID, planID, roomID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取直播智能体版本失败")
 		return
@@ -569,35 +569,64 @@ func (s *Server) liveAgentPlanWorkspaceGet(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-
+	roomID, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("room_id")), 10, 64)
+	if err != nil || roomID <= 0 {
+		writeError(w, http.StatusBadRequest, "请选择直播间")
+		return
+	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), false)
 	if !ok {
 		return
 	}
-	settings, err := s.store.GetPlanAssetSettings(r.Context(), tenantID, planID)
+	access, err := s.store.GetLiveContentMode(r.Context(), tenantID, roomID)
 	if err != nil {
-		writeError(w, 404, "方案不存在")
+		writeError(w, http.StatusInternalServerError, "读取当前直播模式失败")
 		return
 	}
 	contentMode := strings.TrimSpace(r.URL.Query().Get("content_mode"))
 	if contentMode == "" {
-		contentMode = settings.ContentMode
+		contentMode = access.ContentMode
 	}
-	if contentMode != model.LiveContentUserAudio && contentMode != model.LiveContentAIDynamic && contentMode != model.LiveContentAIPregenerated {
-		writeError(w, 400, "无效的方案内容模式")
+	allowed := false
+	for _, mode := range access.AvailableModes {
+		if mode == contentMode {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "当前直播间不能读取该内容模式")
 		return
 	}
-	items, err := s.store.ListLiveAgentPlanVersionsForPlan(r.Context(), tenantID, planID)
+	items, err := s.store.ListLiveAgentPlanVersions(r.Context(), tenantID, planID, roomID)
 	if err != nil {
-		writeError(w, 500, "读取方案版本失败")
+		writeError(w, http.StatusInternalServerError, "读取直播智能体编辑工作区失败")
 		return
 	}
 	version, source := selectLatestLiveAgentPlanWorkspaceTemplate(items, contentMode)
 	if version == nil {
-		writeJSON(w, 200, map[string]any{"version": nil, "source": "", "inherited": false})
-		return
+		// A room grant does not authorize reading another room's saved runtime
+		// configuration, even when both rooms share a plan.
+		if actor.IsInternalStaff() {
+			writeJSON(w, http.StatusOK, map[string]any{"version": nil, "source": "", "inherited": false})
+			return
+		}
+		planItems, planErr := s.store.ListLiveAgentPlanVersionsForPlan(r.Context(), tenantID, planID)
+		if planErr != nil {
+			writeError(w, http.StatusInternalServerError, "读取直播智能体方案版本失败")
+			return
+		}
+		version, source = selectLatestLiveAgentPlanWorkspaceTemplate(planItems, contentMode)
+		if version == nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"version":   nil,
+				"source":    "",
+				"inherited": false,
+			})
+			return
+		}
 	}
-
+	version.SavedFromRoomID, version.RoomID = version.RoomID, roomID
 	hydrateLiveAgentPlanVersionForWorkspace(version)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":        version,
@@ -909,30 +938,52 @@ func (s *Server) liveAgentPlanPublishedVersionForRoom(w http.ResponseWriter, r *
 // or is disabled: such a plan would fail at live start with 「声音已停用」.
 func (s *Server) validatePlanVoiceIdentity(ctx context.Context, tenantID int64, identity *model.LiveAgentVoiceIdentity) error {
 	if identity == nil {
-		return errors.New("请先选择方案声音")
+		return nil
 	}
-	if err := normalizeLiveAgentVoiceIdentity(identity); err != nil {
-		return err
-	}
-	if identity.Source == "official" {
-		settings, err := s.store.VoiceModelSettings(ctx)
-		if err != nil {
-			return errors.New("读取官方声音配置失败")
-		}
-		configured := ttsgateway.QwenConfigFromEnv().APIKey != ""
-		if settings.OfficialLibrary == ttsgateway.TencentPremiumModel {
-			configured = ttsgateway.TencentConfigured()
-		}
-		for _, v := range voicecatalog.CustomerOfficial(settings.OfficialLibrary) {
-			if configured && v.ID == identity.VoiceID && v.Model == identity.Model && v.Provider == identity.Provider {
-				return nil
+	if identity.BindingID > 0 {
+		binding, err := s.store.GetVoiceModelBinding(ctx, tenantID, identity.BindingID)
+		if err != nil || binding.Status != "ready" {
+			// 旧绑定被删除或停用：优先按 voice_id / profile 找回可用的新绑定，
+			// 避免用户切了新声音却因为旧 ID 存不进方案。
+			if recovered, ok := s.recoverPlanVoiceBinding(ctx, tenantID, *identity); ok {
+				binding = recovered
+			} else if err != nil {
+				return fmt.Errorf("该声音已失效，请重新选择声音后再保存")
+			} else {
+				return fmt.Errorf("该声音已停用，请重新选择声音后再保存")
 			}
 		}
-		return errors.New("该官方声音暂不可用，请重新选择声音后再保存")
+		identity.BindingID = binding.ID
+		identity.VoiceID = binding.VoiceID
+		identity.ProfileID = binding.ProfileID
+		identity.Model = binding.Model
+		identity.Provider = binding.Provider
+		return nil
 	}
-	binding, err := s.store.GetVoiceModelBinding(ctx, tenantID, identity.BindingID)
-	if err != nil || binding.Status != "ready" || binding.VoiceID != identity.VoiceID || binding.Model != identity.Model || binding.Provider != identity.Provider || binding.ProfileID != identity.ProfileID {
-		return errors.New("该声音已失效或已停用，请重新选择声音后再保存")
+	if strings.TrimSpace(identity.VoiceID) != "" {
+		binding, err := s.store.FindReadyVoiceBindingByVoiceID(ctx, tenantID, identity.VoiceID)
+		if err != nil {
+			return fmt.Errorf("该声音已失效，请重新选择声音后再保存")
+		}
+		identity.BindingID = binding.ID
+		identity.ProfileID = binding.ProfileID
+		identity.Model = binding.Model
+		identity.Provider = binding.Provider
 	}
 	return nil
+}
+
+// recoverPlanVoiceBinding finds a ready binding for the same voice or profile.
+func (s *Server) recoverPlanVoiceBinding(ctx context.Context, tenantID int64, identity model.LiveAgentVoiceIdentity) (model.VoiceModelBinding, bool) {
+	if strings.TrimSpace(identity.VoiceID) != "" {
+		if binding, err := s.store.FindReadyVoiceBindingByVoiceID(ctx, tenantID, identity.VoiceID); err == nil {
+			return binding, true
+		}
+	}
+	if identity.ProfileID > 0 {
+		if binding, err := s.store.FindReadyVoiceBindingByProfile(ctx, tenantID, identity.ProfileID); err == nil {
+			return binding, true
+		}
+	}
+	return model.VoiceModelBinding{}, false
 }
