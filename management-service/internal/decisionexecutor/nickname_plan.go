@@ -452,12 +452,13 @@ func (w *Worker) phraseAddress(ctx context.Context, s model.LiveRuntimeSession, 
 	}, item.ID+":phrase")
 	if err == nil {
 		if phrase, parseErr := addressing.ParsePhrase(response.Text, in); parseErr == nil {
+			phrase = ensureSpokenTerm(phrase, resolvedTerms)
 			item.PromptAddressPhrase = phrase
 			w.rememberPhrase(s.RoomID, phrase)
 			return
 		}
 	}
-	item.PromptAddressPhrase = fallbackAddressPhrase(in)
+	item.PromptAddressPhrase = ensureSpokenTerm(fallbackAddressPhrase(in), resolvedTerms)
 	w.rememberPhrase(s.RoomID, item.PromptAddressPhrase)
 }
 
@@ -515,4 +516,24 @@ func (w *Worker) cacheNickname(key, base, short string, now time.Time) {
 		w.nicknameAliases = map[string]nicknameAliasCacheEntry{}
 	}
 	w.nicknameAliases[key] = nicknameAliasCacheEntry{Address: base, Short: short, Expires: now.Add(30 * time.Minute)}
+}
+
+// ensureSpokenTerm keeps the address from being a bare nickname: when no
+// configured term appears and it is not a group phrase, append the room's term.
+func ensureSpokenTerm(phrase string, terms []string) string {
+	phrase = strings.TrimSpace(phrase)
+	if phrase == "" || len(terms) == 0 {
+		return phrase
+	}
+	for _, term := range terms {
+		if term != "" && strings.Contains(phrase, term) {
+			return phrase
+		}
+	}
+	for _, noun := range []string{"们", "大家", "几位", "朋友", "家人"} {
+		if strings.Contains(phrase, noun) {
+			return phrase
+		}
+	}
+	return phrase + terms[0]
 }

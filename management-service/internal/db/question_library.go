@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"strings"
 
@@ -22,11 +23,11 @@ ORDER BY id`, tenantID, roomID)
 	items := make([]model.QuestionLibraryEntry, 0, 16)
 	for rows.Next() {
 		var item model.QuestionLibraryEntry
-		var exclude string
+		var exclude sql.NullString
 		if err := rows.Scan(&item.ID, &item.TenantID, &item.RoomID, &item.PlanID, &item.QuestionType, &item.Question, &item.Answer, &item.SenseKey, &item.SenseName, &exclude, &item.Status, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal([]byte(exclude), &item.ExcludeWords)
+		_ = json.Unmarshal([]byte(exclude.String), &item.ExcludeWords)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -63,12 +64,12 @@ VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`, tenantID, planID, questionType, question
 
 func (s *Store) questionLibraryEntry(ctx context.Context, id int64) (model.QuestionLibraryEntry, error) {
 	var item model.QuestionLibraryEntry
-	var exclude string
+	var exclude sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 SELECT id, tenant_id, room_id, plan_id, question_type, question, answer, sense_key, sense_name, exclude_json, status, updated_at
 FROM live_agent_question_library WHERE id = ?`, id).
 		Scan(&item.ID, &item.TenantID, &item.RoomID, &item.PlanID, &item.QuestionType, &item.Question, &item.Answer, &item.SenseKey, &item.SenseName, &exclude, &item.Status, &item.UpdatedAt)
-	_ = json.Unmarshal([]byte(exclude), &item.ExcludeWords)
+	_ = json.Unmarshal([]byte(exclude.String), &item.ExcludeWords)
 	return item, err
 }
 
@@ -165,11 +166,11 @@ ORDER BY id`, tenantID, planID)
 	items := make([]model.QuestionLibraryEntry, 0, 16)
 	for rows.Next() {
 		var item model.QuestionLibraryEntry
-		var exclude string
+		var exclude sql.NullString
 		if err := rows.Scan(&item.ID, &item.TenantID, &item.RoomID, &item.PlanID, &item.QuestionType, &item.Question, &item.Answer, &item.SenseKey, &item.SenseName, &exclude, &item.Status, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal([]byte(exclude), &item.ExcludeWords)
+		_ = json.Unmarshal([]byte(exclude.String), &item.ExcludeWords)
 		items = append(items, item)
 	}
 	return items, rows.Err()
