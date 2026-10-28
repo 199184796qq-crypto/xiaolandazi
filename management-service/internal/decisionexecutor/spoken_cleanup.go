@@ -26,6 +26,16 @@ var (
 // sanitizeSpokenText turns model output into something a TTS engine can read:
 // no bracketed asides, no dashes, no stray spaces.
 func sanitizeSpokenText(text string) string {
+	return sanitizeSpokenTextWithPauses(text, true)
+}
+
+// sanitizeInteractionSpokenText is the interaction path: it keeps the cleanup
+// but never inserts the mainline pause punctuation before TTS.
+func sanitizeInteractionSpokenText(text string) string {
+	return sanitizeSpokenTextWithPauses(text, false)
+}
+
+func sanitizeSpokenTextWithPauses(text string, insertPauses bool) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
@@ -50,5 +60,25 @@ func sanitizeSpokenText(text string) string {
 			out = append(out, line)
 		}
 	}
-	return insertSpeechPauses(strings.Join(out, "\n"))
+	cleaned := strings.Join(out, "\n")
+	if insertPauses {
+		return insertSpeechPauses(cleaned)
+	}
+	return cleaned
+}
+
+// isInteractionSpeech keeps mainline pause behavior while removing pause
+// punctuation from viewer-facing interaction replies.
+func isInteractionSpeech(item decisionItem) bool {
+	switch strings.ToLower(strings.TrimSpace(item.MissionKind)) {
+	case "reply_question", "reply_chat", "reply_follow", "reply_like",
+		"complaint", "welcome_named", "welcome_batch", "conversion_signal",
+		"warmup", "greeting", "thanks", "order_thanks", "order_fulfillment":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(item.Scene)) {
+	case "product_question", "complaint", "greeting", "thanks", "answer":
+		return true
+	}
+	return false
 }
