@@ -414,10 +414,13 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-	} else if set, ok, readyErr := s.latestSavedContentPoolSet(r.Context(), tenantID, planID); readyErr == nil && ok {
-		input.GenerationContext["content_pools"] = contentPoolRef(set)
-		input.GenerationContext["derived_safety"] = map[string]any{"asset_id": set.SafetyID, "source_sha256": set.SafetyHash, "notice": "对应公共池与商品专属池已保存。"}
 	} else {
+		if set, ok, readyErr := s.latestSavedContentPoolSet(r.Context(), tenantID, planID); readyErr == nil && ok {
+			input.GenerationContext["content_pools"] = contentPoolRef(set)
+		}
+		// Saving is the activation point for the next live. Never inherit a
+		// content-pool SafetyID here: facts may have changed since that pool was
+		// saved, and the published version must carry a fresh fact snapshot.
 		reportAnchorAnalysis(r.Context(), 30, "正在核对事实依据")
 		safety, err := s.prepareDerivedSafety(r.Context(), tenantID, planID, actor.UserID)
 		if err != nil {
