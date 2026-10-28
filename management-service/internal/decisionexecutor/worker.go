@@ -1524,9 +1524,9 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	// 称呼之后让模型自己处理停顿：单人、多人统一。
 	if strings.TrimSpace(item.PromptAddressPhrase) != "" {
 		if ttsInstruction == "" {
-			ttsInstruction = "开头称呼之后稍作停顿，再自然往下说。"
+			ttsInstruction = "开头称呼之后停顿约0.2秒，再自然往下说。"
 		} else {
-			ttsInstruction += "；开头称呼之后稍作停顿，再自然往下说。"
+			ttsInstruction += "；开头称呼之后停顿约0.2秒，再自然往下说。"
 		}
 	}
 	w.transitionMission(item, speechmission.StateSynthesizingTTS, "tts_start", "最终话术审核通过，开始生成语音")
