@@ -73,6 +73,7 @@ func (s *Server) buildPlanDomainCard(ctx context.Context, safety model.LiveDeriv
 		log.Printf("domain card validate failed plan=%d: %v", safety.PlanID, err)
 		return nil
 	}
+	domaincard.ExpandSharedFacts(card, facts)
 	card.SourceSHA256 = strings.TrimSpace(safety.SourceSHA256)
 	card.BuiltAt = time.Now().UTC().Format(time.RFC3339)
 	return card

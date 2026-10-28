@@ -169,6 +169,50 @@ func cleanStrings(values []string) []string {
 	return out
 }
 
+// ExpandSharedFacts adds a fact to every dimension whose name or audience
+// phrase literally describes it. Rules often belong to more than one
+// dimension ("本地不抽真空，外地真空包装" is both shipping and packaging);
+// the model tends to file them under one, so this deterministic pass keeps the
+// other dimension complete.
+func ExpandSharedFacts(card *Card, facts []Fact) {
+	if card == nil {
+		return
+	}
+	known := make(map[string]Fact, len(facts))
+	for _, fact := range facts {
+		if id := strings.TrimSpace(fact.ID); id != "" {
+			known[id] = fact
+		}
+	}
+	for index := range card.Dimensions {
+		dimension := &card.Dimensions[index]
+		already := make(map[string]bool, len(dimension.FactIDs))
+		for _, id := range dimension.FactIDs {
+			already[id] = true
+		}
+		phrases := append([]string{dimension.Name}, dimension.Phrases...)
+		normalized := make([]string, 0, len(phrases))
+		for _, phrase := range phrases {
+			if value := normalize(phrase); len([]rune(value)) >= 2 {
+				normalized = append(normalized, value)
+			}
+		}
+		for id, fact := range known {
+			if already[id] {
+				continue
+			}
+			text := normalize(fact.Text)
+			for _, phrase := range normalized {
+				if strings.Contains(text, phrase) {
+					dimension.FactIDs = append(dimension.FactIDs, id)
+					already[id] = true
+					break
+				}
+			}
+		}
+	}
+}
+
 // Match returns the facts belonging to the question's dimensions. It is a
 // recall layer only: applicability/conditions are still judged by the answer
 // model.

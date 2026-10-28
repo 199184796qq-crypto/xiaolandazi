@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"livecompanion/management/internal/contentstrategy"
+	"livecompanion/management/internal/domaincard"
 	"livecompanion/management/internal/factselect"
 	"livecompanion/management/internal/semantic"
 )
@@ -50,6 +51,11 @@ type Input struct {
 	Tenant, Room, Plan  int64
 	Text, Facts, Prompt string
 	Purposes            []contentstrategy.Purpose
+	// DomainCard and CardFacts are compact, plan-local intent context. They
+	// never replace the approved fact package; they tell the intent model which
+	// dimension this question likely belongs to.
+	DomainCard *domaincard.Card
+	CardFacts  []domaincard.Fact
 }
 
 func Normalize(text string) string {
@@ -62,7 +68,11 @@ func Normalize(text string) string {
 	return out.String()
 }
 func SourceID(input Input) string {
-	return contentstrategy.SHA(input.Facts + input.Prompt)[:24] + ":" + contentstrategy.SHA(Normalize(input.Text))
+	cardHash := ""
+	if input.DomainCard != nil {
+		cardHash = input.DomainCard.SourceSHA256
+	}
+	return contentstrategy.SHA(input.Facts + input.Prompt + cardHash)[:24] + ":" + contentstrategy.SHA(Normalize(input.Text))
 }
 
 func preciseFamily(text string) string {
@@ -130,7 +140,24 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	}
 	// The model no longer sees the fact package: it only says why the viewer
 	// asks. Facts are assigned on the program side, which keeps the prompt small.
-	payload, _ := json.Marshal(map[string]any{"观众原话": input.Text, "已有目的": input.Purposes})
+	payloadMap := map[string]any{"观众原话": input.Text, "已有目的": input.Purposes}
+	if input.DomainCard != nil {
+		dimensions := make([]map[string]any, 0, len(input.DomainCard.Dimensions))
+		for _, dimension := range input.DomainCard.Dimensions {
+			dimensions = append(dimensions, map[string]any{
+				"名称": dimension.Name, "问法": dimension.Phrases, "条件": dimension.Conditions,
+			})
+		}
+		payloadMap["领域卡"] = map[string]any{"行业": input.DomainCard.Domain, "维度": dimensions}
+	}
+	if len(input.CardFacts) > 0 {
+		lines := make([]string, 0, len(input.CardFacts))
+		for _, fact := range input.CardFacts {
+			lines = append(lines, fact.ID+" "+strings.TrimSpace(fact.Text))
+		}
+		payloadMap["本问题命中事实"] = strings.Join(lines, "\n")
+	}
+	payload, _ := json.Marshal(payloadMap)
 	raw, err := r.Complete(ctx, string(payload))
 	if err != nil {
 		return Result{}, err
@@ -240,6 +267,7 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	}
 	return result, nil
 }
+
 // assignAngleFacts fills each angle's fact references on the program side: the
 // configured purpose's facts first, then a retrieval pass over the fact package.
 // The model is no longer asked for fact ids, so a wrong or invented id cannot
@@ -251,6 +279,12 @@ func assignAngleFacts(input Input, result Result) []contentstrategy.Row {
 	for _, fact := range facts {
 		known[fact.ID] = true
 		all = append(all, factselect.Fact{ID: fact.ID, Text: fact.Text})
+	}
+	cardIDs := make([]string, 0, len(input.CardFacts))
+	for _, fact := range input.CardFacts {
+		if known[fact.ID] {
+			cardIDs = append(cardIDs, fact.ID)
+		}
 	}
 	var purpose *contentstrategy.Purpose
 	for i := range input.Purposes {
@@ -267,6 +301,14 @@ func assignAngleFacts(input Input, result Result) []contentstrategy.Row {
 			}
 		}
 		return out
+	}
+	if len(result.Angles) == 0 && len(cardIDs) > 0 {
+		result.Angles = []contentstrategy.Row{{
+			PurposeID: result.PurposeID,
+			Angle:     "按命中维度回答",
+			Task:      input.Text,
+			FactIDs:   append([]string(nil), cardIDs...),
+		}}
 	}
 	if len(result.Angles) == 0 && input.Text != "" {
 		// The model may return no angle at all (a vague "在哪里"). Do not give up:
@@ -300,8 +342,9 @@ func assignAngleFacts(input Input, result Result) []contentstrategy.Row {
 	}
 	kept := make([]contentstrategy.Row, 0, len(result.Angles))
 	for _, row := range result.Angles {
-		base := make([]string, 0, len(row.FactIDs)+8)
+		base := make([]string, 0, len(row.FactIDs)+len(cardIDs)+8)
 		base = append(base, row.FactIDs...)
+		base = append(base, cardIDs...)
 		if len(base) == 0 && purpose != nil {
 			base = append(base, filterKnown(purpose.FactIDs)...)
 		}

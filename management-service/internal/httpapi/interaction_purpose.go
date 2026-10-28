@@ -1,18 +1,20 @@
 package httpapi
 
 import (
-	"livecompanion/management/internal/purposelib"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"livecompanion/management/internal/purposelib"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/domaincard"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/interactionpurpose"
 	"livecompanion/management/internal/livecost"
@@ -115,6 +117,18 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	query := interactionpurpose.Input{Tenant: input.Tenant, Room: input.Room, Plan: input.Plan, Text: input.Text, Facts: asset.SafeFacts, Prompt: string(prompt)}
+	// The saved card is a recall index, not a replacement for the approved
+	// facts. Give the intent model only the card's dimensions and the facts that
+	// match this question.
+	if card := domaincard.FromGeneration(published.GenerationContext); card != nil {
+		parsed := contentstrategy.Facts(asset.SafeFacts)
+		all := make([]domaincard.Fact, 0, len(parsed))
+		for _, fact := range parsed {
+			all = append(all, domaincard.Fact{ID: fact.ID, Text: fact.Text})
+		}
+		query.DomainCard = card
+		query.CardFacts = domaincard.Match(input.Text, card, all)
+	}
 	if snapshot := s.loadContentStrategy(ctx, input.Tenant, input.Plan, asset.SafeFacts); snapshot != nil {
 		query.Purposes = snapshot.Purposes
 	}
