@@ -18,6 +18,7 @@ type GreyCandidate struct {
 type GreyDecision struct {
 	UserID string
 	Base   string
+	Short  string
 	OK     bool
 	Reason string
 }
@@ -35,7 +36,8 @@ func GreyPrompt(items []GreyCandidate, rules *Rules) (string, string) {
 4. base 不能含数字；昵称里带数字或英文后缀（如 k8ta、xx、de）时，去掉它们只保留能念的中文主体（如「小斌k8ta」→「小斌」、「4个化骨龙de老豆」→「化骨龙老豆」）。
 5. base 必须按原顺序取自原昵称，只能删字不能改字或换顺序；保留主要意思，不要机械截前几个字。
 6. 只要名字能被安全叫出来，就给 ok=true；拿不准用 ok=false。
-7. 输出严格 JSON，不要解释：{"results":[{"index":0,"ok":true,"base":"小陈"},{"index":1,"ok":false}]}
+6. 每个结果同时给 short：1-2 个字的简称，必须按顺序取自 base，用于后面快速称呼；英文取首个单词。
+7. 输出严格 JSON，不要解释：{"results":[{"index":0,"ok":true,"base":"小陈","short":"小陈"},{"index":1,"ok":false}]}
 8. 每个输入恰好一条结果，index 与输入一致。`, limit, limit, limit)
 	names := make([]map[string]any, 0, len(items))
 	for i, item := range items {
@@ -50,6 +52,7 @@ type greyWire struct {
 		Index int    `json:"index"`
 		OK    bool   `json:"ok"`
 		Base  string `json:"base"`
+		Short string `json:"short"`
 	} `json:"results"`
 }
 
@@ -81,6 +84,7 @@ func ParseGrey(raw string, items []GreyCandidate, rules *Rules) ([]GreyDecision,
 			if salvaged, ok := rules.SalvageBase(base, item.RawName); ok {
 				decision.OK = true
 				decision.Base = salvaged
+				decision.Short = rules.ShortForm(salvaged)
 				decision.Reason = "model_ok_salvaged"
 				decisions[row.Index] = decision
 				continue
@@ -91,6 +95,10 @@ func ParseGrey(raw string, items []GreyCandidate, rules *Rules) ([]GreyDecision,
 		}
 		decision.OK = true
 		decision.Base = base
+		decision.Short = strings.TrimSpace(row.Short)
+		if !rules.ValidateShort(decision.Short, base) {
+			decision.Short = rules.ShortForm(base)
+		}
 		decisions[row.Index] = decision
 	}
 	for i := range decisions {
@@ -99,6 +107,24 @@ func ParseGrey(raw string, items []GreyCandidate, rules *Rules) ([]GreyDecision,
 		}
 	}
 	return decisions, nil
+}
+
+// ValidateShort enforces a 1-2 character address taken from the base form.
+func (r Rules) ValidateShort(short, base string) bool {
+	short = strings.TrimSpace(short)
+	if short == "" {
+		return false
+	}
+	if hasDigit(short) || containsAny(short, r.HardBlock.ContactTerms) || containsAny(short, r.HardBlock.InsultTerms) {
+		return false
+	}
+	if allLatin(short) {
+		return len(strings.Fields(short)) == 1 && len([]rune(short)) <= 3
+	}
+	if utf8.RuneCountInString(short) > 2 {
+		return false
+	}
+	return orderedSubset(short, base)
 }
 
 // ValidateBase enforces: 1..6 runes (or <=3 words for Latin), no digits, and
@@ -230,6 +256,21 @@ func hasDigit(text string) bool {
 		}
 	}
 	return false
+}
+
+// allChineseDigits reports whether every rune is a spoken numeral.
+func allChineseDigits(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, ch := range text {
+		switch ch {
+		case '零', '一', '二', '三', '四', '五', '六', '七', '八', '九':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func stripJSONFence(raw string) string {

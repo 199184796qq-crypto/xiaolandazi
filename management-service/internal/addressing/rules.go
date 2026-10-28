@@ -135,12 +135,21 @@ const (
 type Decision struct {
 	Status Status
 	Text   string // speakable form for safe/rewritten; candidate for grey
+	Short  string // 1-2 character address for later sentence building
 	Reason string
 }
 
 // Check applies the global hard rules first, then program rewrites, and only
 // leaves genuinely ambiguous names for the model.
 func (r Rules) Check(raw string) Decision {
+	decision := r.check(raw)
+	if decision.Status == StatusSafe || decision.Status == StatusRewritten {
+		decision.Short = r.ShortForm(decision.Text)
+	}
+	return decision
+}
+
+func (r Rules) check(raw string) Decision {
 	name := strings.TrimSpace(raw)
 	if name == "" {
 		return Decision{Status: StatusDropped, Reason: "empty"}
@@ -219,6 +228,53 @@ func (r Rules) Check(raw string) Decision {
 		return Decision{Status: StatusSafe, Text: name, Reason: "safe"}
 	}
 	return Decision{Status: StatusRewritten, Text: name, Reason: "rewritten"}
+}
+
+// ShortForm returns a deterministic 1-2 character address for later sentence
+// building. Long or ambiguous names get their short form from the grey model.
+func (r Rules) ShortForm(base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return ""
+	}
+	runes := []rune(base)
+	if len(runes) <= 2 {
+		return base
+	}
+	if allLatin(base) {
+		word := strings.Fields(base)[0]
+		if len([]rune(word)) <= 3 {
+			return word
+		}
+		return string([]rune(word)[:3])
+	}
+	// Account names keep their spoken digits: 用户七二一 -> 七二一.
+	for _, prefix := range r.HardBlock.GenericPrefixes {
+		if prefix != "" && strings.HasPrefix(base, prefix) {
+			rest := strings.TrimSpace(strings.TrimPrefix(base, prefix))
+			if rest != "" && allChineseDigits(rest) {
+				return rest
+			}
+		}
+	}
+	suffix := ""
+	for _, title := range r.Rewrite.KeepSuffixTitles {
+		if strings.HasSuffix(base, title) && utf8.RuneCountInString(title) > utf8.RuneCountInString(suffix) {
+			suffix = title
+		}
+	}
+	if suffix != "" {
+		core := strings.TrimSuffix(base, suffix)
+		coreRunes := []rune(core)
+		if len(coreRunes) == 0 {
+			return base
+		}
+		if len(coreRunes) > 2 {
+			coreRunes = coreRunes[len(coreRunes)-2:]
+		}
+		return string(coreRunes)
+	}
+	return string(runes[:2])
 }
 
 func containsAny(text string, terms []string) bool {

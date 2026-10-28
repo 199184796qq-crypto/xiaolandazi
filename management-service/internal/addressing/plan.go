@@ -161,6 +161,7 @@ func resolveDuplicateAddresses(plan *Plan, rules *Rules) {
 			}
 			counts[picked.Text]--
 			picked.Text = candidate
+			picked.Decision.Short = rules.ShortForm(candidate)
 			counts[candidate] = 1
 			break
 		}
