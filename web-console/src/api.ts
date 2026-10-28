@@ -4722,3 +4722,14 @@ export interface SpeechLibraryPolicy { capacity: number; one_rate: number; two_r
 export interface SpeechLibraryReply { policy: SpeechLibraryPolicy; revision: string; stats: { Texts: number; Audio: number; PlayedReuses: number } }
 export function getSpeechLibraryPolicy() { return request<SpeechLibraryReply>('/api/v1/system/speech-library-policy') }
 export function saveSpeechLibraryPolicy(policy: SpeechLibraryPolicy, expected_revision: string) { return request<SpeechLibraryReply>('/api/v1/system/speech-library-policy', { method: 'PUT', body: JSON.stringify({ policy, expected_revision }) }) }
+
+export function getRoomReadingRules(roomId: number) {
+  return request<RoomReadingRules>('/api/v1/rooms/' + roomId + '/reading-rules')
+}
+
+export function updateRoomReadingRules(roomId: number, rulesText: string) {
+  return request<RoomReadingRules>('/api/v1/rooms/' + roomId + '/reading-rules', {
+    method: 'PUT',
+    body: JSON.stringify({ rules_text: rulesText }),
+  })
+}

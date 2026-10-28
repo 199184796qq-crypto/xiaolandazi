@@ -483,6 +483,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/strategy-stats/stream", s.streamRoomStrategyStats)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/interaction-preferences", s.roomInteractionPreferences)
 	mux.HandleFunc("PUT /api/v1/rooms/{roomID}/interaction-preferences", s.roomInteractionPreferences)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/reading-rules", s.roomReadingRules)
+	mux.HandleFunc("PUT /api/v1/rooms/{roomID}/reading-rules", s.roomReadingRules)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/addressing-preferences", s.roomAddressingPreferences)
 	mux.HandleFunc("PUT /api/v1/rooms/{roomID}/addressing-preferences", s.roomAddressingPreferences)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/human-behavior-profile", s.roomHumanBehaviorProfile)

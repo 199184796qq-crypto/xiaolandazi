@@ -1865,3 +1865,16 @@ CREATE TABLE IF NOT EXISTS live_industry_config_packs (
     UNIQUE KEY uk_industry_domain_code (biz_domain, industry_code),
     KEY idx_industry_domain_status (biz_domain, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_room_reading_rules (
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    rules_text TEXT NOT NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (tenant_id, room_id),
+    KEY idx_live_room_reading_rules_room (room_id),
+    KEY idx_live_room_reading_rules_updated_by (updated_by_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

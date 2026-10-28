@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import RoomReadingRules from '../components/RoomReadingRules.vue'
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { normalizeLiveAgentPlanVersion } from '../liveAgentPlanVersion'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
@@ -287,7 +288,7 @@ function dismissPlanActionsMenu(event: MouseEvent) {
 }
 function selectPlanConfigurationSection(section: PlanConfigurationSection) {
   const modes: Record<PlanConfigurationSection, PlanConfigurationMode> = {
-    business: 'business', facts: lastFactMode.value, interaction: 'memory',
+    business: 'business', facts: lastFactMode.value, interaction: 'memory', reading: 'reading',
     style: 'anchor', voice: 'voice', live: 'fullshow',
   }
   selectPlanConfigurationMode(modes[section])
@@ -7576,7 +7577,10 @@ onBeforeUnmount(() => {
           </section>
         </section>
 
-        <section v-else-if="activeMode === 'memory'" class="strategy-v2-workspace interaction-strategy-workspace">
+        <section v-else-if="activeMode === 'reading'" class="strategy-v2-workspace">
+        <RoomReadingRules :room-id="activeRoomId" />
+      </section>
+      <section v-else-if="activeMode === 'memory'" class="strategy-v2-workspace interaction-strategy-workspace">
           <div class="strategy-v2-section-head interaction-strategy-head">
             <div>
               <h3>互动策略</h3>

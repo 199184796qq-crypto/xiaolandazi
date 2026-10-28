@@ -295,3 +295,15 @@ type StartLiveRuntimeInput struct {
 type StopLiveRuntimeInput struct {
 	Reason string `json:"reason,omitempty"`
 }
+
+type RoomReadingRules struct {
+	TenantID        int64     `json:"tenant_id"`
+	RoomID          int64     `json:"room_id"`
+	RulesText       string    `json:"rules_text"`
+	UpdatedByUserID *int64    `json:"updated_by_user_id,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type RoomReadingRulesInput struct {
+	RulesText string `json:"rules_text"`
+}

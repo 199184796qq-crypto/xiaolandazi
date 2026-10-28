@@ -24,6 +24,7 @@ const sections: { key: PlanConfigurationSection; label: string; icon?: string }[
   { key: 'business', label: '业务模式' },
   { key: 'facts', label: '商品与事实' },
   { key: 'interaction', label: '互动规则' },
+  { key: 'reading', label: '读写规则' },
   { key: 'style', label: '主播风格' },
   { key: 'voice', label: '声音' },
   { key: 'live', label: '直播模式', icon: 'preview' },

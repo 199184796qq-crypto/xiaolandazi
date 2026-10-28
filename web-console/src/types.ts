@@ -5066,3 +5066,10 @@ export interface AnchorStyleWorkbenchStepResponse {
   actual_raw_chars: number
   actual_output_chars: number
 }
+
+export interface RoomReadingRules {
+  tenant_id: number
+  room_id: number
+  rules_text: string
+  updated_at?: string
+}

@@ -123,6 +123,7 @@ type Worker struct {
 	nicknameRulesValue   *addressing.Rules
 	nicknameRandSeed     int64
 	recentPhrases        map[int64][]string
+	readingRules         map[int64]readingRulesCacheEntry
 	benefitRedis         *redis.Client
 	prepared             map[preparedInteractionKey]preparedInteraction
 }
@@ -1538,14 +1539,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	})
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, 35*time.Second)
 	defer ttsCancel()
-	ttsText := text
-	ssmlUsed := false
-	if strings.TrimSpace(item.PromptAddressPhrase) != "" && ttsgateway.SupportsSSML(ttsModel) {
-		if marked, ok := addressSSML(text, item.PromptAddressPhrase, "200ms"); ok {
-			ttsText = marked
-			ssmlUsed = true
-		}
-	}
+	ttsText, ssmlUsed := buildTTSText(text, item.PromptAddressPhrase, w.readingRulesFor(ctx, session), ttsgateway.SupportsSSML(ttsModel))
 	audio, err := w.synthesizeInteractionAudio(ttsCtx, item, ttsgateway.SynthesizeRequest{
 		Provider:    voiceProvider(voice),
 		Model:       ttsModel,

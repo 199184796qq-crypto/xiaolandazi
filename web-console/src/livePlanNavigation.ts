@@ -1,4 +1,4 @@
-export type PlanConfigurationSection = 'business' | 'facts' | 'interaction' | 'style' | 'voice' | 'live'
+export type PlanConfigurationSection = 'business' | 'facts' | 'interaction' | 'reading' | 'style' | 'voice' | 'live'
 export type PlanConfigurationMode = 'business' | 'products' | 'supplement' | 'benefits' | 'knowledge' | 'memory' | 'anchor' | 'voice' | 'fullshow'
 export type PlanFactMode = Extract<PlanConfigurationMode, 'products' | 'supplement' | 'benefits' | 'knowledge'>
 
@@ -13,6 +13,7 @@ export function planConfigurationSection(mode: string): PlanConfigurationSection
   if (mode === 'business') return 'business'
   if (mode === 'memory' || mode === 'addressing' || mode === 'strategy') return 'interaction'
   if (mode === 'anchor') return 'style'
+  if (mode === 'reading') return 'reading'
   if (mode === 'voice') return 'voice'
   return 'facts'
 }
