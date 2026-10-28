@@ -51,11 +51,18 @@ var categoryMap = map[string]categorySpec{
 // Build merges fact categories, links and benefits into a deterministic list.
 func Build(factCategories []string, factsKeys []string, hasLinks, hasBenefits bool) []Spec {
 	byKey := map[string]*Spec{}
+	byName := map[string]string{}
 	add := func(spec categorySpec) {
-		item, ok := byKey[spec.key]
+		key := spec.key
+		if existing, ok := byName[spec.name]; ok {
+			key = existing
+		} else {
+			byName[spec.name] = key
+		}
+		item, ok := byKey[key]
 		if !ok {
-			item = &Spec{Key: spec.key, Name: spec.name, InOut: spec.inOut}
-			byKey[spec.key] = item
+			item = &Spec{Key: key, Name: spec.name, InOut: spec.inOut}
+			byKey[key] = item
 		}
 		for _, keyword := range spec.keywords {
 			item.Keywords = appendUnique(item.Keywords, keyword)
@@ -69,6 +76,7 @@ func Build(factCategories []string, factsKeys []string, hasLinks, hasBenefits bo
 			if spec.name == "" {
 				spec.name = category
 			}
+			spec.keywords = bigrams(spec.name)
 		}
 		add(spec)
 		if item := byKey[spec.key]; item != nil {
@@ -117,4 +125,22 @@ func normalizeKey(value string) string {
 		return "other"
 	}
 	return key
+}
+
+// bigrams derives rough keywords from a Chinese label, so custom fact
+// categories still match questions without manual configuration.
+func bigrams(label string) []string {
+	runes := []rune(strings.TrimSpace(label))
+	out := make([]string, 0, len(runes))
+	for i := 0; i+1 < len(runes); i++ {
+		pair := string(runes[i : i+2])
+		if strings.ContainsAny(pair, "与的和及或") {
+			continue
+		}
+		out = append(out, pair)
+	}
+	if len(out) > 4 {
+		out = out[:4]
+	}
+	return out
 }
