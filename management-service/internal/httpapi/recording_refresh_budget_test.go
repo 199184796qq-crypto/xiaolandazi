@@ -197,10 +197,11 @@ func TestRecordingRefreshQuoteIncludesConfiguredTokenTTSAllowance(t *testing.T) 
 	s, version, state := recordingRefreshQuoteFixture()
 	version.VoiceIdentity.Model = "qwen-audio-3.1-tts-flash"
 	s.liveCostPrices = []liveCostPriceRule{{Provider: ttsgateway.ProviderQwen, Model: version.VoiceIdentity.Model, Kind: livecost.KindTTS, Unit: "tokens", InputMicrosPerMillion: 10_000_000, OutputMicrosPerMillion: 20_000_000}}
-	// Four expanded Unicode characters quote 16 input / 64 output audio tokens:
-	// 160+1280=1440, greater than weighted reference 560; add model's 540.
-	if got, err := s.recordingRefreshQuote("你好。", version, state); err != nil || got != 1980 {
-		t.Fatalf("quote=%d err=%v want=1980", got, err)
+	// Token-billed speech is quoted on the supplier's real unit: input tokens ≈
+	// sent characters, output tokens ≈ 1.35 × billable characters. For "你好。"
+	// that is 4 input and 10 audio tokens: 40+200=240, plus the model's 540.
+	if got, err := s.recordingRefreshQuote("你好。", version, state); err != nil || got != 780 {
+		t.Fatalf("quote=%d err=%v want=780", got, err)
 	}
 }
 
@@ -253,5 +254,15 @@ func TestRecordingRefreshQuoteRejectsMissingIdentityAndOverflows(t *testing.T) {
 		if _, err := recordingRefreshExpandedCount(count); err == nil {
 			t.Fatalf("invalid expanded count admitted: %d", count)
 		}
+	}
+}
+
+func TestCheaperSpeechQuoteBuysMoreUpdates(t *testing.T) {
+	policy := livecost.DefaultPolicy()
+	summary := livecost.Summary{}
+	expensive := recordingDynamicRefreshBudgetForDurationWithPolicy(summary, 5_000_000, 0, 10*time.Minute, policy)
+	cheap := recordingDynamicRefreshBudgetForDurationWithPolicy(summary, 2_500_000, 0, 10*time.Minute, policy)
+	if cheap.Percent <= expensive.Percent {
+		t.Fatalf("cheaper quote should allow more updates: expensive=%d cheap=%d", expensive.Percent, cheap.Percent)
 	}
 }

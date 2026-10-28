@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -334,25 +333,25 @@ func (s *Server) estimateLiveTTSWithPricing(attempt ttsgateway.SynthesisAttempt,
 	knownTokenModel := strings.HasPrefix(strings.ToLower(strings.TrimSpace(attempt.Model)), "qwen-audio-3.1-tts-flash")
 	reason := scope.Reason
 	if tokenContract || knownTokenModel {
-		// Token output cannot be quoted exactly before synthesis. Reserve the
-		// same conservative estimate for a bounded optional attempt and settle
-		// the returned usage. The shared rolling budget still gates every call;
-		// an uncertain unit price must not permanently disable all refreshes.
-		reason += "；Token计费声音按保守用量预估，实际用量回执后结算，允许必要超用"
+		// Token-billed speech is quoted with the supplier's real unit: text tokens
+		// in, audio tokens out. Measured on production receipts: input tokens ≈
+		// sent characters, output tokens ≈ 1.35 × billable characters. The old
+		// 4/16 placeholder over-reserved about 7x and made a cheap model look
+		// expensive, which starved optional updates.
+		inputRate, outputRate := int64(1_500_000), int64(12_000_000)
 		if tokenContract {
-			if attempt.SentTextCharacters > math.MaxInt64/16 {
-				return 0, reason, errors.New("声音用量预估越界")
-			}
-			quoted, e := livecost.EstimateTokens(attempt.SentTextCharacters*4, 0, attempt.SentTextCharacters*16, rule.InputMicrosPerMillion, liveCostCachedRate(*rule), rule.OutputMicrosPerMillion)
-			if e != nil {
-				return 0, reason, e
-			}
-			if quoted > estimate {
-				estimate = quoted
-			}
-		} else {
-			reason += "；尚未配置Token合约价，当前金额仅为用户参考价估计"
+			inputRate, outputRate = rule.InputMicrosPerMillion, rule.OutputMicrosPerMillion
 		}
+		inputTokens := attempt.SentTextCharacters
+		outputTokens := (attempt.BillableCharacters*135 + 99) / 100
+		quoted, e := livecost.EstimateTokens(inputTokens, 0, outputTokens, inputRate, 0, outputRate)
+		if e != nil {
+			return 0, reason, e
+		}
+		// This is the true billing basis for the model, so it replaces the
+		// character-price estimate instead of competing with it.
+		estimate = quoted
+		reason += "；Token计费声音按真实口径预估（文本token+音频token），实际用量回执后结算"
 	}
 	return estimate, reason, nil
 }
@@ -400,8 +399,18 @@ func (o *liveTTSObserver) AfterSynthesis(ctx context.Context, r ttsgateway.Synth
 			}
 		}
 		if !known && r.Usage.InputTokens != nil && r.Usage.OutputTokens != nil && (receipt.InputTokens > 0 || receipt.OutputTokens > 0) {
+			inputRate, outputRate := int64(0), int64(0)
 			if rule := attempt.pricing.Contract; rule != nil && rule.Provider == r.Provider && rule.Model == r.Model && rule.Kind == livecost.KindTTS && rule.Unit == "tokens" {
-				amount, err = livecost.EstimateTokens(receipt.InputTokens, 0, receipt.OutputTokens, rule.InputMicrosPerMillion, liveCostCachedRate(*rule), rule.OutputMicrosPerMillion)
+				inputRate, outputRate = rule.InputMicrosPerMillion, rule.OutputMicrosPerMillion
+			}
+			// Known token-billed speech keeps its published unit rates even before a
+			// contract row exists, otherwise the cheap model is settled at the
+			// legacy per-character reference price.
+			if inputRate == 0 && strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Model)), "qwen-audio-3.1-tts-flash") {
+				inputRate, outputRate = 1_500_000, 12_000_000
+			}
+			if inputRate > 0 {
+				amount, err = livecost.EstimateTokens(receipt.InputTokens, 0, receipt.OutputTokens, inputRate, 0, outputRate)
 				known = err == nil
 			}
 		}
