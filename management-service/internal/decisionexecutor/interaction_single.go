@@ -222,6 +222,14 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	if strings.TrimSpace(answerText) == "" {
 		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
 	}
+	// A sold-out question should not be answered with shipping times: narrow the
+	// facts to the aspect the viewer actually asked about.
+	contextName, questionContext := factbound.MatchContext(question)
+	if contextName != "" {
+		if filtered := strings.TrimSpace(factbound.FilterFactsForContext(answerText, questionContext)); filtered != "" {
+			answerText = filtered
+		}
+	}
 	// The program owns the three-state fact check; the model only phrases it.
 	bound := factbound.Evaluate(question, answerText, true)
 	// A yes/no question can presume something the facts never say ("是当天发货吗").
@@ -232,6 +240,9 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	}
 	voiceCard, _ := w.welcomeVoiceCard(ctx, session)
 	system := "你是直播口播合成器。根据答案事实直接回答观众，第一句必须给出答案，不要先评价问题，也不要宣布“我这就讲/确认”。"
+	if questionContext.Prompt != "" {
+		system += "\n" + questionContext.Prompt
+	}
 	if voiceCard != "" {
 		system += "\n\n【主播腔调】按下面的说话风格、语气词、口头禅自然表达，让人一听就是这位主播：\n" + voiceCard
 	}

@@ -3,6 +3,7 @@ package factbound
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -85,5 +86,20 @@ func TestValidateIntroUsesConfigRules(t *testing.T) {
 func TestQuestionWithoutValuesIsHit(t *testing.T) {
 	if result := Evaluate("发什么快递？", duckFacts, true); result.State != Hit || len(result.Values) != 0 {
 		t.Fatalf("plain question must not be blocked: %+v", result)
+	}
+}
+
+func TestMatchContextAndFilter(t *testing.T) {
+	name, ctx := MatchContext("怎么已抢光了")
+	if name != "stock_out" {
+		t.Fatalf("context=%q want stock_out", name)
+	}
+	facts := "F011 这款已经抢光了，目前没有库存可下单\nF006 下单后第二天上午发货\nF008 统一走京东物流配送"
+	got := FilterFactsForContext(facts, ctx)
+	if strings.Contains(got, "发货") || strings.Contains(got, "物流") {
+		t.Fatalf("shipping facts should be dropped for a sold-out question: %s", got)
+	}
+	if !strings.Contains(got, "抢光") {
+		t.Fatalf("stock fact lost: %s", got)
 	}
 }

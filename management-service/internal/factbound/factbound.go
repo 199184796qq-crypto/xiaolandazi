@@ -49,6 +49,17 @@ type Config struct {
 	BoundaryRhetorics []string            `json:"boundary_rhetorics"`
 	MetaBans          []string            `json:"meta_bans"`
 	IntroRules        IntroRules          `json:"intro_rules"`
+	// Contexts narrow what a question is really about (sold out, refund...), so a
+	// sold-out question does not get an answer about shipping times.
+	Contexts map[string]Context `json:"contexts"`
+}
+
+// Context is a question context with its own keep/drop vocabulary.
+type Context struct {
+	QuestionTerms []string `json:"question_terms"`
+	KeepTerms     []string `json:"keep_terms"`
+	DropTerms     []string `json:"drop_terms"`
+	Prompt        string   `json:"prompt"`
 }
 
 // IntroRules is the configurable check for "what this room sells" intros. It is
@@ -536,6 +547,40 @@ func ValidateIntro(text string) error {
 		return fmt.Errorf("没说明品类")
 	}
 	return nil
+}
+
+// MatchContext returns the configured question context whose terms appear in the
+// viewer's words, e.g. stock_out for "怎么已抢光了".
+func MatchContext(text string) (string, Context) {
+	config, _, err := Load()
+	if err != nil || len(config.Contexts) == 0 {
+		return "", Context{}
+	}
+	for name, ctx := range config.Contexts {
+		if containsAny(text, ctx.QuestionTerms) {
+			return name, ctx
+		}
+	}
+	return "", Context{}
+}
+
+// FilterFactsForContext drops facts that belong to another aspect of the
+// question: a sold-out answer should not talk about shipping time.
+func FilterFactsForContext(facts string, ctx Context) string {
+	if len(ctx.DropTerms) == 0 {
+		return facts
+	}
+	kept := make([]string, 0, 8)
+	for _, line := range strings.Split(facts, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if containsAny(line, ctx.DropTerms) && !containsAny(line, ctx.KeepTerms) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func containsAny(text string, terms []string) bool {
