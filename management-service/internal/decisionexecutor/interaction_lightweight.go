@@ -357,6 +357,13 @@ func (w *Worker) resolveInteractionAddressing(ctx context.Context, session model
 	// 提取可播称呼：优先点名名单，其次群称词，最后主力称呼/「家人们」兜底。
 	address = playableAddressFromPlan(plan)
 
+	// 称呼话术（程序选人 + 模型串句）已生成时，所有策略统一复用它，避免二次
+	// 选择造成点名频率失效。
+	if phrase := strings.TrimSpace(item.PromptAddressPhrase); phrase != "" {
+		address = phrase
+		guidance = phrase
+	}
+
 	item.resolvedAddress = address
 	item.addressingGuidance = guidance
 	item.resolvedAddressingPlan = plan

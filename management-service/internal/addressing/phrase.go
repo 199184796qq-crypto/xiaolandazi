@@ -1,4 +1,4 @@
-﻿package addressing
+package addressing
 
 import (
 	"encoding/json"
@@ -18,6 +18,7 @@ type FormSet struct {
 // PhraseInput is everything the address generator needs for one interaction.
 type PhraseInput struct {
 	Mode        string // single | multi | group
+	Scene       string // greeting | answer
 	People      []FormSet
 	Terms       []string // 称谓词：老乡、朋友、家人们…
 	GroupLabels []string // 集体称呼
@@ -70,23 +71,44 @@ func PhrasePrompt(in PhraseInput, r *rand.Rand) (string, string) {
 	if style == "" {
 		style = PickStyle(r)
 	}
-	system := `你是直播间主播的称呼生成器。只输出一句可播的称呼话术，严格 JSON：{"address":"..."}。
+	system := `你是直播间主播的称呼生成器。只输出一句可播的称呼话术，严格 JSON：{"address":"..."}。`
+	if in.Scene == "answer" {
+		system = `你是直播间主播回答观众时的称呼生成器。只输出一个称呼，用于回答开头，严格 JSON：{"address":"..."}。
+
+规则：
+1. 只用给定的人名形式和称谓，不能编造、不能改字、不能加数字。
+2. 只叫提问的这一个人，不要出现“你们/几位/大家/老乡们”等集体称呼。
+3. 不要出现问候词（来啦、来了、欢迎、哈喽）。
+4. 昵称本身带称谓时不要再叠加；性别称谓必须成对（哥姐），禁止单独哥或姐。
+5. 不超过 10 个字。
+6. 不要输出解释。
+
+示例：
+{"address":"小斌老乡"}
+{"address":"樱桃姐"}
+{"address":"这位朋友"}`
+	} else {
+		system += `
 
 规则：
 1. 只能用给定的人名形式和集体称呼，不能编造名字、不能改字、不能加数字。
-2. 多人时最多点 1-2 个人名，其余人用集体称呼或“你们”覆盖。
-3. 单人时只叫这一个人，禁止出现“你们/几位/大家”或集体称呼，直接叫他/她。
-4. 多人时最多点 1-2 个人名，其余人用集体称呼或“你们”覆盖。
-5. 同一个称谓词不要出现两次；性别称谓必须成对（哥姐、哥哥姐姐），禁止单独用“哥”或“姐”（昵称本身带有的除外）。
-6. 结尾要落到集体称呼或“你们”，不要只说名字就结束。
-7. 口语化、热情、接地气，不要书面腔；不超过 20 个字。
-8. 不要输出解释、不要引号外的内容。
+2. 单人时只叫这一个人，禁止出现“你们/几位/大家”或集体称呼，直接叫他/她。
+3. 多人时最多点 1-2 个人名，其余人用集体称呼或“你们”覆盖。
+4. 同一条话术里称谓词尽量统一，不要一个人用老乡、另一个人用朋友。
+5. 同一个称谓词不要出现两次；同一个人名不要出现两次。
+6. 昵称本身已带称谓（哥/姐/老板/师傅）时，不要再叠加称谓。
+7. 性别称谓必须成对（哥姐、哥哥姐姐），禁止单独用“哥”或“姐”（昵称本身带有的除外）。
+8. 只能用一个集体称呼，不要同时用“老乡们”和“几位朋友”。
+9. 结尾要落到集体称呼或“你们”，不要只说名字就结束。
+10. 口语化、热情、接地气，不要书面腔；不超过 20 个字。
+11. 不要输出解释、不要引号外的内容。
 
 示例：
 {"address":"小陈哥，你们来啦"}
 {"address":"李老乡、王老乡，你们来了"}
 {"address":"老乡们，你们来啦"}
 {"address":"小斌老乡来啦"}`
+	}
 	people := make([]map[string]any, 0, len(in.People))
 	for _, person := range in.People {
 		people = append(people, map[string]any{"base": person.Base, "short": person.Short, "forms": person.Forms})
@@ -129,6 +151,9 @@ func ValidatePhrase(address string, in PhraseInput) error {
 	if hasDigit(address) {
 		return fmt.Errorf("称呼话术含数字")
 	}
+	if in.Scene == "answer" {
+		return validateAnswerAddress(address, in)
+	}
 	allowed := map[string]bool{}
 	for _, label := range in.GroupLabels {
 		if label = strings.TrimSpace(label); label != "" {
@@ -148,15 +173,17 @@ func ValidatePhrase(address string, in PhraseInput) error {
 		}
 	}
 	if !named {
-		return fmt.Errorf("称呼话术没有使用给定称呼")
-	}
-	hasGroup := strings.Contains(address, "你们") || strings.Contains(address, "几位") || strings.Contains(address, "大家")
-	for _, label := range in.GroupLabels {
-		if label != "" && strings.Contains(address, label) {
-			hasGroup = true
-			break
+		for _, noun := range genericGroupNouns {
+			if strings.Contains(address, noun) {
+				named = true
+				break
+			}
 		}
 	}
+	if !named {
+		return fmt.Errorf("称呼话术没有使用给定称呼")
+	}
+	hasGroup := phraseHasGroup(address, in)
 	if in.Mode == "single" && hasGroup {
 		return fmt.Errorf("单人称呼不应使用集体称呼")
 	}
@@ -170,6 +197,106 @@ func ValidatePhrase(address string, in PhraseInput) error {
 	}
 	if err := validateGenderPairs(address, in); err != nil {
 		return err
+	}
+	if err := validateNoRepeats(address, in); err != nil {
+		return err
+	}
+	return nil
+}
+
+// genericGroupNouns are collective words the model may use instead of a
+// configured label.
+var genericGroupNouns = []string{"你们", "大家", "几位", "老乡们", "朋友们", "家人们", "各位", "宝子们"}
+
+func phraseHasGroup(address string, in PhraseInput) bool {
+	for _, noun := range genericGroupNouns {
+		if strings.Contains(address, noun) {
+			return true
+		}
+	}
+	for _, label := range in.GroupLabels {
+		if label != "" && strings.Contains(address, label) {
+			return true
+		}
+	}
+	return false
+}
+
+// FallbackPhrase is used when the model is unavailable or its answer fails
+// validation; it still produces a speakable address.
+func FallbackPhrase(in PhraseInput) string {
+	if in.Scene == "answer" {
+		group := "这位朋友"
+		if len(in.People) > 0 {
+			return in.People[0].Base
+		}
+		return group
+	}
+	group := ""
+	if len(in.GroupLabels) > 0 {
+		group = in.GroupLabels[0]
+	}
+	if group == "" {
+		group = "几位朋友"
+	}
+	switch in.Mode {
+	case "single":
+		if len(in.People) > 0 {
+			return in.People[0].Base + "来啦"
+		}
+		return group + "来啦"
+	default:
+		if len(in.People) == 0 {
+			return group + "，你们来啦"
+		}
+		names := make([]string, 0, 2)
+		for i, person := range in.People {
+			if i >= 2 {
+				break
+			}
+			names = append(names, person.Base)
+		}
+		return strings.Join(names, "、") + "，" + group + "来啦"
+	}
+}
+
+// validateAnswerAddress enforces a bare address for answer openings.
+func validateAnswerAddress(address string, in PhraseInput) error {
+	for _, word := range []string{"来啦", "来了", "欢迎", "哈喽", "你们", "几位", "大家", "老乡们", "朋友们", "家人们"} {
+		if strings.Contains(address, word) {
+			return fmt.Errorf("回答称呼不应含问候或集体词：%s", word)
+		}
+	}
+	if utf8.RuneCountInString(address) > 12 {
+		return fmt.Errorf("回答称呼过长")
+	}
+	for _, person := range in.People {
+		for _, form := range person.Forms {
+			if form != "" && strings.Contains(address, form) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("回答称呼没有使用提问者名字")
+}
+
+// validateNoRepeats rejects the same name twice and stacked group labels.
+func validateNoRepeats(address string, in PhraseInput) error {
+	for _, person := range in.People {
+		for _, form := range person.Forms {
+			if form != "" && strings.Count(address, form) > 1 {
+				return fmt.Errorf("称呼重复：%s", form)
+			}
+		}
+	}
+	labels := 0
+	for _, label := range in.GroupLabels {
+		if label != "" && strings.Contains(address, label) {
+			labels++
+		}
+	}
+	if labels > 1 {
+		return fmt.Errorf("集体称呼叠加")
 	}
 	return nil
 }

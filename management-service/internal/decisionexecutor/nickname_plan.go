@@ -336,6 +336,9 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 	}
 	w.addressMu.Unlock()
 	if len(grey) == 0 || w.agent == nil {
+		if w.agent != nil {
+			w.phraseAddress(ctx, s, item, rules)
+		}
 		return
 	}
 	system, user := addressing.GreyPrompt(grey, rules)
@@ -366,6 +369,63 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 		w.cacheNickname(keys[pos], decision.Base, decision.Short, now)
 	}
 	w.addressMu.Unlock()
+	w.phraseAddress(ctx, s, item, rules)
+}
+
+// phraseAddress builds one spoken address sentence for this interaction. The
+// program supplies names and forms; the model only arranges them.
+func (w *Worker) phraseAddress(ctx context.Context, s model.LiveRuntimeSession, item *decisionItem, rules *addressing.Rules) {
+	var people []string
+	var forms []addressing.FormSet
+	terms := []string{}
+	if prefs, err := w.store.GetRoomAddressingPreferences(ctx, s.TenantID, s.RoomID); err == nil {
+		terms = prefs.PreferredTerms
+	}
+	resolvedTerms, _ := addressing.AddressTermSources{Room: terms}.Resolve()
+	groupLabels, _ := addressing.AddressTermSources{}.ResolveGroupLabels()
+	for i, base := range item.PromptNicknames {
+		if base == "" || base == "这位朋友" {
+			continue
+		}
+		short := ""
+		if i < len(item.PromptShortNames) {
+			short = item.PromptShortNames[i]
+		}
+		people = append(people, base)
+		forms = append(forms, addressing.FormsFor(base, short, resolvedTerms))
+	}
+	mode := "multi"
+	switch len(forms) {
+	case 0:
+		mode = "group"
+	case 1:
+		mode = "single"
+	}
+	scene := "greeting"
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(item.MissionKind)), "welcome") {
+		scene = "answer"
+	}
+	in := addressing.PhraseInput{Mode: mode, Scene: scene, People: forms, Terms: resolvedTerms, GroupLabels: groupLabels}
+	system, user := addressing.PhrasePrompt(in, nil)
+	response, err := w.completePaidModel(ctx, s, agentgateway.Request{
+		Stage:          "interaction_addressing_plan",
+		Messages:       []agentgateway.Message{{Role: "system", Content: system}, {Role: "user", Content: user}},
+		EnableThinking: false,
+		MaxTokens:      120,
+		Timeout:        10 * time.Second,
+	}, item.ID+":phrase")
+	if err == nil {
+		if phrase, parseErr := addressing.ParsePhrase(response.Text, in); parseErr == nil {
+			item.PromptAddressPhrase = phrase
+			return
+		}
+	}
+	item.PromptAddressPhrase = fallbackAddressPhrase(in)
+}
+
+// fallbackAddressPhrase delegates to the shared addressing fallback.
+func fallbackAddressPhrase(in addressing.PhraseInput) string {
+	return addressing.FallbackPhrase(in)
 }
 
 // nicknameRules loads the global nickname rules once per worker process.
