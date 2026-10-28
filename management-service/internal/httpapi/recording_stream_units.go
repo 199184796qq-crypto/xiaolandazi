@@ -250,15 +250,37 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		queue.blockSeq, queue.programID, queue.generation = checkpoint.BlockSeq, checkpoint.ProgramID, checkpoint.Generation
 		log.Printf("recording stream resume checkpoint tenant=%d room=%d session=%d version=%d round=%d tab=%d index=%d block=%d", tenant, room, runtimeID, version.ID, startRound, startTabPos, startIndex, queue.blockSeq)
 	}
-	saveCheckpoint := func(round, tabPos, index int) {
-		if err := saveRecordingSupplyCheckpoint(recordingSupplyCheckpoint{
+	saveCheckpointWithPending := func(round, tabPos, index, blockSeq int, pending *recordingSupplyPendingAppend) error {
+		err := saveRecordingSupplyCheckpoint(recordingSupplyCheckpoint{
 			TenantID: tenant, RoomID: room, SessionID: runtimeID, VersionID: version.ID,
 			ProgramID: queue.programID, Generation: queue.generation,
 			Round: round, TabOrder: append([]int(nil), order...), TabPos: tabPos, Index: index,
-			Sequence: seq, BlockSeq: queue.blockSeq, PreviousLast: previousLast,
-		}); err != nil {
+			Sequence: seq, BlockSeq: blockSeq, PreviousLast: previousLast,
+			Pending: pending,
+		})
+		if err != nil {
 			log.Printf("recording stream checkpoint save failed tenant=%d room=%d session=%d: %v", tenant, room, runtimeID, err)
 		}
+		return err
+	}
+	saveCheckpoint := func(round, tabPos, index int) {
+		_ = saveCheckpointWithPending(round, tabPos, index, queue.blockSeq, nil)
+	}
+	if hasCheckpoint && checkpoint.Pending != nil {
+		if err := s.replayPendingRecordingSupply(ctx, tenant, room, runtimeID, version, &queue, checkpoint.Pending); err != nil {
+			return err
+		}
+		checkpoint.Pending = nil
+		saveCheckpoint(startRound, startTabPos, startIndex)
+	}
+	checkpointRound, checkpointTabPos, checkpointIndex := startRound, startTabPos, startIndex
+	queue.beforeAppend = func(_ context.Context, track coreclient.ProgramRefreshTrack) error {
+		return saveCheckpointWithPending(checkpointRound, checkpointTabPos, checkpointIndex+1, queue.blockSeq+1, &recordingSupplyPendingAppend{
+			Track: track, ProgramID: queue.programID, BlockSeq: queue.blockSeq + 1,
+		})
+	}
+	queue.afterAppend = func(_ context.Context, _ coreclient.ProgramRefreshTrack) error {
+		return saveCheckpointWithPending(checkpointRound, checkpointTabPos, checkpointIndex+1, queue.blockSeq+1, nil)
 	}
 	cacheCandidates := func(tabIndex, index int) []recordingcache.Entry {
 		if blueprint == nil {
@@ -284,6 +306,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 
 	for round := startRound; ; round++ {
 		queue.delivered = 0
+		checkpointRound = round
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -296,6 +319,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		refreshSchedule, updatePlans := s.prepareRecordingRefreshSchedule(ctx, tenant, room, version, polish, tabs, cacheCandidates,
 			&planner, tabIDs, fmt.Sprintf("%d:%d", runtimeID, round), time.Since(startedAt), round == 0, rng)
 		for tabPos, tabIndex := range order {
+			checkpointTabPos = tabPos
 			if round == startRound && tabPos < startTabPos {
 				continue
 			}
@@ -305,6 +329,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 			supplyStats = newRecordingSupplyStats(tenant, room, runtimeID, version.PlanID, round+1, tabIDs[tabIndex], tabs[tabIndex], refresh, roundPercent, roundPercent)
 			supplyStats.setSchedule(refreshSchedule)
 			for index := range tabs[tabIndex] {
+				checkpointIndex = index
 				if round == startRound && tabPos == startTabPos && index < startIndex {
 					continue
 				}

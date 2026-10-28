@@ -7,27 +7,36 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"livecompanion/management/internal/coreclient"
 )
+
+type recordingSupplyPendingAppend struct {
+	Track     coreclient.ProgramRefreshTrack `json:"track"`
+	ProgramID string                         `json:"program_id,omitempty"`
+	BlockSeq  int                            `json:"block_seq"`
+}
 
 // recordingSupplyCheckpoint is the minimum durable cursor needed to resume a
 // recording-stream producer without replaying the first round or reshuffling
 // the current round. It is deliberately scoped to one frozen version/session;
 // a new session or a different published version must not inherit it.
 type recordingSupplyCheckpoint struct {
-	TenantID     int64     `json:"tenant_id"`
-	RoomID       int64     `json:"room_id"`
-	SessionID    int64     `json:"session_id"`
-	VersionID    int64     `json:"version_id"`
-	ProgramID    string    `json:"program_id,omitempty"`
-	Generation   uint64    `json:"generation,omitempty"`
-	Round        int       `json:"round"`
-	TabOrder     []int     `json:"tab_order"`
-	TabPos       int       `json:"tab_pos"`
-	Index        int       `json:"index"`
-	Sequence     int       `json:"sequence"`
-	BlockSeq     int       `json:"block_seq"`
-	PreviousLast int       `json:"previous_last"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	TenantID     int64                         `json:"tenant_id"`
+	RoomID       int64                         `json:"room_id"`
+	SessionID    int64                         `json:"session_id"`
+	VersionID    int64                         `json:"version_id"`
+	ProgramID    string                        `json:"program_id,omitempty"`
+	Generation   uint64                        `json:"generation,omitempty"`
+	Round        int                           `json:"round"`
+	TabOrder     []int                         `json:"tab_order"`
+	TabPos       int                           `json:"tab_pos"`
+	Index        int                           `json:"index"`
+	Sequence     int                           `json:"sequence"`
+	BlockSeq     int                           `json:"block_seq"`
+	PreviousLast int                           `json:"previous_last"`
+	Pending      *recordingSupplyPendingAppend `json:"pending,omitempty"`
+	UpdatedAt    time.Time                     `json:"updated_at"`
 }
 
 func recordingSupplyCheckpointPath(tenant, room, session int64) string {
@@ -38,7 +47,7 @@ func recordingSupplyCheckpointPath(tenant, room, session int64) string {
 func loadRecordingSupplyCheckpoint(tenant, room, session int64) (recordingSupplyCheckpoint, bool) {
 	var checkpoint recordingSupplyCheckpoint
 	raw, err := os.ReadFile(recordingSupplyCheckpointPath(tenant, room, session))
-	if err != nil || len(raw) == 0 || len(raw) > 64*1024 {
+	if err != nil || len(raw) == 0 || len(raw) > 512*1024 {
 		return checkpoint, false
 	}
 	if json.Unmarshal(raw, &checkpoint) != nil {

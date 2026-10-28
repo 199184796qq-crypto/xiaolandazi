@@ -24,6 +24,8 @@ type recordingReadyQueue struct {
 	start        func(context.Context, coreclient.ProgramRefreshTrack) (coreclient.ProgramRefreshSnapshot, error)
 	append       func(context.Context, string, coreclient.ProgramRefreshTrack) (uint64, error)
 	buffer       func(context.Context, string) error
+	beforeAppend func(context.Context, coreclient.ProgramRefreshTrack) error
+	afterAppend  func(context.Context, coreclient.ProgramRefreshTrack) error
 }
 
 func (q *recordingReadyQueue) flush(ctx context.Context, force bool) error {
@@ -60,6 +62,11 @@ func (q *recordingReadyQueue) flush(ctx context.Context, force bool) error {
 			track = coreclient.ProgramRefreshTrack{}
 		}
 		if track.AudioURL != "" {
+			if q.beforeAppend != nil {
+				if err := q.beforeAppend(ctx, track); err != nil {
+					return err
+				}
+			}
 			var deliveryErr error
 			if q.programID == "" {
 				var snapshot coreclient.ProgramRefreshSnapshot
@@ -91,6 +98,11 @@ func (q *recordingReadyQueue) flush(ctx context.Context, force bool) error {
 			} else {
 				q.delivered++
 				log.Printf("recording stream block appended tenant=%d room=%d units=%d safe_points=%d generation=%d", q.tenant, q.room, consumed, len(track.SafePoints), q.generation)
+			}
+			if q.afterAppend != nil {
+				if err := q.afterAppend(ctx, track); err != nil {
+					return err
+				}
 			}
 		}
 		// Keep the exact ready track on an unknown outcome. Only a confirmed

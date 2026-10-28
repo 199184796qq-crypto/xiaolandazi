@@ -1,6 +1,10 @@
 package httpapi
 
-import "testing"
+import (
+	"testing"
+
+	"livecompanion/management/internal/coreclient"
+)
 
 func TestRecordingSupplyCheckpointRoundTrip(t *testing.T) {
 	t.Setenv("MEDIA_ROOT", t.TempDir())
@@ -29,6 +33,23 @@ func TestRecordingSupplyCheckpointRoundTrip(t *testing.T) {
 	bad.TabOrder = []int{1, 1}
 	if recordingSupplyCheckpointMatches(bad, 242, 2) {
 		t.Fatal("checkpoint accepted duplicate tab order")
+	}
+}
+
+func TestRecordingSupplyCheckpointPersistsPendingAppend(t *testing.T) {
+	t.Setenv("MEDIA_ROOT", t.TempDir())
+	want := recordingSupplyCheckpoint{
+		TenantID: 14, RoomID: 29, SessionID: 517, VersionID: 242,
+		ProgramID: "program-1", Generation: 4, Round: 1, TabOrder: []int{0}, TabPos: 0, Index: 5,
+		Sequence: 9, BlockSeq: 3, PreviousLast: 0,
+		Pending: &recordingSupplyPendingAppend{Track: coreclient.ProgramRefreshTrack{ID: "unit-6", AudioURL: "https://example/a.wav"}, ProgramID: "program-1", BlockSeq: 4},
+	}
+	if err := saveRecordingSupplyCheckpoint(want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := loadRecordingSupplyCheckpoint(14, 29, 517)
+	if !ok || got.Pending == nil || got.Pending.Track.ID != "unit-6" || got.Pending.BlockSeq != 4 {
+		t.Fatalf("pending append lost: %+v ok=%v", got.Pending, ok)
 	}
 }
 
