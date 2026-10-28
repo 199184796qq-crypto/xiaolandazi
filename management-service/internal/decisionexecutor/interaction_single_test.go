@@ -221,3 +221,14 @@ func TestRemoteRegionClassification(t *testing.T) {
 		t.Fatalf("regions=%v", got)
 	}
 }
+
+func TestPackingHint(t *testing.T) {
+	local, hint := packingHint([]string{"上海"})
+	if local || !strings.Contains(hint, "真空包装") {
+		t.Fatalf("local=%v hint=%q", local, hint)
+	}
+	local, hint = packingHint([]string{"四川"})
+	if !local || !strings.Contains(hint, "不抽真空") {
+		t.Fatalf("local=%v hint=%q", local, hint)
+	}
+}

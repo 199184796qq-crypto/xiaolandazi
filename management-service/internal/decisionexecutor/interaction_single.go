@@ -510,6 +510,7 @@ func (w *Worker) preferRegionFacts(ctx context.Context, session model.LiveRuntim
 	if len(regions) == 0 {
 		return current
 	}
+	packing := strings.Contains(question, "真空") || strings.Contains(question, "抽真空")
 	remote := make([]string, 0, 2)
 	for _, term := range regions {
 		if remoteRegions[term] {
@@ -525,6 +526,31 @@ func (w *Worker) preferRegionFacts(ctx context.Context, session model.LiveRuntim
 		return current
 	}
 	picked := make([]string, 0, 2)
+	if packing {
+		local, hint := packingHint(regions)
+		for _, line := range strings.Split(facts, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || !strings.Contains(line, "真空") {
+				continue
+			}
+			if local && strings.Contains(line, "不抽真空") {
+				picked = append(picked, line)
+			}
+			if !local && strings.Contains(line, "外地") {
+				picked = append(picked, line)
+			}
+		}
+		if len(picked) > 0 && hint != "" {
+			picked = append([]string{hint}, picked...)
+		}
+		if len(picked) > 0 {
+			if strings.TrimSpace(current) == "" {
+				return strings.Join(picked, "\n")
+			}
+			return strings.Join(picked, "\n") + "\n" + current
+		}
+		return current
+	}
 	if len(remote) > 0 {
 		for _, line := range strings.Split(facts, "\n") {
 			line = strings.TrimSpace(line)
@@ -579,4 +605,18 @@ func detectRegions(question string) []string {
 		}
 	}
 	return regions
+}
+
+// packingHint decides whether the region is local (Sichuan/Chongqing) and the
+// wording that explains the vacuum packing rule for it.
+func packingHint(regions []string) (bool, string) {
+	for _, term := range regions {
+		if term == "四川" || term == "重庆" {
+			return true, "川渝本地发货不抽真空："
+		}
+	}
+	if len(regions) > 0 {
+		return false, regions[0] + "属于外地，发货采用真空包装："
+	}
+	return false, ""
 }
