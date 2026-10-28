@@ -624,7 +624,16 @@ func (s *Server) CompleteLivePaidModel(ctx context.Context, session model.LiveRu
 	s.liveModelCostSequence--
 	id := s.liveModelCostSequence
 	s.liveCostMu.Unlock()
-	if err = s.beginLiveModelCost(ctx, id, request.Stage, "", request); err != nil {
+	// The worker sends no model: the gateway resolves it per stage. Resolve the
+	// same identity here so the paid record names the model that answered, not
+	// the environment default.
+	billingRequest := request
+	if strings.TrimSpace(billingRequest.Model) == "" {
+		if provider, model, resolveErr := agentgateway.NewFromContext(ctx).ResolveStageModel(ctx, request.Stage); resolveErr == nil && model != "" {
+			billingRequest.Provider, billingRequest.Model = provider, model
+		}
+	}
+	if err = s.beginLiveModelCost(ctx, id, request.Stage, "", billingRequest); err != nil {
 		return result, err
 	}
 	completed, sent := false, false

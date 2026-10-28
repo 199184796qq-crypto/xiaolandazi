@@ -82,6 +82,28 @@ func UsesOperatorPinnedModel(stage string) bool {
 	return UsesInteractionAnswerModel(stage) || UsesInteractionPurposeModel(stage)
 }
 
+// ResolveStageModel reports the provider identity and model a stage will use,
+// without sending a request. Billing uses it so a paid record names the model
+// that actually answered instead of the environment's default label.
+func (g *Gateway) ResolveStageModel(ctx context.Context, stage string) (string, string, error) {
+	if g == nil || g.speechModels == nil {
+		return "", "", nil
+	}
+	id := ""
+	if roles, ok := g.speechModels.(TextRoleResolver); ok {
+		var err error
+		id, err = roles.ResolveTextRole(ctx, stage)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	p, err := g.resolveStageProfile(ctx, stage, id)
+	if err != nil || p == nil {
+		return "", "", err
+	}
+	return "anchor:" + p.ID, p.Model, nil
+}
+
 // OperatorModelResolver bypasses the room model pool for pinned stages.
 type OperatorModelResolver interface {
 	ResolveOperatorSpeechModel(context.Context, string) (*SpeechModel, error)

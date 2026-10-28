@@ -113,3 +113,22 @@ func TestUnifiedModelSelectionsRequireEnabledProfiles(t *testing.T) {
 		t.Fatal("disabled review profile accepted")
 	}
 }
+
+func TestResolveStageModelNamesTheAnsweringProfile(t *testing.T) {
+	review := SpeechModel{ID: "review", Model: "deepseek-flash", BaseURL: "https://api.deepseek.com"}
+	pooled := SpeechModel{ID: "pool", Model: "qwen3.7-flash", BaseURL: "https://dashscope.aliyuncs.com"}
+	f := &pinnedRoleFixture{
+		profiles: map[string]SpeechModel{"review": review, "pool": pooled},
+		system:   "pool",
+		review:   "review",
+	}
+	ctx := WithModelResolver(context.Background(), f)
+	g := NewFromContext(ctx)
+	provider, model, err := g.ResolveStageModel(ctx, "interaction_single_direct_answer")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if provider != "anchor:review" || model != "deepseek-flash" {
+		t.Fatalf("provider=%q model=%q want anchor:review/deepseek-flash", provider, model)
+	}
+}
