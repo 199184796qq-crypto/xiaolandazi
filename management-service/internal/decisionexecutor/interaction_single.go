@@ -373,8 +373,9 @@ func (w *Worker) generateSingleInteractionGreet(ctx context.Context, session mod
 	// 点名名单仍单独在 user 里给出，让模型明确知道「叫谁」，但附加一条硬约束：
 	// 性别未知时禁止单用「哥」或「姐」，改用「哥姐」「老乡」「老板」「朋友」等中性词。
 	user := "事件类型：" + kind
-	names := item.resolvedAddressingPlan.SelectedNames
-	if len(names) >= 2 {
+	if phrase := strings.TrimSpace(item.PromptAddressPhrase); phrase != "" {
+		user += "\n开头称呼（原样使用）：" + phrase
+	} else if names := item.resolvedAddressingPlan.SelectedNames; len(names) >= 2 {
 		user += "\n本次要称呼的对象（逐个点到，可自然带过）：" + strings.Join(names, "、")
 	} else if len(names) == 1 {
 		user += "\n本次要称呼的对象：" + names[0]

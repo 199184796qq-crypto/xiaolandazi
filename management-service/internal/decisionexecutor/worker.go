@@ -121,6 +121,7 @@ type Worker struct {
 	nicknameAliases      map[string]nicknameAliasCacheEntry
 	nicknameRulesOnce    sync.Once
 	nicknameRulesValue   *addressing.Rules
+	nicknameRandSeed     int64
 	benefitRedis         *redis.Client
 	prepared             map[preparedInteractionKey]preparedInteraction
 }

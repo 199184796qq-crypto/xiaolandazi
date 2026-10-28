@@ -10,6 +10,7 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/model"
 	"log"
+	"math/rand"
 	"sort"
 	"strconv"
 	"strings"
@@ -301,6 +302,17 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 			return
 		}
 	}
+	viewers := make([]addressing.Viewer, len(item.Nicknames))
+	for i, name := range item.Nicknames {
+		viewers[i] = addressing.Viewer{UserID: strconv.Itoa(i), RawName: name}
+	}
+	seed := time.Now().UnixNano()
+	if w.nicknameRandSeed != 0 {
+		seed = w.nicknameRandSeed
+	}
+	// 掷骰子选人：最多抽 Dice.Max 个最近进房的昵称做合规与称呼规划，其余统一
+	// 交给集体称呼，不再整批规划。
+	plan := addressing.Build(viewers, rules, rand.New(rand.NewSource(seed)))
 	keys := make([]string, len(item.Nicknames))
 	var grey []addressing.GreyCandidate
 	var greyPositions []int
@@ -313,23 +325,34 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 			delete(w.nicknameAliases, key)
 		}
 	}
-	for i, name := range item.Nicknames {
-		keys[i] = nicknameCacheKey(s, identity, rules.Version, name)
-		if cached, ok := w.nicknameAliases[keys[i]]; ok {
-			item.PromptNicknames[i] = cached.Address
-			item.PromptShortNames[i] = cached.Short
+	for _, picked := range plan.Picked {
+		index, ok := nicknameViewerIndex(picked.UserID, len(item.Nicknames))
+		if !ok {
 			continue
 		}
-		decision := rules.Check(name)
-		switch decision.Status {
-		case addressing.StatusSafe, addressing.StatusRewritten:
-			item.PromptNicknames[i] = decision.Text
-			item.PromptShortNames[i] = decision.Short
-			w.cacheNickname(keys[i], decision.Text, decision.Short, now)
-		case addressing.StatusGrey:
-			grey = append(grey, addressing.GreyCandidate{Viewer: addressing.Viewer{UserID: strconv.Itoa(i), RawName: name}, Candidate: decision.Text})
-			greyPositions = append(greyPositions, i)
+		keys[index] = nicknameCacheKey(s, identity, rules.Version, item.Nicknames[index])
+		if cached, found := w.nicknameAliases[keys[index]]; found {
+			item.PromptNicknames[index] = cached.Address
+			item.PromptShortNames[index] = cached.Short
+			continue
 		}
+		item.PromptNicknames[index] = picked.Text
+		item.PromptShortNames[index] = picked.Decision.Short
+		w.cacheNickname(keys[index], picked.Text, picked.Decision.Short, now)
+	}
+	for _, viewer := range plan.Grey {
+		index, ok := nicknameViewerIndex(viewer.UserID, len(item.Nicknames))
+		if !ok {
+			continue
+		}
+		keys[index] = nicknameCacheKey(s, identity, rules.Version, item.Nicknames[index])
+		if cached, found := w.nicknameAliases[keys[index]]; found {
+			item.PromptNicknames[index] = cached.Address
+			item.PromptShortNames[index] = cached.Short
+			continue
+		}
+		grey = append(grey, addressing.GreyCandidate{Viewer: viewer, Candidate: rules.Check(viewer.RawName).Text})
+		greyPositions = append(greyPositions, index)
 	}
 	w.addressMu.Unlock()
 	if len(grey) == 0 || w.agent == nil {
@@ -441,6 +464,14 @@ func (w *Worker) nicknameRules() *addressing.Rules {
 		return &defaults
 	}
 	return w.nicknameRulesValue
+}
+
+func nicknameViewerIndex(userID string, length int) (int, bool) {
+	index, err := strconv.Atoi(strings.TrimSpace(userID))
+	if err != nil || index < 0 || index >= length {
+		return 0, false
+	}
+	return index, true
 }
 
 func nicknameCacheKey(s model.LiveRuntimeSession, identity string, rulesVersion int, name string) string {

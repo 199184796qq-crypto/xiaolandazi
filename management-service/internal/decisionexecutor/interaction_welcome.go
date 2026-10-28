@@ -473,11 +473,12 @@ func (w *Worker) generateWelcomeGreeting(ctx context.Context, session model.Live
 		"\n【改写】" + rewrite +
 		"\n\n最终答案禁止输出任何内部标题、策略名称、概率、系统说明、字段名或分析过程。只输出主播真正会说的那一句。"
 
-	// 点名名单单独在 user 里给出，让模型明确知道「叫谁」；性别未知的硬规则已由
-	// addressingGuidance（称呼策略约束）统一承载，不在此重复。
+	// 称呼已在前置阶段冻结成一句短句；欢迎生成只能原样复用它，不能再补名单。
 	user := "事件类型：" + kind
-	names := item.resolvedAddressingPlan.SelectedNames
-	if len(names) >= 2 {
+	if phrase := strings.TrimSpace(item.PromptAddressPhrase); phrase != "" {
+		system += "\n【必说】开头必须原样使用这句称呼：" + phrase + "；不得改写、不得增删人名、不得再加其他昵称。"
+		user += "\n开头称呼（原样使用）：" + phrase
+	} else if names := item.resolvedAddressingPlan.SelectedNames; len(names) >= 2 {
 		user += "\n本次要称呼的对象（逐个点到，可自然带过）：" + strings.Join(names, "、")
 	} else if len(names) == 1 {
 		user += "\n本次要称呼的对象：" + names[0]

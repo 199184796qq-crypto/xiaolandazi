@@ -93,12 +93,12 @@ func (g *nicknameFixtureModel) Complete(_ context.Context, r agentgateway.Reques
 func TestNicknameProgramPathNeedsNoGreyCall(t *testing.T) {
 	modelAPI := &nicknameFixtureModel{identity: "role"}
 	w := &Worker{store: &nicknameFixtureStore{}, agent: modelAPI}
-	item := decisionItem{Nicknames: []string{"小明", "老王"}}
+	item := decisionItem{Nicknames: []string{"小明"}}
 	w.planNicknameAddresses(context.Background(), model.LiveRuntimeSession{TenantID: 14, RoomID: 26}, &item)
 	if modelAPI.grey != 0 {
 		t.Fatalf("program-safe names called grey %d times", modelAPI.grey)
 	}
-	if item.PromptNicknames[0] != "小明" || item.PromptShortNames[1] != "老王" {
+	if item.PromptNicknames[0] != "小明" || item.PromptShortNames[0] != "小明" {
 		t.Fatalf("names=%v shorts=%v", item.PromptNicknames, item.PromptShortNames)
 	}
 	if item.PromptAddressPhrase == "" {
@@ -109,7 +109,7 @@ func TestNicknameProgramPathNeedsNoGreyCall(t *testing.T) {
 func TestNicknameGreyUsesOneBatchedCall(t *testing.T) {
 	modelAPI := &nicknameFixtureModel{identity: "role"}
 	w := &Worker{store: &nicknameFixtureStore{}, agent: modelAPI}
-	item := decisionItem{Nicknames: []string{"挖坑不会埋", "芝士味的小宝贝"}}
+	item := decisionItem{Nicknames: []string{"挖坑不会埋"}}
 	w.planNicknameAddresses(context.Background(), model.LiveRuntimeSession{TenantID: 14, RoomID: 26}, &item)
 	if modelAPI.grey != 1 {
 		t.Fatalf("grey batch calls=%d", modelAPI.grey)
@@ -121,13 +121,10 @@ func TestNicknameGreyUsesOneBatchedCall(t *testing.T) {
 
 func TestNicknameGreyInvalidFallsBackNeutral(t *testing.T) {
 	w := &Worker{store: &nicknameFixtureStore{}, agent: &nicknameFixtureModel{bad: true}}
-	item := decisionItem{Nicknames: []string{"挖坑不会埋", "小明"}}
+	item := decisionItem{Nicknames: []string{"挖坑不会埋"}}
 	w.planNicknameAddresses(context.Background(), model.LiveRuntimeSession{TenantID: 14, RoomID: 26}, &item)
 	if item.PromptNicknames[0] != "这位朋友" {
 		t.Fatalf("invalid grey accepted: %v", item.PromptNicknames)
-	}
-	if item.PromptNicknames[1] != "小明" {
-		t.Fatalf("program-safe name changed: %v", item.PromptNicknames)
 	}
 }
 
@@ -169,5 +166,28 @@ func TestNicknameCacheExpires(t *testing.T) {
 	plan()
 	if modelAPI.grey != 2 {
 		t.Fatalf("expired address reused: %d", modelAPI.grey)
+	}
+}
+
+func TestNicknameDiceLimitsPlannedNames(t *testing.T) {
+	modelAPI := &nicknameFixtureModel{identity: "role"}
+	w := &Worker{store: &nicknameFixtureStore{}, agent: modelAPI}
+	names := make([]string, 12)
+	for i := range names {
+		names[i] = "名字" + string(rune('甲'+i))
+	}
+	item := decisionItem{Nicknames: names}
+	w.planNicknameAddresses(context.Background(), model.LiveRuntimeSession{TenantID: 14, RoomID: 26}, &item)
+	planned := 0
+	for _, name := range item.PromptNicknames {
+		if name != "这位朋友" {
+			planned++
+		}
+	}
+	if planned < 1 || planned > 5 {
+		t.Fatalf("dice planned %d names, want 1..5", planned)
+	}
+	if modelAPI.grey != 0 {
+		t.Fatalf("safe names should not hit grey: %d", modelAPI.grey)
 	}
 }
