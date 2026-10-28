@@ -350,7 +350,9 @@ func TestWebSocketV1RestartsTTSAfterCompositeIdleGap(t *testing.T) {
 		if flusher != nil {
 			flusher.Flush()
 		}
-		time.Sleep(1600 * time.Millisecond)
+		// Longer than the 3s idle threshold, so the gateway intentionally
+		// closes this TTS session and the next PCM chunk starts a new one.
+		time.Sleep(3400 * time.Millisecond)
 		_, _ = w.Write(pcm)
 		if flusher != nil {
 			flusher.Flush()

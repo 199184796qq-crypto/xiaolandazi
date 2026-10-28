@@ -300,7 +300,11 @@ func (g *gateway) streamRoomAudio(ctx context.Context, writer *lockedConn, roomI
 		return fmt.Errorf("start ffmpeg: %w", err)
 	}
 
-	const ttsIdleTimeout = 1200 * time.Millisecond
+	// A 1.2s idle stop was cutting the tail: during a mainline/interaction
+	// switch the PCM stream can pause for a moment, and the device stops
+	// immediately on "tts stop" instead of draining its buffer. Keep the
+	// restart behavior for genuinely long gaps, but do not stop on short ones.
+	const ttsIdleTimeout = 3 * time.Second
 	var sendMu sync.Mutex
 	started := false
 	lastInputAt := time.Time{}
