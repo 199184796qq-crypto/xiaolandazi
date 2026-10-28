@@ -23,6 +23,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"livecompanion/management/internal/addressing"
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorstylescore"
 	"livecompanion/management/internal/contentstrategy"
@@ -118,6 +119,8 @@ type Worker struct {
 	recentBoundary       map[int64][]string
 	recentWelcomeProfile map[int64]string
 	nicknameAliases      map[string]nicknameAliasCacheEntry
+	nicknameRulesOnce    sync.Once
+	nicknameRulesValue   *addressing.Rules
 	benefitRedis         *redis.Client
 	prepared             map[preparedInteractionKey]preparedInteraction
 }
@@ -154,6 +157,7 @@ type decisionItem struct {
 	SampleQuestions        []string                              `json:"sample_questions"`
 	Nicknames              []string                              `json:"nicknames,omitempty"`
 	PromptNicknames        []string                              `json:"-"`
+	PromptShortNames       []string                              `json:"-"`
 	ManualAction           string                                `json:"manual_action"`
 	ManualOrigin           string                                `json:"manual_origin"`
 	ExecutionMode          string                                `json:"execution_mode"`

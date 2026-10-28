@@ -141,7 +141,7 @@ func TestPaidWorkerExplicitFactsOrVoiceRevisionUsesDifferentRequestKey(t *testin
 		t.Fatal(trace)
 	}
 }
-func TestPaidWorkerNicknameMissAccountedAndCachedAliasNoSecondCall(t *testing.T) {
+func TestPaidWorkerNicknameProgramPathNeedsNoModel(t *testing.T) {
 	agent := &nicknameFixtureModel{identity: "existing-role"}
 	w := New(readyVoiceStore(), nil, agent, nil)
 	trace := &paidWorkerTrace{}
@@ -150,11 +150,11 @@ func TestPaidWorkerNicknameMissAccountedAndCachedAliasNoSecondCall(t *testing.T)
 	for index := 0; index < 2; index++ {
 		item := decisionItem{ID: "nickname-decision", Nicknames: []string{"原昵称123456789"}}
 		w.planNicknameAddresses(context.Background(), session, &item)
-		if item.PromptNicknames[0] != "这位老乡" {
+		if item.PromptNicknames[0] != "原昵称" {
 			t.Fatal(item.PromptNicknames)
 		}
 	}
-	if trace.models != 1 || trace.voices != 0 || agent.calls != 1 {
+	if trace.models != 0 || trace.voices != 0 || agent.calls != 0 {
 		t.Fatal(trace, agent.calls)
 	}
 }

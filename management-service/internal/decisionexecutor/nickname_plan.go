@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"livecompanion/management/internal/addressing"
 	"livecompanion/management/internal/agentgateway"
-	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"log"
 	"sort"
@@ -20,6 +20,7 @@ import (
 
 type nicknameAliasCacheEntry struct {
 	Address string
+	Short   string
 	Expires time.Time
 }
 type nicknamePlanInput struct {
@@ -275,49 +276,37 @@ func decodeNicknameAddress(raw string) (string, error) {
 }
 
 // A short, separate planning task uses the central system-model role. It
-// chooses addresses through prompts, never a nickname keyword blacklist or a
-// post-generation semantic veto. Failures use neutral addresses and continue.
+// planNicknameAddresses fills PromptNicknames (基础昵称) and PromptShortNames
+// (1-2 字简称). The program owns compliance, identity and validation; the model
+// is called at most once, only for names the program marked ambiguous.
 func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeSession, item *decisionItem) {
 	if item.PromptNicknames != nil || len(item.Nicknames) == 0 {
 		return
 	}
+	rules := w.nicknameRules()
 	item.PromptNicknames = make([]string, len(item.Nicknames))
+	item.PromptShortNames = make([]string, len(item.Nicknames))
 	for i := range item.PromptNicknames {
 		item.PromptNicknames[i] = "这位朋友"
+		item.PromptShortNames[i] = "朋友"
 	}
-	mother, e := interactionpolicy.Read("interaction-nickname-plan.md")
-	if e != nil || w.agent == nil {
-		return
+	now := time.Now().UTC()
+	if w.now != nil {
+		now = w.now().UTC()
 	}
-	policy, e := interactionpolicy.Read("interaction-nickname-addressing.md")
-	if e != nil {
-		return
-	}
-	mother = append(append(policy, []byte("\n\n")...), mother...)
-	// The 9k-character P0 block is not part of address selection: the addressing
-	// policy already carries the naming bans (digits, contacts, insults, masks).
-	// Sending it per nickname was the single largest interaction token cost.
 	identity := ""
 	if resolver, ok := w.agent.(interface {
 		ModelRoleIdentity(context.Context, string) (string, error)
 	}); ok {
+		var e error
 		identity, e = resolver.ModelRoleIdentity(ctx, "interaction_addressing_plan")
 		if e != nil {
 			return
 		}
 	}
-	prefs, err := w.store.GetRoomAddressingPreferences(ctx, s.TenantID, s.RoomID)
-	if err != nil {
-		prefs = model.RoomAddressingPreferences{NamingPreference: "natural"}
-	}
-	prefJSON, _ := json.Marshal(prefs)
-	now := time.Now().UTC()
-	if w.now != nil {
-		now = w.now().UTC()
-	}
 	keys := make([]string, len(item.Nicknames))
-	pending := []nicknamePlanInput{}
-	positions := []int{}
+	var grey []addressing.GreyCandidate
+	var greyPositions []int
 	w.addressMu.Lock()
 	if w.nicknameAliases == nil {
 		w.nicknameAliases = map[string]nicknameAliasCacheEntry{}
@@ -328,60 +317,77 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 		}
 	}
 	for i, name := range item.Nicknames {
-		keys[i] = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprint(s.TenantID, ":", s.RoomID)+":"+identity+":"+string(mother)+":"+string(prefJSON)+":"+name)))
+		keys[i] = nicknameCacheKey(s, identity, rules.Version, name)
 		if cached, ok := w.nicknameAliases[keys[i]]; ok {
 			item.PromptNicknames[i] = cached.Address
+			item.PromptShortNames[i] = cached.Short
 			continue
 		}
-		if len(pending) < 16 {
-			pending = append(pending, nicknameInput(len(pending), name))
-			positions = append(positions, i)
+		decision := rules.Check(name)
+		switch decision.Status {
+		case addressing.StatusSafe, addressing.StatusRewritten:
+			item.PromptNicknames[i] = decision.Text
+			item.PromptShortNames[i] = decision.Short
+			w.cacheNickname(keys[i], decision.Text, decision.Short, now)
+		case addressing.StatusGrey:
+			grey = append(grey, addressing.GreyCandidate{Viewer: addressing.Viewer{UserID: strconv.Itoa(i), RawName: name}, Candidate: decision.Text})
+			greyPositions = append(greyPositions, i)
 		}
 	}
 	w.addressMu.Unlock()
-	if len(pending) == 0 {
+	if len(grey) == 0 || w.agent == nil {
 		return
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
-	defer cancel()
-	// One request covers several names: the rules are the same for every viewer,
-	// so sending them per nickname multiplied the prompt by the batch size.
-	const nicknameBatchSize = 8
-	for start := 0; start < len(pending); start += nicknameBatchSize {
-		end := min(start+nicknameBatchSize, len(pending))
-		chunk := pending[start:end]
-		names := make([]map[string]any, 0, len(chunk))
-		for i, input := range chunk {
-			names = append(names, map[string]any{
-				"index": i, "raw_name": input.RawName, "char_count": input.Chars,
-				"max_continuous_digits": input.Digits, "masked": input.Masked,
-				"shortening": nicknameShorteningHint(input.RawName),
-			})
-		}
-		packet, _ := json.Marshal(map[string]any{"names": names, "preferred_terms": prefs.PreferredTerms, "blocked_terms": prefs.BlockedTerms})
-		key := item.ID + ":nickname:" + strconv.Itoa(positions[start])
-		response, err := w.completePaidModel(callCtx, s, agentgateway.Request{Stage: "interaction_addressing_plan", Messages: []agentgateway.Message{{Role: "system", Content: string(mother)}, {Role: "user", Content: string(packet)}}, EnableThinking: false, MaxTokens: 60*len(chunk) + 80, Timeout: 12 * time.Second}, key)
-		var aliases []string
-		if err == nil {
-			aliases, err = decodeNicknamePlan(response.Text, len(chunk))
-		}
-		if err != nil {
-			log.Printf("nickname plan fallback tenant=%d room=%d decision=%s batch=%d reason=planning_unavailable", s.TenantID, s.RoomID, item.ID, len(chunk))
+	system, user := addressing.GreyPrompt(grey, rules)
+	response, err := w.completePaidModel(ctx, s, agentgateway.Request{
+		Stage:          "interaction_addressing_plan",
+		Messages:       []agentgateway.Message{{Role: "system", Content: system}, {Role: "user", Content: user}},
+		EnableThinking: false,
+		MaxTokens:      60*len(grey) + 80,
+		Timeout:        12 * time.Second,
+	}, item.ID+":nickname:0")
+	if err != nil {
+		log.Printf("nickname grey fallback tenant=%d room=%d decision=%s batch=%d reason=planning_unavailable", s.TenantID, s.RoomID, item.ID, len(grey))
+		return
+	}
+	decisions, err := addressing.ParseGrey(response.Text, grey, rules)
+	if err != nil {
+		log.Printf("nickname grey invalid tenant=%d room=%d decision=%s reason=%v", s.TenantID, s.RoomID, item.ID, err)
+		return
+	}
+	w.addressMu.Lock()
+	for i, decision := range decisions {
+		if !decision.OK {
 			continue
 		}
-		w.addressMu.Lock()
-		for i, alias := range aliases {
-			alias = nicknameModelName(strings.TrimSpace(alias))
-			if alias == "" {
-				continue
-			}
-			pos := positions[start+i]
-			item.PromptNicknames[pos] = alias
-			if len(w.nicknameAliases) >= 512 {
-				w.nicknameAliases = map[string]nicknameAliasCacheEntry{}
-			}
-			w.nicknameAliases[keys[pos]] = nicknameAliasCacheEntry{Address: alias, Expires: now.Add(30 * time.Minute)}
-		}
-		w.addressMu.Unlock()
+		pos := greyPositions[i]
+		item.PromptNicknames[pos] = decision.Base
+		item.PromptShortNames[pos] = decision.Short
+		w.cacheNickname(keys[pos], decision.Base, decision.Short, now)
 	}
+	w.addressMu.Unlock()
+}
+
+// nicknameRules loads the global nickname rules once per worker process.
+func (w *Worker) nicknameRules() *addressing.Rules {
+	w.nicknameRulesOnce.Do(func() {
+		w.nicknameRulesValue = addressing.LoadDefault()
+	})
+	if w.nicknameRulesValue == nil {
+		defaults := addressing.DefaultRules()
+		return &defaults
+	}
+	return w.nicknameRulesValue
+}
+
+func nicknameCacheKey(s model.LiveRuntimeSession, identity string, rulesVersion int, name string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprint(s.TenantID, ":", s.RoomID)+":"+identity+":"+strconv.Itoa(rulesVersion)+":"+name)))
+}
+
+// cacheNickname stores one validated address; the caller holds addressMu.
+func (w *Worker) cacheNickname(key, base, short string, now time.Time) {
+	if len(w.nicknameAliases) >= 512 {
+		w.nicknameAliases = map[string]nicknameAliasCacheEntry{}
+	}
+	w.nicknameAliases[key] = nicknameAliasCacheEntry{Address: base, Short: short, Expires: now.Add(30 * time.Minute)}
 }

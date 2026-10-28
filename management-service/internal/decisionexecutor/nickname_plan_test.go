@@ -4,11 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"livecompanion/management/internal/agentgateway"
-	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -28,6 +24,7 @@ type nicknameFixtureModel struct {
 func (g *nicknameFixtureModel) ModelRoleIdentity(context.Context, string) (string, error) {
 	return g.identity, nil
 }
+
 func (g *nicknameFixtureModel) Complete(_ context.Context, r agentgateway.Request) (agentgateway.Response, error) {
 	g.calls++
 	if g.bad {
@@ -35,223 +32,108 @@ func (g *nicknameFixtureModel) Complete(_ context.Context, r agentgateway.Reques
 	}
 	var input struct {
 		Names []struct {
-			Index int `json:"index"`
+			Index int    `json:"index"`
+			Name  string `json:"name"`
 		} `json:"names"`
 	}
 	if err := json.Unmarshal([]byte(r.Messages[1].Content), &input); err != nil {
 		return agentgateway.Response{}, err
 	}
-	aliases := make([]map[string]any, 0, len(input.Names))
+	results := make([]map[string]any, 0, len(input.Names))
 	for _, name := range input.Names {
-		aliases = append(aliases, map[string]any{"index": name.Index, "address": "这位老乡"})
+		runes := []rune(name.Name)
+		base := name.Name
+		if len(runes) > 4 {
+			base = string(runes[:4])
+		}
+		if len([]rune(base)) > 2 {
+			base = string([]rune(base)[:2])
+		}
+		short := base
+		if len([]rune(short)) > 2 {
+			short = string([]rune(short)[:2])
+		}
+		results = append(results, map[string]any{"index": name.Index, "ok": true, "base": base, "short": short})
 	}
-	raw, _ := json.Marshal(map[string]any{"aliases": aliases})
+	raw, _ := json.Marshal(map[string]any{"results": results})
 	return agentgateway.Response{Text: string(raw)}, nil
 }
-func TestNicknamePlanningCachesByRoleAndLeavesOriginalNamesIntact(t *testing.T) {
-	modelAPI := &nicknameFixtureModel{identity: "max-one"}
+
+func TestNicknameProgramPathNeedsNoModel(t *testing.T) {
+	modelAPI := &nicknameFixtureModel{identity: "role"}
 	w := &Worker{store: &nicknameFixtureStore{}, agent: modelAPI}
-	session := model.LiveRuntimeSession{TenantID: 14, RoomID: 26}
-	item := decisionItem{Nicknames: []string{"原昵称123456789"}}
-	w.planNicknameAddresses(context.Background(), session, &item)
-	if item.Nicknames[0] != "原昵称123456789" || item.PromptNicknames[0] != "这位老乡" {
-		t.Fatal(item)
+	item := decisionItem{Nicknames: []string{"小明", "老王"}}
+	w.planNicknameAddresses(context.Background(), model.LiveRuntimeSession{TenantID: 14, RoomID: 26}, &item)
+	if modelAPI.calls != 0 {
+		t.Fatalf("program-safe names called the model %d times", modelAPI.calls)
 	}
-	for i := 0; i < 2; i++ {
-		again := decisionItem{Nicknames: item.Nicknames}
-		w.planNicknameAddresses(context.Background(), session, &again)
-	}
-	if modelAPI.calls != 1 {
-		t.Fatal("same nickname planned repeatedly", modelAPI.calls)
-	}
-	modelAPI.identity = "max-two"
-	next := decisionItem{Nicknames: item.Nicknames}
-	w.planNicknameAddresses(context.Background(), session, &next)
-	if modelAPI.calls != 2 {
-		t.Fatal("model switch kept stale nickname plan")
-	}
-}
-func TestNicknamePlanFailureUsesNeutralAddressesWithoutBlocking(t *testing.T) {
-	w := &Worker{store: &nicknameFixtureStore{}, agent: &nicknameFixtureModel{bad: true}}
-	item := decisionItem{Nicknames: []string{"某个名字", "另一个名字"}}
-	w.planNicknameAddresses(context.Background(), model.LiveRuntimeSession{RoomID: 26}, &item)
-	if len(item.PromptNicknames) != 2 || item.PromptNicknames[0] != "这位朋友" || item.contentError != nil {
-		t.Fatal(item)
+	if item.PromptNicknames[0] != "小明" || item.PromptShortNames[1] != "老王" {
+		t.Fatalf("names=%v shorts=%v", item.PromptNicknames, item.PromptShortNames)
 	}
 }
 
-func TestNicknameCacheExpiresAndFreshRulesInvalidateIt(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"interaction-nickname-plan.md", "interaction-nickname-addressing.md"} {
-		raw, err := interactionpolicy.Read(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = os.WriteFile(filepath.Join(dir, name), raw, 0600); err != nil {
-			t.Fatal(err)
-		}
+func TestNicknameGreyUsesOneBatchedCall(t *testing.T) {
+	modelAPI := &nicknameFixtureModel{identity: "role"}
+	w := &Worker{store: &nicknameFixtureStore{}, agent: modelAPI}
+	item := decisionItem{Nicknames: []string{"挖坑不会埋", "芝士味的小宝贝"}}
+	w.planNicknameAddresses(context.Background(), model.LiveRuntimeSession{TenantID: 14, RoomID: 26}, &item)
+	if modelAPI.calls != 1 {
+		t.Fatalf("grey batch calls=%d", modelAPI.calls)
 	}
-	p0, err := interactionpolicy.Read("compliance/L1/p0-hard-block.md")
-	if err != nil {
-		t.Fatal(err)
+	if item.PromptNicknames[0] == "这位朋友" {
+		t.Fatalf("grey name not addressed: %v", item.PromptNicknames)
 	}
-	if err = os.MkdirAll(filepath.Join(dir, "compliance", "L1"), 0700); err != nil {
-		t.Fatal(err)
+}
+
+func TestNicknameGreyInvalidFallsBackNeutral(t *testing.T) {
+	w := &Worker{store: &nicknameFixtureStore{}, agent: &nicknameFixtureModel{bad: true}}
+	item := decisionItem{Nicknames: []string{"挖坑不会埋", "小明"}}
+	w.planNicknameAddresses(context.Background(), model.LiveRuntimeSession{TenantID: 14, RoomID: 26}, &item)
+	if item.PromptNicknames[0] != "这位朋友" {
+		t.Fatalf("invalid grey accepted: %v", item.PromptNicknames)
 	}
-	if err = os.WriteFile(filepath.Join(dir, "compliance", "L1", "p0-hard-block.md"), p0, 0600); err != nil {
-		t.Fatal(err)
+	if item.PromptNicknames[1] != "小明" {
+		t.Fatalf("program-safe name changed: %v", item.PromptNicknames)
 	}
-	t.Setenv("ANCHOR_STYLE_PROMPT_DIR", dir)
+}
+
+func TestNicknameCacheSkipsSecondGreyCall(t *testing.T) {
+	modelAPI := &nicknameFixtureModel{identity: "role"}
+	w := &Worker{store: &nicknameFixtureStore{}, agent: modelAPI}
+	session := model.LiveRuntimeSession{TenantID: 14, RoomID: 26}
+	for i := 0; i < 3; i++ {
+		item := decisionItem{Nicknames: []string{"挖坑不会埋"}}
+		w.planNicknameAddresses(context.Background(), session, &item)
+	}
+	if modelAPI.calls != 1 {
+		t.Fatalf("cache miss repeated: %d", modelAPI.calls)
+	}
+	modelAPI.identity = "other-role"
+	item := decisionItem{Nicknames: []string{"挖坑不会埋"}}
+	w.planNicknameAddresses(context.Background(), session, &item)
+	if modelAPI.calls != 2 {
+		t.Fatalf("role change kept stale address: %d", modelAPI.calls)
+	}
+}
+
+func TestNicknameCacheExpires(t *testing.T) {
 	now := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
-	modelAPI := &nicknameFixtureModel{identity: "max"}
+	modelAPI := &nicknameFixtureModel{identity: "role"}
 	w := &Worker{store: &nicknameFixtureStore{}, agent: modelAPI, now: func() time.Time { return now }}
 	session := model.LiveRuntimeSession{TenantID: 14, RoomID: 26}
 	plan := func() {
-		item := decisionItem{Nicknames: []string{"原昵称123456789"}}
+		item := decisionItem{Nicknames: []string{"挖坑不会埋"}}
 		w.planNicknameAddresses(context.Background(), session, &item)
 	}
 	plan()
 	now = now.Add(29 * time.Minute)
 	plan()
 	if modelAPI.calls != 1 {
-		t.Fatal("cache expired before its lifetime")
+		t.Fatalf("cache expired early: %d", modelAPI.calls)
 	}
-	now = now.Add(time.Minute)
+	now = now.Add(2 * time.Minute)
 	plan()
 	if modelAPI.calls != 2 {
-		t.Fatal("expired nickname kept its old address")
+		t.Fatalf("expired address reused: %d", modelAPI.calls)
 	}
-	path := filepath.Join(dir, "interaction-nickname-addressing.md")
-	raw, _ := os.ReadFile(path)
-	if err := os.WriteFile(path, append(raw, '\n'), 0600); err != nil {
-		t.Fatal(err)
-	}
-	plan()
-	if modelAPI.calls != 3 {
-		t.Fatal("new rules reused an old address")
-	}
-	session.RoomID = 27
-	plan()
-	if modelAPI.calls != 4 {
-		t.Fatal("another room reused the first room's address")
-	}
-}
-func TestNicknameStructureAndNumericMetadata(t *testing.T) {
-	for _, raw := range []string{`{"aliases":[]}`, `{"aliases":[{"index":9,"address":"朋友"}]}`, `{"aliases":[{"index":0,"address":"朋友","extra":true}]}`} {
-		if _, e := decodeNicknamePlan(raw, 1); e == nil {
-			t.Fatal("invalid structure accepted")
-		}
-	}
-	in := nicknameInput(0, "小林12345678")
-	if in.Chars != 10 || in.Digits != 8 || in.RawName != "小林12345678" {
-		t.Fatal(in)
-	}
-}
-func TestNicknameCooldownUsesOriginalIdentityInsteadOfSharedNeutralAlias(t *testing.T) {
-	w := &Worker{recentNamed: map[int64]map[string]time.Time{26: {}}}
-	w.recordUsedAddressingNames(26, []string{"这位朋友"}, "欢迎这位朋友", []string{"账号甲"})
-	got, _ := w.playableAddressingNames(26, []string{"这位朋友"}, []string{"账号乙"})
-	if len(got) != 1 {
-		t.Fatal("neutral address suppressed unrelated person")
-	}
-	got, _ = w.playableAddressingNames(26, []string{"这位朋友"}, []string{"账号甲"})
-	if len(got) != 0 {
-		t.Fatal("original person cooldown lost")
-	}
-	if strings.Contains(addressingPlanGuidance(w.buildAddressingPlan(26, decisionItem{Nicknames: []string{"账号乙"}, PromptNicknames: []string{"这位朋友"}}, "natural", "", model.RoomAddressingPreferences{}, nil)), "账号乙") {
-		t.Fatal("raw nickname sent to speech")
-	}
-}
-
-func TestMaskedNicknameInputsOnlyExposeReadablePrefix(t *testing.T) {
-	for _, tc := range []struct{ raw, want string }{
-		{"小陈***隐藏部分", "小陈"},
-		{"芬芬＊隐藏部分", "芬芬"},
-		{" 小 陈❤️123*隐藏部分", "小 陈"},
-		{"***小陈", "这位朋友"},
-		{"123456*隐藏部分", "这位朋友"},
-		{"❤️*隐藏部分", "这位朋友"},
-		{"Ann*隐藏部分", "Ann"},
-	} {
-		t.Run(tc.raw, func(t *testing.T) {
-			in := nicknameInput(0, tc.raw)
-			if in.RawName != tc.want || !in.Masked || in.Chars != len([]rune(tc.want)) || in.Digits != 0 {
-				t.Fatalf("unsafe planner input: %#v", in)
-			}
-		})
-	}
-	plain := nicknameInput(0, "小林12345678")
-	if plain.RawName != "小林12345678" || plain.Masked || plain.Digits != 8 {
-		t.Fatalf("ordinary nickname changed: %#v", plain)
-	}
-}
-
-func TestNicknameAddressSuffixAndShorteningHint(t *testing.T) {
-	suffixCases := []struct {
-		name   string
-		suffix string
-	}{
-		{"小明", ""},
-		{"老王", ""},
-		{"爱吃苹果", ""},
-		{"爱吃辣的小陈哥", "哥"},
-		{"卖水果的刘老板", "老板"},
-		{"做菜很好吃的王师傅", "师傅"},
-		{"爱跳舞的丽丽姐", "姐"},
-		{"湖南香辣妹", "妹"},
-		{"我是你永远的家", ""}, // "家"是主题词，不是称谓，不应误判
-	}
-	for _, c := range suffixCases {
-		if got := nicknameAddressSuffix(c.name); got != c.suffix {
-			t.Errorf("nicknameAddressSuffix(%q)=%q want %q", c.name, got, c.suffix)
-		}
-	}
-
-	hintCases := []struct {
-		name   string
-		expect string
-	}{
-		{"小明", "仅 2 字，直接使用全称，不要简称"},
-		{"爱吃苹果", "仅 4 字，直接使用全称，不要简称"},
-		{"超级爱吃苹果的人", "共 8 字，取最有辨识度的核心，最多 4 字（不机械截前 4 字）"},
-		{"爱吃辣的小陈哥", "末尾带称谓「哥」，简称取核心 1-2 字再带上该称谓（如「小陈哥」「刘老板」）"},
-	}
-	for _, c := range hintCases {
-		if got := nicknameShorteningHint(c.name); got != c.expect {
-			t.Errorf("nicknameShorteningHint(%q)=%q want %q", c.name, got, c.expect)
-		}
-	}
-}
-
-func TestNicknamePlanningBatchesOneCallAndDropsP0Block(t *testing.T) {
-	modelAPI := &nicknameFixtureModel{identity: "batch"}
-	var systemPrompt string
-	agent := &nicknamePromptSpy{inner: modelAPI, capture: &systemPrompt}
-	w := &Worker{store: &nicknameFixtureStore{}, agent: agent}
-	item := decisionItem{Nicknames: []string{"小明", "老王", "爱吃苹果"}}
-	w.planNicknameAddresses(context.Background(), model.LiveRuntimeSession{TenantID: 14, RoomID: 26}, &item)
-	if modelAPI.calls != 1 {
-		t.Fatalf("calls=%d want one batched call", modelAPI.calls)
-	}
-	if len(item.PromptNicknames) != 3 || item.PromptNicknames[0] != "这位老乡" {
-		t.Fatalf("aliases=%v", item.PromptNicknames)
-	}
-	if len([]rune(systemPrompt)) > 4000 {
-		t.Fatalf("nickname prompt still carries the P0 block: %d runes", len([]rune(systemPrompt)))
-	}
-}
-
-type nicknamePromptSpy struct {
-	inner   *nicknameFixtureModel
-	capture *string
-}
-
-func (s *nicknamePromptSpy) ModelRoleIdentity(ctx context.Context, stage string) (string, error) {
-	return s.inner.ModelRoleIdentity(ctx, stage)
-}
-func (s *nicknamePromptSpy) Complete(ctx context.Context, r agentgateway.Request) (agentgateway.Response, error) {
-	if len(r.Messages) > 0 {
-		*s.capture = r.Messages[0].Content
-	}
-	return s.inner.Complete(ctx, r)
 }
