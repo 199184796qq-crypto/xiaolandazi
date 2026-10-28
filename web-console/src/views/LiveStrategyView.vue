@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import QuestionLibraryPanel from '../components/QuestionLibraryPanel.vue'
 import RoomReadingRules from '../components/RoomReadingRules.vue'
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { normalizeLiveAgentPlanVersion } from '../liveAgentPlanVersion'
@@ -7587,6 +7588,7 @@ onBeforeUnmount(() => {
               <p>这里只规定遇到什么情况要回应、优先级、频率和怎么组织回答；商品、履约、售后等回答内容只能来自“事实依据”。</p>
             </div>
           </div>
+          <QuestionLibraryPanel :room-id="activeRoomId" />
           <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" :facts="formalFacts" :location-request="interactionLocationRequest" @refresh="refreshMemories" @adopted="refreshMemories" @facts-updated="onInteractionFactsUpdated">
           <AnswerStrategyPanel :items="interactionMemories" :loading="memoriesLoading" :error="memoriesError" :scope-key="`${activeRoom?.tenant_id}:${activeRoomId}:${currentRoomPlanId}`" :editing-id="editingMemoryId" :mutating-id="memoryMutatingId" :delete-confirm-id="memoryDeleteConfirmId" @refresh="refreshMemories" @edit="editingMemoryId === $event.id ? resetMemoryEdit() : beginMemoryEdit($event)" @delete="deleteMemory">
             <template #editor="{ item }">

@@ -5073,3 +5073,15 @@ export interface RoomReadingRules {
   rules_text: string
   updated_at?: string
 }
+
+export interface QuestionLibraryEntry {
+  id: number
+  tenant_id: number
+  room_id: number
+  plan_id: number
+  question_type: string
+  question: string
+  answer: string
+  status: string
+  updated_at?: string
+}

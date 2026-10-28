@@ -307,3 +307,21 @@ type RoomReadingRules struct {
 type RoomReadingRulesInput struct {
 	RulesText string `json:"rules_text"`
 }
+
+type QuestionLibraryEntry struct {
+	ID          int64     `json:"id"`
+	TenantID    int64     `json:"tenant_id"`
+	RoomID      int64     `json:"room_id"`
+	PlanID      int64     `json:"plan_id"`
+	QuestionType string   `json:"question_type"`
+	Question    string    `json:"question"`
+	Answer      string    `json:"answer"`
+	Status      string    `json:"status"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type QuestionLibraryInput struct {
+	QuestionType string `json:"question_type"`
+	Question     string `json:"question"`
+	Answer       string `json:"answer"`
+}

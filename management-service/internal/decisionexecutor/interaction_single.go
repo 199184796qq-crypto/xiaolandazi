@@ -213,6 +213,12 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		address = "朋友"
 	}
 	question := strings.TrimSpace(primaryQuestion(item))
+	if entry, hit := w.matchQuestionLibrary(ctx, session, question); hit {
+		if entry.QuestionType == "unknown" {
+			return address + "，" + strings.TrimSpace(entry.Answer)
+		}
+		return address + "，" + strings.TrimSpace(entry.Answer)
+	}
 	answerText := w.singleAnswerFacts(item)
 	answerText = w.preferRegionFacts(ctx, session, question, answerText)
 	if strings.TrimSpace(answerText) == "" {

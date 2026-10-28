@@ -4733,3 +4733,26 @@ export function updateRoomReadingRules(roomId: number, rulesText: string) {
     body: JSON.stringify({ rules_text: rulesText }),
   })
 }
+
+export function listQuestionLibrary(roomId: number) {
+  return request<{ items: QuestionLibraryEntry[] }>('/api/v1/rooms/' + roomId + '/question-library')
+}
+
+export function saveQuestionLibrary(roomId: number, payload: { question_type: string; question: string; answer: string }, id?: number) {
+  const suffix = id ? '?id=' + id : ''
+  return request<QuestionLibraryEntry>('/api/v1/rooms/' + roomId + '/question-library' + suffix, {
+    method: id ? 'PUT' : 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteQuestionLibrary(roomId: number, id: number) {
+  return request<{ ok: boolean }>('/api/v1/rooms/' + roomId + '/question-library?id=' + id, { method: 'DELETE' })
+}
+
+export function classifyQuestionType(roomId: number, question: string) {
+  return request<{ type: string; types: string[] }>('/api/v1/rooms/' + roomId + '/question-library/classify', {
+    method: 'POST',
+    body: JSON.stringify({ question }),
+  })
+}

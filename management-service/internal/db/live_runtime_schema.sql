@@ -1878,3 +1878,20 @@ CREATE TABLE IF NOT EXISTS live_room_reading_rules (
     KEY idx_live_room_reading_rules_room (room_id),
     KEY idx_live_room_reading_rules_updated_by (updated_by_user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_question_library (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    question_type VARCHAR(32) NOT NULL DEFAULT 'fact',
+    question VARCHAR(255) NOT NULL,
+    answer TEXT NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    created_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_question_library_room (tenant_id, room_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
