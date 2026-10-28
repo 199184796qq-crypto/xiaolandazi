@@ -5082,6 +5082,9 @@ export interface QuestionLibraryEntry {
   question_type: string
   question: string
   answer: string
+  sense_key?: string
+  sense_name?: string
+  exclude_words?: string[]
   status: string
   updated_at?: string
 }

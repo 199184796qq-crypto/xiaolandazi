@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { classifyQuestionType, deleteQuestionLibrary, listQuestionLibrary, saveQuestionLibrary } from '../api'
+import { classifyQuestionType, deleteQuestionLibrary, getPlanPurposes, listQuestionLibrary, saveQuestionLibrary } from '../api'
 import type { QuestionLibraryEntry } from '../types'
 
 const props = defineProps<{ roomId: number | null }>()
@@ -10,9 +10,14 @@ type Row = {
   question_type: string
   question: string
   answer: string
+  sense_key: string
+  sense_name: string
+  excludeText: string
   saving?: boolean
   deleting?: boolean
 }
+
+type PurposeOption = { key: string; name: string }
 
 const typeOptions = [
   { value: 'pool_in_out', label: '池内/池外' },
@@ -27,12 +32,18 @@ const typeOptions = [
 ]
 
 const rows = ref<Row[]>([])
+const purposes = ref<PurposeOption[]>([])
 const loading = ref(false)
 const error = ref('')
 const notice = ref('')
 
 function blankRow(): Row {
-  return { id: 0, question_type: 'fact', question: '', answer: '' }
+  return { id: 0, question_type: 'fact', question: '', answer: '', sense_key: '', sense_name: '', excludeText: '' }
+}
+
+function pickSense(row: Row, key: string) {
+  row.sense_key = key
+  row.sense_name = purposes.value.find(item => item.key === key)?.name || ''
 }
 
 async function load() {
@@ -43,12 +54,16 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const result = await listQuestionLibrary(props.roomId)
+    const [result, purposeResult] = await Promise.all([listQuestionLibrary(props.roomId), getPlanPurposes(props.roomId)])
+    purposes.value = (purposeResult.items || []).map(item => ({ key: item.key, name: item.name }))
     rows.value = (result.items || []).map((item: QuestionLibraryEntry) => ({
       id: item.id,
       question_type: item.question_type || 'fact',
       question: item.question || '',
       answer: item.answer || '',
+      sense_key: item.sense_key || '',
+      sense_name: item.sense_name || '',
+      excludeText: (item.exclude_words || []).join('、'),
     }))
   } catch (e) {
     error.value = e instanceof Error ? e.message : '读取问题库失败'
@@ -78,6 +93,9 @@ async function saveRow(row: Row) {
       question_type: row.question_type,
       question: row.question,
       answer: row.answer,
+      sense_key: row.sense_key,
+      sense_name: row.sense_name,
+      exclude_words: row.excludeText.split(/[、,，\s]+/).filter(Boolean),
     }, row.id || undefined)
     row.id = saved.id
     row.question_type = saved.question_type
@@ -163,6 +181,13 @@ watch(() => props.roomId, load, { immediate: true })
             />
           </td>
           <td>
+            <div class="ql-sense">
+              <select :value="row.sense_key" @change="pickSense(row, ($event.target as HTMLSelectElement).value)">
+                <option value="">指的是（可选）</option>
+                <option v-for="purpose in purposes" :key="purpose.key" :value="purpose.key">{{ purpose.name }}</option>
+              </select>
+              <input v-model="row.excludeText" type="text" placeholder="排除词：价、便宜、优惠" />
+            </div>
             <span v-if="!row.answer.trim()" class="ql-chip">待回答</span>
             <textarea v-model="row.answer" rows="2" placeholder="直接写要说的话；留空则标红，系统自动追加的问题先空着" />
           </td>
@@ -195,6 +220,8 @@ watch(() => props.roomId, load, { immediate: true })
 .ql-table input,.ql-table select,.ql-table textarea{width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #d9e0ea;border-radius:6px;font:inherit;background:#fff}
 .ql-table textarea{resize:vertical}
 .ql-row-actions{display:flex;gap:6px}
+.ql-sense{display:flex;gap:6px;margin-bottom:6px}
+.ql-sense select,.ql-sense input{flex:1}
 button.primary,button.ghost,button.danger{padding:6px 12px;border-radius:6px;border:1px solid transparent;font:inherit;cursor:pointer}
 button.primary{background:#6b5cff;color:#fff}
 button.ghost{background:#fff;border-color:#d9e0ea;color:#414a57}

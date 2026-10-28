@@ -316,12 +316,18 @@ type QuestionLibraryEntry struct {
 	QuestionType string   `json:"question_type"`
 	Question    string    `json:"question"`
 	Answer      string    `json:"answer"`
+	SenseKey    string    `json:"sense_key"`
+	SenseName   string    `json:"sense_name"`
+	ExcludeWords []string `json:"exclude_words"`
 	Status      string    `json:"status"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type QuestionLibraryInput struct {
-	QuestionType string `json:"question_type"`
-	Question     string `json:"question"`
-	Answer       string `json:"answer"`
+	QuestionType string   `json:"question_type"`
+	Question     string   `json:"question"`
+	Answer       string   `json:"answer"`
+	SenseKey     string   `json:"sense_key"`
+	SenseName    string   `json:"sense_name"`
+	ExcludeWords []string `json:"exclude_words"`
 }

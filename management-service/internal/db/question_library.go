@@ -11,7 +11,7 @@ import (
 // ListQuestionLibrary returns the room's question-library entries.
 func (s *Store) ListQuestionLibrary(ctx context.Context, tenantID, roomID int64) ([]model.QuestionLibraryEntry, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, tenant_id, room_id, plan_id, question_type, question, answer, status, updated_at
+SELECT id, tenant_id, room_id, plan_id, question_type, question, answer, sense_key, sense_name, exclude_json, status, updated_at
 FROM live_agent_question_library
 WHERE tenant_id = ? AND room_id = ? AND status = 'active'
 ORDER BY id`, tenantID, roomID)
@@ -22,9 +22,11 @@ ORDER BY id`, tenantID, roomID)
 	items := make([]model.QuestionLibraryEntry, 0, 16)
 	for rows.Next() {
 		var item model.QuestionLibraryEntry
-		if err := rows.Scan(&item.ID, &item.TenantID, &item.RoomID, &item.PlanID, &item.QuestionType, &item.Question, &item.Answer, &item.Status, &item.UpdatedAt); err != nil {
+		var exclude string
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.RoomID, &item.PlanID, &item.QuestionType, &item.Question, &item.Answer, &item.SenseKey, &item.SenseName, &exclude, &item.Status, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal([]byte(exclude), &item.ExcludeWords)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -41,17 +43,17 @@ func (s *Store) UpsertQuestionLibrary(ctx context.Context, tenantID, roomID, use
 	if id > 0 {
 		_, err := s.db.ExecContext(ctx, `
 UPDATE live_agent_question_library
-SET question_type = ?, question = ?, answer = ?
+SET question_type = ?, question = ?, answer = ?, sense_key = ?, sense_name = ?, exclude_json = ?
 WHERE id = ? AND tenant_id = ? AND room_id = ?`,
-			questionType, question, answer, id, tenantID, roomID)
+			questionType, question, answer, strings.TrimSpace(input.SenseKey), strings.TrimSpace(input.SenseName), excludeJSON(input.ExcludeWords), id, tenantID, roomID)
 		if err != nil {
 			return model.QuestionLibraryEntry{}, err
 		}
 		return s.questionLibraryEntry(ctx, id)
 	}
 	res, err := s.db.ExecContext(ctx, `
-INSERT INTO live_agent_question_library (tenant_id, room_id, plan_id, question_type, question, answer, created_by_user_id)
-VALUES (?, ?, 0, ?, ?, ?, ?)`, tenantID, roomID, questionType, question, answer, userID)
+INSERT INTO live_agent_question_library (tenant_id, room_id, plan_id, question_type, question, answer, sense_key, sense_name, exclude_json, created_by_user_id)
+VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`, tenantID, roomID, questionType, question, answer, strings.TrimSpace(input.SenseKey), strings.TrimSpace(input.SenseName), excludeJSON(input.ExcludeWords), userID)
 	if err != nil {
 		return model.QuestionLibraryEntry{}, err
 	}
@@ -61,10 +63,12 @@ VALUES (?, ?, 0, ?, ?, ?, ?)`, tenantID, roomID, questionType, question, answer,
 
 func (s *Store) questionLibraryEntry(ctx context.Context, id int64) (model.QuestionLibraryEntry, error) {
 	var item model.QuestionLibraryEntry
+	var exclude string
 	err := s.db.QueryRowContext(ctx, `
-SELECT id, tenant_id, room_id, plan_id, question_type, question, answer, status, updated_at
+SELECT id, tenant_id, room_id, plan_id, question_type, question, answer, sense_key, sense_name, exclude_json, status, updated_at
 FROM live_agent_question_library WHERE id = ?`, id).
-		Scan(&item.ID, &item.TenantID, &item.RoomID, &item.PlanID, &item.QuestionType, &item.Question, &item.Answer, &item.Status, &item.UpdatedAt)
+		Scan(&item.ID, &item.TenantID, &item.RoomID, &item.PlanID, &item.QuestionType, &item.Question, &item.Answer, &item.SenseKey, &item.SenseName, &exclude, &item.Status, &item.UpdatedAt)
+	_ = json.Unmarshal([]byte(exclude), &item.ExcludeWords)
 	return item, err
 }
 
@@ -132,5 +136,16 @@ func gapKeywords(question string) string {
 		}
 	}
 	raw, _ := json.Marshal(keywords)
+	return string(raw)
+}
+
+func excludeJSON(values []string) string {
+	clean := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			clean = append(clean, value)
+		}
+	}
+	raw, _ := json.Marshal(clean)
 	return string(raw)
 }

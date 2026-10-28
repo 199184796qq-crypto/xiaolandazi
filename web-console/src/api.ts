@@ -4734,11 +4734,15 @@ export function updateRoomReadingRules(roomId: number, rulesText: string) {
   })
 }
 
+export function getPlanPurposes(roomId: number) {
+  return request<{ plan_id: number; items: { key: string; name: string; keywords: string[]; in_out: boolean }[] }>('/api/v1/rooms/' + roomId + '/purposes')
+}
+
 export function listQuestionLibrary(roomId: number) {
   return request<{ items: QuestionLibraryEntry[] }>('/api/v1/rooms/' + roomId + '/question-library')
 }
 
-export function saveQuestionLibrary(roomId: number, payload: { question_type: string; question: string; answer: string }, id?: number) {
+export function saveQuestionLibrary(roomId: number, payload: { question_type: string; question: string; answer: string; sense_key?: string; sense_name?: string; exclude_words?: string[] }, id?: number) {
   const suffix = id ? '?id=' + id : ''
   return request<QuestionLibraryEntry>('/api/v1/rooms/' + roomId + '/question-library' + suffix, {
     method: id ? 'PUT' : 'POST',

@@ -43,15 +43,9 @@ func (w *Worker) matchQuestionLibrary(ctx context.Context, session model.LiveRun
 	best := model.QuestionLibraryEntry{}
 	bestLen := 0
 	for _, entry := range entries {
-		for _, token := range splitQuestionKeywords(entry.Question) {
-			key := normalizeQuestion(token)
-			if key == "" || len([]rune(key)) < 2 {
-				continue
-			}
-			if strings.Contains(normalized, key) && len([]rune(key)) > bestLen {
-				best = entry
-				bestLen = len([]rune(key))
-			}
+		if length, ok := matchLibraryEntry(entry, normalized); ok && length > bestLen {
+			best = entry
+			bestLen = length
 		}
 	}
 	if bestLen == 0 {
@@ -70,4 +64,30 @@ func splitQuestionKeywords(value string) []string {
 		}
 	}
 	return out
+}
+
+// matchLibraryEntry reports the longest keyword hit for one entry. Entries with
+// exclusion words are skipped when any exclusion appears in the question, so
+// "砍" no longer matches "砍价".
+func matchLibraryEntry(entry model.QuestionLibraryEntry, normalized string) (int, bool) {
+	if strings.TrimSpace(entry.Answer) == "" {
+		return 0, false
+	}
+	for _, word := range entry.ExcludeWords {
+		key := normalizeQuestion(word)
+		if key != "" && strings.Contains(normalized, key) {
+			return 0, false
+		}
+	}
+	best := 0
+	for _, token := range splitQuestionKeywords(entry.Question) {
+		key := normalizeQuestion(token)
+		if key == "" {
+			continue
+		}
+		if strings.Contains(normalized, key) && len([]rune(key)) > best {
+			best = len([]rune(key))
+		}
+	}
+	return best, best > 0
 }
