@@ -266,3 +266,14 @@ func TestCheaperSpeechQuoteBuysMoreUpdates(t *testing.T) {
 		t.Fatalf("cheaper quote should allow more updates: expensive=%d cheap=%d", expensive.Percent, cheap.Percent)
 	}
 }
+
+func TestRecordingRefreshQuoteUsesTokenDefaultsWithoutContract(t *testing.T) {
+	s, version, state := recordingRefreshQuoteFixture()
+	version.VoiceIdentity.Model = "qwen-audio-3.1-tts-flash"
+	s.liveCostPrices = nil
+	// Supplier token price (1.5 in / 12 out per million) is the billing basis even
+	// before an operator adds a contract row: 4 input + 10 audio tokens + 540 model.
+	if got, err := s.recordingRefreshQuote("你好。", version, state); err != nil || got != 666 {
+		t.Fatalf("quote=%d err=%v want=666", got, err)
+	}
+}
