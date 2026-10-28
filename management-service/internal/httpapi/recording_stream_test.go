@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/ttsgateway"
 )
 
 func TestSplitRecordingStreamTextHonorsFortyToEightyRunesAndPunctuation(t *testing.T) {
@@ -56,6 +57,17 @@ func TestRecordingStreamOwnerAllowsUserAudioOnlyForStreamMode(t *testing.T) {
 	}
 	if !liveAnchorOwnerModeAllowed("ai_dynamic", original) {
 		t.Fatal("realtime dynamic must remain accepted")
+	}
+}
+
+func TestWithNaturalBreathInstruction(t *testing.T) {
+	plain := withNaturalBreathInstruction(ttsgateway.SynthesizeRequest{Text: "八个月这个时间刚刚好。"})
+	if !strings.Contains(plain.Instruction, "自然换气起句") || !strings.Contains(plain.Instruction, "尾字说完整") {
+		t.Fatalf("plain instruction = %q", plain.Instruction)
+	}
+	styled := withNaturalBreathInstruction(ttsgateway.SynthesizeRequest{Text: "八个月这个时间刚刚好。", Instruction: "像真人直播聊天。"})
+	if !strings.Contains(styled.Instruction, "像真人直播聊天") || !strings.Contains(styled.Instruction, "自然换气起句") {
+		t.Fatalf("styled instruction = %q", styled.Instruction)
 	}
 }
 

@@ -222,7 +222,7 @@ func (s *Server) refreshContentVariant(ctx context.Context, tenantID, actorID, p
 		paidCtx := s.withLiveCostTTS(ctx, liveCostCallScope{TenantID: tenantID, RoomID: roomID, PlanID: planID,
 			Priority: "necessary", Reason: "事实或内容更新需要重新交付声音",
 			Key: fmt.Sprintf("content-refresh:%d:%d:%d:%d", original.AudioAssetID, original.GenerationNo, part, percent)})
-		generated, err := gateway.SynthesizeURL(paidCtx, ttsgateway.SynthesizeRequest{Model: modelName, VoiceID: voiceID, Text: text, Rate: voice.Rate})
+		generated, err := gateway.SynthesizeURL(paidCtx, withNaturalBreathInstruction(ttsgateway.SynthesizeRequest{Model: modelName, VoiceID: voiceID, Text: text, Rate: voice.Rate}))
 		if err != nil {
 			return original, err
 		}

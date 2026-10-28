@@ -430,7 +430,7 @@ func synthesizeMainlinePreview(ctx context.Context, gateway mainlineSynthesizer,
 		}
 		partScope.Key += fmt.Sprintf(":part:%d", i)
 		partCtx := withLiveCostScope(ctx, partScope)
-		generated, err := gateway.SynthesizeURL(partCtx, ttsgateway.SynthesizeRequest{Model: voice.Model, VoiceID: voice.VoiceID, Text: part, Rate: voice.Rate})
+		generated, err := gateway.SynthesizeURL(partCtx, withNaturalBreathInstruction(ttsgateway.SynthesizeRequest{Model: voice.Model, VoiceID: voice.VoiceID, Text: part, Rate: voice.Rate}))
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("第%d个声音片段生成失败: %w", i+1, err)
 		}

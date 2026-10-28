@@ -325,6 +325,7 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 		Model: modelName, VoiceID: voiceID, Text: text, Rate: rate,
 		Instruction: recordingInstructionForVersion(version, text),
 	}
+	request = withNaturalBreathInstruction(request)
 	var generated ttsgateway.SynthesizeResponse
 	// Only the provider boundary is charged. Re-signing, rebuilding a cache
 	// track and retrying archive/download never create another TTS request.
@@ -440,6 +441,22 @@ func (s *Server) combineRecordingStreamBlock(ctx context.Context, tenant int64, 
 // for each TTS chunk. It never changes the spoken text; it only tells the
 // cloned voice how to phrase it (questions lift, prices slow down, urgency is
 // tighter, ordinary chat keeps a relaxed pause and drawl).
+const naturalBreathInstruction = "自然换气起句，尾字说完整，收尾后短停，不要突然切断。"
+
+// withNaturalBreathInstruction asks the TTS model to phrase each mainline
+// segment with a natural breath at the start and a complete final syllable.
+// It is a delivery instruction, not text: it is never spoken. Existing
+// emotion/style instructions are preserved and this is appended to them.
+func withNaturalBreathInstruction(request ttsgateway.SynthesizeRequest) ttsgateway.SynthesizeRequest {
+	base := strings.TrimSpace(request.Instruction)
+	if base == "" {
+		request.Instruction = naturalBreathInstruction
+		return request
+	}
+	request.Instruction = base + "；" + naturalBreathInstruction
+	return request
+}
+
 func recordingInstructionForVersion(version model.LiveAgentPlanVersion, text string) string {
 	if version.VoiceIdentity.EmotionEnabled == nil || !*version.VoiceIdentity.EmotionEnabled {
 		return ""

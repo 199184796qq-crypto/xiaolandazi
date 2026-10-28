@@ -146,9 +146,9 @@ func (s *Server) liveAgentPlanFullShowVariantVoice(w http.ResponseWriter, r *htt
 	gateway := ttsgateway.NewFromEnv()
 	pieces := make([]generatedVoiceWAVPiece, 0, len(segments))
 	for index, segmentText := range segments {
-		generated, synthErr := gateway.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{
+		generated, synthErr := gateway.SynthesizeURL(ctx, withNaturalBreathInstruction(ttsgateway.SynthesizeRequest{
 			Model: modelName, VoiceID: voiceID, Text: segmentText, Rate: input.Rate,
-		})
+		}))
 		if synthErr != nil {
 			writeError(w, http.StatusBadGateway, fmt.Sprintf("%s稿第%d段声音生成失败：%v", variantKey, index+1, synthErr))
 			return
