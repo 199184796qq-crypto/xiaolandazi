@@ -200,3 +200,12 @@ func TestAnswerStartsAsQuestionFragment(t *testing.T) {
 		t.Fatal("normal answer must pass")
 	}
 }
+
+func TestDetectRegions(t *testing.T) {
+	if got := detectRegions("新疆可以吗"); len(got) != 1 || got[0] != "新疆" {
+		t.Fatalf("regions=%v", got)
+	}
+	if got := detectRegions("多久发货"); len(got) != 0 {
+		t.Fatalf("regions=%v", got)
+	}
+}

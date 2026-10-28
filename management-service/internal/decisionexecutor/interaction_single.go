@@ -214,6 +214,7 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	}
 	question := strings.TrimSpace(primaryQuestion(item))
 	answerText := w.singleAnswerFacts(item)
+	answerText = w.preferRegionFacts(ctx, session, question, answerText)
 	if strings.TrimSpace(answerText) == "" {
 		// The selected plan may be empty even though the room has facts (a new
 		// purpose, a stale snapshot). Try one retrieval pass before giving up.
@@ -495,4 +496,63 @@ func (w *Worker) singleAnswerFacts(item decisionItem) string {
 		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// regionTerms lists delivery regions that change shipping rules.
+var regionTerms = []string{"新疆", "西藏", "内蒙古", "海南", "黑龙江", "吉林", "辽宁", "青海", "甘肃", "宁夏"}
+
+// preferRegionFacts puts region-specific shipping facts in front when the
+// viewer asks whether their region is supported ("新疆可以吗").
+func (w *Worker) preferRegionFacts(ctx context.Context, session model.LiveRuntimeSession, question, current string) string {
+	regions := detectRegions(question)
+	if len(regions) == 0 {
+		return current
+	}
+	for _, term := range regions {
+		if strings.Contains(current, term) {
+			return current
+		}
+	}
+	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
+	if err != nil || plan.ID <= 0 {
+		return current
+	}
+	_, facts, err := w.interactionApprovedFacts(ctx, session, plan.ID)
+	if err != nil || strings.TrimSpace(facts) == "" {
+		return current
+	}
+	picked := make([]string, 0, 2)
+	for _, line := range strings.Split(facts, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		for _, term := range regions {
+			if strings.Contains(line, term) {
+				picked = append(picked, line)
+				break
+			}
+		}
+		if len(picked) >= 2 {
+			break
+		}
+	}
+	if len(picked) == 0 {
+		return current
+	}
+	if strings.TrimSpace(current) == "" {
+		return strings.Join(picked, "\n")
+	}
+	return strings.Join(picked, "\n") + "\n" + current
+}
+
+// detectRegions returns the delivery regions mentioned in the question.
+func detectRegions(question string) []string {
+	regions := make([]string, 0, 2)
+	for _, term := range regionTerms {
+		if strings.Contains(question, term) {
+			regions = append(regions, term)
+		}
+	}
+	return regions
 }
