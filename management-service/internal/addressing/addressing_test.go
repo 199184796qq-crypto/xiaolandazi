@@ -1,4 +1,4 @@
-package addressing
+﻿package addressing
 
 import (
 	"math/rand"
@@ -36,7 +36,7 @@ func TestCheckHardRules(t *testing.T) {
 		{"爱吃苹果", StatusSafe, "爱吃苹果"},
 		{"加V看福利", StatusDropped, ""},
 		{"微信abc123", StatusDropped, ""},
-		{"我是你爸爸", StatusDropped, ""},
+		{"我是你爸爸", StatusGrey, "我是你爸爸"},
 		{"叫我老板", StatusDropped, ""},
 		{"12345678", StatusDropped, ""},
 		{"小林12345678", StatusRewritten, "小林"},
@@ -47,8 +47,10 @@ func TestCheckHardRules(t *testing.T) {
 		{"超级爱吃苹果的人", StatusGrey, "超级爱吃苹果的人"},
 		{"Ann Lee", StatusSafe, "Ann Lee"},
 		// Real production names that exposed rule gaps on 2026-10-28.
+		{"妈妈", StatusGrey, "妈妈"},
+		{"爸爸", StatusGrey, "爸爸"},
+		{"老公", StatusGrey, "老公"},
 		{"二楠妈妈", StatusSafe, "二楠妈妈"},
-		{"妈妈", StatusDropped, ""},
 		{"用户4001612171583", StatusDropped, ""},
 		{"卟过如此ヤ", StatusRewritten, "卟过如此"},
 		{"雅迪电动车(丰收路专卖店)", StatusDropped, ""},

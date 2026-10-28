@@ -157,10 +157,11 @@ func (r Rules) Check(raw string) Decision {
 	if containsAny(name, r.HardBlock.InsultTerms) {
 		return Decision{Status: StatusDropped, Reason: "insult"}
 	}
-	// A name that contains a kinship term ("二楠妈妈") is still a person; only a
-	// name that IS the term ("妈妈") asks to be called that.
-	if r.HardBlock.isSemanticName(name) {
-		return Decision{Status: StatusDropped, Reason: "semantic_relation"}
+	// A name that contains a kinship term ("二楠妈妈") is still a person; a name
+	// that IS the term ("妈妈") or asks to be called one ("我是你爸爸") goes to
+	// semantic judgement instead of being dropped, because it may be legitimate.
+	if r.HardBlock.hasSemanticRisk(name) {
+		return Decision{Status: StatusGrey, Text: name, Reason: "semantic_relation"}
 	}
 	if containsAny(name, r.HardBlock.CommandTerms) {
 		return Decision{Status: StatusDropped, Reason: "command"}
@@ -262,12 +263,21 @@ func stripSymbols(name string) string {
 	return strings.TrimSpace(b.String())
 }
 
-// isSemanticName matches only a name that is exactly a kinship/relationship
-// term; "二楠妈妈" stays a person's name.
-func (h HardBlock) isSemanticName(name string) bool {
+// hasSemanticRisk matches a name that is exactly a kinship term, or one that
+// combines a kinship term with an address request ("我是你爸爸").
+func (h HardBlock) hasSemanticRisk(name string) bool {
 	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
 	for _, term := range h.SemanticTerms {
-		if term != "" && name == term {
+		if term == "" {
+			continue
+		}
+		if name == term {
+			return true
+		}
+		if strings.Contains(name, term) && containsAny(name, h.CommandTerms) {
 			return true
 		}
 	}
