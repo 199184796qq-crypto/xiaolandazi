@@ -2,6 +2,7 @@ package decisionexecutor
 
 import (
 	"encoding/json"
+	"sort"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,6 +64,9 @@ func insertSpeechPauses(text string) string {
 	if len(rules.AfterPhrases) == 0 && len(rules.BeforeTerms) == 0 {
 		return text
 	}
+	// 长词优先：先匹「绸都杨鸭子」再匹「杨鸭子」，避免在品牌中间插停顿。
+	beforeTerms := append([]string(nil), rules.BeforeTerms...)
+	sort.SliceStable(beforeTerms, func(i, j int) bool { return len([]rune(beforeTerms[i])) > len([]rune(beforeTerms[j])) })
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -84,7 +88,7 @@ func insertSpeechPauses(text string) string {
 				added++
 			}
 		}
-		for _, term := range rules.BeforeTerms {
+		for _, term := range beforeTerms {
 			if added >= limit || term == "" || !strings.Contains(trimmed, term) {
 				continue
 			}
