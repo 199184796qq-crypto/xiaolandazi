@@ -61,3 +61,34 @@ func cleanTerms(terms []string) []string {
 	}
 	return out
 }
+
+// GroupLabelsFrom derives collective addresses from the winning address terms,
+// so a room configured with 老乡/家人们 never hears the default 几位朋友.
+func GroupLabelsFrom(terms []string) []string {
+	labels := make([]string, 0, len(terms)*2)
+	seen := map[string]bool{}
+	add := func(label string) {
+		label = strings.TrimSpace(label)
+		if label == "" || seen[label] {
+			return
+		}
+		seen[label] = true
+		labels = append(labels, label)
+	}
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
+		}
+		if strings.HasSuffix(term, "们") {
+			add(term)
+			continue
+		}
+		add(term + "们")
+		add(term)
+	}
+	if len(labels) == 0 {
+		return append([]string(nil), DefaultGroupLabels...)
+	}
+	return labels
+}

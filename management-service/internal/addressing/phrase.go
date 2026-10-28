@@ -185,6 +185,20 @@ func ValidatePhrase(address string, in PhraseInput) error {
 	if in.Mode != "single" && !hasGroup {
 		return fmt.Errorf("多人称呼缺少集体称呼")
 	}
+	if in.Mode != "single" {
+		mentioned := 0
+		for _, person := range in.People {
+			for _, form := range person.Forms {
+				if form != "" && strings.Contains(address, form) {
+					mentioned++
+					break
+				}
+			}
+		}
+		if mentioned > 2 {
+			return fmt.Errorf("多人称呼点名超过 2 人")
+		}
+	}
 	for _, term := range in.Terms {
 		if term != "" && strings.Count(address, term) > 1 {
 			return fmt.Errorf("称谓词重复：%s", term)

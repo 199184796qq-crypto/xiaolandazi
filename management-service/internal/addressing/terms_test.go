@@ -1,6 +1,9 @@
 package addressing
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestTermFallbackChain(t *testing.T) {
 	cases := []struct {
@@ -29,5 +32,19 @@ func TestGroupLabelsFallBackToDefaults(t *testing.T) {
 	labels, from := AddressTermSources{}.ResolveGroupLabels()
 	if from != "default" || len(labels) == 0 {
 		t.Fatalf("labels=%v from=%s", labels, from)
+	}
+}
+
+func TestGroupLabelsFollowRoomTerms(t *testing.T) {
+	labels := GroupLabelsFrom([]string{"老乡", "家人们"})
+	joined := strings.Join(labels, ",")
+	if !strings.Contains(joined, "老乡们") || !strings.Contains(joined, "家人们") {
+		t.Fatalf("labels=%v", labels)
+	}
+	if strings.Contains(joined, "几位朋友") {
+		t.Fatalf("default label leaked: %v", labels)
+	}
+	if fallback := GroupLabelsFrom(nil); len(fallback) == 0 {
+		t.Fatal("missing fallback labels")
 	}
 }
