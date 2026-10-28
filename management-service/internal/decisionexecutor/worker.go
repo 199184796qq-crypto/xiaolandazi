@@ -693,95 +693,7 @@ func addressingModeForPlan(item decisionItem, candidate string, selectedNames []
 	return "NONE"
 }
 
-func (w *Worker) playableAddressingNames(roomID int64, raw []string, originals ...[]string) ([]string, float64) {
-	if w == nil || len(raw) == 0 {
-		return nil, 0
-	}
-	now := time.Now().UTC()
-	if w.now != nil {
-		now = w.now().UTC()
-	}
-	cleaned := make([]string, 0, len(raw))
-	identity := map[string]string{}
-	seen := make(map[string]struct{}, len(raw))
-	for i, rawName := range raw {
-		name, ok := normalizePlayableNickname(rawName)
-		if !ok {
-			continue
-		}
-		if _, exists := seen[name]; exists {
-			continue
-		}
-		seen[name] = struct{}{}
-		cleaned = append(cleaned, name)
-		identity[name] = name
-		if len(originals) > 0 && i < len(originals[0]) {
-			identity[name] = originals[0][i]
-		}
-	}
-	if len(cleaned) == 0 {
-		return nil, 0
-	}
 
-	w.addressMu.Lock()
-	defer w.addressMu.Unlock()
-	recent := w.recentNamed[roomID]
-	for name, usedAt := range recent {
-		if now.Sub(usedAt) >= addressingNameCooldown {
-			delete(recent, name)
-		}
-	}
-	result := make([]string, 0, len(cleaned))
-	suppressed := 0
-	for _, name := range cleaned {
-		if usedAt, exists := recent[identity[name]]; exists && now.Sub(usedAt) < addressingNameCooldown {
-			suppressed++
-			continue
-		}
-		result = append(result, name)
-	}
-	penalty := 0.0
-	if total := len(result) + suppressed; total > 0 {
-		penalty = float64(suppressed) / float64(total)
-	}
-	return result, penalty
-}
-
-func (w *Worker) recordUsedAddressingNames(roomID int64, names []string, finalText string, originals ...[]string) {
-	if w == nil || roomID <= 0 || len(names) == 0 {
-		return
-	}
-	finalText = strings.TrimSpace(finalText)
-	if finalText == "" {
-		return
-	}
-	now := time.Now().UTC()
-	if w.now != nil {
-		now = w.now().UTC()
-	}
-	used := make([]string, 0, len(names))
-	for i, rawName := range names {
-		name, ok := normalizePlayableNickname(rawName)
-		if !ok || !strings.Contains(finalText, name) {
-			continue
-		}
-		if len(originals) > 0 && i < len(originals[0]) {
-			name = originals[0][i]
-		}
-		used = append(used, name)
-	}
-	if len(used) == 0 {
-		return
-	}
-	w.addressMu.Lock()
-	if w.recentNamed[roomID] == nil {
-		w.recentNamed[roomID] = make(map[string]time.Time)
-	}
-	for _, name := range used {
-		w.recentNamed[roomID][name] = now
-	}
-	w.addressMu.Unlock()
-}
 
 func normalizePlayableNickname(raw string) (string, bool) {
 	value := strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
@@ -812,93 +724,8 @@ func normalizePlayableNickname(raw string) (string, bool) {
 	return value, true
 }
 
-func addressingPlanGuidance(plan speechmission.AddressingPlan) string {
-	selected := strings.Join(plan.SelectedNames, "、")
-	groupLabel := strings.TrimSpace(plan.GroupLabel)
-	base := ""
-	switch strings.ToUpper(strings.TrimSpace(plan.Mode)) {
-	case "NONE":
-		base = "称呼计划：本轮无可用昵称，用主播主力称呼（如“哥姐”“叔叔阿姨”“兄弟姐妹”“老乡”“朋友”）自然打一次招呼，不要裸奔（不要直接说内容而不带任何称呼）。"
-	case "GROUP":
-		if groupLabel != "" {
-			if plan.Optional {
-				base = "称呼计划：本轮面向群体；自然使用一次群体称呼“" + groupLabel + "”，但不要逐个报名字，也不要为了执行策略重复称呼。"
-			} else {
-				base = "称呼计划：本轮需要自然使用一次群体称呼“" + groupLabel + "”；只出现一次，不要逐个报名字，不要重复称呼。"
-			}
-		} else {
-			base = "称呼计划：本轮面向群体；用主播主力称呼（如“哥姐”“叔叔阿姨”“兄弟姐妹”“老乡”“朋友”）自然打一次招呼，不逐个点名，不要裸奔。"
-		}
-	case "SAMPLE":
-		if selected != "" {
-			if plan.Optional {
-				base = "称呼计划：本轮允许从可播昵称里抽样称呼“" + selected + "”，最多 " + strconv.Itoa(maxAddressingInt(plan.MaxNamedCount, 1)) + " 个；不得扩写或虚构其他昵称。"
-			} else {
-				base = "称呼计划：本轮需要自然点名“" + selected + "”中的 2 个，最多 " + strconv.Itoa(maxAddressingInt(plan.MaxNamedCount, 1)) + " 个；不得扩写或虚构其他昵称。"
-			}
-		} else {
-			base = "称呼计划：本轮允许抽样称呼可播昵称；不得虚构昵称。"
-		}
-	case "MIXED":
-		if selected != "" && groupLabel != "" {
-			if plan.Optional {
-				base = "称呼计划：本轮可先自然称呼“" + selected + "”，再用“" + groupLabel + "”带到其他人；不得逐个报完整名单。"
-			} else {
-				base = "称呼计划：本轮需要自然点名“" + selected + "”中的 2 个，可再用“" + groupLabel + "”带到其他人；不得逐个报完整名单。"
-			}
-		} else {
-			base = "称呼计划：本轮允许点少量可播昵称后自然带到其他观众；不得逐个报完整名单，也不得虚构昵称。"
-		}
-	default:
-		if selected != "" {
-			if plan.Optional {
-				base = "称呼计划：本轮只面向当前事件对应的单个观众；语境自然时可称呼“" + selected + "”最多 1 次，不得重复点名或虚构昵称。"
-			} else {
-				base = "称呼计划：本轮需要自然称呼观众“" + selected + "”1 次；不得重复点名或虚构昵称。"
-			}
-		} else if groupLabel != "" {
-			if plan.Optional {
-				base = "称呼计划：本轮只面向当前事件对应的单个观众；语境自然时可使用称呼“" + groupLabel + "”，不知道昵称时用泛称或直接省略。"
-			} else {
-				base = "称呼计划：本轮需要自然使用一次观众称谓“" + groupLabel + "”；它只用于叫对方，绝不能作为主播自称。"
-			}
-		} else {
-			base = "称呼计划：本轮只面向当前事件对应的单个观众；不知道昵称时直接省略称呼，不得虚构昵称。"
-		}
-	}
-	if len(plan.PreferredTerms) > 0 {
-		base += " 用户常用的观众称谓：" + strings.Join(plan.PreferredTerms, "、") + "；这些词只能用于称呼观众/对方，是二人称呼语，不代表主播身份，绝不能用于主播自称、自我介绍或说成“我是/我叫/作为某称谓”。仅在语境自然时使用，不要求每轮出现。"
-	}
-	if len(plan.BlockedTerms) > 0 {
-		base += " 用户明确不喜欢这些称呼：" + strings.Join(plan.BlockedTerms, "、") + "；本轮及最终正文禁止使用。"
-	}
-	if strings.EqualFold(plan.Preference, "less") {
-		base += " 用户偏好少点名，能不点昵称时优先不用昵称。"
-	} else if strings.EqualFold(plan.Preference, "more") {
-		base += " 用户偏好多点名；系统会按较高目标频率触发，命中的这一轮必须自然使用一次称呼，但不能生硬重复。"
-	}
-	// SelectedNames retain original event identities; generated speech may use
-	// a safe short name or neutral address under the nickname prompt policy.
-	base += " 原昵称只用于识别；本次可采用安全全称、自然简称或代称，不要求逐字读原昵称。带昵称打招呼时句式要自然变化（如“这位朋友XX”“XX你说”“XX和XX”等），不要每次都机械套同一个称呼模板。"
-	// 性别未知的硬规则（用户 2026-10-20 明确）：可以给昵称加称谓，但不知道对方男女时
-	// 禁止单用「哥」或「姐」这类性别化称谓，改用「哥姐」「老乡」「老板」「朋友」「家人」等中性词；
-	// 只有昵称或上下文明确体现性别时，才可用「哥」或「姐」。
-	base += " 不确定对方性别时，禁止单用“哥”“姐”“叔”“姨”，改用“哥姐”“哥哥姐姐”“叔叔阿姨”“兄弟姐妹”“老乡”“老板”“朋友”“家人”等中性或男女成对称谓；只有昵称本身已明确含性别（如“王哥”“李姐”“大哥”“妹子”）时才可沿用对应性别称谓。"
-	return base
-}
 
-func maxAddressingInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
 
-func addressingGuidance(mode, candidate string) string {
-	return addressingPlanGuidance(speechmission.AddressingPlan{
-		Mode: mode, Candidate: strings.TrimSpace(candidate), GroupLabel: strings.TrimSpace(candidate), Optional: true,
-	})
-}
 
 func (w *Worker) applyResumeStrategyStage(
 	ctx context.Context,
@@ -1816,9 +1643,6 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 	})
 	w.transitionMission(item, speechmission.StateDispatched, "core_dispatched", dispatchResult.traceNote())
 	w.archiveSessionAudio(ctx, session, "reply:"+item.ID, "interaction", text, audioURL, dispatchResult.Task.DurationMS)
-	if mission, ok := w.missionSnapshot(item); ok {
-		w.recordUsedAddressingNames(session.RoomID, mission.Addressing.SelectedNames, text, mission.Addressing.OriginalSelectedNames)
-	}
 	sourceType := "interrupt_answer"
 	if action == "quick" {
 		sourceType = "interrupt_quick"

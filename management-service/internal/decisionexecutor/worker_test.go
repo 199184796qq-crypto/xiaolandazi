@@ -162,18 +162,6 @@ func containsString(values []string, target string) bool {
 }
 
 
-func TestAddressingPreferredTermIsAudienceOnlyGuidance(t *testing.T) {
-	guidance := addressingPlanGuidance(speechmission.AddressingPlan{
-		Mode:           "SINGLE",
-		PreferredTerms: []string{"四川老妹"},
-		Optional:       true,
-	})
-	for _, expected := range []string{"称呼观众/对方", "不代表主播身份", "主播自称"} {
-		if !strings.Contains(guidance, expected) {
-			t.Fatalf("addressing guidance missing %q: %s", expected, guidance)
-		}
-	}
-}
 
 func TestHostStateDeliveryGuidanceConvertsSymptomsToBehavior(t *testing.T) {
 	guidance := hostStateDeliveryGuidance("今天有点不舒服，有点咳嗽")
@@ -189,26 +177,6 @@ func TestHostStateDeliveryGuidanceConvertsSymptomsToBehavior(t *testing.T) {
 	}
 }
 
-func TestRecentAddressingSuppressionOnlyRecordsActuallySpokenNames(t *testing.T) {
-	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
-	now := time.Date(2026, 9, 29, 18, 40, 0, 0, time.UTC)
-	worker.now = func() time.Time { return now }
-
-	worker.recordUsedAddressingNames(11, []string{"小陈", "阿芳"}, "小陈，欢迎你，咱们继续看今天这个产品。")
-	names, penalty := worker.playableAddressingNames(11, []string{"小陈", "阿芳"})
-	if len(names) != 1 || names[0] != "阿芳" {
-		t.Fatalf("recent-name suppression=%v want [阿芳]", names)
-	}
-	if penalty <= 0 {
-		t.Fatalf("expected positive recent-name penalty, got %v", penalty)
-	}
-
-	now = now.Add(addressingNameCooldown + time.Second)
-	names, penalty = worker.playableAddressingNames(11, []string{"小陈", "阿芳"})
-	if len(names) != 2 || penalty != 0 {
-		t.Fatalf("cooldown should expire, names=%v penalty=%v", names, penalty)
-	}
-}
 
 func TestBuildHumanStyleMissionPlanSeparatesTraitStateReaction(t *testing.T) {
 	plan := buildHumanStyleMissionPlan(
