@@ -398,9 +398,15 @@ func (w *Worker) phraseAddress(ctx context.Context, s model.LiveRuntimeSession, 
 	case 1:
 		mode = "single"
 	}
-	scene := "greeting"
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(item.MissionKind)), "welcome") {
-		scene = "answer"
+	kind := strings.ToLower(strings.TrimSpace(item.MissionKind))
+	scene := "answer"
+	switch {
+	case strings.HasPrefix(kind, "welcome"):
+		scene = "greeting"
+	case kind == "reply_like" || kind == "reply_follow" || kind == "conversion_signal":
+		if len(forms) > 1 {
+			scene = "thanks"
+		}
 	}
 	in := addressing.PhraseInput{Mode: mode, Scene: scene, People: forms, Terms: resolvedTerms, GroupLabels: groupLabels}
 	system, user := addressing.PhrasePrompt(in, nil)
