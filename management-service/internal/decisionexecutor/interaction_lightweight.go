@@ -345,6 +345,7 @@ func (w *Worker) resolveInteractionAddressing(ctx context.Context, session model
 		item.resolvedAddress = phrase
 		item.addressingGuidance = phrase
 		item.resolvedAddressingPlan = plan
+		w.updateMission(item, func(m *speechmission.Mission) { m.Addressing = plan })
 		return phrase, phrase
 	}
 
@@ -372,13 +373,14 @@ func (w *Worker) resolveInteractionAddressing(ctx context.Context, session model
 	item.resolvedAddress = address
 	item.addressingGuidance = guidance
 	item.resolvedAddressingPlan = plan
+	w.updateMission(item, func(m *speechmission.Mission) { m.Addressing = plan })
 	return address, guidance
 }
 
 // frozenAddressingPlan projects the frozen phrase back into the legacy plan
 // shape so cooldown and diagnostics keep working without a second selection.
 func frozenAddressingPlan(item decisionItem) speechmission.AddressingPlan {
-	plan := speechmission.AddressingPlan{GroupLabel: "几位朋友"}
+	plan := speechmission.AddressingPlan{Mode: "GROUP", GroupLabel: "朋友", Candidate: "朋友", Optional: true, MaxNamedCount: 3}
 	for i, name := range item.promptNicknames() {
 		if name == "" || name == "这位朋友" {
 			continue
@@ -388,8 +390,15 @@ func frozenAddressingPlan(item decisionItem) speechmission.AddressingPlan {
 		}
 		plan.SelectedNames = append(plan.SelectedNames, name)
 	}
-	if len(plan.SelectedNames) == 1 {
+	switch len(plan.SelectedNames) {
+	case 0:
+	case 1:
+		plan.Mode = "SINGLE"
+		plan.Candidate = plan.SelectedNames[0]
 		plan.GroupLabel = ""
+		plan.Optional = false
+	default:
+		plan.Mode = "MIXED"
 	}
 	return plan
 }

@@ -235,13 +235,12 @@ func (w *Worker) strategyStageRegistry() map[string]strategyStageFunc {
 		"interrupt":   w.applyInterruptStrategyStage,
 		"resume":      w.applyResumeStrategyStage,
 		"opening":     w.applyOpeningStrategyStage,
-		"addressing":  w.applyAddressingStrategyStage,
 		"humanize":    w.applyHumanizeStrategyStage,
 	}
 }
 
 func normalizeStrategyStageOrder(raw string, registry map[string]strategyStageFunc) []string {
-	defaultOrder := []string{"interaction", "interrupt", "resume", "opening", "addressing", "humanize"}
+	defaultOrder := []string{"interaction", "interrupt", "resume", "opening", "humanize"}
 	seen := make(map[string]struct{}, len(registry))
 	result := make([]string, 0, len(registry))
 	raw = strings.NewReplacer("，", ",", "；", ",", ";", ",", "|", ",").Replace(raw)
