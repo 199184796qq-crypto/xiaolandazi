@@ -11,6 +11,9 @@ const strategy = await readFile(new URL('../src/views/LiveStrategyView.vue', imp
 const ast = ts.createSourceFile('room.ts', room.slice(room.indexOf('<script setup lang="ts">') + 24, room.indexOf('</script>')), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
 const handler = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'changeLiveSpeechRate')?.getText(ast)
 assert.ok(handler)
+const rateOptions = ast.statements.find(n => ts.isVariableStatement(n) && n.declarationList.declarations.some(d => d.name.getText(ast) === 'liveSpeechRateOptions'))?.getText(ast)
+assert.ok(rateOptions, 'Use the actual live page rate options, including its imports')
+const rateImports = ast.statements.filter(n => ts.isImportDeclaration(n) && n.moduleSpecifier.text === '../planVoiceRate').map(n => n.getText(ast).replace('../planVoiceRate', '/src/planVoiceRate.ts')).join('\n')
 const roomControl = room.slice(room.indexOf('<label v-if="canConfigureRoomStrategy" class="speech-rate-control">'), room.indexOf('</label>', room.indexOf('<label v-if="canConfigureRoomStrategy" class="speech-rate-control">')) + 8)
 const strategyControl = strategy.match(/<PlanVoiceRateControl[\s\S]*?\/>/)[0]
 const roomRetry = room.match(/<button v-if="canConfigureRoomStrategy && liveSpeechRateError[\s\S]*?<\/button>/)[0]
@@ -18,7 +21,8 @@ const roomStyles = room.match(/^\.speech-rate-.+$/gm).join('\n')
 assert.ok(strategy.includes('rate: planVoiceRate.saved.value'))
 const roomFixture = `<script setup lang="ts">
 import {usePlanVoiceRate} from '/src/usePlanVoiceRate.ts'
-import {planVoiceRateOptions as liveSpeechRateOptions} from '/src/planVoiceRate.ts'
+${rateImports}
+${rateOptions}
 const canConfigureRoomStrategy=true
 const planVoiceRate=usePlanVoiceRate(()=>window.fixture.scope)
 const liveSpeechRate=planVoiceRate.rate,liveSpeechRateBusy=planVoiceRate.busy,liveSpeechRateError=planVoiceRate.error

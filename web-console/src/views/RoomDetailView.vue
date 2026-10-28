@@ -6,6 +6,7 @@ import { isNewLiveRuntimeFailure, liveRuntimeFailureMessage } from '../liveRunti
 import { advanceStartupStage, startupMilestones, type StartupStage } from '../liveStartupProgress'
 import { useRoomSpeechIdentity } from '../useRoomSpeechIdentity'
 import { usePlanVoiceRate } from '../usePlanVoiceRate'
+import { planVoiceRateOptions } from '../planVoiceRate'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
@@ -432,7 +433,7 @@ const generatedSpeechHistory = ref<GeneratedSpeechHistoryPage>({
   runtime_session_id: 0,
 })
 let speechHistorySearchTimer: number | undefined
-const liveSpeechRateOptions = [0.8, 0.9, 1, 1.1, 1.2] as const
+const liveSpeechRateOptions = planVoiceRateOptions
 const speechHistoryTotalPages = computed(() =>
   Math.max(1, Math.ceil(generatedSpeechHistory.value.total / Math.max(1, generatedSpeechHistory.value.page_size))),
 )
