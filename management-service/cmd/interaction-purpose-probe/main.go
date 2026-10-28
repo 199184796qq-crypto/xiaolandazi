@@ -135,6 +135,7 @@ func main() {
 	userFile := flag.String("user-file", "", "send this user prompt verbatim to the review model")
 	repeats := flag.Int("repeats", 1, "how many times to repeat the verbatim call")
 	boundaryClass := flag.String("class", "", "generate only a boundary line for this class (no_dimension/complaint/location/identity)")
+	maxTokens := flag.Int("max-tokens", 200, "output token cap for the verbatim system/user file mode")
 	flag.Parse()
 	if *tenant <= 0 || *room <= 0 || *text == "" {
 		fmt.Println("usage: -tenant N -room N -text 观众原话")
@@ -212,7 +213,7 @@ func main() {
 				Stage:          "interaction_single_direct_answer",
 				Model:          profile.Model,
 				Messages:       []agentgateway.Message{{Role: "system", Content: string(system)}, {Role: "user", Content: string(user)}},
-				MaxTokens:      200,
+				MaxTokens:      *maxTokens,
 				ResponseFormat: agentgateway.ResponseText,
 			})
 			if callErr != nil {
