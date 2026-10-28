@@ -23,7 +23,12 @@ func Build(text string) (string, []Fact) {
 	lines := make([]string, 0, len(source)+4)
 	for _, fact := range source {
 		prefix, body := splitPrefix(fact.Text)
-		parts := splitTopLevel(body)
+		if !splittablePrefix(prefix) {
+			lines = append(lines, fact.Text)
+			continue
+		}
+		core, _ := splitCoreAndMetadata(body)
+		parts := splitTopLevel(core)
 		if len(parts) <= 1 {
 			lines = append(lines, fact.Text)
 			continue
@@ -32,11 +37,11 @@ func Build(text string) (string, []Fact) {
 			if part == "" {
 				continue
 			}
-			if prefix == "" {
-				lines = append(lines, part)
-			} else {
-				lines = append(lines, prefix+" "+part)
+			line := part
+			if prefix != "" {
+				line = prefix + " " + line
 			}
+			lines = append(lines, line)
 		}
 	}
 	rendered := strings.Join(lines, "\n")
@@ -60,6 +65,13 @@ func splitPrefix(text string) (string, string) {
 	return text[:end+1], strings.TrimSpace(text[end+1:])
 }
 
+// Product cards and benefit cards are already one record with many fields;
+// splitting their semicolons would turn one product into a dozen "facts".
+// Only public policy facts are safe to split by attribute.
+func splittablePrefix(prefix string) bool {
+	return strings.Contains(prefix, "用户指定公共") || strings.Contains(prefix, "公共")
+}
+
 func splitTopLevel(body string) []string {
 	body = strings.ReplaceAll(body, "；", ";")
 	raw := strings.Split(body, ";")
@@ -70,4 +82,22 @@ func splitTopLevel(body string) []string {
 		}
 	}
 	return out
+}
+
+// splitCoreAndMetadata separates the approved fact body from its rewrite /
+// forbidden-expression annotations. Semicolons inside those annotations must
+// never create new facts.
+func splitCoreAndMetadata(body string) (string, string) {
+	body = strings.TrimSpace(body)
+	for _, marker := range []string{"；安全改写=", "安全改写=", "；禁说=", "禁说=", "【必说】", "【可说】", "【不提】", "【改写】"} {
+		if index := strings.Index(body, marker); index >= 0 {
+			core := strings.TrimSpace(body[:index])
+			tail := strings.TrimSpace(body[index:])
+			if tail != "" && !strings.HasPrefix(tail, "；") && !strings.HasPrefix(tail, "【") {
+				tail = "；" + tail
+			}
+			return core, tail
+		}
+	}
+	return body, ""
 }
