@@ -738,6 +738,10 @@ func (s *Server) liveAgentPlanPublishRoomEmotion(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	if err := s.validatePlanVoiceIdentity(r.Context(), tenantID, &inputVersion.VoiceIdentity); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	created, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, published.PlanID, actor.UserID, inputVersion)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "保存新的实时情感版本失败")
@@ -921,4 +925,58 @@ func (s *Server) liveAgentPlanPublishedVersionForRoom(w http.ResponseWriter, r *
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"version": item})
+}
+
+// validatePlanVoiceIdentity refuses to snapshot a voice that no longer exists
+// or is disabled: such a plan would fail at live start with 「声音已停用」.
+func (s *Server) validatePlanVoiceIdentity(ctx context.Context, tenantID int64, identity *model.LiveAgentVoiceIdentity) error {
+	if identity == nil {
+		return nil
+	}
+	if identity.BindingID > 0 {
+		binding, err := s.store.GetVoiceModelBinding(ctx, tenantID, identity.BindingID)
+		if err != nil || binding.Status != "ready" {
+			// 旧绑定被删除或停用：优先按 voice_id / profile 找回可用的新绑定，
+			// 避免用户切了新声音却因为旧 ID 存不进方案。
+			if recovered, ok := s.recoverPlanVoiceBinding(ctx, tenantID, *identity); ok {
+				binding = recovered
+			} else if err != nil {
+				return fmt.Errorf("该声音已失效，请重新选择声音后再保存")
+			} else {
+				return fmt.Errorf("该声音已停用，请重新选择声音后再保存")
+			}
+		}
+		identity.BindingID = binding.ID
+		identity.VoiceID = binding.VoiceID
+		identity.ProfileID = binding.ProfileID
+		identity.Model = binding.Model
+		identity.Provider = binding.Provider
+		return nil
+	}
+	if strings.TrimSpace(identity.VoiceID) != "" {
+		binding, err := s.store.FindReadyVoiceBindingByVoiceID(ctx, tenantID, identity.VoiceID)
+		if err != nil {
+			return fmt.Errorf("该声音已失效，请重新选择声音后再保存")
+		}
+		identity.BindingID = binding.ID
+		identity.ProfileID = binding.ProfileID
+		identity.Model = binding.Model
+		identity.Provider = binding.Provider
+	}
+	return nil
+}
+
+// recoverPlanVoiceBinding finds a ready binding for the same voice or profile.
+func (s *Server) recoverPlanVoiceBinding(ctx context.Context, tenantID int64, identity model.LiveAgentVoiceIdentity) (model.VoiceModelBinding, bool) {
+	if strings.TrimSpace(identity.VoiceID) != "" {
+		if binding, err := s.store.FindReadyVoiceBindingByVoiceID(ctx, tenantID, identity.VoiceID); err == nil {
+			return binding, true
+		}
+	}
+	if identity.ProfileID > 0 {
+		if binding, err := s.store.FindReadyVoiceBindingByProfile(ctx, tenantID, identity.ProfileID); err == nil {
+			return binding, true
+		}
+	}
+	return model.VoiceModelBinding{}, false
 }

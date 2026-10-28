@@ -500,3 +500,27 @@ func defaultJSONMap(value map[string]any) map[string]any {
 func IsNotFound(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
 }
+
+// FindReadyVoiceBindingByVoiceID finds a usable binding for a voice id.
+func (s *Store) FindReadyVoiceBindingByVoiceID(ctx context.Context, tenantID int64, voiceID string) (model.VoiceModelBinding, error) {
+	return scanVoiceModelBinding(s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, profile_id, sample_asset_id, provider, model, voice_id,
+		       rate, status, CAST(config_json AS CHAR), created_by_user_id, created_at, updated_at
+		FROM voice_model_bindings
+		WHERE tenant_id=? AND voice_id=? AND status='ready'
+		ORDER BY id DESC
+		LIMIT 1
+	`, tenantID, voiceID))
+}
+
+// FindReadyVoiceBindingByProfile returns the newest ready binding for a profile.
+func (s *Store) FindReadyVoiceBindingByProfile(ctx context.Context, tenantID, profileID int64) (model.VoiceModelBinding, error) {
+	return scanVoiceModelBinding(s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, profile_id, sample_asset_id, provider, model, voice_id,
+		       rate, status, CAST(config_json AS CHAR), created_by_user_id, created_at, updated_at
+		FROM voice_model_bindings
+		WHERE tenant_id=? AND profile_id=? AND status='ready'
+		ORDER BY id DESC
+		LIMIT 1
+	`, tenantID, profileID))
+}
