@@ -467,8 +467,14 @@ func (w *Worker) generateWelcomeGreeting(ctx context.Context, session model.Live
 			"\n" + voiceCard
 	}
 
-	system += "\n\n按四层约束生成：" +
-		"\n【必说】开头必须带一个合规称呼，不得裸奔；欢迎语气自然热情。" + addressingGuidance +
+	noAudience := len(item.Nicknames) == 0 && item.MissionEventCount == 0
+	system += "\n\n按四层约束生成："
+	if noAudience {
+		system += "\n【必说】本轮没有任何观众进入或互动：不要称呼任何人，不要出现「来啦」「欢迎」「这位朋友」「某位朋友」，直接讲品或抛一个问题暖场。"
+	} else {
+		system += "\n【必说】开头必须带一个合规称呼，不得裸奔；欢迎语气自然热情。" + addressingGuidance
+	}
+	system +=
 		"\n【不提】" + notMention +
 		"\n【改写】" + rewrite +
 		"\n\n最终答案禁止输出任何内部标题、策略名称、概率、系统说明、字段名或分析过程。只输出主播真正会说的那一句。"

@@ -338,6 +338,12 @@ func (w *Worker) resolveInteractionAddressing(ctx context.Context, session model
 	}
 	// ① 昵称简称规划（填 PromptNicknames/PromptShortNames），带缓存。
 	w.planNicknameAddresses(ctx, session, item)
+	// 暖场/批量欢迎在 0 观众时不能称呼任何人，否则会凭空叫「这位朋友」。
+	if len(item.Nicknames) == 0 && item.MissionEventCount == 0 {
+		item.resolvedAddress = ""
+		item.addressingGuidance = "本轮没有任何观众进入或互动：不要称呼任何人，不要出现来啦、欢迎、这位朋友。"
+		return "", item.addressingGuidance
+	}
 
 	// 新链路：称呼话术已经由程序选人 + 模型串句生成，直接冻结为唯一计划，
 	// 不再执行旧的 buildAddressingPlan 二次选择（否则点名频率会被覆盖）。

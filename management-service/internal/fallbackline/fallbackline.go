@@ -61,6 +61,7 @@ func Prompt(req Request) (string, string, string) {
 	b.WriteString("- 不要解释规则、系统、资料、页面，不要说“以实际为准”；\n")
 	b.WriteString("- 不要编造名字、身份、数字、价格、时效、承诺；\n")
 	b.WriteString("- 不要重复最近说过的类似说法。\n")
+	b.WriteString("- 不要复述观众原话，也不要以「个/的/了/是」这类残句开头。\n")
 	if req.Class == "identity" {
 		b.WriteString("- 观众在问主播的名字，主播不公开名字；可以让他喊“主播”，但绝对不能给自己起名字。\n")
 	}
@@ -234,6 +235,9 @@ func Pick(req Request, candidates []string) (string, error) {
 	best, bestScore := "", -1.0
 	for _, candidate := range Evaluate(req, candidates) {
 		if !candidate.OK {
+			continue
+		}
+		if looksLikeQuestionEcho(candidate.Text, req.Question) {
 			continue
 		}
 		if candidate.Score > bestScore {
@@ -417,3 +421,26 @@ func ValidateHumanized(original, polished string) error {
 
 // Similar reports how alike two spoken lines are, for de-duplicating welcome parts.
 func Similar(a, b string) float64 { return similarity(a, b) }
+
+// looksLikeQuestionEcho rejects lines that quote a fragment of the viewer's
+// question instead of answering it ("个107的，它包含有虾滑啊…").
+func looksLikeQuestionEcho(text, question string) bool {
+	text = strings.TrimSpace(text)
+	question = strings.TrimSpace(question)
+	if text == "" || question == "" {
+		return false
+	}
+	runes := []rune(text)
+	if len(runes) < 2 {
+		return false
+	}
+	switch runes[0] {
+	case '个', '的', '了', '是', '和', '就', '都', '还', '也':
+		return true
+	}
+	prefixLen := 4
+	if len(runes) < prefixLen {
+		prefixLen = len(runes)
+	}
+	return strings.Contains(question, string(runes[:prefixLen]))
+}

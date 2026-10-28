@@ -287,10 +287,37 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		}
 		text = strings.TrimRight(text, "。！？!?；; ") + "。" + line
 	}
+	if answerStartsAsQuestionFragment(text, question) {
+		// 复述了观众原话的残片（如「个107的」），改用边界句，避免播半句。
+		text = ""
+	}
+	if strings.TrimSpace(text) == "" {
+		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
+	}
 	if !strings.HasPrefix(text, address) {
 		text = address + "，" + text
 	}
 	return text
+}
+
+// answerStartsAsQuestionFragment detects an answer opening that is a slice of
+// the viewer's own question instead of a real answer.
+func answerStartsAsQuestionFragment(answer, question string) bool {
+	answer = strings.TrimSpace(answer)
+	question = strings.TrimSpace(question)
+	if answer == "" || question == "" {
+		return false
+	}
+	runes := []rune(answer)
+	switch runes[0] {
+	case '个', '的', '了', '和', '就', '都', '还', '也':
+		return true
+	}
+	if len(runes) < 3 {
+		return false
+	}
+	prefix := string(runes[:3])
+	return strings.Contains(question, prefix) && !strings.ContainsAny(string(runes[0]), "好这那我你他她它咱")
 }
 
 var awkwardAnswerLeadPhrases = []string{

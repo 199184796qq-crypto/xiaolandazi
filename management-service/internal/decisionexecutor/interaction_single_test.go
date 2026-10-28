@@ -190,3 +190,13 @@ func TestDispatchSingleInteraction(t *testing.T) {
 		})
 	}
 }
+
+func TestAnswerStartsAsQuestionFragment(t *testing.T) {
+	q := "想问主播，我订了一个107的，它包含有虾滑吗？"
+	if !answerStartsAsQuestionFragment("个107的，它包含有虾滑啊", q) {
+		t.Fatal("fragment should be detected")
+	}
+	if answerStartsAsQuestionFragment("整只有900g和960g两种规格", q) {
+		t.Fatal("normal answer must pass")
+	}
+}
