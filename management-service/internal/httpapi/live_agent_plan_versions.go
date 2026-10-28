@@ -400,19 +400,20 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	var safety model.LiveDerivedSafetyAsset
+	var safetyErr error
 	if isRealtimeScheme(input.GenerationContext) {
 		// 【事实驱动新链路】不再固定「内容池文案 + 角度钩子」中间层，改为：
 		// 正式事实包(derived_safety) + 卖点轮盘×角度(含 tier) + 商品讲解范围(ProductFocus)。
 		// 开播时 createLiveAnchorRun 走 ProductFocus 分支，正文用「卖点×角度 + 侧面筛事实」。
 		reportAnchorAnalysis(r.Context(), 30, "正在核对事实依据与商品讲解范围")
-		safety, err = s.prepareDerivedSafety(r.Context(), tenantID, planID, actor.UserID)
-		if err != nil {
-			writeError(w, http.StatusConflict, err.Error())
+		safety, safetyErr = s.prepareDerivedSafety(r.Context(), tenantID, planID, actor.UserID)
+		if safetyErr != nil {
+			writeError(w, http.StatusConflict, safetyErr.Error())
 			return
 		}
 		input.GenerationContext["derived_safety"] = derivedSafetyRef(safety)
-		if err = s.captureRealtimeProductFocus(r.Context(), tenantID, planID, &input, safety); err != nil {
-			writeError(w, http.StatusConflict, err.Error())
+		if captureErr := s.captureRealtimeProductFocus(r.Context(), tenantID, planID, &input, safety); captureErr != nil {
+			writeError(w, http.StatusConflict, captureErr.Error())
 			return
 		}
 	} else {
@@ -423,9 +424,9 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		// content-pool SafetyID here: facts may have changed since that pool was
 		// saved, and the published version must carry a fresh fact snapshot.
 		reportAnchorAnalysis(r.Context(), 30, "正在核对事实依据")
-		safety, err = s.prepareDerivedSafety(r.Context(), tenantID, planID, actor.UserID)
-		if err != nil {
-			writeError(w, http.StatusConflict, err.Error())
+		safety, safetyErr = s.prepareDerivedSafety(r.Context(), tenantID, planID, actor.UserID)
+		if safetyErr != nil {
+			writeError(w, http.StatusConflict, safetyErr.Error())
 			return
 		}
 		input.GenerationContext["derived_safety"] = derivedSafetyRef(safety)

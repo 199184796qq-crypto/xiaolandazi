@@ -444,7 +444,6 @@ func openingIntentForMission(item decisionItem) (string, string, string) {
 	}
 }
 
-
 func addressingModeForMission(item decisionItem, candidate string) string {
 	if strings.TrimSpace(candidate) == "" {
 		return "NONE"
@@ -495,8 +494,6 @@ func choosePreferredAddressingTerm(preferredTerms, blockedTerms []string, seed s
 	sum := sha256.Sum256([]byte(seed))
 	return candidates[int(binary.BigEndian.Uint32(sum[:4])%uint32(len(candidates)))]
 }
-
-
 
 // anchorStyleAddressTerms 从主播风格评分基准解析主力/辅助/候选称呼。
 // 每个直播间的主播风格不同，主力称呼也不同，不能写死。
@@ -556,7 +553,6 @@ func (w *Worker) fetchAnchorAddressTerms(ctx context.Context, session model.Live
 	}
 	return anchorStyleAddressTerms(style.Profile)
 }
-
 
 func (w *Worker) recentGreetingPhrases(roomID int64) []string {
 	if w == nil {
@@ -696,8 +692,6 @@ func addressingModeForPlan(item decisionItem, candidate string, selectedNames []
 	return "NONE"
 }
 
-
-
 func normalizePlayableNickname(raw string) (string, bool) {
 	value := strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
 	runes := []rune(value)
@@ -726,9 +720,6 @@ func normalizePlayableNickname(raw string) (string, bool) {
 	}
 	return value, true
 }
-
-
-
 
 func (w *Worker) applyResumeStrategyStage(
 	ctx context.Context,
