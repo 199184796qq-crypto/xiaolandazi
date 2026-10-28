@@ -1538,14 +1538,32 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	})
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, 35*time.Second)
 	defer ttsCancel()
+	ttsText := text
+	ssmlUsed := false
+	if strings.TrimSpace(item.PromptAddressPhrase) != "" && ttsgateway.SupportsSSML(ttsModel) {
+		if marked, ok := addressSSML(text, item.PromptAddressPhrase, "200ms"); ok {
+			ttsText = marked
+			ssmlUsed = true
+		}
+	}
 	audio, err := w.synthesizeInteractionAudio(ttsCtx, item, ttsgateway.SynthesizeRequest{
 		Provider:    voiceProvider(voice),
 		Model:       ttsModel,
 		VoiceID:     voice.VoiceID,
-		Text:        text,
+		Text:        ttsText,
 		Rate:        voiceRate(voice),
 		Instruction: ttsInstruction,
 	})
+	if err != nil && ssmlUsed {
+		audio, err = w.synthesizeInteractionAudio(ttsCtx, item, ttsgateway.SynthesizeRequest{
+			Provider:    voiceProvider(voice),
+			Model:       ttsModel,
+			VoiceID:     voice.VoiceID,
+			Text:        text,
+			Rate:        voiceRate(voice),
+			Instruction: ttsInstruction,
+		})
+	}
 	if err != nil {
 		err = fmt.Errorf("TTS生成失败: %w", err)
 		w.transitionMission(item, speechmission.StateFailed, "tts_failed", err.Error())

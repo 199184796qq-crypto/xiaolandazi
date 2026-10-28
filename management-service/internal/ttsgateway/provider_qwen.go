@@ -87,6 +87,9 @@ func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequ
 		endpoint = p.ttsBaseURL + "/services/aigc/multimodal-generation/generation"
 	}
 	input := payload["input"].(map[string]any)
+	if strings.Contains(request.Text, "<speak") && SupportsSSML(request.Model) {
+		input["enable_ssml"] = true
+	}
 	if instruction := strings.TrimSpace(request.Instruction); instruction != "" && qwenSupportsInstructionControl(request.Model) {
 		if qwenUsesMultimodalGeneration(request.Model) {
 			input["instructions"] = instruction

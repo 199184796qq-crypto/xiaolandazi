@@ -30,3 +30,17 @@ func TestInsertSpeechPausesSkipsParticles(t *testing.T) {
 		t.Fatalf("particle should not be split: %q", got)
 	}
 }
+
+func TestAddressSSMLInsertsBreak(t *testing.T) {
+	got, ok := addressSSML("小斌老乡来啦", "小斌老乡", "200ms")
+	if !ok {
+		t.Fatal("expected ssml")
+	}
+	want := `<speak>小斌老乡<break time="200ms"/>来啦</speak>`
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if _, ok := addressSSML("别的话", "小斌", "200ms"); ok {
+		t.Fatal("missing address must not produce ssml")
+	}
+}

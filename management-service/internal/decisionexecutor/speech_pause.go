@@ -148,3 +148,34 @@ func isPauseRune(r rune) bool {
 	}
 	return false
 }
+
+// addressSSML wraps the text in SSML and inserts a short break right after the
+// address, using the TTS model's native <break> support.
+func addressSSML(text, address, pause string) (string, bool) {
+	text = strings.TrimSpace(text)
+	address = strings.TrimSpace(address)
+	if text == "" || address == "" || pause == "" {
+		return "", false
+	}
+	runes := []rune(text)
+	target := []rune(address)
+	for i := 0; i+len(target) <= len(runes); i++ {
+		if string(runes[i:i+len(target)]) != address {
+			continue
+		}
+		end := i + len(target)
+		var b strings.Builder
+		b.WriteString("<speak>")
+		b.WriteString(escapeSSML(string(runes[:end])))
+		b.WriteString("<break time=\"" + pause + "\"/>")
+		b.WriteString(escapeSSML(string(runes[end:])))
+		b.WriteString("</speak>")
+		return b.String(), true
+	}
+	return "", false
+}
+
+func escapeSSML(text string) string {
+	replacer := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+	return replacer.Replace(text)
+}

@@ -42,3 +42,14 @@ func VoiceLibraryMatches(library, target string) bool {
 	}
 	return library == target
 }
+
+// SupportsSSML reports whether the TTS model accepts SSML <break> pauses.
+func SupportsSSML(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch model {
+	case "qwen-audio-3.0-tts-plus", "qwen-audio-3.0-tts-flash", "qwen-audio-3.1-tts-plus", "qwen-audio-3.1-tts-flash",
+		CosyVoiceFlash, CosyVoicePlus, "cosyvoice-v2", "cosyvoice-v3-flash", "cosyvoice-v3-plus":
+		return true
+	}
+	return false
+}
