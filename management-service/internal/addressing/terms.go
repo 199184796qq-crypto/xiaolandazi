@@ -2,20 +2,18 @@ package addressing
 
 import "strings"
 
-// DefaultTerms are used when neither the room, the anchor style nor the script
-// presets configure any address term.
+// DefaultTerms are used when neither the room nor the anchor style configures
+// any address term; the program owns this fallback.
 var DefaultTerms = []string{"老乡", "朋友", "家人", "哥姐"}
 
 // DefaultGroupLabels are the fallback collective addresses.
 var DefaultGroupLabels = []string{"几位朋友", "几位老乡", "刚来的几位"}
 
 // AddressTermSources is the ordered fallback chain for 称谓词/集体称呼:
-// room configuration first, then the anchor style, then the script preset.
-// The first non-empty source wins; later sources never override it.
+// room configuration first, then the anchor style, then program defaults.
 type AddressTermSources struct {
-	Room   []string
-	Style  []string
-	Script []string
+	Room  []string
+	Style []string
 }
 
 // Resolve returns the winning terms and where they came from.
@@ -26,7 +24,6 @@ func (s AddressTermSources) Resolve() ([]string, string) {
 	}{
 		{"room", s.Room},
 		{"style", s.Style},
-		{"script", s.Script},
 	} {
 		if terms := cleanTerms(source.terms); len(terms) > 0 {
 			return terms, source.name
@@ -43,7 +40,6 @@ func (s AddressTermSources) ResolveGroupLabels() ([]string, string) {
 	}{
 		{"room", s.Room},
 		{"style", s.Style},
-		{"script", s.Script},
 	} {
 		if terms := cleanTerms(source.terms); len(terms) > 0 {
 			return terms, source.name
