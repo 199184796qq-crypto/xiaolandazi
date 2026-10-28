@@ -128,7 +128,7 @@ function onAdopted() {
 .refresh-rules { flex-shrink: 0; padding: 10px 16px; border: 1px solid #e1e7f4; border-radius: 12px; background: #fff; color: #536884; font: inherit; cursor: pointer; }
 .rule-navigation{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:16px}
 .rule-tabs { display: flex; flex-wrap: wrap; gap: 10px; margin:0; width: fit-content; max-width: 100%; }
-.rule-tabs button { display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:47px;padding:11px 22px;border:1px solid #fff;border-radius:13px;background:linear-gradient(135deg,#fff,#f7faff);color:#526e9b;font:inherit;font-weight:750;cursor:pointer;box-shadow:0 3px 12px #7d9aca09;white-space:nowrap }
+.rule-tabs button { display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:47px;padding:11px 22px;border:1px solid #fff;border-radius:13px;background:linear-gradient(135deg,#fff,#f7faff);color:#526e9b;font:inherit;font-size:20px;font-weight:750;cursor:pointer;box-shadow:0 3px 12px #7d9aca09;white-space:nowrap }
 .rule-tabs button svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .rule-tabs button.active { color: #fff; background:linear-gradient(135deg,#8580fb,#645ced);box-shadow:0 5px 12px #7164e62b;border-color:#918afe }
 .rule-tabs button[data-interaction-tab="simulation"] svg{fill:currentColor;stroke-width:1}

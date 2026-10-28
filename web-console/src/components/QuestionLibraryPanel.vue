@@ -184,14 +184,14 @@ watch(() => props.roomId, load, { immediate: true })
 <style scoped>
 .question-library{display:grid;gap:12px;padding:16px;border:1px solid #e1e6ef;border-radius:12px;background:#fff}
 .ql-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
-.ql-head h4{margin:0 0 4px;font-size:15px}
+.ql-head h4{margin:0 0 6px;font-size:20px}
 .ql-head p{margin:0;color:#5b6472;font-size:16px;line-height:1.6}
 .ql-actions{display:flex;gap:8px}
 .ql-table{width:100%;border-collapse:collapse;font-size:16px}
 .ql-table tr.unanswered td{background:#fff5f5}
 .ql-chip{display:inline-block;margin-bottom:4px;padding:1px 8px;border-radius:10px;background:#fde2e1;color:#c62828;font-size:13px}
 .ql-table th,.ql-table td{border-bottom:1px solid #eef1f6;padding:8px 6px;text-align:left;vertical-align:top}
-.ql-table th{color:#6b7484;font-weight:600;font-size:15px}
+.ql-table th{color:#6b7484;font-weight:600;font-size:20px;padding-bottom:10px}
 .ql-table input,.ql-table select,.ql-table textarea{width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #d9e0ea;border-radius:6px;font:inherit;background:#fff}
 .ql-table textarea{resize:vertical}
 .ql-row-actions{display:flex;gap:6px}

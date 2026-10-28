@@ -11979,4 +11979,5 @@ onBeforeUnmount(() => {
 .strategy-formal-facts :is(small,span,p,label,button,input,select,textarea,th,td),.strategy-formal-facts .strategy-fact-category-item strong { font-size:16px; }
 </style>
 
-<style scoped src="../styles/formalFactsPanel.css"></style>
+<style scoped src="../styles/formalFactsPanel.css">.interaction-strategy-head h3{font-size:20px}
+</style>
