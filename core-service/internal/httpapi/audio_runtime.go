@@ -847,6 +847,17 @@ func (s *Server) completeInteractionAfterMainlineResume(roomID int64, taskID, de
 // The warning marks a slow return, not the end of observation. Channels keep
 // the actual physical transitions testable without waiting 30 real seconds.
 func (s *Server) awaitInteractionMainlineResume(roomID int64, taskID, decisionID string, noticeC, pollC <-chan time.Time) {
+	hardAfter := 60 * time.Second
+	if s.speechRuntime != nil {
+		if speech, err := s.speechRuntime.Snapshot(roomID); err == nil && speech.Interrupt.DurationMS > 0 {
+			hardAfter = time.Duration(speech.Interrupt.DurationMS)*time.Millisecond + 12*time.Second + 500*time.Millisecond
+		}
+	}
+	if hardAfter > 2*time.Minute {
+		hardAfter = 2 * time.Minute
+	}
+	hardC := time.NewTimer(hardAfter)
+	defer hardC.Stop()
 	for {
 		if s.speechRuntime == nil || s.roomAudio == nil {
 			return
@@ -878,6 +889,9 @@ func (s *Server) awaitInteractionMainlineResume(roomID int64, taskID, decisionID
 			// Releasing merely because 30 seconds elapsed could overlap audio.
 			log.Printf("interaction lifecycle still returning after timeout room=%d task=%s decision=%s phase=%s source=%s continuing_watch=true", roomID, taskID, decisionID, engine.Phase, engine.ActiveSource)
 			noticeC = nil
+		case <-hardC.C:
+			s.forceAbortRoomAudioInteraction(roomID, taskID, decisionID, "interaction_hard_deadline")
+			return
 		case _, open := <-pollC:
 			if !open {
 				return

@@ -315,8 +315,31 @@ func (e *Engine) Resume(roomID int64) (Snapshot, error) {
 	return snapshotLocked(state), nil
 }
 
-func (e *Engine) Reset(roomID int64) {
+// IdleWaitingContent is the non-destructive缺料 transition. It releases the
+// interaction cursor and timeline but keeps PCM subscribers, the mainline
+// position and the room's output clock intact, so the same session can resume
+// when new mainline content is appended. Reset must not be used for this.
+func (e *Engine) IdleWaitingContent(roomID int64) Snapshot {
 	if e == nil || roomID <= 0 {
+		return Snapshot{RoomID: roomID, Phase: PhaseIdle}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	state := e.ensureRoomLocked(roomID)
+	state.phase = PhaseIdle
+	state.activeSource = SourceNone
+	state.currentSegmentID = ""
+	state.plannedCutSegmentID = ""
+	state.resumeSegmentID = ""
+	state.resumeHighlightSegmentID = ""
+	state.interruptTimeline = nil
+	state.interruptCursorMS = 0
+	state.pausedFrom = ""
+	state.updatedAt = e.now().UTC()
+	return snapshotLocked(state)
+}
+
+func (e *Engine) Reset(roomID int64) {	if e == nil || roomID <= 0 {
 		return
 	}
 	e.mu.Lock()

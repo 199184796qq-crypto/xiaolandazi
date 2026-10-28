@@ -50,12 +50,16 @@ func TestMissingInteractionTerminalRecoversMainlineWithoutCompletingFailedAnswer
 	}
 }
 
-func TestInteractionWatchdogCannotResumeNewOrStoppedTask(t *testing.T) {
+func TestInteractionWatchdogOnlyRecoversCurrentTask(t *testing.T) {
 	for _, test := range []struct {
 		name, current string
 		running       bool
+		want          int
 	}{
-		{"replacement", "new-answer", true}, {"stopped", "answer", false},
+		{"replacement", "new-answer", true, 0},
+		// A stopped program is still the current interaction: recovery must
+		// close it to idle instead of leaving the engine in interrupt.
+		{"stopped", "answer", false, 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := New(nil, nil, nil, nil, nil, "development", "token")
@@ -63,8 +67,8 @@ func TestInteractionWatchdogCannotResumeNewOrStoppedTask(t *testing.T) {
 			server.SetAudioClient(client, "")
 			_, _ = server.speechRuntime.Update(29, speechruntime.UpdateInput{Track: speechruntime.TrackInterrupt, Status: speechruntime.StatusFailed, SpeechTaskID: "answer", DecisionID: "decision"})
 			server.recoverExpiredRoomAudioInteraction(29, "answer", "decision", 0)
-			if len(client.recovered) != 0 {
-				t.Fatal("watchdog revived wrong lifecycle")
+			if len(client.recovered) != test.want {
+				t.Fatalf("watchdog recovered %d tasks, want %d", len(client.recovered), test.want)
 			}
 		})
 	}
