@@ -132,3 +132,21 @@ func TestResolveStageModelNamesTheAnsweringProfile(t *testing.T) {
 		t.Fatalf("provider=%q model=%q want anchor:review/deepseek-flash", provider, model)
 	}
 }
+
+func TestAddressingPlanPinsReviewRole(t *testing.T) {
+	review := SpeechModel{ID: "review", Model: "deepseek-flash", BaseURL: "https://api.deepseek.com"}
+	pooled := SpeechModel{ID: "pool", Model: "qwen3.7-flash", BaseURL: "https://dashscope.aliyuncs.com"}
+	f := &pinnedRoleFixture{
+		profiles: map[string]SpeechModel{"review": review, "pool": pooled},
+		system:   "pool",
+		review:   "review",
+	}
+	ctx := WithModelResolver(context.Background(), f)
+	provider, model, err := NewFromContext(ctx).ResolveStageModel(ctx, "interaction_addressing_plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "deepseek-flash" || provider != "anchor:review" {
+		t.Fatalf("provider=%q model=%q", provider, model)
+	}
+}
