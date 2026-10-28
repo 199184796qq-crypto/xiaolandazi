@@ -973,25 +973,22 @@ func interactionMissionCandidate(rule interactionRule, window interactionWindow,
 	case "reply_chat":
 		question = strings.TrimSpace(window.LatestContent)
 		if question == "" {
-			question = "自然回应直播间刚刚出现的有效弹幕"
+			question = "直播间弹幕"
 		}
 		title = compactInteractionMissionTitle(question, 22)
 		summary = fmt.Sprintf("互动时间窗触发：累计%d条有效弹幕，需要自然回应一次", count)
 	case "reply_follow":
-		question = "自然感谢刚刚新增的关注，不要机械报数"
-		summary = fmt.Sprintf("互动时间窗触发：最近累计%d次关注，需要主播自然回应", count)
+		question = "新增关注"
+		summary = fmt.Sprintf("互动时间窗触发：最近累计%d次关注，需要主播回应", count)
 	case "reply_like":
-		question = "自然感谢大家刚才的点赞支持，不逐个报名字"
-		summary = fmt.Sprintf("互动时间窗触发：最近累计%d次点赞事件，需要主播自然回应", count)
+		question = "点赞支持"
+		summary = fmt.Sprintf("互动时间窗触发：最近累计%d次点赞事件，需要主播回应", count)
 	case "welcome_named":
-		if name := strings.TrimSpace(window.LatestName); name != "" {
-			question = "自然欢迎刚进入直播间的 " + name
-		} else {
-			question = "自然点名欢迎一位刚进入直播间的新朋友"
-		}
-		summary = "互动时间窗触发：安排一次低频、自然的点名欢迎"
+		// 问题文本不再指定单人：称呼由下游按整批昵称掷骰子决定。
+		question = "新观众进入直播间"
+		summary = "互动时间窗触发：安排一次点名欢迎"
 	case "welcome_batch":
-		question = "自然欢迎刚刚进入直播间的一批新朋友，不逐个报名字"
+		question = "一批新观众进入直播间"
 		summary = fmt.Sprintf("互动时间窗触发：累计%d次进房事件，需要做一次打包欢迎", count)
 	default:
 		return agentdecision.Candidate{}
