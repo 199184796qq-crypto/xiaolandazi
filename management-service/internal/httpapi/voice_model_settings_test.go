@@ -10,6 +10,27 @@ import (
 	"livecompanion/management/internal/ttsgateway"
 )
 
+func TestVoiceModelPriceCatalogMatchesOfficialRates(t *testing.T) {
+	got := map[string]voiceModelPrice{}
+	for _, item := range voiceModelPriceCatalog() {
+		got[item.Model] = item
+	}
+	for model, want := range map[string]float64{
+		"cosyvoice-v3.5-flash":     0.8,
+		"cosyvoice-v3.5-plus":      1.5,
+		"qwen-audio-3.0-tts-plus":  1.4,
+		"qwen-audio-3.0-tts-flash": 1.0,
+		"qwen3-tts-flash":          0.8,
+	} {
+		if got[model].YuanPer10K != want {
+			t.Fatalf("%s price=%v want=%v", model, got[model].YuanPer10K, want)
+		}
+	}
+	if got["qwen-audio-3.1-tts-flash"].Unit != "tokens" || got["qwen-audio-3.1-tts-flash"].InputYuanPerMillion != 1.5 || got["qwen-audio-3.1-tts-flash"].OutputYuanPerMillion != 12 {
+		t.Fatalf("token model price=%+v", got["qwen-audio-3.1-tts-flash"])
+	}
+}
+
 func TestVoiceSettingsRequireAuthenticatedAdministrator(t *testing.T) {
 	s := &Server{auth: auth.NewResolver("test", nil)}
 	for _, handler := range []http.HandlerFunc{s.systemVoiceModelsGet, s.systemVoiceModelsPut, s.liveVoiceSettings} {
