@@ -33,7 +33,7 @@ ORDER BY id`, tenantID, roomID)
 }
 
 // UpsertQuestionLibrary creates or updates one entry; id=0 inserts.
-func (s *Store) UpsertQuestionLibrary(ctx context.Context, tenantID, roomID, userID int64, id int64, input model.QuestionLibraryInput) (model.QuestionLibraryEntry, error) {
+func (s *Store) UpsertQuestionLibrary(ctx context.Context, tenantID, planID, userID int64, id int64, input model.QuestionLibraryInput) (model.QuestionLibraryEntry, error) {
 	questionType := strings.TrimSpace(input.QuestionType)
 	if questionType == "" {
 		questionType = "fact"
@@ -44,8 +44,8 @@ func (s *Store) UpsertQuestionLibrary(ctx context.Context, tenantID, roomID, use
 		_, err := s.db.ExecContext(ctx, `
 UPDATE live_agent_question_library
 SET question_type = ?, question = ?, answer = ?, sense_key = ?, sense_name = ?, exclude_json = ?
-WHERE id = ? AND tenant_id = ? AND room_id = ?`,
-			questionType, question, answer, strings.TrimSpace(input.SenseKey), strings.TrimSpace(input.SenseName), excludeJSON(input.ExcludeWords), id, tenantID, roomID)
+WHERE id = ? AND tenant_id = ? AND plan_id = ?`,
+			questionType, question, answer, strings.TrimSpace(input.SenseKey), strings.TrimSpace(input.SenseName), excludeJSON(input.ExcludeWords), id, tenantID, planID)
 		if err != nil {
 			return model.QuestionLibraryEntry{}, err
 		}
@@ -53,7 +53,7 @@ WHERE id = ? AND tenant_id = ? AND room_id = ?`,
 	}
 	res, err := s.db.ExecContext(ctx, `
 INSERT INTO live_agent_question_library (tenant_id, room_id, plan_id, question_type, question, answer, sense_key, sense_name, exclude_json, created_by_user_id)
-VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`, tenantID, roomID, questionType, question, answer, strings.TrimSpace(input.SenseKey), strings.TrimSpace(input.SenseName), excludeJSON(input.ExcludeWords), userID)
+VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`, tenantID, planID, questionType, question, answer, strings.TrimSpace(input.SenseKey), strings.TrimSpace(input.SenseName), excludeJSON(input.ExcludeWords), userID)
 	if err != nil {
 		return model.QuestionLibraryEntry{}, err
 	}
@@ -73,21 +73,21 @@ FROM live_agent_question_library WHERE id = ?`, id).
 }
 
 // DeleteQuestionLibrary marks one entry inactive.
-func (s *Store) DeleteQuestionLibrary(ctx context.Context, tenantID, roomID, id int64) error {
+func (s *Store) DeleteQuestionLibrary(ctx context.Context, tenantID, planID, id int64) error {
 	_, err := s.db.ExecContext(ctx, `
 UPDATE live_agent_question_library SET status = 'deleted'
-WHERE id = ? AND tenant_id = ? AND room_id = ?`, id, tenantID, roomID)
+WHERE id = ? AND tenant_id = ? AND room_id = ?`, id, tenantID, planID)
 	return err
 }
 
 // AppendQuestionGap records an unanswered question discovered by intent mining.
 // It dedupes by type and question similarity so repeated asks do not pile up.
-func (s *Store) AppendQuestionGap(ctx context.Context, tenantID, roomID, planID int64, questionType, question string) (bool, error) {
+func (s *Store) AppendQuestionGap(ctx context.Context, tenantID, planID int64, questionType, question string) (bool, error) {
 	question = strings.TrimSpace(question)
 	if question == "" {
 		return false, nil
 	}
-	existing, err := s.ListQuestionLibrary(ctx, tenantID, roomID)
+	existing, err := s.ListQuestionLibraryByPlan(ctx, tenantID, planID)
 	if err != nil {
 		return false, err
 	}
@@ -103,7 +103,7 @@ func (s *Store) AppendQuestionGap(ctx context.Context, tenantID, roomID, planID 
 	}
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO live_agent_question_library (tenant_id, room_id, plan_id, question_type, question, answer, keywords_json, created_by_user_id)
-VALUES (?, ?, ?, ?, ?, '', ?, NULL)`, tenantID, roomID, planID, questionType, question, gapKeywords(question))
+VALUES (?, 0, ?, ?, ?, '', ?, NULL)`, tenantID, planID, questionType, question, gapKeywords(question))
 	return err == nil, err
 }
 

@@ -8,7 +8,7 @@ import (
 )
 
 type questionLibrarySource interface {
-	ListQuestionLibrary(context.Context, int64, int64) ([]model.QuestionLibraryEntry, error)
+	ListQuestionLibraryByPlan(context.Context, int64, int64) ([]model.QuestionLibraryEntry, error)
 }
 
 // normalizeQuestion strips spaces and punctuation so short viewer questions can
@@ -32,7 +32,11 @@ func (w *Worker) matchQuestionLibrary(ctx context.Context, session model.LiveRun
 	if !ok || session.RoomID <= 0 {
 		return model.QuestionLibraryEntry{}, false
 	}
-	entries, err := source.ListQuestionLibrary(ctx, session.TenantID, session.RoomID)
+	plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
+	if planErr != nil || plan.ID <= 0 {
+		return model.QuestionLibraryEntry{}, false
+	}
+	entries, err := source.ListQuestionLibraryByPlan(ctx, session.TenantID, plan.ID)
 	if err != nil || len(entries) == 0 {
 		return model.QuestionLibraryEntry{}, false
 	}

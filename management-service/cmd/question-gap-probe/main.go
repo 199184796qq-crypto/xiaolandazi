@@ -14,7 +14,6 @@ import (
 
 func main() {
 	tenant := flag.Int64("tenant", 0, "tenant")
-	room := flag.Int64("room", 0, "room")
 	plan := flag.Int64("plan", 0, "plan")
 	qtype := flag.String("type", "fact", "question type")
 	question := flag.String("question", "", "question text")
@@ -27,8 +26,8 @@ func main() {
 		return
 	}
 	defer store.Close()
-	first, err := store.AppendQuestionGap(ctx, *tenant, *room, *plan, *qtype, *question)
+	first, err := store.AppendQuestionGap(ctx, *tenant, *plan, *qtype, *question)
 	fmt.Printf("first inserted=%t err=%v\n", first, err)
-	second, err := store.AppendQuestionGap(ctx, *tenant, *room, *plan, *qtype, *question)
+	second, err := store.AppendQuestionGap(ctx, *tenant, *plan, *qtype, *question)
 	fmt.Printf("second inserted=%t err=%v\n", second, err)
 }

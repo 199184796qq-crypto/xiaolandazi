@@ -25,18 +25,17 @@ func (s *Server) roomQuestionLibrary(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
 		return
 	}
+	plan, planErr := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID)
+	if planErr != nil || plan.ID <= 0 {
+		writeError(w, http.StatusNotFound, "方案不存在")
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
-		items, err := s.store.ListQuestionLibrary(r.Context(), tenantID, roomID)
+		items, err := s.store.ListQuestionLibraryByPlan(r.Context(), tenantID, plan.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "读取问题库失败")
 			return
-		}
-		// 房间还没有条目时，回落到同方案共享条目，避免新直播间看起来是空的。
-		if len(items) == 0 {
-			if plan, planErr := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID); planErr == nil && plan.ID > 0 {
-				items, _ = s.store.ListQuestionLibraryByPlan(r.Context(), tenantID, plan.ID)
-			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	case http.MethodPost, http.MethodPut:
@@ -57,7 +56,7 @@ func (s *Server) roomQuestionLibrary(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		item, err := s.store.UpsertQuestionLibrary(r.Context(), tenantID, roomID, actor.UserID, id, input)
+		item, err := s.store.UpsertQuestionLibrary(r.Context(), tenantID, plan.ID, actor.UserID, id, input)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "保存问题库失败")
 			return
@@ -69,7 +68,7 @@ func (s *Server) roomQuestionLibrary(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "缺少问题库条目 id")
 			return
 		}
-		if err := s.store.DeleteQuestionLibrary(r.Context(), tenantID, roomID, id); err != nil {
+		if err := s.store.DeleteQuestionLibrary(r.Context(), tenantID, plan.ID, id); err != nil {
 			writeError(w, http.StatusInternalServerError, "删除问题库失败")
 			return
 		}

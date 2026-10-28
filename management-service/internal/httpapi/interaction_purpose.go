@@ -129,7 +129,7 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 	}
 	// 未覆盖问题自动进问题库：只记分类和问题，答案留空等运营补。
 	if strings.TrimSpace(result.PurposeID) == "" {
-		_, _ = s.store.AppendQuestionGap(ctx, input.Tenant, input.Room, input.Plan, inferGapType(result), refineGapQuestion(result))
+		_, _ = s.store.AppendQuestionGap(ctx, input.Tenant, input.Plan, inferGapType(result), refineGapQuestion(result))
 	}
 	current, err := s.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, input.Tenant, input.Room)
 	if err != nil || current.ID != published.ID {
