@@ -18,10 +18,10 @@ func (c planSaveConnector) Connect(context.Context) (driver.Conn, error) { retur
 func (c planSaveConnector) Driver() driver.Driver                        { return openingAssetTestDriver{} }
 
 type planSaveConn struct {
-	active, failPointer, committed, rolled, locked bool
-	writes                                         []string
-	deleted                                        []int64
-	retention                                      []driver.Value
+	active, failInsert, committed, rolled, locked bool
+	writes                                        []string
+	deleted                                       []int64
+	retention                                     []driver.Value
 }
 
 func (*planSaveConn) Prepare(string) (driver.Stmt, error) {
@@ -75,7 +75,7 @@ func (c *planSaveConn) QueryContext(_ context.Context, q string, a []driver.Name
 		return &contentPolicyTestRows{columns: []string{"id", "mode"}, values: [][]driver.Value{{int64(48), "ai_dynamic"}, {int64(47), "ai_dynamic"}, {int64(46), "ai_dynamic"}, {int64(45), "ai_dynamic"}, {int64(44), "ai_dynamic"}, {int64(43), "user_audio"}, {int64(42), "ai_dynamic"}}}, nil
 	}
 	if strings.Contains(q, "selection.tenant_id=?") {
-		if strings.Contains(q, "published_at IS NOT NULL") || strings.Contains(q, "publication.version_id=") || !strings.Contains(q, "ORDER BY live_agent_plan_versions.id DESC") || strings.Contains(q, "selection.room_id=live_agent_plan_versions.room_id") || !strings.Contains(q, "access.selected_mode") {
+		if strings.Contains(q, "published_at IS NOT NULL") || strings.Contains(q, "publication.version_id=") || !strings.Contains(q, "ORDER BY live_agent_plan_versions.id DESC") || strings.Contains(q, "selection.room_id=live_agent_plan_versions.room_id") || strings.Contains(q, "access.selected_mode") || strings.Contains(q, "room_bindings") {
 			return nil, errors.New("not latest scoped saved version")
 		}
 	}
@@ -88,11 +88,14 @@ func (c *planSaveConn) ExecContext(_ context.Context, q string, a []driver.Named
 	}
 	c.writes = append(c.writes, q)
 	if strings.Contains(q, "INSERT INTO live_agent_room_plan_publications") {
-		if c.failPointer {
-			return nil, errors.New("injected pointer failure")
+		return nil, errors.New("plan save wrote a room pointer")
+	}
+	if strings.Contains(q, "INSERT INTO live_agent_plan_versions") {
+		if c.failInsert {
+			return nil, errors.New("injected save failure")
 		}
-		if !strings.Contains(q, "selection.plan_id=binding.plan_id") {
-			return nil, errors.New("saving non-selected plan switched room")
+		if a[2].Value != int64(0) {
+			return nil, errors.New("save still owns a room")
 		}
 	}
 	if strings.Contains(q, "DELETE FROM") {
@@ -120,8 +123,8 @@ func TestSavePlanAtomicallyBecomesEffectiveAndRetainsThreeOldSnapshots(t *testin
 		t.Fatal("current plus three old / other mode preservation failed", c.deleted)
 	}
 }
-func TestSavePlanPointerFailureRollsBackEntireSave(t *testing.T) {
-	c := &planSaveConn{failPointer: true}
+func TestSavePlanInsertFailureRollsBackEntireSave(t *testing.T) {
+	c := &planSaveConn{failInsert: true}
 	s := planSaveStore(t, c)
 	_, err := s.CreateLiveAgentPlanVersion(context.Background(), 14, 4, 8, model.CreateLiveAgentPlanVersionInput{RoomID: 26})
 	if err == nil || c.committed || !c.rolled || len(c.deleted) != 0 {
@@ -136,11 +139,13 @@ func TestSaveDuringLiveDoesNotDeletePinnedVersion(t *testing.T) {
 		t.Fatal(err, c)
 	}
 }
-func TestEffectivePlanUsesLatestSavedSnapshotWithoutPublication(t *testing.T) {
+func TestEffectivePlanUsesLatestSavedSnapshotWithoutRoomModeOrBinding(t *testing.T) {
 	c := &planSaveConn{}
 	s := planSaveStore(t, c)
-	v, err := s.GetPublishedLiveAgentPlanVersionForRoom(context.Background(), 14, 26)
-	if err != nil || v.ID != 48 || v.VoiceIdentity.VoiceID != "original-voice" {
-		t.Fatal(v, err)
+	for _, room := range []int64{26, 29} {
+		v, err := s.GetPublishedLiveAgentPlanVersionForRoom(context.Background(), 14, room)
+		if err != nil || v.ID != 48 || v.VoiceIdentity.VoiceID != "original-voice" {
+			t.Fatal(v, err)
+		}
 	}
 }

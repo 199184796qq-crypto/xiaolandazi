@@ -64,16 +64,9 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, "自定义音稿文件过大或上传格式错误")
 		return
 	}
-	roomID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("room_id")), 10, 64)
-	if err != nil || roomID <= 0 {
-		writeError(w, http.StatusBadRequest, "请选择直播间")
-		return
-	}
-	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
+	roomID := int64(0)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), true)
 	if !ok {
-		return
-	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) || !s.requireLiveSupportPlanScope(w, r, actor, tenantID, planID, true) {
 		return
 	}
 	if _, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID); err != nil {
@@ -377,17 +370,15 @@ func (s *Server) liveAgentPlanCustomMainlineRebuild(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusBadRequest, "自定义音稿校对参数格式错误")
 		return
 	}
-	if input.RoomID <= 0 || input.AudioAssetID <= 0 {
+	if input.AudioAssetID <= 0 {
 		writeError(w, http.StatusBadRequest, "自定义音稿参数不完整")
 		return
 	}
-	tenantID, ok := s.tenantForRoom(w, r, actor, input.RoomID)
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), true)
 	if !ok {
 		return
 	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) || !s.requireLiveSupportPlanScope(w, r, actor, tenantID, planID, true) {
-		return
-	}
+	input.RoomID = 0
 	if _, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID); err != nil {
 		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
 		return
@@ -397,7 +388,7 @@ func (s *Server) liveAgentPlanCustomMainlineRebuild(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusNotFound, "自定义音稿音频不存在")
 		return
 	}
-	if strings.TrimSpace(fmt.Sprint(asset.Metadata["purpose"])) != "live_agent_custom_mainline_audio" {
+	if strings.TrimSpace(fmt.Sprint(asset.Metadata["purpose"])) != "live_agent_custom_mainline_audio" || mediaMetadataInt64(asset.Metadata["plan_id"]) != planID {
 		writeError(w, http.StatusConflict, "这个音频不是自定义主线音稿")
 		return
 	}

@@ -1,4 +1,4 @@
-﻿package httpapi
+package httpapi
 
 import (
 	"net/http"
@@ -10,29 +10,14 @@ import (
 
 // roomQuestionLibrary lists, creates, updates and deletes question-library rows.
 func (s *Server) roomQuestionLibrary(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.resolveActor(w, r)
+	actor, tenantID, planID, ok := s.planAssetScope(w, r)
 	if !ok {
 		return
 	}
-	roomID, ok := pathID(w, r)
-	if !ok {
-		return
-	}
-	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
-	if !ok {
-		return
-	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
-		return
-	}
-	plan, planErr := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID)
-	if planErr != nil || plan.ID <= 0 {
-		writeError(w, http.StatusNotFound, "方案不存在")
-		return
-	}
+
 	switch r.Method {
 	case http.MethodGet:
-		items, err := s.store.ListQuestionLibraryByPlan(r.Context(), tenantID, plan.ID)
+		items, err := s.store.ListQuestionLibraryByPlan(r.Context(), tenantID, planID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "读取问题库失败")
 			return
@@ -56,7 +41,7 @@ func (s *Server) roomQuestionLibrary(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		item, err := s.store.UpsertQuestionLibrary(r.Context(), tenantID, plan.ID, actor.UserID, id, input)
+		item, err := s.store.UpsertQuestionLibrary(r.Context(), tenantID, planID, actor.UserID, id, input)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "保存问题库失败")
 			return
@@ -68,7 +53,7 @@ func (s *Server) roomQuestionLibrary(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "缺少问题库条目 id")
 			return
 		}
-		if err := s.store.DeleteQuestionLibrary(r.Context(), tenantID, plan.ID, id); err != nil {
+		if err := s.store.DeleteQuestionLibrary(r.Context(), tenantID, planID, id); err != nil {
 			writeError(w, http.StatusInternalServerError, "删除问题库失败")
 			return
 		}

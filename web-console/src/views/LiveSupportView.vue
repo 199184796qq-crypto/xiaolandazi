@@ -124,7 +124,7 @@ onMounted(() => void load())
               <em :class="item.status">{{ statusLabel(item.status) }}</em>
             </header>
             <p>
-              仅维护此直播间已授权的智能体方案、方案内容以及直播间与方案的绑定关系。
+              仅维护客户授权范围内的账号方案、方案内容及当前直播间的方案选择。
             </p>
             <small>
               申请时间 {{ formatTime(item.requested_at) }}

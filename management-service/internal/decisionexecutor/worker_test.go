@@ -60,7 +60,6 @@ func TestOpeningIntentSeparatesSimpleAndComplexQuestions(t *testing.T) {
 	}
 }
 
-
 func TestOpeningPlanIsFrozenIntoSpeechMission(t *testing.T) {
 	worker := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
 	item := &decisionItem{
@@ -147,11 +146,6 @@ func TestNormalizePlayableNicknameFiltersUnsafeOrUnreadableNames(t *testing.T) {
 	}
 }
 
-
-
-
-
-
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -160,8 +154,6 @@ func containsString(values []string, target string) bool {
 	}
 	return false
 }
-
-
 
 func TestHostStateDeliveryGuidanceConvertsSymptomsToBehavior(t *testing.T) {
 	guidance := hostStateDeliveryGuidance("今天有点不舒服，有点咳嗽")
@@ -176,7 +168,6 @@ func TestHostStateDeliveryGuidanceConvertsSymptomsToBehavior(t *testing.T) {
 		}
 	}
 }
-
 
 func TestBuildHumanStyleMissionPlanSeparatesTraitStateReaction(t *testing.T) {
 	plan := buildHumanStyleMissionPlan(
@@ -479,6 +470,7 @@ func (f *fakeTTS) SynthesizeURL(_ context.Context, request ttsgateway.Synthesize
 
 func readyVoiceStore() *fakeStore {
 	return &fakeStore{
+		publishedVersion: &model.LiveAgentPlanVersion{ID: 44, TenantID: 7, PlanID: 3, VoiceIdentity: model.LiveAgentVoiceIdentity{Name: "默认声音", Source: "clone", Provider: "aliyun_qwen", Model: "qwen-audio-3.0-tts-plus", VoiceID: "voice-1", ProfileID: 1, Rate: 1}},
 		plan: model.LiveAgentPlan{
 			ID: 3, TenantID: 7, Name: "测试直播方案", Description: "测试回答策略",
 			Status: "active",
@@ -502,38 +494,27 @@ func readyVoiceStore() *fakeStore {
 	}
 }
 
-func TestReadyVoiceFallsBackToSystemDefaultWhenRoomHasNoBinding(t *testing.T) {
-	worker := New(&fakeStore{}, &fakeCore{}, &fakeAgent{}, &fakeTTS{})
-	voice, ok, err := worker.readyVoice(context.Background(), 7, 11)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || voice.VoiceID != voicecatalog.DefaultVoiceID {
-		t.Fatalf("voice=%#v ok=%v want system default %s", voice, ok, voicecatalog.DefaultVoiceID)
-	}
-	if voiceModel(voice) != voicecatalog.SystemTTSModel {
-		t.Fatalf("model=%q want=%q", voiceModel(voice), voicecatalog.SystemTTSModel)
-	}
-}
-
-func TestReadyVoiceUsesRoomOfficialBinding(t *testing.T) {
-	store := &fakeStore{versions: []model.AgentConfigVersion{{
-		LifecycleStatus: "active",
-		SpeechConfig: map[string]any{"rooms": map[string]any{"11": map[string]any{
-			"selected_voice": map[string]any{"source": "official", "voice_id": "Serena"},
-		}}},
-	}}}
+func TestReadyVoiceRequiresSavedPlanAndNeverFallsBackToRoomOrDefault(t *testing.T) {
+	store := readyVoiceStore()
+	store.publishedVersion = nil
 	worker := New(store, &fakeCore{}, &fakeAgent{}, &fakeTTS{})
-	voice, ok, err := worker.readyVoice(context.Background(), 7, 11)
-	if err != nil {
-		t.Fatal(err)
+	if _, ok, err := worker.readyVoice(context.Background(), 7, 11); err == nil || ok {
+		t.Fatal("room voice/default used without a saved plan")
 	}
-	if !ok || voice.VoiceID != "Serena" {
-		t.Fatalf("voice=%#v ok=%v want Serena", voice, ok)
+}
+func TestReadyVoiceUsesSamePlanInEveryRoom(t *testing.T) {
+	store := readyVoiceStore()
+	store.publishedVersion.VoiceIdentity = model.LiveAgentVoiceIdentity{Source: "official", VoiceID: "Serena", Model: voicecatalog.SystemTTSModel, Rate: 1.01}
+	worker := New(store, &fakeCore{}, &fakeAgent{}, &fakeTTS{})
+	for _, room := range []int64{11, 29} {
+		voice, ok, err := worker.readyVoice(context.Background(), 7, room)
+		if err != nil || !ok || voice.VoiceID != "Serena" || voice.Config["rate"] != 1.01 {
+			t.Fatal(room, voice, err)
+		}
 	}
 }
 
-func TestReadyVoiceUsesBoundCloneBeforeSystemDefault(t *testing.T) {
+func TestReadyVoiceUsesSavedPlanClone(t *testing.T) {
 	store := readyVoiceStore()
 	worker := New(store, &fakeCore{}, &fakeAgent{}, &fakeTTS{})
 	voice, ok, err := worker.readyVoice(context.Background(), 7, 11)
@@ -541,7 +522,7 @@ func TestReadyVoiceUsesBoundCloneBeforeSystemDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !ok || voice.VoiceID != "voice-1" {
-		t.Fatalf("voice=%#v ok=%v want room clone", voice, ok)
+		t.Fatalf("voice=%#v ok=%v want plan clone", voice, ok)
 	}
 }
 
@@ -982,7 +963,6 @@ func TestTTSInstructionIncludesHostStateAndTTSStyleReaction(t *testing.T) {
 		}
 	}
 }
-
 
 func TestEmotionEnabledReadsPublishedVersionFlag(t *testing.T) {
 	store := readyVoiceStore()

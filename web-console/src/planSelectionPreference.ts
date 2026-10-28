@@ -2,8 +2,8 @@ export type PlanSelectionScope = { userId: number; tenantId: number; roomId: num
 type PreferenceStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 export function planSelectionPreferenceKey(scope: PlanSelectionScope) {
-  if (![scope.userId, scope.tenantId, scope.roomId].every(id => Number.isSafeInteger(id) && id > 0)) return ''
-  return `xiaolan-ui:${scope.userId}:live-strategy:selected-plan:${scope.supportSession ? 'support' : 'customer'}:${scope.tenantId}:${scope.roomId}`
+  if (![scope.userId, scope.tenantId].every(id => Number.isSafeInteger(id) && id > 0)) return ''
+  return `xiaolan-ui:${scope.userId}:live-strategy:selected-account-plan:${scope.supportSession ? 'support' : 'customer'}:${scope.tenantId}`
 }
 
 export function readSelectedPlan(scope: PlanSelectionScope, storage?: PreferenceStorage) {

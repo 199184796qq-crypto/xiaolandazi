@@ -124,7 +124,7 @@ type Worker struct {
 	nicknameRulesValue   *addressing.Rules
 	nicknameRandSeed     int64
 	recentPhrases        map[int64][]string
-	readingRules         map[int64]readingRulesCacheEntry
+	readingRules         map[string]readingRulesCacheEntry
 	benefitRedis         *redis.Client
 	prepared             map[preparedInteractionKey]preparedInteraction
 }
@@ -2317,32 +2317,7 @@ func (w *Worker) readyVoice(ctx context.Context, tenantID, roomID int64) (model.
 		return model.VoiceProfile{}, false, publishedErr
 	}
 
-	versions, err := w.store.ListLiveAgentConfigVersions(ctx, tenantID)
-	if err != nil {
-		return model.VoiceProfile{}, false, err
-	}
-	selected := selectedRoomVoice(versions, roomID)
-	if len(selected) > 0 {
-		source := strings.ToLower(strings.TrimSpace(fmt.Sprint(selected["source"])))
-		if source == "clone" {
-			if profileID := mapInt64(selected["profile_id"]); profileID > 0 {
-				profile, profileErr := w.store.GetVoiceProfile(ctx, tenantID, profileID)
-				if profileErr == nil && strings.EqualFold(strings.TrimSpace(profile.CloneStatus), "ready") && strings.TrimSpace(profile.VoiceID) != "" {
-					return profile, true, nil
-				}
-			}
-		}
-		if source == "official" {
-			if voice, exists := voicecatalog.Find(strings.TrimSpace(fmt.Sprint(selected["voice_id"]))); exists {
-				return officialVoiceProfile(voice), true, nil
-			}
-		}
-	}
-	voice := voicecatalog.Default()
-	if strings.TrimSpace(voice.ID) == "" || strings.TrimSpace(voice.Model) == "" {
-		return model.VoiceProfile{}, false, nil
-	}
-	return officialVoiceProfile(voice), true, nil
+	return model.VoiceProfile{}, false, fmt.Errorf("请先为当前方案保存可用声音")
 }
 
 func selectedRoomVoice(versions []model.AgentConfigVersion, roomID int64) map[string]any {

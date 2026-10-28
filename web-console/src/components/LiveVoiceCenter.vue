@@ -1,30 +1,26 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  activateLiveAgentConfigVersion,
   cloneLiveVoiceModelBinding,
   cloneLiveVoiceProfile,
   designLiveVoiceProfile,
-  createLiveAgentConfigDraft,
   deleteLiveVoiceProfile,
   renameLiveVoiceProfile,
   getLiveVoiceSettings,
-  getLiveAgentConfigVersions,
   getLiveOfficialVoices,
   getLiveVoiceModelBindings,
   getLiveVoiceProfileQuota,
   getLiveVoiceProfiles,
   previewLiveOfficialVoice,
   previewLiveVoiceModelBinding,
-  publishLiveAgentVoiceBinding,
   uploadLiveMediaAsset,
 } from '../api'
-import type { LiveAgentConfigVersion, OfficialVoice, VoiceModelBinding, VoiceProfile } from '../types'
+import type { LiveAgentVoiceIdentity, OfficialVoice, VoiceModelBinding, VoiceProfile } from '../types'
 import { liveSupportMediaPlaybackURL } from '../liveSupportAccess'
 import { useFeedbackErrorRef } from '../uiFeedback'
 
-const props = defineProps<{ roomId: number | null; roomName?: string; supportSession?: boolean }>()
-const emit = defineEmits<{ changed: [] }>()
+const props = defineProps<{ planId: number | null; planName?: string; selectedVoice: LiveAgentVoiceIdentity; scopeKey: string; disabled?: boolean; supportSession?: boolean }>()
+const emit = defineEmits<{ selected: [voice: LiveAgentVoiceIdentity] }>()
 
 const VOICE_PREVIEW_TEXT = '你好，我是你的主播，欢迎为你效劳。'
 const MIN_SAMPLE_SECONDS = 5
@@ -50,7 +46,6 @@ const officialConfigured = ref(false)
 const officialPreviewText = ref('')
 const voiceProfiles = ref<VoiceProfile[]>([])
 const voiceBindings = ref<VoiceModelBinding[]>([])
-const versions = ref<LiveAgentConfigVersion[]>([])
 const quota = ref({ limit: 0, used: 0, remaining: 0 })
 const loading = ref(false)
 const selecting = ref(false)
@@ -61,6 +56,7 @@ const savingNameId = ref(0)
 const nameDraft = ref('')
 const nameError = ref('')
 let nameScope = 0
+let loadEpoch = 0
 const error = useFeedbackErrorRef('')
 const notice = ref('')
 const previewingKey = ref('')
@@ -85,16 +81,7 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-const activeVersion = computed(
-  () => versions.value.find((item) => item.lifecycle_status === 'active') || versions.value[0] || null,
-)
-
-const selectedVoice = computed(() => {
-  const speech = asRecord(activeVersion.value?.speech_config)
-  const rooms = asRecord(speech.rooms)
-  const room = asRecord(rooms[String(props.roomId || 0)])
-  return asRecord(room.selected_voice)
-})
+const selectedVoice = computed(() => props.selectedVoice)
 
 const currentVoiceName = computed(() => voiceProfiles.value.find(profile => profile.id === selectedProfileId.value)?.name || String(selectedVoice.value.name || '').trim() || '龙安灵心')
 const selectedProfileId = computed(() => Number(selectedVoice.value.profile_id || 0))
@@ -109,37 +96,36 @@ function countVoiceCharacters(value: string) {
 }
 
 async function load() {
-  if (!props.roomId) {
+  const token = ++loadEpoch
+  if (!props.planId) {
+    loading.value = false
     officialVoices.value = []
     voiceProfiles.value = []
     voiceBindings.value = []
-    versions.value = []
     return
   }
   loading.value = true
-  const scope = nameScope, room = props.roomId
+  const scope = nameScope, room = props.planId
   error.value = ''
   try {
-    const [official, profiles, bindings, configVersions, profileQuota, settings] = await Promise.all([
+    const [official, profiles, bindings, profileQuota, settings] = await Promise.all([
       getLiveOfficialVoices(),
       getLiveVoiceProfiles(),
       getLiveVoiceModelBindings(),
-      getLiveAgentConfigVersions(),
       getLiveVoiceProfileQuota(),
       getLiveVoiceSettings(),
     ])
-    if (scope !== nameScope || room !== props.roomId) return
+    if (token !== loadEpoch || scope !== nameScope || room !== props.planId) return
     officialVoices.value = official.items || []
     officialConfigured.value = official.configured === true
     voiceProfiles.value = (profiles || []).filter((item) => item.clone_status !== 'disabled')
     voiceBindings.value = (bindings || []).filter((item) => item.status !== 'disabled')
-    versions.value = configVersions || []
     quota.value = profileQuota
     voiceSettings.value = settings
   } catch (err) {
-    if (scope === nameScope && room === props.roomId) error.value = err instanceof Error ? err.message : '读取声音中心失败'
+    if (token === loadEpoch && scope === nameScope && room === props.planId) error.value = err instanceof Error ? err.message : '读取声音中心失败'
   } finally {
-    if (scope === nameScope && room === props.roomId) loading.value = false
+    if (token === loadEpoch && scope === nameScope && room === props.planId) loading.value = false
   }
 }
 
@@ -225,46 +211,16 @@ async function playURL(key: string, factory: () => Promise<{ audio_url: string }
   }
 }
 
-function updatedSpeechConfig(voice: Record<string, unknown>) {
-  const speech = { ...asRecord(activeVersion.value?.speech_config) }
-  const rooms = { ...asRecord(speech.rooms) }
-  const key = String(props.roomId || 0)
-  const room = { ...asRecord(rooms[key]) }
-  room.selected_voice = voice
-  rooms[key] = room
-  speech.rooms = rooms
-  return speech
-}
-
-async function bindVoice(voice: Record<string, unknown>): Promise<boolean> {
-  if (!props.roomId || selecting.value) return false
-  const scope = nameScope, room = props.roomId
-  selecting.value = true
+function selectVoice(voice: LiveAgentVoiceIdentity) {
+  if (!props.planId || props.disabled || loading.value || selecting.value) return
   error.value = ''
-  notice.value = ''
-  try {
-    const draft = await createLiveAgentConfigDraft({
-      speech_config: updatedSpeechConfig({ ...voice, selected_at: new Date().toISOString() }),
-    })
-    if (scope !== nameScope || room !== props.roomId) return false
-    await activateLiveAgentConfigVersion(draft.id)
-    if (scope !== nameScope || room !== props.roomId) return false
-    await load()
-    if (scope !== nameScope || room !== props.roomId) return false
-    notice.value = `“${String(voice.name || '声音')}”已用于直播间「${props.roomName || '当前直播间'}」`
-    emit('changed')
-    return true
-  } catch (err) {
-    if (scope === nameScope) error.value = err instanceof Error ? err.message : '保存直播间声音失败'
-    return false
-  } finally {
-    if (scope === nameScope) selecting.value = false
-  }
+  emit('selected', voice)
+  notice.value = `“${voice.name}”已选入方案「${props.planName || '当前方案'}」，请点击“保存方案”完成保存。`
 }
 
 async function chooseOfficial(item: OfficialVoice) {
-  if (!officialConfigured.value) return
-  await bindVoice({ source: 'official', provider: item.provider || 'aliyun_qwen', name: item.name, voice_id: item.id, model: item.model })
+  if (!officialConfigured.value || props.disabled || loading.value || !props.planId) return
+  selectVoice({ version: 'V1', source: 'official', provider: item.provider || 'aliyun_qwen', name: item.name, voice_id: item.id, model: item.model })
 }
 
 function previewOfficial(item: OfficialVoice) {
@@ -314,27 +270,19 @@ async function previewCustom(profile: VoiceProfile) {
 }
 
 async function useCustom(profile: VoiceProfile) {
-  if (!props.roomId) return
-  const scope = nameScope, room = props.roomId
+  if (!props.planId || props.disabled || loading.value || selecting.value) return
+  const scope = nameScope, plan = props.planId
   const model = voiceSettings.value.custom_model
-  const binding = await ensureBinding(profile, model)
-  if (!binding || binding.status !== 'ready' || scope !== nameScope || room !== props.roomId) return
-  const saved = await bindVoice({
-    source: 'clone', provider: binding.provider, name: profile.name, voice_id: binding.voice_id,
-    profile_id: profile.id, binding_id: binding.id, model: binding.model, rate: binding.rate || 1,
-  })
-  if (!saved || scope !== nameScope || room !== props.roomId) return
   selecting.value = true
   try {
-    await publishLiveAgentVoiceBinding(room, binding.id)
-    if (scope !== nameScope || room !== props.roomId) return
-    await load()
-    emit('changed')
-  } catch (err) {
-    if (scope === nameScope) error.value = err instanceof Error ? err.message : '声音已保存，但应用到智能体方案失败'
-  } finally {
-    if (scope === nameScope) selecting.value = false
-  }
+    const binding = await ensureBinding(profile, model)
+    if (!binding || binding.status !== 'ready' || scope !== nameScope || plan !== props.planId || props.disabled) return
+    selecting.value = false
+    selectVoice({
+      version: 'V1', source: 'clone', provider: binding.provider, name: profile.name, voice_id: binding.voice_id,
+      profile_id: profile.id, binding_id: binding.id, model: binding.model, rate: binding.rate || 1,
+    })
+  } finally { if (scope === nameScope) selecting.value = false }
 }
 
 function openCloneDialog(mode: 'upload' | 'design' = 'upload') {
@@ -453,7 +401,7 @@ async function submitClone() {
     resetCloneForm()
     await load()
     if (scope !== nameScope) return
-    notice.value = '专属声音已生成成功，现在可以试听或用于当前直播间。'
+    notice.value = '专属声音已生成成功，现在可以试听或选入当前方案。'
   } catch (err) {
     if (scope !== nameScope) return
     cloneError.value = err instanceof Error ? err.message : '声音生成失败'
@@ -470,18 +418,18 @@ async function removeCustomVoice(profile: VoiceProfile) {
   error.value = ''
   notice.value = ''
   const wasSelected = selectedProfileId.value === profile.id
+  const scope = nameScope
   try {
     await deleteLiveVoiceProfile(profile.id)
+    if (scope !== nameScope) return
     await load()
-    if (wasSelected) {
-      const fallback = await getLiveOfficialVoices()
-      if (fallback.items[0]) await chooseOfficial(fallback.items[0])
-    }
-    notice.value = `已删除“${profile.name}”，声音名额已释放。`
+    if (scope !== nameScope) return
+    notice.value = `已删除“${profile.name}”，声音名额已释放。${wasSelected ? '请为当前方案重新选择可用声音后保存。' : ''}`
   } catch (err) {
+    if (scope !== nameScope) return
     error.value = err instanceof Error ? err.message : '删除自定义声音失败'
   } finally {
-    deletingProfileId.value = 0
+    if (scope === nameScope) deletingProfileId.value = 0
   }
 }
 
@@ -512,7 +460,7 @@ function createdLabel(value: string) {
   })
 }
 
-watch(() => props.roomId, () => { nameScope++; voiceSettings.value = { custom_model: '', can_design: false }; cloneOpen.value = false; resetCloneForm(); stopPreview(); bindingBusyKey.value = ''; selecting.value = false; editingNameId.value = 0; savingNameId.value = 0; nameError.value = ''; void load() })
+watch(() => [props.scopeKey, props.planId], () => { nameScope++; officialVoices.value = []; voiceProfiles.value = []; voiceBindings.value = []; officialConfigured.value = false; notice.value = ''; error.value = ''; voiceSettings.value = { custom_model: '', can_design: false }; cloneOpen.value = false; resetCloneForm(); stopPreview(); bindingBusyKey.value = ''; selecting.value = false; editingNameId.value = 0; savingNameId.value = 0; nameError.value = ''; void load() })
 onMounted(() => void load())
 onBeforeUnmount(() => { nameScope++; stopPreview() })
 </script>
@@ -522,7 +470,7 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
     <div class="voice-room-strip">
       <div><span class="section-kicker">VOICE MANAGEMENT</span><strong>样本声音 · 自定义音色</strong></div>
       <div class="room-voice-state">
-        <span>指定直播间</span><b>{{ roomName || '请选择直播间' }}</b><i></i>
+        <span>当前方案</span><b>{{ planName || '请先选择一个方案' }}</b><i></i>
         <span>当前声音</span><b>{{ currentVoiceName }}</b>
       </div>
     </div>
@@ -565,7 +513,7 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
             <div class="voice-row-copy"><div><strong>{{ item.name }}</strong><span>{{ officialTag(item) }}</span></div><p>{{ item.description }}</p></div>
             <div class="voice-row-actions">
               <button type="button" class="preview-button" :disabled="!officialConfigured" @click="previewOfficial(item)"><span>{{ previewingKey === 'official-' + item.id ? 'Ⅱ' : '▶' }}</span>{{ previewingKey === 'official-' + item.id ? previewPhase === 'playing' ? '正在试听' : '准备中…' : '试听' }}</button>
-              <button type="button" class="use-voice-button" :class="{ selected: isOfficialSelected(item) }" :disabled="selecting || !officialConfigured" @click="chooseOfficial(item)">{{ isOfficialSelected(item) ? '当前使用' : '使用这个声音' }}</button>
+              <button type="button" class="use-voice-button" :class="{ selected: isOfficialSelected(item) }" :disabled="disabled || !planId || loading || selecting || !officialConfigured" @click="chooseOfficial(item)">{{ isOfficialSelected(item) ? '当前使用' : '使用这个声音' }}</button>
             </div>
           </article>
         </div>
@@ -581,7 +529,7 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
 
             <div class="voice-row-actions custom-actions">
               <button type="button" class="preview-button" :disabled="(Boolean(bindingBusyKey) && previewingKey !== customPreviewKey(profile))" @click="previewCustom(profile)"><span>{{ previewingKey === customPreviewKey(profile) ? 'Ⅱ' : '▶' }}</span>{{ previewingKey === customPreviewKey(profile) ? previewPhase === 'playing' ? '停止试听' : '准备中…' : '试听' }}</button>
-              <button type="button" class="use-voice-button" :class="{ selected: isCustomModelSelected(profile) }" :disabled="selecting || Boolean(bindingBusyKey)" @click="useCustom(profile)">{{ isCustomModelSelected(profile) ? '当前使用' : '使用这个声音' }}</button>
+              <button type="button" class="use-voice-button" :class="{ selected: isCustomModelSelected(profile) }" :disabled="disabled || !planId || loading || selecting || Boolean(bindingBusyKey)" @click="useCustom(profile)">{{ isCustomModelSelected(profile) ? '当前使用' : '使用这个声音' }}</button>
               <button v-if="!props.supportSession" type="button" class="delete-voice-button" :disabled="deletingProfileId === profile.id" title="删除自定义声音" @click="removeCustomVoice(profile)">{{ deletingProfileId === profile.id ? '…' : '删除' }}</button>
             </div>
           </article>

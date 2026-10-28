@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { openPlanPicker } from '../planAssets'
 import LivePlanVersionBadge from '../components/LivePlanVersionBadge.vue'
 import LiveSessionDownloads from '../components/LiveSessionDownloads.vue'
 import { confirmAction, useFeedbackErrorRef, showAlert } from '../uiFeedback'
@@ -15,7 +16,6 @@ import {
   getLiveAgentPlans,
   createLiveAgentPlan,
   getRoomLiveAgentPlans,
-  bindRoomLiveAgentPlan,
   setLiveRuntimePlan,
   chatLiveAgent,
   controlLiveDevice,
@@ -411,6 +411,19 @@ const agentPlanBusy = ref(false)
 const publishedPlanVersionError = ref(false)
 const publishedPlanVersionLoading = ref(false)
 const agentPlanError = useFeedbackErrorRef()
+const agentPlanNotice = ref('')
+const livePlanPicker = ref<HTMLSelectElement | null>(null)
+let accountPlanLoadEpoch = 0
+let accountPlanScopeEpoch = 0
+const accountPlanIdentity = () => JSON.stringify([session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id, session.bootstrap?.actor.role, room.value?.tenant_id, canConfigureRoomStrategy.value])
+const accountPlanScope = () => accountPlanScopeEpoch + ':' + accountPlanIdentity()
+watch(accountPlanIdentity, () => {
+  accountPlanScopeEpoch++
+  accountPlanLoadEpoch++
+  liveAgentPlans.value = []
+  agentPlanError.value = ''
+  agentPlanNotice.value = ''
+}, { flush: 'sync' })
 const roomBrain = ref<RoomBrainView | null>(null)
 const speechRuntime = ref<SpeechRuntimeSnapshot | null>(null)
 const speechMissions = ref<SpeechMission[]>([])
@@ -1188,6 +1201,8 @@ const deviceControlBusy = ref(false)
 const deviceControlError = useFeedbackErrorRef()
 
 async function loadLiveAgentPlansForRoom() {
+  const token = ++accountPlanLoadEpoch, scope = accountPlanScope()
+  const current = () => !pageUnmounted && token === accountPlanLoadEpoch && scope === accountPlanScope()
   if (!canConfigureRoomStrategy.value) {
     liveAgentPlans.value = []
     return
@@ -1197,10 +1212,12 @@ async function loadLiveAgentPlansForRoom() {
   agentPlanError.value = ''
   try {
     const result = await getRoomLiveAgentPlans(roomId, true)
-    liveAgentPlans.value = (result.items || []).filter((item) => item.status !== 'archived')
+    if (!current()) return
+    liveAgentPlans.value = (result.items || []).filter((item) => item.tenant_id === currentRoom.tenant_id && item.status !== 'archived')
   } catch (err) {
+    if (!current()) return
     liveAgentPlans.value = []
-    agentPlanError.value = err instanceof Error ? err.message : '读取当前直播间已发布方案失败'
+    agentPlanError.value = err instanceof Error ? err.message : '读取账号已保存方案失败'
   }
 }
 
@@ -1248,18 +1265,20 @@ async function createDefaultLiveAgentPlan() {
     description: '系统自动创建的基础智能体直播方案，可在直播策略中继续修改。',
     tenant_id: currentRoom.tenant_id,
   })
-  await bindRoomLiveAgentPlan(plan.id, roomId, currentRoom.tenant_id)
   await setLiveRuntimePlan(roomId, plan.id)
   await Promise.all([refreshRuntime(), loadLiveAgentPlansForRoom()])
   return plan
 }
 
 async function changeLiveAgentPlan(event: Event) {
-  if (!canConfigureRoomStrategy.value || !room.value || !coreActionsAvailable.value || agentPlanBusy.value) return
+  if (!canConfigureRoomStrategy.value || !room.value || !coreActionsAvailable.value || agentPlanBusy.value || runtimeControlBusy.value) return
   const target = event.target as HTMLSelectElement
   const rawValue = target.value
   const previous = liveAgentPlanSelectValue.value
+  const scope = accountPlanScope()
+  const current = () => !pageUnmounted && scope === accountPlanScope()
   agentPlanBusy.value = true
+  agentPlanNotice.value = ''
   agentPlanError.value = ''
   try {
     if (rawValue === '__create_default__') {
@@ -1274,12 +1293,16 @@ async function changeLiveAgentPlan(event: Event) {
     if (!Number.isFinite(planId) || planId <= 0 || planId === selectedLiveAgentPlanId.value) return
     await setLiveRuntimePlan(roomId, planId)
     const plan = liveAgentPlans.value.find((item) => item.id === planId) || null
+    if (!current()) return
     await refreshRuntime()
+    if (!current()) return
+    agentPlanNotice.value = '已切换，重新开播生效'
     logUserAction('LIVE_AGENT_PLAN_SELECTED', {
       plan_id: planId,
       plan_name: plan?.name || '',
     })
   } catch (err) {
+    if (!current()) return
     target.value = previous
     agentPlanError.value = err instanceof Error ? err.message : '切换智能体直播方案失败'
   } finally {
@@ -1290,7 +1313,8 @@ async function changeLiveAgentPlan(event: Event) {
 async function setCompanionMode(mode: 'control' | 'anchor') {
   if (!coreActionsAvailable.value || runtimeModeBusy.value || aiRuntimeMode.value === mode) return
   if (mode === 'anchor' && !selectedLiveAgentPlanId.value) {
-    openRuntimeActionError('无法切换到主播模式', null, '主播模式需要先选择智能体直播方案')
+    agentPlanError.value = '请先选择一个方案'
+    openPlanPicker(livePlanPicker.value)
     return
   }
   runtimeModeBusy.value = true
@@ -3235,10 +3259,11 @@ async function connectLocalAudioReceiver() {
 }
 
 async function startCompanionRuntime() {
-  if (!coreActionsAvailable.value || runtimeControlBusy.value || firstVoiceStartPending.value || aiActive.value) return
+  if (!coreActionsAvailable.value || agentPlanBusy.value || runtimeControlBusy.value || firstVoiceStartPending.value || aiActive.value) return
   closeRuntimeActionError()
   if (aiRuntimeMode.value === 'anchor' && !selectedLiveAgentPlanId.value) {
-    openRuntimeActionError('无法启动直播搭子', null, '主播模式需要先选择智能体直播方案')
+    agentPlanError.value = '请先选择一个方案'
+    openPlanPicker(livePlanPicker.value)
     return
   }
   runtimeControlBusy.value = true
@@ -3249,7 +3274,21 @@ async function startCompanionRuntime() {
   firstVoicePlaybackEpoch += 1
   flushCompositeAudioQueue()
   let startAccepted = false
+  const planAtStart = selectedLiveAgentPlanId.value, scope = accountPlanScope()
+  const assertCurrent = () => {
+    if (pageUnmounted || scope !== accountPlanScope() || planAtStart !== selectedLiveAgentPlanId.value) throw new Error('账号或方案已变化，请重新开始')
+  }
   try {
+    if (aiRuntimeMode.value === 'anchor') {
+      const saved = await getRoomPublishedLiveAgentPlanVersion(roomId)
+      assertCurrent()
+      if (!saved.version || saved.version.plan_id !== planAtStart || saved.version.tenant_id !== room.value?.tenant_id) {
+        agentPlanError.value = '该方案还没有保存，请先保存'
+        return
+      }
+      publishedSpeechVersion.value = saved.version
+      agentPlanError.value = ''
+    }
     if (!(await ensureLocalAudioUnlocked())) {
       openRuntimeActionError('无法启动直播搭子', localAudioError.value, '浏览器没有允许声音播放，请再次点击开始')
       return
@@ -3260,7 +3299,9 @@ async function startCompanionRuntime() {
       return
     }
     initialVoiceStage.value = 'connecting'
+    assertCurrent()
     await connectLocalAudioReceiver()
+    assertCurrent()
     await startLiveRuntime(roomId)
     startAccepted = true
     if (startupMilestones[initialVoiceStage.value].percent < 10) initialVoiceStage.value = 'waiting_startup'
@@ -4640,8 +4681,9 @@ onBeforeUnmount(() => {
           <span>直播搭子</span>
           <label v-if="canConfigureRoomStrategy" class="companion-plan-select" aria-label="智能体直播方案">
             <select
+              ref="livePlanPicker"
               :value="liveAgentPlanSelectValue"
-              :disabled="!coreActionsAvailable || agentPlanBusy"
+              :disabled="!coreActionsAvailable || agentPlanBusy || runtimeControlBusy"
               @change="changeLiveAgentPlan"
             >
               <option value="" disabled>
@@ -4662,6 +4704,7 @@ onBeforeUnmount(() => {
             :error="publishedPlanVersionError"
             :loading="publishedPlanVersionLoading"
           />
+          <small v-if="agentPlanNotice" role="status">{{ agentPlanNotice }}</small>
           <small v-if="agentPlanError" class="companion-plan-error">{{ agentPlanError }}</small>
           <div class="companion-mode-switch" aria-label="直播搭子工作模式">
             <button

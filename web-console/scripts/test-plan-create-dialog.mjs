@@ -26,7 +26,7 @@ assert.ok(createEntry && editEntry)
 const fixture = `<script setup lang="ts">
 import {computed,ref,shallowRef} from 'vue'
 import PlanCreateDialog from '/src/components/PlanCreateDialog.vue'
-import {createLiveAgentPlan,bindRoomLiveAgentPlan,updateLiveAgentPlan} from '/src/api.ts'
+import {createLiveAgentPlan,updateLiveAgentPlan} from '/src/api.ts'
 import {applySession} from '/src/session.ts'
 import {useFeedbackErrorRef,feedbackState} from '/src/uiFeedback.ts'
 import '/src/style.css'
@@ -35,6 +35,9 @@ const livePlans=ref([{id:6,tenant_id:14,name:'原有方案',description:'已有�
 const currentPlan=computed(()=>livePlans.value.find(p=>p.id===currentRoomPlanId.value))
 const planBusy=ref(false),newPlanName=ref(''),newPlanDescription=ref(''),showPlanManager=ref(false),planManagerMode=ref<'create'|'edit'>('edit'),planCreateError=ref(''),deleteConfirmPlanId=ref(null),settingsError=useFeedbackErrorRef(),messages=ref([]),planActionsMenu=ref(null)
 const planCreateReturnFocus=shallowRef(null)
+let contentModeDisposed=false,planAssetScopeEpoch=0
+const planSelectionScope=()=>({tenantId:14,roomId:room.value?.id||0})
+const planSelectionPreferenceKey=scope=>JSON.stringify(scope)
 function closePlanActionsMenu(){planActionsMenu.value?.removeAttribute('open')}
 async function refreshLivePlans(){if(window.fixture.refreshFailure)throw Error('列表刷新失败');livePlans.value=structuredClone(window.fixture.plans)}
 async function refreshCurrentRoomPlan(){}
@@ -50,10 +53,6 @@ window.fetch=async(url,init={})=>{
  if(path==='/api/v1/live-agent-plans'){
   if(window.fixture.fail)return Response.json({error:'方案名称已存在，请修改后重试'},{status:409})
   const plan={id:window.fixture.plans.length+10,...body};window.fixture.plans.push(plan);return Response.json(plan)
- }
- if(path.endsWith('/room-bindings')){
-  if(window.fixture.failBinding)return Response.json({error:'当前直播间不可绑定'},{status:409})
-  return Response.json({})
  }
  if(init.method==='PUT'){
   const id=Number(path.split('/').at(-1)),plan={...window.fixture.plans.find(p=>p.id===id),...body};window.fixture.plans=window.fixture.plans.map(p=>p.id===id?plan:p);return Response.json(plan)
@@ -86,12 +85,12 @@ try {
   const modal = page.getByRole('dialog', { name: '新建方案', exact: true })
   const name = page.getByRole('textbox', { name: '方案名称', exact: true })
   const description = page.getByRole('textbox', { name: '方案说明（选填）', exact: true })
-  const create = page.getByRole('button', { name: '创建并绑定当前直播间', exact: true })
+  const create = page.getByRole('button', { name: '创建方案', exact: true })
   const state = () => page.evaluate(() => window.fixture.state())
   const open = async () => { await page.getByText('更多', { exact: true }).click(); await page.getByRole('button', { name: '新建方案', exact: true }).click(); await modal.waitFor() }
   await page.goto(url)
   await open()
-  assert.equal(await name.inputValue(), '绵都杨鸭子直播间 智能体方案01')
+  assert.equal(await name.inputValue(), '智能体方案01')
   assert.ok(await name.evaluate(element => document.activeElement === element))
   assert.equal(await page.locator('.strategy-plan-manager-inline').count(), 0)
   await page.getByRole('button', { name: '取消', exact: true }).click()
@@ -136,15 +135,9 @@ try {
   assert.equal((await state()).selected, 11)
   const calls = await page.evaluate(() => window.fixture.calls)
   assert.deepEqual(calls[1].body, { name: '测试新方案', description: '测试说明', tenant_id: 14 })
-  assert.equal(calls.filter(call => call.path.endsWith('/room-bindings')).length, 1)
-  assert.deepEqual(calls.find(call => call.path.endsWith('/room-bindings')).body, { room_id: 26, tenant_id: 14 })
+  assert.equal(calls.filter(call => call.path.endsWith('/room-bindings')).length, 0)
   assert.equal((await state()).show, false); assert.equal(await page.locator('.strategy-plan-manager-inline').count(), 0)
-  checks.push('创建中阻止取消及重复提交；成功仅绑定一次且关闭弹窗，未遗留编辑条')
-  await page.reload(); await open(); await page.evaluate(() => window.fixture.failBinding = true); await create.click()
-  await modal.waitFor({ state: 'detached' }); await page.waitForFunction(() => !window.fixture.state().busy)
-  assert.match((await state()).settingsError, /已创建，但绑定当前直播间失败/)
-  assert.equal(await page.evaluate(() => window.fixture.calls.filter(call => call.path === '/api/v1/live-agent-plans').length), 1)
-  checks.push('已创建但绑定失败时关闭创建表单并保留原警告，不误导再次创建')
+  checks.push('创建中阻止取消及重复提交；成功创建账号方案并关闭弹窗，没有绑定请求或遗留编辑条')
   await page.reload(); await page.getByText('更多', { exact: true }).click(); await page.getByRole('button', { name: '修改名称与说明', exact: true }).click()
   assert.equal(await modal.count(), 0); assert.equal(await page.locator('.strategy-plan-manager-inline').count(), 1)
   const editName = page.locator('.strategy-plan-manager-inline input').first(); await editName.fill('修改原方案')
@@ -153,9 +146,10 @@ try {
   checks.push('原修改名称/说明入口仍编辑原方案并走PUT，不触发创建')
   await page.reload(); await page.evaluate(() => window.fixture.noRoom()); await open()
   await page.getByRole('button', { name: '创建方案', exact: true }).click(); await modal.waitFor({ state: 'detached' }); await page.waitForFunction(() => !window.fixture.state().busy)
-  assert.match((await state()).settingsError, /没有可用的直播间/)
+  assert.equal((await state()).settingsError, '')
+  assert.equal((await state()).selected, 11)
   assert.equal(await page.evaluate(() => window.fixture.calls.length), 1)
-  checks.push('无直播间时保留只创建方案及明确未绑定提示，未发绑定请求')
+  checks.push('无直播间仍能创建账号方案并进入编辑，没有错误或绑定请求')
   await page.reload(); await open(); await page.evaluate(() => window.fixture.refreshFailure = true); await create.click(); await modal.waitFor({ state: 'detached' }); await page.waitForFunction(() => !window.fixture.state().busy)
   assert.match((await state()).settingsError, /列表刷新失败/)
   assert.equal((await state()).show, false)

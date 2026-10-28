@@ -2,6 +2,7 @@ package decisionexecutor
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"livecompanion/management/internal/model"
@@ -20,32 +21,39 @@ func (w *Worker) readingRulesFor(ctx context.Context, session model.LiveRuntimeS
 	}
 	w.addressMu.Lock()
 	if w.readingRules == nil {
-		w.readingRules = map[int64]readingRulesCacheEntry{}
+		w.readingRules = map[string]readingRulesCacheEntry{}
 	}
+	w.addressMu.Unlock()
+	version, err := w.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, session.TenantID, session.RoomID)
+	if err != nil {
+		return nil
+	}
+	key := fmt.Sprintf("%d:%d:%d", session.TenantID, version.PlanID, version.ID)
+	w.addressMu.Lock()
 	now := time.Now()
 	if w.now != nil {
 		now = w.now()
 	}
-	if entry, ok := w.readingRules[session.RoomID]; ok && entry.expires.After(now) {
+	if entry, ok := w.readingRules[key]; ok && entry.expires.After(now) {
 		w.addressMu.Unlock()
 		return entry.rules
 	}
 	w.addressMu.Unlock()
 
-	var text string
-	if source, ok := w.store.(roomReadingRulesSource); ok {
-		if item, err := source.GetRoomReadingRules(ctx, session.TenantID, session.RoomID); err == nil {
+	text, hasSnapshot := version.GenerationContext["reading_rules"].(string)
+	if source, ok := w.store.(planReadingRulesSource); ok && !hasSnapshot {
+		if item, err := source.GetPlanReadingRules(ctx, session.TenantID, version.PlanID); err == nil {
 			text = item.RulesText
 		}
 	}
 	rules := readingrules.Parse(text)
 
 	w.addressMu.Lock()
-	w.readingRules[session.RoomID] = readingRulesCacheEntry{rules: rules, expires: now.Add(2 * time.Minute)}
+	w.readingRules[key] = readingRulesCacheEntry{rules: rules, expires: now.Add(2 * time.Minute)}
 	w.addressMu.Unlock()
 	return rules
 }
 
-type roomReadingRulesSource interface {
-	GetRoomReadingRules(context.Context, int64, int64) (model.RoomReadingRules, error)
+type planReadingRulesSource interface {
+	GetPlanReadingRules(context.Context, int64, int64) (model.RoomReadingRules, error)
 }

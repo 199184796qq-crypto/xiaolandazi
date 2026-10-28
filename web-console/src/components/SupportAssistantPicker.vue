@@ -161,7 +161,7 @@ onMounted(() => void load())
 
     <p v-if="error" class="inline-error">{{ error }}</p>
     <p v-if="success" class="support-success">{{ success }}</p>
-    <p class="support-scope-note">仅授权当前直播间的智能体配置及绑定关系，可随时撤销。</p>
+    <p class="support-scope-note">仅授权范围内的账号方案维护及当前直播间的方案选择，可随时撤销。</p>
 
     <div v-if="staff.length" class="support-carousel-shell">
       <button type="button" class="support-carousel-arrow" :disabled="selectedIndex <= 0" aria-label="上一位协助员" @click="scrollToStaff(selectedIndex - 1)">‹</button>

@@ -83,7 +83,7 @@ func (s *Server) liveAgentPlanFullShowVariantVoice(w http.ResponseWriter, r *htt
 	input.Text = strings.TrimSpace(input.Text)
 	input.Source = strings.ToLower(strings.TrimSpace(input.Source))
 	input.VoiceID = strings.TrimSpace(input.VoiceID)
-	if input.RoomID <= 0 || input.Text == "" {
+	if input.Text == "" {
 		writeError(w, http.StatusBadRequest, "直播间和稿件正文不能为空")
 		return
 	}
@@ -102,27 +102,14 @@ func (s *Server) liveAgentPlanFullShowVariantVoice(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
-		return
-	}
-	plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
+	input.RoomID = 0
+	_, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
 		return
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取直播智能体方案失败")
-		return
-	}
-	bound := false
-	for _, roomID := range plan.RoomIDs {
-		if roomID == input.RoomID {
-			bound = true
-			break
-		}
-	}
-	if !bound {
-		writeError(w, http.StatusBadRequest, "当前直播方案没有绑定到所选直播间")
 		return
 	}
 
@@ -212,7 +199,7 @@ func (s *Server) liveAgentPlanFullShowVariantSubtitleRebuild(w http.ResponseWrit
 		writeError(w, http.StatusBadRequest, "SRT 校对参数格式错误")
 		return
 	}
-	if input.RoomID <= 0 || input.AudioAssetID <= 0 || len(input.Timeline) == 0 {
+	if input.AudioAssetID <= 0 || len(input.Timeline) == 0 {
 		writeError(w, http.StatusBadRequest, "SRT 校对参数不完整")
 		return
 	}
@@ -224,27 +211,14 @@ func (s *Server) liveAgentPlanFullShowVariantSubtitleRebuild(w http.ResponseWrit
 	if !ok {
 		return
 	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
-		return
-	}
-	plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
+	input.RoomID = 0
+	_, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
 		return
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取直播智能体方案失败")
-		return
-	}
-	bound := false
-	for _, roomID := range plan.RoomIDs {
-		if roomID == input.RoomID {
-			bound = true
-			break
-		}
-	}
-	if !bound {
-		writeError(w, http.StatusBadRequest, "当前直播方案没有绑定到所选直播间")
 		return
 	}
 	asset, err := s.store.GetMediaAsset(r.Context(), tenantID, input.AudioAssetID)
@@ -254,7 +228,6 @@ func (s *Server) liveAgentPlanFullShowVariantSubtitleRebuild(w http.ResponseWrit
 	}
 	if strings.TrimSpace(fmt.Sprint(asset.Metadata["purpose"])) != "live_agent_formal_voice_timeline" ||
 		mediaMetadataInt64(asset.Metadata["plan_id"]) != planID ||
-		mediaMetadataInt64(asset.Metadata["room_id"]) != input.RoomID ||
 		!strings.EqualFold(strings.TrimSpace(fmt.Sprint(asset.Metadata["variant_key"])), variantKey) {
 		writeError(w, http.StatusConflict, "当前声音资产与这篇稿件不匹配")
 		return

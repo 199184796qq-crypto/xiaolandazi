@@ -71,7 +71,7 @@ func TestPreparedInteractionInvalidatesChangedFactsCorrectionsVoiceAndQuestion(t
 		{"correction", func(s *preparedTestStore, _ *fakeCore) {
 			s.memories = []model.AgentMemoryItem{{ID: 1, TenantID: 7, RoomID: 11, Status: "active", MemoryType: "style", MemoryKey: "short", CurrentVersion: &model.AgentMemoryVersion{ContentText: "回答更简短", Structured: map[string]any{"review_plan_id": s.plan.ID}}}}
 		}},
-		{"voice", func(s *preparedTestStore, _ *fakeCore) { s.profiles[0].VoiceID = "new-voice" }},
+		{"voice", func(s *preparedTestStore, _ *fakeCore) { s.publishedVersion.VoiceIdentity.VoiceID = "new-voice" }},
 		{"question", func(_ *preparedTestStore, core *fakeCore) {
 			core.claimRaw = `{"claimed":true,"item":{"id":"d-1","topic":"FAMILY:发货物流","sample_questions":["发什么快递"],"manual_action":"answer"}}`
 		}},

@@ -297,6 +297,7 @@ type StopLiveRuntimeInput struct {
 }
 
 type RoomReadingRules struct {
+	PlanID          int64     `json:"plan_id,omitempty"`
 	TenantID        int64     `json:"tenant_id"`
 	RoomID          int64     `json:"room_id"`
 	RulesText       string    `json:"rules_text"`

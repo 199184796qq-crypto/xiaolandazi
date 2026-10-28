@@ -7,11 +7,11 @@ import (
 
 const savedPlanVersionsToKeep = 4 // Current snapshot plus three older snapshots.
 
-// History is retained once per plan/content mode. Any running bound room
-// protects the shared history until stop: the pinned version is runtime-only.
+// History is retained once per plan/content mode. Any active session in the tenant
+// defers cleanup: its pinned plan may differ from the room's next-start selection.
 func pruneSavedPlanVersions(ctx context.Context, tx *sql.Tx, tenant, plan, room int64) error {
 	var active int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM live_runtime_sessions runtime WHERE runtime.tenant_id=? AND (runtime.ended_at IS NULL OR runtime.status IN ('running','paused','starting','resuming')) AND EXISTS (SELECT 1 FROM live_agent_plan_room_bindings binding WHERE binding.tenant_id=runtime.tenant_id AND binding.room_id=runtime.room_id AND binding.plan_id=? AND binding.status='active')`, tenant, plan).Scan(&active); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM live_runtime_sessions runtime WHERE runtime.tenant_id=? AND (runtime.ended_at IS NULL OR runtime.status IN ('running','paused','starting','resuming'))`, tenant).Scan(&active); err != nil {
 		return err
 	}
 	if active > 0 {
@@ -52,7 +52,7 @@ func pruneSavedPlanVersions(ctx context.Context, tx *sql.Tx, tenant, plan, room 
 
 // Saving while live defers cleanup until this guarded stop path.
 func (s *Store) PruneSavedPlanVersionsForRoom(ctx context.Context, tenant, room int64) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT plan_id FROM live_agent_plan_room_bindings WHERE tenant_id=? AND room_id=? AND status='active'`, tenant, room)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM live_agent_plans WHERE tenant_id=? AND status='active'`, tenant)
 	if err != nil {
 		return err
 	}

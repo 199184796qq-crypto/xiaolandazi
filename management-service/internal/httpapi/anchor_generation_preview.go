@@ -38,40 +38,23 @@ func (s *Server) requireCycleRunAccess(w http.ResponseWriter, r *http.Request, a
 }
 func (s *Server) planSelectedVoice(ctx context.Context, tenant, plan, sourceRoom int64) (anchorcycle.VoiceConfig, error) {
 	var identity model.LiveAgentVoiceIdentity
-	if sourceRoom > 0 {
-		versions, err := s.store.ListLiveAgentConfigVersions(ctx, tenant)
-		if err != nil {
-			return anchorcycle.VoiceConfig{}, err
-		}
-		for _, version := range versions {
-			if version.LifecycleStatus != "active" {
-				continue
-			}
-			room := asSupportMap(asSupportMap(version.SpeechConfig["rooms"])[strconv.FormatInt(sourceRoom, 10)])
-			raw, _ := json.Marshal(room["selected_voice"])
-			if json.Unmarshal(raw, &identity) == nil && identity.VoiceID != "" {
-				break
-			}
-		}
+	// sourceRoom is an obsolete client hint. A preview uses the selected plan's
+	// latest saved voice, exactly like the next live in every room.
+	versions, err := s.store.ListLiveAgentPlanVersionsForPlan(ctx, tenant, plan)
+	if err != nil {
+		return anchorcycle.VoiceConfig{}, err
 	}
-	if identity.VoiceID == "" {
-		versions, err := s.store.ListLiveAgentPlanVersionsForPlan(ctx, tenant, plan)
-		if err != nil {
-			return anchorcycle.VoiceConfig{}, err
-		}
-		for _, version := range versions {
-			if sourceRoom == 0 || version.RoomID == sourceRoom {
-				identity = version.VoiceIdentity
-				break
-			}
-		}
+	if len(versions) > 0 {
+		identity = versions[0].VoiceIdentity
 	}
 	if identity.VoiceID == "" {
 		return anchorcycle.VoiceConfig{}, errors.New("请先在智能体方案选择并保存声音；试听不另选音色")
 	}
-	if identity.Rate == 0 {
-		identity.Rate = 1
+	settings, err := s.store.GetPlanVoiceRate(ctx, tenant, plan)
+	if err != nil {
+		return anchorcycle.VoiceConfig{}, err
 	}
+	identity.Rate = settings.Rate
 	return anchorcycle.VoiceConfig{Source: identity.Source, VoiceID: identity.VoiceID, ProfileID: identity.ProfileID, Model: identity.Model, Rate: identity.Rate, BufferSeconds: 120}, nil
 }
 func cyclePreviewProjection(state *anchorcycle.State) any {

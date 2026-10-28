@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
-import { classifyQuestionType, deleteQuestionLibrary, getPlanPurposes, listQuestionLibrary, saveQuestionLibrary } from '../api'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { classifyQuestionType, deleteQuestionLibrary, getPlanPurposes, listQuestionLibrary, saveQuestionLibrary, getPlanQuestionPurposes, listPlanQuestionLibrary, savePlanQuestionLibrary, deletePlanQuestionLibrary, classifyPlanQuestionType } from '../api'
 import type { QuestionLibraryEntry } from '../types'
 
-const props = defineProps<{ roomId: number | null }>()
+const props = defineProps<{ roomId?: number | null; planId?: number | null; tenantId?: number }>()
+const assetId = computed(() => props.planId || props.roomId || null)
+const purposesForAsset = (id: number, query?: string, init?: Parameters<typeof getPlanPurposes>[2]) => props.planId ? getPlanQuestionPurposes(id, props.tenantId, query, init) : getPlanPurposes(id, query, init)
+const listForAsset = (id: number) => props.planId ? listPlanQuestionLibrary(id, props.tenantId) : listQuestionLibrary(id)
+const saveForAsset = (id: number, payload: Parameters<typeof saveQuestionLibrary>[1], rowId?: number) => props.planId ? savePlanQuestionLibrary(id, payload, rowId, props.tenantId) : saveQuestionLibrary(id, payload, rowId)
+const deleteForAsset = (id: number, rowId: number) => props.planId ? deletePlanQuestionLibrary(id, rowId, props.tenantId) : deleteQuestionLibrary(id, rowId)
+const classifyForAsset = (id: number, question: string) => props.planId ? classifyPlanQuestionType(id, question, props.tenantId) : classifyQuestionType(id, question)
+
 
 type Row = {
   clientId: number
@@ -68,7 +75,7 @@ function invalidateRequests() {
 }
 
 function currentRow(row: Row, roomId: number | null, version: number) {
-  return props.roomId === roomId && loadVersion === version && rows.value.includes(row)
+  return assetId.value === roomId && loadVersion === version && rows.value.includes(row)
 }
 
 function senseOptions(row: Row): PurposeOption[] {
@@ -113,7 +120,7 @@ function questionChanged(row: Row) {
 }
 
 function suggest(row: Row) {
-  const roomId = props.roomId
+  const roomId = assetId.value
   const query = row.question.trim()
   if (!roomId || !query || query === row.suggestionQuery || row.saving) return
   cancelSuggestion(row)
@@ -124,7 +131,7 @@ function suggest(row: Row) {
     suggestionTimers.delete(row.clientId)
     if (!isCurrent()) return
     try {
-      const result = await getPlanPurposes(roomId, query, { suppressErrorDialog: true })
+      const result = await purposesForAsset(roomId, query, { suppressErrorDialog: true })
       if (!isCurrent()) return
       row.suggestions = (Array.isArray(result.suggestions) ? result.suggestions : [])
         .filter(item => item && typeof item.key === 'string' && typeof item.name === 'string')
@@ -142,9 +149,9 @@ function suggest(row: Row) {
 
 async function load() {
   invalidateRequests()
-  const roomId = props.roomId
+  const roomId = assetId.value
   const version = loadVersion
-  const isCurrent = () => version === loadVersion && props.roomId === roomId
+  const isCurrent = () => version === loadVersion && assetId.value === roomId
   error.value = ''
   notice.value = ''
   if (!roomId) {
@@ -155,13 +162,13 @@ async function load() {
   }
   loading.value = true
   // Purpose hints are optional; they must not block the saved question library.
-  void getPlanPurposes(roomId, undefined, { suppressErrorDialog: true }).then(result => {
+  void purposesForAsset(roomId, undefined, { suppressErrorDialog: true }).then(result => {
     if (isCurrent()) purposes.value = result.items || []
   }).catch(() => {
     if (isCurrent()) purposes.value = []
   })
   try {
-    const result = await listQuestionLibrary(roomId)
+    const result = await listForAsset(roomId)
     if (!isCurrent()) return
     rows.value = (result.items || []).map((item: QuestionLibraryEntry) => ({
       ...blankRow(),
@@ -187,10 +194,10 @@ function addRow() {
 
 async function saveRow(row: Row) {
   if (row.saving) return
-  const roomId = props.roomId
+  const roomId = assetId.value
   const version = loadVersion
   if (!roomId) {
-    error.value = '请先选择直播间'
+    error.value = '请先选择方案'
     return
   }
   cancelSuggestion(row)
@@ -202,7 +209,7 @@ async function saveRow(row: Row) {
   error.value = ''
   notice.value = ''
   try {
-    const saved = await saveQuestionLibrary(roomId, {
+    const saved = await saveForAsset(roomId, {
       question_type: row.question_type,
       question: row.question,
       answer: row.answer,
@@ -223,7 +230,7 @@ async function saveRow(row: Row) {
 
 async function removeRow(row: Row) {
   if (row.saving || row.deleting) return
-  const roomId = props.roomId
+  const roomId = assetId.value
   const version = loadVersion
   if (!roomId || !row.id) {
     cancelSuggestion(row)
@@ -235,7 +242,7 @@ async function removeRow(row: Row) {
   row.deleting = true
   error.value = ''
   try {
-    await deleteQuestionLibrary(roomId, row.id)
+    await deleteForAsset(roomId, row.id)
     if (!currentRow(row, roomId, version)) return
     rows.value = rows.value.filter(item => item !== row)
   } catch (e) {
@@ -246,7 +253,7 @@ async function removeRow(row: Row) {
 }
 
 async function classify(row: Row) {
-  const roomId = props.roomId
+  const roomId = assetId.value
   const version = loadVersion
   const question = row.question
   const previousType = row.question_type
@@ -257,7 +264,7 @@ async function classify(row: Row) {
   error.value = ''
   notice.value = ''
   try {
-    const result = await classifyQuestionType(roomId, question)
+    const result = await classifyForAsset(roomId, question)
     if (!currentRow(row, roomId, version) || row.question !== question || row.question_type !== previousType || row.saving) return
     row.question_type = result.type
     notice.value = '模型判断类型：' + (typeOptions.find(item => item.value === result.type)?.label || result.type)
@@ -266,7 +273,7 @@ async function classify(row: Row) {
   }
 }
 
-watch(() => props.roomId, () => {
+watch(() => [props.planId, props.tenantId, props.roomId], () => {
   rows.value = []
   purposes.value = []
   void load()
@@ -283,7 +290,7 @@ onBeforeUnmount(invalidateRequests)
       </div>
       <div class="ql-actions">
         <button type="button" class="ghost" :disabled="loading" @click="load">刷新</button>
-        <button type="button" class="primary" :disabled="loading || !props.roomId" @click="addRow">添加一行</button>
+        <button type="button" class="primary" :disabled="loading || !assetId" @click="addRow">添加一行</button>
       </div>
     </header>
     <table class="ql-table">

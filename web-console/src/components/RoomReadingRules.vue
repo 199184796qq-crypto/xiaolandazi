@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { getRoomReadingRules, updateRoomReadingRules } from '../api'
+import { onBeforeUnmount, ref, watch } from 'vue'
+import { getRoomReadingRules, updateRoomReadingRules, getPlanReadingRules, updatePlanReadingRules } from '../api'
 
-const props = defineProps<{ roomId: number | null }>()
+const props = defineProps<{ roomId?: number | null; planId?: number | null; tenantId?: number }>()
+let epoch = 0
 
 const rulesText = ref('')
 const loading = ref(false)
@@ -14,43 +15,53 @@ const sample = `南充特产绸都杨鸭子 => 南充特产|绸都杨鸭子
 绸都 => chou2 du1`
 
 async function load() {
-  if (!props.roomId) {
+  const owner = ++epoch, plan = props.planId, tenant = props.tenantId, room = props.roomId
+  if (!plan && !room) {
     rulesText.value = ''
+    loading.value = false
+    error.value = ''; message.value = ''
     return
   }
   loading.value = true
   error.value = ''
   message.value = ''
   try {
-    const item = await getRoomReadingRules(props.roomId)
+    const item = plan ? await getPlanReadingRules(plan, tenant) : await getRoomReadingRules(room!)
+    if (owner !== epoch) return
     rulesText.value = item.rules_text || ''
   } catch (e) {
+    if (owner !== epoch) return
     error.value = e instanceof Error ? e.message : '读取读写规则失败'
   } finally {
-    loading.value = false
+    if (owner === epoch) loading.value = false
   }
 }
 
 async function save() {
-  if (!props.roomId) {
-    error.value = '请先选择直播间'
+  const owner = epoch, plan = props.planId, tenant = props.tenantId, room = props.roomId
+  if (saving.value || loading.value) return
+  if (!plan && !room) {
+    error.value = '请先选择方案'
     return
   }
   saving.value = true
   error.value = ''
   message.value = ''
   try {
-    const item = await updateRoomReadingRules(props.roomId, rulesText.value)
+    const item = plan ? await updatePlanReadingRules(plan, rulesText.value, tenant) : await updateRoomReadingRules(room!, rulesText.value)
+    if (owner !== epoch) return
     rulesText.value = item.rules_text || ''
-    message.value = '已保存，开播后送 TTS 前生效'
+    message.value = '已保存到方案；保存方案后，各直播间下次开播统一使用'
   } catch (e) {
+    if (owner !== epoch) return
     error.value = e instanceof Error ? e.message : '保存读写规则失败'
   } finally {
-    saving.value = false
+    if (owner === epoch) saving.value = false
   }
 }
 
-watch(() => props.roomId, load, { immediate: true })
+watch(() => [props.planId, props.tenantId, props.roomId], () => { rulesText.value = ''; saving.value = false; void load() }, { immediate: true })
+onBeforeUnmount(() => epoch++)
 </script>
 
 <template>
@@ -80,13 +91,13 @@ watch(() => props.roomId, load, { immediate: true })
 .reading-rules{display:grid;gap:12px;padding:16px;border:1px solid #e1e6ef;border-radius:12px;background:#fff}
 .reading-rules header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
 .reading-rules h3{margin:0 0 4px;font-size:16px}
-.reading-rules p{margin:0;color:#5b6472;font-size:13px;line-height:1.6}
+.reading-rules p{margin:0;color:#5b6472;font-size:16px;line-height:1.6}
 .reading-rules code{background:#f2f5fa;border-radius:4px;padding:0 4px}
-.reading-rules textarea{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #d9e0ea;border-radius:8px;font-family:inherit;font-size:14px;line-height:1.7;resize:vertical}
-.reading-rules .primary{padding:8px 18px;border:0;border-radius:8px;background:#6b5cff;color:#fff;font-weight:600;cursor:pointer}
+.reading-rules textarea{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #d9e0ea;border-radius:8px;font-family:inherit;font-size:16px;line-height:1.7;resize:vertical}
+.reading-rules .primary{font-size:16px;min-height:44px;padding:8px 18px;border:0;border-radius:8px;background:#6b5cff;color:#fff;font-weight:600;cursor:pointer}
 .reading-rules .primary:disabled{opacity:.6;cursor:default}
-.reading-rules .hint{font-size:12px;color:#8a93a3}
-.reading-rules .sample{margin:0;padding:10px 12px;background:#f7f9fc;border-radius:8px;font-size:13px;color:#414a57;white-space:pre-wrap}
-.reading-rules .ok{color:#1a7f37;font-size:13px}
-.reading-rules .error{color:#c62828;font-size:13px}
+.reading-rules .hint{font-size:16px;color:#8a93a3}
+.reading-rules .sample{margin:0;padding:10px 12px;background:#f7f9fc;border-radius:8px;font-size:16px;color:#414a57;white-space:pre-wrap}
+.reading-rules .ok{color:#1a7f37;font-size:16px}
+.reading-rules .error{color:#c62828;font-size:16px}
 </style>

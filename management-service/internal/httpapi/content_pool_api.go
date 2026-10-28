@@ -9,6 +9,7 @@ import (
 
 	"livecompanion/management/internal/contentpools"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/model"
 )
 
 type contentPoolStatus struct {
@@ -57,7 +58,12 @@ func (s *Server) contentPoolStatus(ctx context.Context, tenant, plan, room int64
 	if err != nil {
 		return out, err
 	}
-	version, versionErr := s.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, tenant, room)
+	versions, versionErr := s.store.ListLiveAgentPlanVersionsForPlan(ctx, tenant, plan)
+	var version model.LiveAgentPlanVersion
+	if len(versions) > 0 {
+		version = versions[0]
+	}
+
 	if versionErr == nil && version.PlanID == plan {
 		out.SavedSetID = contentPoolSetID(version.GenerationContext)
 		if out.SavedSetID > 0 {
@@ -141,14 +147,8 @@ func (s *Server) contentPoolAccess(w http.ResponseWriter, r *http.Request, edit 
 	if !ok {
 		return 0, 0, 0, 0, false
 	}
-	room, _ = strconv.ParseInt(r.URL.Query().Get("room_id"), 10, 64)
-	if room <= 0 {
-		writeError(w, 400, "请选择直播间")
-		return 0, 0, 0, 0, false
-	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenant, room) {
-		return 0, 0, 0, 0, false
-	}
+	room = 0
+
 	if _, err := s.store.GetLiveAgentPlan(r.Context(), tenant, plan); err != nil {
 		writeError(w, 404, "当前方案不存在")
 		return 0, 0, 0, 0, false

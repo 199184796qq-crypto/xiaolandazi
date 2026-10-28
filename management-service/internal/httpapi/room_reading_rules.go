@@ -1,4 +1,4 @@
-﻿package httpapi
+package httpapi
 
 import (
 	"net/http"
@@ -9,23 +9,13 @@ import (
 
 // roomReadingRules reads or replaces the room's "读写规则" text.
 func (s *Server) roomReadingRules(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.resolveActor(w, r)
+	actor, tenantID, planID, ok := s.planAssetScope(w, r)
 	if !ok {
 		return
 	}
-	roomID, ok := pathID(w, r)
-	if !ok {
-		return
-	}
-	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
-	if !ok {
-		return
-	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
-		return
-	}
+
 	if r.Method == http.MethodGet {
-		item, err := s.store.GetRoomReadingRules(r.Context(), tenantID, roomID)
+		item, err := s.store.GetPlanReadingRules(r.Context(), tenantID, planID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "读取读写规则失败")
 			return
@@ -45,7 +35,7 @@ func (s *Server) roomReadingRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "读写规则最多 200 行")
 		return
 	}
-	item, err := s.store.UpsertRoomReadingRules(r.Context(), tenantID, roomID, actor.UserID, input)
+	item, err := s.store.SetPlanReadingRules(r.Context(), tenantID, planID, actor.UserID, input.RulesText)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "保存读写规则失败")
 		return

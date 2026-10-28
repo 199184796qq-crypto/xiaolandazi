@@ -215,6 +215,14 @@ func (s *Store) GetLiveContentMode(ctx context.Context, tenantID, roomID int64) 
 		return model.LiveContentModeAccess{}, err
 	}
 	access, err := s.readLiveContentAccess(ctx, tenantID, roomID, p.Policy.ContentMode)
+	if err == nil {
+		if version, versionErr := s.GetPublishedLiveAgentPlanVersionForRoom(ctx, tenantID, roomID); versionErr == nil {
+			access = model.ResolveLiveContentMode(model.LiveContentModeFromGenerationContext(version.GenerationContext), true, "plan")
+		} else if !errors.Is(versionErr, ErrLiveAgentPlanVersionNotFound) {
+			return model.LiveContentModeAccess{}, versionErr
+		}
+	}
+
 	access.AutoRefreshEnabled = p.Policy.AutoRefreshEnabled
 	access.RefreshIntervalSeconds = p.Policy.MainlineTTLSeconds
 	access.ReplacementPercent = p.Policy.ReplacementPercent

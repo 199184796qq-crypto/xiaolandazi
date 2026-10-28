@@ -1,4 +1,4 @@
-﻿package httpapi
+package httpapi
 
 import (
 	"context"
@@ -24,21 +24,11 @@ const questionTypeSystemPrompt = `你是直播问答的问题分类器。把观�
 
 // classifyQuestionLibrary asks the model to suggest a question type.
 func (s *Server) classifyQuestionLibrary(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.resolveActor(w, r)
+	_, _, _, ok := s.planAssetScope(w, r)
 	if !ok {
 		return
 	}
-	roomID, ok := pathID(w, r)
-	if !ok {
-		return
-	}
-	tenantID, ok := s.tenantForRoom(w, r, actor, roomID)
-	if !ok {
-		return
-	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, roomID) {
-		return
-	}
+
 	var input struct {
 		Question string `json:"question"`
 	}

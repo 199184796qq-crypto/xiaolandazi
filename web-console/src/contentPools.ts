@@ -23,9 +23,9 @@ export function contentPoolURL(plan: number, room: number, tenant?: number) {
   if (tenant) query.set('tenant_id', String(tenant))
   return `/api/v1/live-agent-plans/${plan}/content-pools?${query}`
 }
-export function useContentPools(plan: Ref<number | null>, room: Ref<{ id: number; tenant_id?: number } | undefined>) {
+export function useContentPools(plan: Ref<number | null>, tenant: Ref<number>) {
   const status = ref<PoolStatus | null>(null), error = ref(''), submitting = ref(false), preview = ref(false)
-  const url = computed(() => plan.value && room.value ? contentPoolURL(plan.value, room.value.id, room.value.tenant_id) : '')
+  const url = computed(() => plan.value && tenant.value ? contentPoolURL(plan.value, 0, tenant.value) : '')
   let epoch = 0, timer: ReturnType<typeof setTimeout> | undefined, controller: AbortController | undefined
   let busy = false, disposed = false
   function schedule() { if (!disposed && url.value) timer = setTimeout(() => void refresh(), 5000) }

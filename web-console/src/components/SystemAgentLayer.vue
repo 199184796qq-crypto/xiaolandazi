@@ -7,7 +7,6 @@ import { useAgentEnterSend } from '../useAgentEnterSend'
 import { useFloatingAgentDrawer, type DrawerResizeEdge } from '../useFloatingAgentDrawer'
 import { isTenantMaintenanceWriteIntent } from '../tenantAgentWriteIntent'
 import { tenantActionContextMatches } from '../tenantAgentActionGuard'
-import { boundRoomIdForPlan } from '../tenantAgentContext'
 import TodoBadge from './TodoBadge.vue'
 import { isInboxIntent, refreshInbox, canUseWorkInbox } from '../workInbox'
 import {
@@ -44,7 +43,6 @@ import {
   adoptLiveAgentPlanFacts,
   adoptLiveAgentPlanBenefits,
   adoptLiveAgentPlanProductLinks,
-  bindRoomLiveAgentPlan,
   deleteLiveAgentPlanFact,
   deleteLiveAgentPlanBenefit,
   deleteLiveAgentPlanProductLink,
@@ -70,7 +68,6 @@ import {
   simulateRoomAgentDecision,
   setLiveRuntimePlan,
   testLivePolicyAdmin,
-  unbindRoomLiveAgentPlan,
   updateUserUIPreferences,
   updateLiveAgentPlanFact,
   updateLiveAgentPlanBenefit,
@@ -147,8 +144,6 @@ const unifiedLiveStrategyActionTypes = new Set([
   'add_live_script_reference',
   'confirm_live_script_reference_update',
   'confirm_live_script_reference_disable',
-  'confirm_live_plan_bind',
-  'confirm_live_plan_unbind',
   'confirm_live_plan_switch',
 ])
 
@@ -1088,8 +1083,6 @@ function restoreAgentChatHistory(userId: number) {
         item.action?.type === 'add_live_script_reference' ||
         item.action?.type === 'confirm_live_script_reference_update' ||
         item.action?.type === 'confirm_live_script_reference_disable' ||
-        item.action?.type === 'confirm_live_plan_bind' ||
-        item.action?.type === 'confirm_live_plan_unbind' ||
         item.action?.type === 'confirm_live_plan_switch' ||
         item.action?.type === 'clarify_live_strategy_intent'
           ? item.action
@@ -1155,8 +1148,6 @@ function persistAgentChatHistory(userId: number) {
       item.action?.type === 'add_live_script_reference' ||
       item.action?.type === 'confirm_live_script_reference_update' ||
       item.action?.type === 'confirm_live_script_reference_disable' ||
-      item.action?.type === 'confirm_live_plan_bind' ||
-      item.action?.type === 'confirm_live_plan_unbind' ||
       item.action?.type === 'confirm_live_plan_switch' ||
       item.action?.type === 'clarify_live_strategy_intent'
         ? item.action
@@ -2123,8 +2114,6 @@ function latestPendingLiveStrategyAction(domain: AgentDomain = 'live-strategy') 
     'add_live_script_reference',
     'confirm_live_script_reference_update',
     'confirm_live_script_reference_disable',
-    'confirm_live_plan_bind',
-    'confirm_live_plan_unbind',
     'confirm_live_plan_switch',
     'clarify_live_strategy_intent',
   ])
@@ -3349,9 +3338,9 @@ async function prepareLiveScriptIntentAction(
 async function resolveIntentTargetPlan(roomId: number, result: LiveStrategyIntentResponse) {
   const targetID = Number(result.target?.plan_id || 0)
   const targetName = intentString(result.target?.plan_name)
-  const [allResult, boundResult] = await Promise.all([
+  const [allResult, savedResult] = await Promise.all([
     getLiveAgentPlans(),
-    getRoomLiveAgentPlans(roomId),
+    getRoomLiveAgentPlans(roomId, true),
   ])
   const allPlans = allResult.items || []
   let target = targetID ? allPlans.find((item) => item.id === targetID) : undefined
@@ -3365,7 +3354,7 @@ async function resolveIntentTargetPlan(roomId: number, result: LiveStrategyInten
   }
   return {
     target,
-    boundIDs: new Set((boundResult.items || []).map((item) => item.id)),
+    savedIDs: new Set((savedResult.items || []).map((item) => item.id)),
   }
 }
 
@@ -3381,67 +3370,24 @@ async function prepareLivePlanIntentAction(
     return { text: result.reply || '我知道你要操作直播方案，但还不能唯一找到目标方案。请直接说方案名称。' }
   }
   if (target.status !== 'active') {
-    return { text: '“' + target.name + '”当前不是可用状态，不能绑定或切换。' }
+    return { text: '“' + target.name + '”当前不是可用状态，不能选择。' }
   }
-  if (result.intent === 'plan.bind') {
-    if (resolved.boundIDs.has(target.id)) {
-      return { text: '“' + target.name + '”已经绑定到当前直播间，不需要重复绑定。' }
-    }
-    return {
-      text: '我已经定位到方案“' + target.name + '”。绑定只表示当前房间可以使用，不会自动切换运行方案。请确认。',
-      action: {
-        type: 'confirm_live_plan_bind',
-        title: '确认绑定方案',
-        summary: '确认后加入当前直播间可用方案列表；不会自动切换当前运行方案。',
-        risk_level: 'low',
-        requires_confirmation: true,
-        payload: {
-          room_id: roomId,
-          current_plan_id: currentPlanId || 0,
-          target_plan_id: target.id,
-          target_plan_name: target.name,
-          source_text: sourceText,
-        },
-      } as SystemAgentActionPreview,
-    }
-  }
-  if (result.intent === 'plan.unbind') {
-    if (!resolved.boundIDs.has(target.id)) {
-      return { text: '“' + target.name + '”当前没有绑定到这个直播间。' }
-    }
-    return {
-      text: '我已经定位到已绑定方案“' + target.name + '”。解绑会移出当前直播间可用方案，请确认。',
-      action: {
-        type: 'confirm_live_plan_unbind',
-        title: '确认解绑方案',
-        summary: target.id === currentPlanId
-          ? '这是当前选中的方案。解绑可能使当前方案失效，请确认后执行。'
-          : '确认后从当前直播间解绑；不会删除方案本身。',
-        risk_level: 'medium',
-        requires_confirmation: true,
-        payload: {
-          room_id: roomId,
-          current_plan_id: currentPlanId || 0,
-          target_plan_id: target.id,
-          target_plan_name: target.name,
-          source_text: sourceText,
-        },
-      } as SystemAgentActionPreview,
-    }
+  if (result.intent === 'plan.bind' || result.intent === 'plan.unbind') {
+    return { text: '方案现在是账号资产，任意直播间均可直接选择。请选择要使用的已保存方案。' }
   }
   if (result.intent === 'plan.switch') {
-    if (!resolved.boundIDs.has(target.id)) {
-      return { text: '“' + target.name + '”还没有绑定到当前直播间。我不会把“切换”偷偷变成“绑定”；请先说“绑定' + target.name + '”。' }
+    if (!resolved.savedIDs.has(target.id)) {
+      return { text: '该方案还没有保存，请先保存' }
     }
     if (target.id === currentPlanId) {
       return { text: '当前直播间已经在使用“' + target.name + '”，不需要重复切换。' }
     }
     return {
-      text: '我已经定位到已绑定方案“' + target.name + '”。确认后会热切换当前直播运行方案。',
+      text: '我已经定位到方案“' + target.name + '”。确认后选择此方案，下次开播生效。',
       action: {
         type: 'confirm_live_plan_switch',
         title: '确认切换运行方案',
-        summary: '其它已绑定方案继续保留；确认后当前直播间只把运行方案切换到这个方案。',
+        summary: '已切换，重新开播生效。其它直播间与当前场次保持原配置。',
         risk_level: 'medium',
         requires_confirmation: true,
         payload: {
@@ -3552,19 +3498,7 @@ async function handleUnifiedLiveStrategyIntent(
   return false
 }
 
-async function resolveTenantWriteRoomID(planId: number) {
-  const stored = Number(window.localStorage.getItem('system-agent-live-room-id') || 0)
-  if (stored > 0) return stored
-  try {
-    const plans = await getLiveAgentPlans()
-    const boundRoomId = boundRoomIdForPlan(plans.items || [], planId)
-    if (boundRoomId > 0) {
-      window.localStorage.setItem('system-agent-live-room-id', String(boundRoomId))
-      return boundRoomId
-    }
-  } catch {
-    // fall through to first accessible room
-  }
+async function resolveTenantWriteRoomID(_planId: number) {
   return resolveLiveStrategyRoomID()
 }
 
@@ -4731,7 +4665,7 @@ async function sendLiveRoomSimulation(value: string) {
       matched = await simulateRoomAgentDecision(roomId, { question })
     }
 
-    const planText = matched.plan_name || '未绑定方案'
+    const planText = matched.plan_name || '未选择方案'
     const modeText = matched.execution_mode || 'intent'
     pushAgentMessage(
       'live-room',
@@ -6495,11 +6429,7 @@ async function executeAction(message: ChatMessage) {
     return
   }
 
-  if (
-    action.type === 'confirm_live_plan_bind' ||
-    action.type === 'confirm_live_plan_unbind' ||
-    action.type === 'confirm_live_plan_switch'
-  ) {
+  if (action.type === 'confirm_live_plan_switch') {
     const roomId = Number(action.payload.room_id || 0)
     const targetPlanId = Number(action.payload.target_plan_id || 0)
     const targetPlanName = String(action.payload.target_plan_name || '').trim()
@@ -6514,39 +6444,25 @@ async function executeAction(message: ChatMessage) {
       pushAgentMessage(message.domain, '你已经切换了直播间，这条旧方案确认已失效。')
       return
     }
+    const actorScope = JSON.stringify([actor.value?.user_id, actor.value?.tenant_id, actor.value?.role]), accountEpoch = tenantPlanLoadSequence
+    const current = () => accountEpoch === tenantPlanLoadSequence && actorScope === JSON.stringify([actor.value?.user_id, actor.value?.tenant_id, actor.value?.role]) && Number(window.localStorage.getItem('system-agent-live-room-id') || 0) === roomId
     executing.value = true
     try {
-      if (action.type === 'confirm_live_plan_bind') {
-        const bound = await getRoomLiveAgentPlans(roomId)
-        if ((bound.items || []).some((item) => item.id === targetPlanId)) {
-          throw new Error('这个方案已经绑定到当前直播间。')
-        }
-        await bindRoomLiveAgentPlan(targetPlanId, roomId)
-        message.action = undefined
-        focusLivePlanModule(liveStrategyPlanId.value || targetPlanId, 'plan')
-        pushAgentMessage(message.domain, '已把“' + targetPlanName + '”绑定到当前直播间。当前运行方案没有自动切换。')
-      } else if (action.type === 'confirm_live_plan_unbind') {
-        const bound = await getRoomLiveAgentPlans(roomId)
-        if (!(bound.items || []).some((item) => item.id === targetPlanId)) {
-          throw new Error('这个方案已经不在当前直播间的绑定列表里。')
-        }
-        await unbindRoomLiveAgentPlan(targetPlanId, roomId)
-        message.action = undefined
-        focusLivePlanModule(liveStrategyPlanId.value || targetPlanId, 'plan')
-        pushAgentMessage(message.domain, '已从当前直播间解绑“' + targetPlanName + '”。方案本身没有删除。')
-      } else {
-        const bound = await getRoomLiveAgentPlans(roomId)
-        if (!(bound.items || []).some((item) => item.id === targetPlanId)) {
-          throw new Error('目标方案已经不再绑定到当前直播间，请先重新绑定。')
-        }
-        await setLiveRuntimePlan(roomId, targetPlanId)
-        liveStrategyPlanId.value = targetPlanId
-        window.localStorage.setItem('system-agent-live-plan-id', String(targetPlanId))
-        message.action = undefined
-        focusLivePlanModule(targetPlanId, 'plan')
-        pushAgentMessage(message.domain, '已把当前直播间运行方案热切换到“' + targetPlanName + '”。其它已绑定方案继续保留。')
+      const saved = await getRoomLiveAgentPlans(roomId, true)
+      if (!current()) return
+      if (!(saved.items || []).some(item => item.id === targetPlanId && item.status === 'active')) {
+        throw new Error('该方案还没有保存，请先保存')
       }
+      if (Number(window.localStorage.getItem('system-agent-live-room-id') || 0) !== roomId) throw new Error('直播间已变化，请重新选择方案')
+      await setLiveRuntimePlan(roomId, targetPlanId)
+      if (!current()) return
+      liveStrategyPlanId.value = targetPlanId
+      window.localStorage.setItem('system-agent-live-plan-id', String(targetPlanId))
+      message.action = undefined
+      focusLivePlanModule(targetPlanId, 'plan')
+      pushAgentMessage(message.domain, '已切换，重新开播生效')
     } catch (error) {
+      if (!current()) return
       pushAgentMessage(message.domain, error instanceof Error ? '方案操作没有执行：' + error.message : '方案操作没有执行，请重试。')
     } finally {
       executing.value = false
@@ -7560,10 +7476,6 @@ async function copyCredential(credential?: InitialCredential) {
                     ? '口播样稿修改确认'
                   : message.action.type === 'confirm_live_script_reference_disable'
                     ? '口播样稿停用确认'
-                  : message.action.type === 'confirm_live_plan_bind'
-                    ? '方案绑定确认'
-                  : message.action.type === 'confirm_live_plan_unbind'
-                    ? '方案解绑确认'
                   : message.action.type === 'confirm_live_plan_switch'
                     ? '方案切换确认'
                   : message.action.type === 'clarify_live_strategy_intent'
@@ -7747,14 +7659,14 @@ async function copyCredential(credential?: InitialCredential) {
                   <dd>{{ message.action.payload.script_text || message.action.payload.current_script_text || '-' }}</dd>
                 </div>
               </dl>
-              <dl v-else-if="message.action.type === 'confirm_live_plan_bind' || message.action.type === 'confirm_live_plan_unbind' || message.action.type === 'confirm_live_plan_switch'">
+              <dl v-else-if="message.action.type === 'confirm_live_plan_switch'">
                 <div>
                   <dt>目标方案</dt>
                   <dd>{{ message.action.payload.target_plan_name || '-' }}</dd>
                 </div>
                 <div>
                   <dt>操作</dt>
-                  <dd>{{ message.action.type === 'confirm_live_plan_bind' ? '绑定到当前直播间' : message.action.type === 'confirm_live_plan_unbind' ? '从当前直播间解绑' : '切换为当前运行方案' }}</dd>
+                  <dd>下次开播使用所选方案</dd>
                 </div>
               </dl>
               <dl v-else-if="message.action.type === 'confirm_live_product_update'">
@@ -7893,10 +7805,6 @@ async function copyCredential(credential?: InitialCredential) {
                       ? '确认修改话术'
                     : message.action.type === 'confirm_live_script_reference_disable'
                       ? '确认停用话术'
-                    : message.action.type === 'confirm_live_plan_bind'
-                      ? '确认绑定'
-                    : message.action.type === 'confirm_live_plan_unbind'
-                      ? '确认解绑'
                     : message.action.type === 'confirm_live_plan_switch'
                       ? '确认切换'
                       : '确认执行' }}

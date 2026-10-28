@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const name = defineModel<string>('name', { required: true })
 const description = defineModel<string>('description', { required: true })
-const props = defineProps<{ busy: boolean; roomName?: string; error: string; returnFocus?: HTMLElement | null }>()
+const props = defineProps<{ busy: boolean; error: string; returnFocus?: HTMLElement | null }>()
 const emit = defineEmits<{ close: []; create: [] }>()
 const dialog = ref<HTMLDialogElement | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
@@ -49,7 +49,7 @@ function onKeydown(event: KeyboardEvent) {
   <Teleport to="body">
     <dialog ref="dialog" class="plan-create-dialog" tabindex="-1" aria-labelledby="plan-create-title" aria-describedby="plan-create-description" :aria-busy="busy" @cancel.prevent="close" @click="onBackdropClick" @keydown="onKeydown">
       <header>
-        <div><h2 id="plan-create-title">新建方案</h2><p id="plan-create-description">{{ roomName ? `创建后将绑定到直播间“${roomName}”` : '填写方案名称和说明' }}</p></div>
+        <div><h2 id="plan-create-title">新建方案</h2><p id="plan-create-description">方案保存在当前账号下，保存后可供任意直播间选择。</p></div>
         <button class="plan-create-close" type="button" aria-label="关闭新建方案" :disabled="busy" @click="close">×</button>
       </header>
       <form @submit.prevent="create">
@@ -58,7 +58,7 @@ function onKeydown(event: KeyboardEvent) {
         <p v-if="error" class="plan-create-error" role="alert">{{ error }}</p>
         <footer>
           <button class="plan-create-cancel" type="button" :disabled="busy" @click="close">取消</button>
-          <button class="plan-create-submit" type="submit" :disabled="!canCreate">{{ busy ? '创建中…' : roomName ? '创建并绑定当前直播间' : '创建方案' }}</button>
+          <button class="plan-create-submit" type="submit" :disabled="!canCreate">{{ busy ? '创建中…' : '创建方案' }}</button>
         </footer>
       </form>
     </dialog>

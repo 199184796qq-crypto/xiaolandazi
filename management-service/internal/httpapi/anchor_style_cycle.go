@@ -202,9 +202,6 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if productionPreviewRequest(r) {
-		if input.VoiceSourceRoomID > 0 && !s.requireLiveStrategyRoomAccess(w, r, actor, tenant, input.VoiceSourceRoomID) {
-			return
-		}
 		w, r = cycleProgressStream(w, r)
 		settings, err := s.store.AnchorGenerationSettings(r.Context())
 		if err != nil || settings.Validate() != nil {
@@ -216,7 +213,7 @@ func (s *Server) anchorStyleCycleStart(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		voice, err := s.planSelectedVoice(r.Context(), tenant, plan, input.VoiceSourceRoomID)
+		voice, err := s.planSelectedVoice(r.Context(), tenant, plan, 0)
 		if err != nil {
 			writeError(w, 409, err.Error())
 			return

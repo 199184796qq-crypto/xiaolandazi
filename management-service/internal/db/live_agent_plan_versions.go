@@ -128,20 +128,8 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if exists == 0 {
 		return model.LiveAgentPlanVersion{}, ErrLiveAgentPlanNotFound
 	}
-	// 允许「仅保存、不绑定房间」的草稿型版本：未选房间(RoomID<=0)时跳过房间绑定校验，
-	// 这类版本只存档方案内容，不投送到任何直播间；绑定/发布到具体房间时再走发布链路校验。
-	if input.RoomID > 0 {
-		if err := s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*)
-			FROM live_agent_plan_room_bindings
-			WHERE tenant_id=? AND plan_id=? AND room_id=? AND status='active'
-		`, tenantID, planID, input.RoomID).Scan(&exists); err != nil {
-			return model.LiveAgentPlanVersion{}, err
-		}
-		if exists == 0 {
-			return model.LiveAgentPlanVersion{}, ErrLiveAgentPlanRoomNotBound
-		}
-	}
+	// New saves are owned solely by the plan; room_id remains legacy provenance.
+	input.RoomID = 0
 
 	voiceJSON, err := json.Marshal(input.VoiceIdentity)
 	if err != nil {
@@ -241,9 +229,6 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
-	if err := publishSharedPlanPointersTx(ctx, tx, tenantID, planID, versionID, actorUserID, contentMode); err != nil {
-		return model.LiveAgentPlanVersion{}, err
-	}
 	if err := pruneSavedPlanVersions(ctx, tx, tenantID, planID, input.RoomID); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
@@ -274,30 +259,7 @@ func (s *Store) ListLiveAgentPlanVersions(
 	ctx context.Context,
 	tenantID, planID, roomID int64,
 ) ([]model.LiveAgentPlanVersion, error) {
-	rows, err := s.db.QueryContext(
-		ctx,
-		liveAgentPlanVersionSelect+`
-		WHERE tenant_id=? AND plan_id=? AND lifecycle_status NOT IN ('prepared','abandoned')
-		  AND EXISTS (SELECT 1 FROM live_agent_plan_room_bindings binding WHERE binding.tenant_id=live_agent_plan_versions.tenant_id AND binding.plan_id=live_agent_plan_versions.plan_id AND binding.room_id=? AND binding.status='active')
-		ORDER BY id DESC
-	`,
-		tenantID,
-		planID,
-		roomID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]model.LiveAgentPlanVersion, 0)
-	for rows.Next() {
-		item, err := scanLiveAgentPlanVersion(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
+	return s.ListLiveAgentPlanVersionsForPlan(ctx, tenantID, planID)
 }
 
 func (s *Store) ListLiveAgentPlanVersionsForPlan(
@@ -381,9 +343,6 @@ func (s *Store) PublishLiveAgentPlanVersion(
 	`, actorUserID, tenantID, planID, versionID); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
-	if err := publishSharedPlanPointersTx(ctx, tx, tenantID, planID, versionID, actorUserID, contentMode); err != nil {
-		return model.LiveAgentPlanVersion{}, err
-	}
 	if err := tx.Commit(); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
@@ -400,44 +359,15 @@ func (s *Store) GetPublishedLiveAgentPlanVersionForRoom(
 		INNER JOIN live_agent_room_plan_selections selection
 		        ON selection.tenant_id=live_agent_plan_versions.tenant_id
 		       AND selection.plan_id=live_agent_plan_versions.plan_id
-		LEFT JOIN live_room_content_access access
-		       ON access.tenant_id=live_agent_plan_versions.tenant_id
-		      AND access.room_id=selection.room_id
 		WHERE selection.tenant_id=? AND selection.room_id=?
 		  AND live_agent_plan_versions.lifecycle_status IN ('draft','published','superseded')
-		  AND (access.selected_mode IS NULL OR access.selected_mode=COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(live_agent_plan_versions.generation_context_json,'$.content_mode')),''),'ai_pregenerated'))
 		ORDER BY live_agent_plan_versions.id DESC
 		LIMIT 1
 	`,
 		tenantID,
 		roomID,
 	))
-	if errors.Is(err, sql.ErrNoRows) {
-		// Backward compatibility for rooms published before explicit plan
-		// selection was introduced.
-		item, err = scanLiveAgentPlanVersion(s.db.QueryRowContext(
-			ctx,
-			liveAgentPlanVersionSelect+`
-			INNER JOIN live_agent_plan_room_bindings binding
-			        ON binding.tenant_id=live_agent_plan_versions.tenant_id
-			       AND binding.plan_id=live_agent_plan_versions.plan_id
-			INNER JOIN live_agent_room_plan_publications pub
-			        ON pub.tenant_id=binding.tenant_id AND pub.room_id=binding.room_id AND pub.plan_id=binding.plan_id
-			LEFT JOIN live_room_content_access access
-			       ON access.tenant_id=live_agent_plan_versions.tenant_id
-			      AND access.room_id=binding.room_id
-			WHERE pub.tenant_id=? AND pub.room_id=?
-			  AND binding.status='active'
-			  AND NOT EXISTS (SELECT 1 FROM live_agent_room_plan_selections selection WHERE selection.tenant_id=pub.tenant_id AND selection.room_id=pub.room_id)
-			  AND live_agent_plan_versions.lifecycle_status IN ('draft','published','superseded')
-			  AND (access.selected_mode IS NULL OR access.selected_mode=COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(live_agent_plan_versions.generation_context_json,'$.content_mode')),''),'ai_pregenerated'))
-			ORDER BY live_agent_plan_versions.id DESC
-			LIMIT 1
-		`,
-			tenantID,
-			roomID,
-		))
-	}
+
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.LiveAgentPlanVersion{}, ErrLiveAgentPlanVersionNotFound
 	}

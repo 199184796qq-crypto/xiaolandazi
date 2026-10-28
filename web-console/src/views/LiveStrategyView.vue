@@ -7,7 +7,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { useRoute } from 'vue-router'
 import { mainlineIndustryLabel, mainlineLiveTypeLabel, mainlineRoleSequenceLabel, productPlanDirectionLabel, productRoomRolesLabel } from '../agent/mainlineDisplay'
 
-import SupportAssistantPicker from '../components/SupportAssistantPicker.vue'
+import { planVoiceChoices, planVoiceUnavailable } from '../planAssets'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import PlanVoiceRateControl from '../components/PlanVoiceRateControl.vue'
 import { usePlanVoiceRate } from '../usePlanVoiceRate'
@@ -67,9 +67,7 @@ import {
   copyLiveAgentPlanProductLink,
   copyLiveAgentPlanBenefit,
   archiveLiveAgentPlan,
-  bindRoomLiveAgentPlan,
   cloneLiveVoiceProfile,
-  unbindRoomLiveAgentPlan,
   createAgentLearningSession,
   createAgentLearningTurn,
   createLiveAgentPlanVersion,
@@ -87,9 +85,8 @@ import {
   suggestLiveAgentPlanFactTypes,
   getLiveAgentPlanProductLinks,
   getLiveAgentPlanScripts,
-  getRoomLiveAgentPlans,
-  getLiveRuntime,
-  setLiveRuntimePlan,
+  getLiveVoiceModelBindings,
+  getLiveOfficialVoices,
   createLiveAgentConfigDraft,
   getLiveAgentConfigVersions,
   getLiveAddressingStrategy,
@@ -159,7 +156,7 @@ import type { FactTypeSuggestion } from '../api'
 import { session } from '../session'
 import '../styles/workflow-guidance.css'
 import { beginLiveSupportScope, liveSupportMediaPlaybackURL } from '../liveSupportAccess'
-import { getLiveContentMode, setLiveContentMode } from '../liveContentMode'
+import { getPlanContentMode, setPlanContentMode } from '../api'
 import { canSelectLiveContentMode, liveContentModeLabels, visibleLiveContentModes, type LiveContentMode, type LiveContentModeAccess } from '../liveContentModeOptions'
 import type {
   AgentMemoryItem,
@@ -198,7 +195,6 @@ import type {
   LiveAgentSettingsInput,
   LiveAddressingOption,
   LiveAddressingStrategy,
-  LiveRuntimeSnapshot,
   LiveRoomPolicyContext,
   Room,
 } from '../types'
@@ -213,9 +209,9 @@ const props = withDefaults(defineProps<{
   supportRoomId: 0,
 })
 
+const planTenantId = computed(() => Number(props.supportSession ? props.supportTenantId : session.bootstrap?.actor.tenant_id || 0))
 const rooms = ref<Room[]>([])
 const activeRoomId = ref<number | null>(props.supportRoomId || null)
-const roomSidebarCollapsed = ref(false)
 const endSupportScope = props.supportSession ? beginLiveSupportScope(props.supportRoomId) : null
 
 function liveStrategyPreferenceKey(name: string) {
@@ -228,18 +224,8 @@ function restoreLiveStrategyPreferencesLocal() {
   const roomRaw = window.localStorage.getItem(liveStrategyPreferenceKey('selected-room'))
   const parsedRoom = Number(roomRaw || 0)
   if (parsedRoom > 0) activeRoomId.value = parsedRoom
-  roomSidebarCollapsed.value = window.localStorage.getItem(liveStrategyPreferenceKey('rooms-sidebar-collapsed')) === '1'
 }
 
-function toggleRoomSidebar() {
-  roomSidebarCollapsed.value = !roomSidebarCollapsed.value
-  if (!props.supportSession) {
-    window.localStorage.setItem(
-      liveStrategyPreferenceKey('rooms-sidebar-collapsed'),
-      roomSidebarCollapsed.value ? '1' : '0',
-    )
-  }
-}
 
 function persistSelectedRoomLocal(roomID: number | null) {
   if (props.supportSession) return
@@ -248,15 +234,6 @@ function persistSelectedRoomLocal(roomID: number | null) {
   else window.localStorage.removeItem(key)
 }
 
-function selectLiveStrategyRoom(roomID: number) {
-  if (props.supportSession && roomID !== props.supportRoomId) return
-  if (activeRoomId.value === roomID) return
-  activeRoomId.value = roomID
-  persistSelectedRoomLocal(roomID)
-  if (!props.supportSession) {
-    void updateUserUIPreferences({ selected_live_room_id: roomID }).catch(() => undefined)
-  }
-}
 
 type StrategyMode =
   | 'business'
@@ -327,19 +304,20 @@ const addressingError = useFeedbackErrorRef()
 const addressingNotice = ref('')
 const configVersions = ref<LiveAgentConfigVersion[]>([])
 const livePlans = ref<LiveAgentPlan[]>([])
-const boundRoomPlans = ref<LiveAgentPlan[]>([])
-const publishedRoomPlans = ref<LiveAgentPlan[]>([])
-const roomRuntimeSnapshot = ref<LiveRuntimeSnapshot | null>(null)
 const currentRoomPlanId = ref<number | null>(null)
 const planSelectionScope = () => ({
   userId: Number(session.bootstrap?.actor.user_id || 0),
-  tenantId: Number(rooms.value.find(room => room.id === activeRoomId.value)?.tenant_id || (props.supportSession ? props.supportTenantId : session.bootstrap?.actor.tenant_id) || 0),
-  roomId: activeRoomId.value || 0,
+  tenantId: planTenantId.value,
+  roomId: 0,
   supportSession: props.supportSession,
 })
 let roomPlanLoadSequence = 0
+let planAssetScopeEpoch = 0
 watch(() => planSelectionPreferenceKey(planSelectionScope()), () => {
   roomPlanLoadSequence++
+  planAssetScopeEpoch++
+  const tenant = planSelectionScope().tenantId
+  livePlans.value = livePlans.value.filter(plan => plan.tenant_id === tenant)
   currentRoomPlanId.value = null
 }, { flush: 'sync' })
 watch(currentRoomPlanId, planId => {
@@ -379,7 +357,7 @@ const knowledgeDraftText = ref('')
 const rhythmDraftText = ref('')
 const previewingFormalFact = ref<LiveAgentPlanFact | null>(null)
 function previewFormalFact(item: LiveAgentPlanFact) { previewingFormalFact.value = item }
-watch([activeRoomId, currentRoomPlanId], () => { previewingFormalFact.value = null })
+watch([planTenantId, currentRoomPlanId], () => { previewingFormalFact.value = null })
 
 const formalFacts = ref<LiveAgentPlanFact[]>([])
 // 四层结构解析：把 safe_rewrite(【必说】【可说】)与 forbidden_wording(【改写】【不提】)按标题分块；旧数据无标题时整体放入对应卡片。
@@ -465,7 +443,7 @@ const factSearchQuery = ref('')
 const factSearchTerm = computed(() => factSearchQuery.value.trim().normalize('NFKC').toLocaleLowerCase())
 function resetFormalFactFilters() { factScopeFilter.value = 'all'; factSearchQuery.value = '' }
 const factFilterProducts = computed(() => formalProductLinks.value
-  .filter(item => item.status === 'active' && item.plan_id === currentRoomPlanId.value && item.tenant_id === rooms.value.find(room => room.id === activeRoomId.value)?.tenant_id)
+  .filter(item => item.status === 'active' && item.plan_id === currentRoomPlanId.value && item.tenant_id === planTenantId.value)
   .sort((a, b) => a.link_key.localeCompare(b.link_key, 'zh-CN', { numeric: true }) || a.id - b.id))
 const factFilterProductIds = computed(() => new Set(factFilterProducts.value.map(item => item.id)))
 function formalFactFilterScope(item: LiveAgentPlanFact) {
@@ -519,7 +497,7 @@ const factScopeSavingId = ref<number | null>(null)
 const factCategorySavingId = ref<number | null>(null)
 let factScopeSequence = 0
 let formalFactReadSequence = 0
-watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, rooms.value.find(room => room.id === activeRoomId.value)?.tenant_id, session.bootstrap?.actor.user_id, props.supportSession, props.supportTenantId]), () => {
+watch(() => JSON.stringify([currentRoomPlanId.value, planTenantId.value, session.bootstrap?.actor.user_id, props.supportSession, props.supportTenantId]), () => {
   editingFormalFactId.value = null
   inlineFactSavingId.value = null
   factScopeSortOrder.value = 'none'
@@ -537,7 +515,7 @@ async function saveFormalFactScope(item: LiveAgentPlanFact, scope: NonNullable<L
   const plan = currentRoomPlanId.value
   const sequence = factScopeSequence
   const current = () => sequence === factScopeSequence && plan === currentRoomPlanId.value
-  if (!plan || item.plan_id !== plan || item.tenant_id !== activeRoom.value?.tenant_id || factScopeSavingId.value !== null || mutatingFormalFactId.value || editingFormalFactId.value !== null) throw new Error('当前方案或事实编辑状态已变化，请重新选择')
+  if (!plan || item.plan_id !== plan || item.tenant_id !== planTenantId.value || factScopeSavingId.value !== null || mutatingFormalFactId.value || editingFormalFactId.value !== null) throw new Error('当前方案或事实编辑状态已变化，请重新选择')
   factScopeSavingId.value = item.id
   formalFactReadSequence++
   try {
@@ -553,7 +531,7 @@ async function saveFormalFactCategory(item: LiveAgentPlanFact, category: string)
   const plan = currentRoomPlanId.value
   const sequence = factScopeSequence
   const current = () => sequence === factScopeSequence && plan === currentRoomPlanId.value
-  if (!plan || item.plan_id !== plan || item.tenant_id !== activeRoom.value?.tenant_id || factCategorySavingId.value !== null || mutatingFormalFactId.value || editingFormalFactId.value !== null) throw new Error('当前方案或事实编辑状态已变化，请重新选择')
+  if (!plan || item.plan_id !== plan || item.tenant_id !== planTenantId.value || factCategorySavingId.value !== null || mutatingFormalFactId.value || editingFormalFactId.value !== null) throw new Error('当前方案或事实编辑状态已变化，请重新选择')
   factCategorySavingId.value = item.id
   formalFactReadSequence++
   try {
@@ -588,7 +566,7 @@ function closeFactTypeMenu() {
 async function suggestFactTypeForFact(item: LiveAgentPlanFact) {
   const plan = currentRoomPlanId.value
   if (!plan || factTypeSuggestingId.value !== null) return
-  const tenantId = activeRoom.value?.tenant_id
+  const tenantId = planTenantId.value
   const sequence = factScopeSequence
   const current = () => sequence === factScopeSequence && plan === currentRoomPlanId.value
   factTypeMenu.value.fact = null
@@ -643,22 +621,21 @@ const memoryDeleteConfirmId = ref<number | null>(null)
 const messages = ref<Array<{ role: 'agent' | 'user'; text: string }>>([
   { role: 'agent', text: defaultSettings.greeting },
 ])
-const activeRoom = computed(() => rooms.value.find((item) => item.id === activeRoomId.value) || rooms.value[0])
-const answerStrategyScope = () => ({ tenantId: activeRoom.value?.tenant_id || 0, roomId: activeRoomId.value || 0, planId: currentRoomPlanId.value || 0, actorKey: session.bootstrap ? `${session.bootstrap.actor.tenant_id}:${session.bootstrap.actor.user_id}` : '' })
+const answerStrategyScope = () => ({ tenantId: planTenantId.value || 0, roomId: activeRoomId.value || 0, planId: currentRoomPlanId.value || 0, actorKey: session.bootstrap ? `${session.bootstrap.actor.tenant_id}:${session.bootstrap.actor.user_id}` : '' })
 const { items: memories, loading: memoriesLoading, error: memoriesError, refresh: refreshMemories } = usePlanAnswerStrategies(answerStrategyScope)
 const interactionMemories = computed(() => memories.value.filter(item => memoryInPlan(item, answerStrategyScope()) && ['semantic', 'interaction'].includes(String(item.memory_type || '').trim().toLowerCase())))
 let memoryEditEpoch = 0
 watch(() => JSON.stringify(answerStrategyScope()), () => {
   resetMemoryEdit(); memoryMutatingId.value = null; memoryDeleteConfirmId.value = null
 }, { flush: 'sync' })
-const contentPools = useContentPools(currentRoomPlanId, activeRoom)
+const contentPools = useContentPools(currentRoomPlanId, planTenantId)
 const poolStatus = contentPools.status
 const poolPreview = contentPools.preview
-const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingFormalFact, () => ({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }), { suppressErrorDialog: true })
+const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingFormalFact, () => ({ planId: currentRoomPlanId.value, tenantId: planTenantId.value }), { suppressErrorDialog: true })
 const currentPlan = computed(
   () => livePlans.value.find((item) => item.id === currentRoomPlanId.value) || null,
 )
-const planBusinessMode = usePlanBusinessMode(currentRoomPlanId, computed(() => activeRoom.value?.tenant_id))
+const planBusinessMode = usePlanBusinessMode(currentRoomPlanId, computed(() => planTenantId.value))
 // 资料补全页「所属行业」与业务模式联动：只读展示当前业务模式 + 已选行业名称（红字）。
 const supplementBusinessLabel = computed(() => {
   const domain = planBusinessMode.value.value
@@ -672,26 +649,13 @@ const supplementIndustryName = computed(() => {
   if (!code) return ''
   return planBusinessMode.industryOptions.value[domain].find((item) => item.code === code)?.label || code
 })
-const runtimePlanId = computed(() => roomRuntimeSnapshot.value?.agent_plan_id || 0)
-const boundPlanIdSet = computed(() => new Set(boundRoomPlans.value.map((item) => item.id)))
-const publishedPlanIdSet = computed(() => new Set(publishedRoomPlans.value.map((item) => item.id)))
-const currentPlanIsBound = computed(() => !!currentPlan.value && boundPlanIdSet.value.has(currentPlan.value.id))
-const orderedRoomPlans = computed(() => [...livePlans.value].sort((left, right) => {
-  const rank = (plan: LiveAgentPlan) => {
-    if (runtimePlanId.value === plan.id) return 0
-    if (publishedPlanIdSet.value.has(plan.id)) return 1
-    if (boundPlanIdSet.value.has(plan.id)) return 2
-    return 3
-  }
-  return rank(left) - rank(right) || left.name.localeCompare(right.name, 'zh-CN')
-}))
-
+const orderedRoomPlans = computed(() => [...livePlans.value].sort((left,right) =>
+  Number(right.id === currentRoomPlanId.value) - Number(left.id === currentRoomPlanId.value) || left.name.localeCompare(right.name,'zh-CN')))
 function planRoomRelationLabel(plan: LiveAgentPlan) {
-  if (runtimePlanId.value === plan.id && publishedPlanIdSet.value.has(plan.id)) return '正在使用 · 已保存'
-  if (publishedPlanIdSet.value.has(plan.id)) return '已保存 · 可开播'
-  if (boundPlanIdSet.value.has(plan.id)) return '已绑定 · 待保存'
-  return '未绑定'
+  return plan.id === currentRoomPlanId.value ? '正在编辑' : '账号方案'
 }
+// Legacy preview payloads still include room_id; plan editing always sends zero.
+const planAssetContext = computed(() => planTenantId.value ? { id: 0, tenant_id: planTenantId.value, name: currentPlan.value?.name || '方案' } : null)
 const activeScript = computed(
   () => planScripts.value.find((item) => item.id === selectedScriptId.value) || null,
 )
@@ -859,13 +823,13 @@ async function duplicateFormalBenefit(item: LiveAgentPlanBenefit) {
     return
   }
   const plan = currentRoomPlanId.value
-  const tenant = activeRoom.value?.tenant_id
+  const tenant = planTenantId.value
   if (!plan || item.plan_id !== plan || item.tenant_id !== tenant) return
   mutatingFormalBenefitId.value = item.id
   formalBenefitMessage.value = { id: item.id, text: '正在复制…' }
   try {
     const created = await copyLiveAgentPlanBenefit(plan, item)
-    if (currentRoomPlanId.value !== plan || activeRoom.value?.tenant_id !== tenant) return
+    if (currentRoomPlanId.value !== plan || planTenantId.value !== tenant) return
     const cards = [...formalBenefits.value]
     const index = cards.findIndex(card => card.id === item.id)
     cards.splice(index < 0 ? cards.length : index + 1, 0, created)
@@ -873,20 +837,20 @@ async function duplicateFormalBenefit(item: LiveAgentPlanBenefit) {
     void contentPools.refresh(true)
     formalBenefitMessage.value = { id: item.id, text: '已复制，关联库中下一条真实商品链接：' + created.link_key }
   } catch (err) {
-    if (currentRoomPlanId.value === plan && activeRoom.value?.tenant_id === tenant) formalBenefitMessage.value = { id: item.id, text: err instanceof Error ? err.message : '复制失败，请刷新确认后重试', error: true }
+    if (currentRoomPlanId.value === plan && planTenantId.value === tenant) formalBenefitMessage.value = { id: item.id, text: err instanceof Error ? err.message : '复制失败，请刷新确认后重试', error: true }
   } finally { mutatingFormalBenefitId.value = null }
 }
 
 async function deleteFormalBenefit(item: LiveAgentPlanBenefit) {
   if (mutatingFormalBenefitId.value || deleteConfirmFormalBenefitId.value !== item.id) return
   const plan = currentRoomPlanId.value
-  const tenant = activeRoom.value?.tenant_id
+  const tenant = planTenantId.value
   if (!plan || item.plan_id !== plan || item.tenant_id !== tenant) return
   mutatingFormalBenefitId.value = item.id
   formalBenefitMessage.value = { id: item.id, text: '正在删除…' }
   try {
     await deleteLiveAgentPlanBenefit(plan, item.id, tenant)
-    if (currentRoomPlanId.value !== plan || activeRoom.value?.tenant_id !== tenant) return
+    if (currentRoomPlanId.value !== plan || planTenantId.value !== tenant) return
     formalBenefits.value = formalBenefits.value.filter(entry => entry.id !== item.id)
     expandedFormalBenefitIds.value = new Set([...expandedFormalBenefitIds.value].filter(id => id !== item.id))
     if (editingFormalBenefit.value?.itemId === item.id) editingFormalBenefit.value = null
@@ -895,7 +859,7 @@ async function deleteFormalBenefit(item: LiveAgentPlanBenefit) {
     scriptNotice.value = '福利卡已删除，历史记录保留。请更新内容并保存智能体方案。'
     void contentPools.refresh(true)
   } catch (err) {
-    if (currentRoomPlanId.value === plan && activeRoom.value?.tenant_id === tenant) {
+    if (currentRoomPlanId.value === plan && planTenantId.value === tenant) {
       formalBenefitMessage.value = { id: item.id, text: err instanceof Error ? err.message : '删除失败，请重试', error: true }
     }
   } finally { mutatingFormalBenefitId.value = null }
@@ -908,7 +872,7 @@ const currentBoundAnchorId = ref(0)
 const currentBoundAnchorStyle = computed(() => reusableAnchorStyles.value.find((item) => item.id === currentBoundAnchorId.value) || null)
 const anchorBindingBusy = ref(false)
 let anchorBindingEpoch = 0, anchorWorkspaceLoadSequence = 0
-const anchorWorkspaceScope = () => `${session.bootstrap?.actor.user_id || 0}:${activeRoom.value?.tenant_id || 0}:${activeRoomId.value || 0}:${currentRoomPlanId.value || 0}`
+const anchorWorkspaceScope = () => `${session.bootstrap?.actor.user_id || 0}:${planTenantId.value || 0}:${currentRoomPlanId.value || 0}`
 watch(anchorWorkspaceScope, () => {
   anchorBindingEpoch++; anchorWorkspaceLoadSequence++; reusableAnchorSelectionEpoch++
   anchorRecommendationsOpen.value = false; currentBoundAnchorId.value = 0; anchorBindingBusy.value = false
@@ -972,8 +936,8 @@ function setAnchorSampleDraft(event: Event) {
   reusableAnchorSampleLimitNotice.value = limited.truncated ? '最多10000字，超出部分已截断。' : ''
 }
 function anchorAnalysisScope(styleId: number) {
-  const tenant = activeRoom.value?.tenant_id, room = activeRoomId.value, epoch = reusableAnchorSelectionEpoch
-  return { tenant, current: () => tenant === activeRoom.value?.tenant_id && room === activeRoomId.value && styleId === selectedReusableAnchorStyleId.value && epoch === reusableAnchorSelectionEpoch }
+  const tenant = planTenantId.value, room = currentRoomPlanId.value, epoch = reusableAnchorSelectionEpoch
+  return { tenant, current: () => tenant === planTenantId.value && room === currentRoomPlanId.value && styleId === selectedReusableAnchorStyleId.value && epoch === reusableAnchorSelectionEpoch }
 }
 function anchorAnalysisProgress(event: PreviewStreamEvent) {
   if (event.type !== 'progress') return
@@ -1191,11 +1155,11 @@ async function saveAnchorStyleProfile() {
       description: style.description || '',
       style_source_mode: 'card',
       style_card: profile,
-    }, activeRoom.value?.tenant_id)
+    }, planTenantId.value)
     selectedReusableAnchorStyle.value = updated
     reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
     loadAnchorStyleProfileDraft(updated)
-    reusableAnchorStyleNotice.value = '主播风格卡已保存，并切换为风格卡来源；可以直接测试或绑定方案。'
+    reusableAnchorStyleNotice.value = '主播风格卡已保存，并切换为风格卡来源；可以直接测试或用于方案。'
   } catch (err) {
     reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播风格失败'
   } finally {
@@ -1205,7 +1169,7 @@ async function saveAnchorStyleProfile() {
 
 async function saveAnchorSourceMode(style: LiveAnchorStyle, mode: 'card' | 'sample') {
   if (!style || reusableAnchorStyleBusy.value) return
-  const tenant = activeRoom.value?.tenant_id, room = activeRoomId.value
+  const tenant = planTenantId.value, room = currentRoomPlanId.value
   reusableAnchorStyleBusy.value = true
   reusableAnchorStyleError.value = ''
   try {
@@ -1222,7 +1186,7 @@ async function saveAnchorSourceMode(style: LiveAnchorStyle, mode: 'card' | 'samp
           description: style.description || '',
           style_source_mode: mode,
         }, tenant)
-    if (tenant !== activeRoom.value?.tenant_id || room !== activeRoomId.value) return
+    if (tenant !== planTenantId.value || room !== currentRoomPlanId.value) return
     selectedReusableAnchorStyle.value = updated
     reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
     loadAnchorAddressingDraft(updated)
@@ -1230,7 +1194,7 @@ async function saveAnchorSourceMode(style: LiveAnchorStyle, mode: 'card' | 'samp
     reusableAnchorStyleTab.value = mode === 'card' ? 'style' : 'samples'
     reusableAnchorStyleNotice.value = mode === 'card' ? '已切换为风格卡。' : '已切换为风格样本。'
   } catch (err) {
-    if (tenant === activeRoom.value?.tenant_id && room === activeRoomId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '切换风格来源失败'
+    if (tenant === planTenantId.value && room === currentRoomPlanId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '切换风格来源失败'
   } finally { reusableAnchorStyleBusy.value = false }
 }
 
@@ -1262,7 +1226,7 @@ async function saveAnchorAddressingOverride() {
       name: style.name,
       description: style.description || '',
       profile,
-    }, activeRoom.value?.tenant_id)
+    }, planTenantId.value)
     selectedReusableAnchorStyle.value = updated
     reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
     loadAnchorAddressingDraft(updated)
@@ -1294,7 +1258,7 @@ function styleOverlayApplicationLabel(value: string) {
 
 async function loadStyleOverlays() {
   const planId = currentRoomPlanId.value
-  const tenantId = activeRoom.value?.tenant_id
+  const tenantId = planTenantId.value
   styleOverlayProfile.value = null
   stylePluginCatalog.value = null
   styleOverlayPending.value = null
@@ -1316,7 +1280,7 @@ async function loadStyleOverlays() {
 }
 
 async function loadReusableAnchorStyleWorkspace(preferredID?: number | null) {
-  const tenantID = activeRoom.value?.tenant_id
+  const tenantID = planTenantId.value
   const planID = currentRoomPlanId.value
   const scope = anchorWorkspaceScope(), sequence = ++anchorWorkspaceLoadSequence, selectionEpoch = reusableAnchorSelectionEpoch
   const currentScope = () => scope === anchorWorkspaceScope() && sequence === anchorWorkspaceLoadSequence
@@ -1340,7 +1304,7 @@ async function loadReusableAnchorStyleWorkspace(preferredID?: number | null) {
 }
 
 async function acceptRecommendedAnchors(items: LiveAnchorStyle[]) {
-  const tenant = activeRoom.value?.tenant_id
+  const tenant = planTenantId.value
   const owned = items.filter(item => item.tenant_id === tenant)
   if (!owned.length) return
   const known = new Set(reusableAnchorStyles.value.map(item => item.id))
@@ -1351,22 +1315,22 @@ async function acceptRecommendedAnchors(items: LiveAnchorStyle[]) {
 
 async function saveUploadedAnchorAvatar(style: LiveAnchorStyle, file: File) {
   if (savingReusableAnchorAvatarIds.value.includes(style.id)) return
-  const tenant = activeRoom.value?.tenant_id, room = activeRoomId.value
+  const tenant = planTenantId.value, room = currentRoomPlanId.value
   savingReusableAnchorAvatarIds.value = [...savingReusableAnchorAvatarIds.value, style.id]
   try {
     const result = await uploadAnchorAvatar(style.id, file, tenant)
-    if (tenant !== activeRoom.value?.tenant_id || room !== activeRoomId.value) return
+    if (tenant !== planTenantId.value || room !== currentRoomPlanId.value) return
     reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, avatar_url: result.avatar_url } : item)
     if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, avatar_url: result.avatar_url }
     reusableAnchorStyleNotice.value = '你的主播头像已上传并保存啦。'
-  } catch (err) { if (tenant === activeRoom.value?.tenant_id && room === activeRoomId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '上传头像失败' }
+  } catch (err) { if (tenant === planTenantId.value && room === currentRoomPlanId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '上传头像失败' }
   finally { savingReusableAnchorAvatarIds.value = savingReusableAnchorAvatarIds.value.filter(id => id !== style.id) }
 }
 
 async function selectReusableAnchorStyle(styleID: number, showNotice = true) {
   const epoch = ++reusableAnchorSelectionEpoch
   const roomId = activeRoomId.value
-  const tenantID = activeRoom.value?.tenant_id
+  const tenantID = planTenantId.value
   viewedAnchorSample.value = null
   reusableAnchorMultiAnalysis.value = false
   reusableAnchorStyleAnalysisStage.value = ''
@@ -1382,11 +1346,11 @@ async function selectReusableAnchorStyle(styleID: number, showNotice = true) {
       listLiveAnchorStyleSamples(styleID, tenantID),
       getLiveAnchorAnalysisVersions(styleID, tenantID),
     ])
-    if (epoch !== reusableAnchorSelectionEpoch || tenantID !== activeRoom.value?.tenant_id || roomId !== activeRoomId.value) return
+    if (epoch !== reusableAnchorSelectionEpoch || tenantID !== planTenantId.value || roomId !== activeRoomId.value) return
     if (!stylePluginCatalog.value) {
       try { stylePluginCatalog.value = await getAnchorStylePluginCatalog() } catch { /* 插件目录不可用时仍可查看和训练主播 */ }
     }
-    if (epoch !== reusableAnchorSelectionEpoch || tenantID !== activeRoom.value?.tenant_id || roomId !== activeRoomId.value) return
+    if (epoch !== reusableAnchorSelectionEpoch || tenantID !== planTenantId.value || roomId !== activeRoomId.value) return
     selectedReusableAnchorStyleId.value = styleID
     selectedReusableAnchorStyle.value = style
     reusableAnchorStyleSamples.value = samples.items || []
@@ -1396,7 +1360,7 @@ async function selectReusableAnchorStyle(styleID: number, showNotice = true) {
     loadAnchorStyleProfileDraft(style)
     if (styleSourceMode(style) === 'card') reusableAnchorStyleTab.value = 'style'
     else if (!reusableAnchorStyleTab.value || reusableAnchorStyleTab.value === 'style') reusableAnchorStyleTab.value = 'samples'
-    if (showNotice) reusableAnchorStyleNotice.value = `已切换到主播“${style.name}”，后续测试和方案绑定都会使用这套风格。`
+    if (showNotice) reusableAnchorStyleNotice.value = `已切换到主播“${style.name}”，后续测试和方案保存都会使用这套风格。`
   } catch (err) {
     if (epoch === reusableAnchorSelectionEpoch) reusableAnchorStyleError.value = err instanceof Error ? err.message : '读取主播风格详情失败'
   } finally {
@@ -1412,7 +1376,7 @@ async function createReusableAnchorStyle() {
       name: '新主播',
       description: '自然口语，像跟一个人说话',
       style_source_mode: 'card',
-      tenant_id: activeRoom.value?.tenant_id,
+      tenant_id: planTenantId.value,
     })
     const defaultProfile = buildAnchorStyleCardProfile(style, defaultAnchorStyleDraft())
     const updated = await updateLiveAnchorStyle(style.id, {
@@ -1420,7 +1384,7 @@ async function createReusableAnchorStyle() {
       description: style.description || '自然口语，像跟一个人说话',
       style_source_mode: 'card',
       style_card: defaultProfile,
-    }, activeRoom.value?.tenant_id)
+    }, planTenantId.value)
     reusableAnchorStyles.value = [updated, ...reusableAnchorStyles.value]
     await selectReusableAnchorStyle(style.id)
     reusableAnchorStyleTab.value = 'style'
@@ -1431,20 +1395,20 @@ async function createReusableAnchorStyle() {
 
 async function saveReusableAnchorAvatar(style: LiveAnchorStyle, kind: AnchorAvatarType) {
   if (savingReusableAnchorAvatarIds.value.includes(style.id) || (style.avatar_type === kind && !style.avatar_url)) return
-  const tenant = activeRoom.value?.tenant_id
+  const tenant = planTenantId.value
   const roomId = activeRoomId.value
   savingReusableAnchorAvatarIds.value = [...savingReusableAnchorAvatarIds.value, style.id]
   reusableAnchorStyleError.value = ''
   try {
     const updated = await updateLiveAnchorStyleAvatar(style.id, kind, tenant)
-    if (tenant !== activeRoom.value?.tenant_id || roomId !== activeRoomId.value) return
+    if (tenant !== planTenantId.value || roomId !== activeRoomId.value) return
     // Merge only presentation metadata; a concurrently completed analysis or
     // rename must not be replaced with this request's older full response.
     reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, avatar_type: updated.avatar_type, avatar_url: updated.avatar_url } : item)
     if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, avatar_type: updated.avatar_type, avatar_url: updated.avatar_url }
     reusableAnchorStyleNotice.value = '主播头像已自动保存。'
   } catch (err) {
-    if (tenant === activeRoom.value?.tenant_id && roomId === activeRoomId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播头像失败'
+    if (tenant === planTenantId.value && roomId === activeRoomId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播头像失败'
   } finally { savingReusableAnchorAvatarIds.value = savingReusableAnchorAvatarIds.value.filter(id => id !== style.id) }
 }
 
@@ -1456,15 +1420,15 @@ function beginReusableAnchorStyleNameEdit(style: LiveAnchorStyle) {
 
 async function saveReusableAnchorDescription(style: LiveAnchorStyle, text: string) {
   if (savingReusableAnchorDescriptionIds.value.includes(style.id)) return
-  const tenant = activeRoom.value?.tenant_id, room = activeRoomId.value
+  const tenant = planTenantId.value, room = currentRoomPlanId.value
   savingReusableAnchorDescriptionIds.value.push(style.id)
   try {
     const result = await updateLiveAnchorDescription(style.id, Array.from(text).slice(0, 50).join(''), tenant)
-    if (tenant !== activeRoom.value?.tenant_id || room !== activeRoomId.value) return
+    if (tenant !== planTenantId.value || room !== currentRoomPlanId.value) return
     reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, description: result.description } : item)
     if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, description: result.description }
     reusableAnchorStyleNotice.value = '主播特征介绍已自动保存。'
-  } catch (err) { if (tenant === activeRoom.value?.tenant_id && room === activeRoomId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存介绍失败' }
+  } catch (err) { if (tenant === planTenantId.value && room === currentRoomPlanId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存介绍失败' }
   finally { savingReusableAnchorDescriptionIds.value = savingReusableAnchorDescriptionIds.value.filter(id => id !== style.id) }
 }
 
@@ -1486,13 +1450,13 @@ async function saveReusableAnchorStyleName(style: LiveAnchorStyle) {
     return
   }
   savingReusableAnchorStyleNameId.value = style.id
-  const tenant = activeRoom.value?.tenant_id, room = activeRoomId.value
+  const tenant = planTenantId.value, room = currentRoomPlanId.value
   try {
     const updated = await updateLiveAnchorStyle(style.id, {
       name,
       description: style.description || '',
     }, tenant)
-    if (tenant !== activeRoom.value?.tenant_id || room !== activeRoomId.value) return
+    if (tenant !== planTenantId.value || room !== currentRoomPlanId.value) return
     if (selectedReusableAnchorStyleId.value === updated.id && selectedReusableAnchorStyle.value) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, name: updated.name }
     reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? { ...item, name: updated.name } : item)
     reusableAnchorStyleNotice.value = `主播名称“${updated.name}”已自动保存。`
@@ -1507,7 +1471,7 @@ async function deleteReusableAnchorStyle(styleToDelete?: LiveAnchorStyle) {
   if (!window.confirm(`确定删除主播“${style.name}”吗？删除后该主播的样本、训练记录和绑定关系都会移除。`)) return
   if (!window.confirm('请再次确认：这不是移出列表，而是永久删除这名主播的风格资料。')) return
   try {
-    await deleteLiveAnchorStyle(style.id, activeRoom.value?.tenant_id)
+    await deleteLiveAnchorStyle(style.id, planTenantId.value)
     reusableAnchorStyles.value = reusableAnchorStyles.value.filter((item) => item.id !== style.id)
     if (selectedReusableAnchorStyleId.value === style.id) {
       selectedReusableAnchorStyleId.value = null
@@ -1684,7 +1648,7 @@ async function deleteReusableAnchorStyleSample(sample: LiveAnchorStyleSample) {
   const style = selectedReusableAnchorStyle.value
   if (!style || !window.confirm(`删除样本“${sample.title}”吗？`)) return
   try {
-    await deleteLiveAnchorStyleSample(style.id, sample.id, activeRoom.value?.tenant_id)
+    await deleteLiveAnchorStyleSample(style.id, sample.id, planTenantId.value)
     reusableAnchorStyleSamples.value = reusableAnchorStyleSamples.value.filter((item) => item.id !== sample.id)
     syncAnchorSampleCount()
   } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '删除主播样本失败' }
@@ -1702,7 +1666,7 @@ async function unbindReusableAnchorStyle(style: LiveAnchorStyle) {
 }
 
 async function updateReusableAnchorBinding(style: LiveAnchorStyle, unbind: boolean) {
-  const planID = currentRoomPlanId.value, tenantID = activeRoom.value?.tenant_id
+  const planID = currentRoomPlanId.value, tenantID = planTenantId.value
   if (!planID || !tenantID || style.tenant_id !== tenantID || anchorBindingBusy.value) return
   const scope = anchorWorkspaceScope(), token = ++anchorBindingEpoch
   const current = () => scope === anchorWorkspaceScope() && token === anchorBindingEpoch
@@ -1724,7 +1688,7 @@ async function updateReusableAnchorBinding(style: LiveAnchorStyle, unbind: boole
 }
 
 async function runReusableLongTest() {
-  if (reusableAnchorStyleLongTestRunning.value || !selectedReusableAnchorStyle.value || !currentRoomPlanId.value || !activeRoomId.value) return
+  if (reusableAnchorStyleLongTestRunning.value || !selectedReusableAnchorStyle.value || !currentRoomPlanId.value || !planTenantId.value) return
   const style = selectedReusableAnchorStyle.value.profile
   const sampleText = reusableAnchorStyleSamples.value.find((item) => item.analysis_status === 'analyzed')?.readable_text || currentAnchorStyleSampleText(style)
   if (!style?.dimensions?.length || !sampleText) { reusableAnchorStyleError.value = '请先分析至少一份主播样本，再进行长时间测试。'; return }
@@ -1742,7 +1706,7 @@ async function runReusableLongTest() {
       reusableAnchorStyleLongTestStage.value = `正在生成第 ${index + 1}/${totalSegments} 段，事实检查通过后立即显示；风格失败会回退基础正文…`
       const continuityTopic = `${anchorStyleTestTopic.value}。这是连续主线测试的第${index + 1}段，请承接上一段但换一个表达角度，不引入互动问答。`.slice(0, 280)
       const result = await testLiveAgentAnchorStyle(currentRoomPlanId.value, {
-        room_id: activeRoomId.value, topic: continuityTopic,
+        room_id: 0, topic: continuityTopic,
         target_chars: Math.min(1800, Math.max(300, anchorStyleTestTargetChars.value)),
         style_match_intensity: anchorStyleMatchIntensity.value,
         expansion_freedom: fullShowExpansionFreedom.value, conversion_intensity: anchorStyleConversionIntensity.value,
@@ -1796,7 +1760,7 @@ async function toggleReusableAnchorPlugin(item: AnchorStylePluginCatalogItem) {
   const existing = style.plugin_settings?.find((entry) => entry.plugin_id === item.manifest.id)
   try {
     if (existing?.enabled) {
-      await deleteLiveAnchorStylePlugin(style.id, item.manifest.id, activeRoom.value?.tenant_id)
+      await deleteLiveAnchorStylePlugin(style.id, item.manifest.id, planTenantId.value)
       style.plugin_settings = style.plugin_settings.filter((entry) => entry.plugin_id !== item.manifest.id)
     } else {
       const result = await upsertLiveAnchorStylePlugin(style.id, {
@@ -1804,7 +1768,7 @@ async function toggleReusableAnchorPlugin(item: AnchorStylePluginCatalogItem) {
         plugin_version: item.manifest.version,
         enabled: true,
         parameters: existing?.parameters || stylePluginDefaultParameters(item),
-      }, activeRoom.value?.tenant_id)
+      }, planTenantId.value)
       style.plugin_settings = result.items
     }
     if (currentRoomPlanId.value && styleOverlayProfile.value && item.activation_supported) {
@@ -1839,7 +1803,7 @@ async function activateStylePlugin(item: AnchorStylePluginCatalogItem) {
       plugin_version: item.manifest.version,
       strength: 50,
       parameters: stylePluginDefaultParameters(item),
-    }, activeRoom.value?.tenant_id)
+    }, planTenantId.value)
     if (planId !== currentRoomPlanId.value) return
     styleOverlayProfile.value = result.profile
     styleOverlayNotice.value = `插件“${item.manifest.name}”已加入主播并热生效。`
@@ -1875,7 +1839,7 @@ async function interpretStyleOverlay() {
       source_text: source,
       explanation_text: styleOverlayExplanation.value.trim() || undefined,
       strength: styleOverlayStrength.value,
-    }, activeRoom.value?.tenant_id)
+    }, planTenantId.value)
     if (planId !== currentRoomPlanId.value) return
     styleOverlayPending.value = result.item
     styleOverlayMemoryMatches.value = result.memory_matches
@@ -1895,7 +1859,7 @@ async function persistStyleOverlayItems(items: LiveAnchorStyleOverlayItem[], suc
   styleOverlayError.value = ''
   styleOverlayNotice.value = ''
   try {
-    const result = await saveLiveAgentPlanStyleOverlays(planId, { ...profile, items }, activeRoom.value?.tenant_id)
+    const result = await saveLiveAgentPlanStyleOverlays(planId, { ...profile, items }, planTenantId.value)
     if (planId !== currentRoomPlanId.value) return false
     styleOverlayProfile.value = result.profile
     styleOverlayNotice.value = success + (result.semantic_indexed ? '；已存入当前客户的风格理解记忆。' : '；向量服务不可用时不影响规则执行。')
@@ -1979,7 +1943,7 @@ async function refreshAnchorSellingPointWheel() {
   anchorSellingPointWheelLoading.value = true
   anchorSellingPointWheelError.value = ''
   try {
-    const context = await getAnchorStyleWorkbenchContext(planId, activeRoom.value?.tenant_id)
+    const context = await getAnchorStyleWorkbenchContext(planId, planTenantId.value)
     if (token !== anchorSellingPointWheelLoadToken || planId !== currentRoomPlanId.value) return
     anchorSellingPointWheel.value = context.saved_selling_point_wheel || null
   } catch (error) {
@@ -2000,7 +1964,7 @@ async function initializeAnchorGeneration(force = false) {
   startAnchorInitializationProgress()
   try {
     const params = new URLSearchParams()
-    if (activeRoom.value?.tenant_id) params.set('tenant_id', String(activeRoom.value.tenant_id))
+    if (planTenantId.value) params.set('tenant_id', String(planTenantId.value))
     if (force) params.set('force', '1')
     const qs = params.toString()
     const query = qs ? '?' + qs : ''
@@ -2068,7 +2032,7 @@ const fullShowFactDraft = ref({
   key: '',
   value: '',
 })
-const fullShowFactName = useFactNameSuggestion(fullShowFactDraft, fullShowFactDialogOpen, () => ({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }))
+const fullShowFactName = useFactNameSuggestion(fullShowFactDraft, fullShowFactDialogOpen, () => ({ planId: currentRoomPlanId.value, tenantId: planTenantId.value }))
 type FullShowVoiceState = {
   status: 'idle' | 'generating' | 'ready' | 'candidate' | 'failed'
   progress: number
@@ -2116,15 +2080,15 @@ let contentModeDisposed = false
 
 async function refreshContentMode(reset = false) {
   if (contentModeDisposed) return
-  const roomId = activeRoomId.value
+  const roomId = currentRoomPlanId.value
   const token = ++contentModeLoadNo
   if (reset) contentModeAccess.value = null
   contentModeError.value = ''
   if (!roomId) { contentModeLoading.value = false; return }
   contentModeLoading.value = true
   try {
-    const value = await getLiveContentMode(roomId)
-    if (token !== contentModeLoadNo || activeRoomId.value !== roomId) return
+    const value = await getPlanContentMode(roomId, planTenantId.value)
+    if (token !== contentModeLoadNo || currentRoomPlanId.value !== roomId) return
     const previousMode = contentModeAccess.value?.content_mode
     contentModeAccess.value = value
     if (previousMode !== value.content_mode) {
@@ -2140,7 +2104,7 @@ async function refreshContentMode(reset = false) {
 }
 
 async function chooseContentMode(mode: LiveContentMode) {
-  const roomId = activeRoomId.value
+  const roomId = currentRoomPlanId.value
   if (!roomId || contentModeLoading.value || contentModeSaving.value || fullShowGenerating.value) return
   if (!canSelectLiveContentMode(contentModeAccess.value, mode)) return
   if (contentModeAccess.value?.content_mode === mode) return
@@ -2149,8 +2113,8 @@ async function chooseContentMode(mode: LiveContentMode) {
   contentModeError.value = ''
   contentModeNotice.value = ''
   try {
-    const value = await setLiveContentMode(roomId, mode)
-    if (token !== contentModeLoadNo || roomId !== activeRoomId.value) return
+    const value = await setPlanContentMode(roomId, mode, planTenantId.value)
+    if (token !== contentModeLoadNo || roomId !== currentRoomPlanId.value) return
     contentModeAccess.value = value
     fullShowOutputMode.value = mode === 'user_audio' ? 'custom' : 'generated'
     selectFullShowOutputMode(value.content_mode === 'user_audio' ? 'custom' : 'generated')
@@ -2365,7 +2329,7 @@ let planVersionSaveEpoch = 0
 watch(() => JSON.stringify([
   session.bootstrap?.actor.user_id, session.bootstrap?.actor.tenant_id, session.bootstrap?.actor.role,
   props.supportSession, props.supportTenantId, props.supportRoomId,
-  activeRoomId.value, activeRoom.value?.tenant_id, currentRoomPlanId.value, contentModeAccess.value?.content_mode,
+  planTenantId.value, currentRoomPlanId.value, contentModeAccess.value?.content_mode,
 ]), () => {
   planVersionSaveEpoch++
   fullShowSaveReceipt.value = null
@@ -2385,7 +2349,7 @@ const fullShowWorkspaceInherited = ref(false)
 const fullShowWorkspaceVoiceIdentity = ref<LiveAgentVoiceIdentity | null>(null)
 const fullShowWorkspaceLegacyPartial = ref(false)
 const fullShowSaveBlockedReason = computed(() => {
-  if (!currentRoomPlanId.value || !activeRoom.value) return '先选好直播间和方案，我们再一起保存吧～'
+  if (!currentRoomPlanId.value || !planTenantId.value) return '请先选择方案'
   if (planVoiceRate.loading.value || planVoiceRate.busy.value || !planVoiceRate.ready.value) return '请先在“声音”中读取或保存方案语速'
   if (fullShowVersionSaving.value) return '正在把方案收好，稍等一下哦～'
   if (anchorInitializing.value) return '智能体正在准备中，等它完成后就能保存啦～'
@@ -2414,7 +2378,7 @@ const savePlanOneClickStage = ref('')
 // 其余阻塞原因（未生成文稿、音色不一致等）仍沿用 fullShowSaveBlockedReason。
 const savePlanOneClickDisabled = computed(() => {
   if (savePlanOneClickBusy.value) return true
-  if (!currentRoomPlanId.value || !activeRoom.value) return true
+  if (!currentRoomPlanId.value || !planTenantId.value) return true
   return Boolean(fullShowSaveBlockedReason.value)
 })
 const savePlanOneClickHint = computed(() => {
@@ -2469,22 +2433,16 @@ const systemDefaultVoice = {
   model: 'qwen-audio-3.0-tts-plus',
   system_default: true,
 }
-const currentRoomSelectedVoice = computed(() => {
-  const speech = asRecord(activeConfig.value?.speech_config)
-  const rooms = asRecord(speech.rooms)
-  const room = asRecord(rooms[String(activeRoomId.value || 0)])
-  const selected = asRecord(room.selected_voice)
-  return String(selected.voice_id || '').trim() ? selected : systemDefaultVoice
-})
-const currentRoomSelectedVoiceName = computed(
+const selectedPlanVoice = computed(() => fullShowWorkspaceVoiceIdentity.value || systemDefaultVoice)
+const selectedPlanVoiceName = computed(
   () => {
-    const name = String(currentRoomSelectedVoice.value.name || '').trim() || systemDefaultVoice.name
-    return currentRoomSelectedVoice.value.system_default ? '系统默认 · ' + name : name
+    const name = String(selectedPlanVoice.value.name || '').trim() || systemDefaultVoice.name
+    return ('system_default' in selectedPlanVoice.value && selectedPlanVoice.value.system_default) ? '系统默认 · ' + name : name
   },
 )
 const planVoiceRate = usePlanVoiceRate(() => ({ planId: currentRoomPlanId.value || 0, tenantId: planSelectionScope().tenantId, key: planSelectionPreferenceKey(planSelectionScope()) }))
-const roomVoiceIdentity = computed<LiveAgentVoiceIdentity>(() => {
-  const voice = asRecord(currentRoomSelectedVoice.value)
+const planVoiceIdentity = computed<LiveAgentVoiceIdentity>(() => {
+  const voice = asRecord(selectedPlanVoice.value)
   return {
     name: String(voice.identity_name || voice.name || systemDefaultVoice.name).trim(),
     version: String(voice.version || 'V1').trim(),
@@ -2500,7 +2458,7 @@ const roomVoiceIdentity = computed<LiveAgentVoiceIdentity>(() => {
   }
 })
 const currentVoiceIdentity = computed<LiveAgentVoiceIdentity>(
-  () => ({ ...(fullShowWorkspaceVoiceIdentity.value || roomVoiceIdentity.value), rate: planVoiceRate.saved.value }),
+  () => ({ ...(fullShowWorkspaceVoiceIdentity.value || planVoiceIdentity.value), rate: planVoiceRate.saved.value }),
 )
 const realtimeGenerationOptions = ref<RealtimeGenerationOptions | null>(null)
 const realtimeOptionsLoading = ref(false), realtimeOptionsLoadError = useFeedbackErrorRef(), realtimeOptionsChanged = ref(false)
@@ -2517,23 +2475,23 @@ function updateSelfReference(event: Event) {
   updateRealtimeOptions({ ...realtimeGenerationOptions.value, self_reference: value })
 }
 async function loadRealtimeOptionsDefaults() {
-  const planId = currentRoomPlanId.value, room = activeRoom.value, token = fullShowWorkspaceLoadToken
+  const planId = currentRoomPlanId.value, room = planTenantId.value ? { id: 0, tenant_id: planTenantId.value, name: currentPlan.value?.name || '方案' } : null, token = fullShowWorkspaceLoadToken
   if (!planId || !room) return
   realtimeOptionsLoading.value = true; realtimeOptionsLoadError.value = ''
   try {
     const query = room.tenant_id ? '?tenant_id=' + room.tenant_id : ''
     const options = await request<RealtimeGenerationOptions>('/api/v1/live-agent-plans/' + planId + '/realtime-options' + query)
-    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
+    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || planTenantId.value !== room.tenant_id) return
     realtimeGenerationOptions.value = validatedRealtimeOptions(options)
     realtimeOptionsChanged.value = false
   } catch (err) {
-    if (token === fullShowWorkspaceLoadToken && currentRoomPlanId.value === planId && activeRoom.value?.id === room.id) realtimeOptionsLoadError.value = err instanceof Error ? err.message : '读取实时声音参数失败'
+    if (token === fullShowWorkspaceLoadToken && currentRoomPlanId.value === planId && planTenantId.value === room.tenant_id) realtimeOptionsLoadError.value = err instanceof Error ? err.message : '读取实时声音参数失败'
   } finally { if (token === fullShowWorkspaceLoadToken) realtimeOptionsLoading.value = false }
 }
 const currentFullShowVoiceName = computed(() =>
   fullShowWorkspaceVoiceIdentity.value
     ? '版本恢复 · ' + currentVoiceIdentity.value.name
-    : currentRoomSelectedVoiceName.value,
+    : selectedPlanVoiceName.value,
 )
 function fullShowVoiceIdentityKey(identity: LiveAgentVoiceIdentity) {
   return [
@@ -2849,7 +2807,7 @@ async function saveSelectedTextAsFormalFact() {
     const result = await adoptLiveAgentPlanFacts(
       planId,
       [candidate],
-      activeRoom.value?.tenant_id,
+      planTenantId.value,
       'fullshow:' + variant.variant_key + ':manual-selection',
     )
     await refreshFormalFacts()
@@ -3001,7 +2959,7 @@ function openCustomMainline() {
 
 async function saveFullShowSubtitleText(key: string) {
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   const state = fullShowVoiceState(key)
   const draft = fullShowSubtitleDrafts.value[key]
   if (!planId || !room || !state.audio_asset_id || !draft?.length) return
@@ -3179,14 +3137,14 @@ async function uploadCustomMainline() {
   if (contentModeAccess.value?.content_mode !== 'user_audio') await chooseContentMode('user_audio')
   selectFullShowOutputMode('custom')
   if (!contentModeReady.value || !isUserAudioContentMode.value) {
-    customMainlineError.value = '当前直播间暂不能使用原始音，请刷新页面后重试。'
+    customMainlineError.value = '当前方案暂不能使用原始音，请刷新页面后重试。'
     return
   }
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   const files = customMainlineFiles.value
   if (!planId || !room || !files.length) {
-    customMainlineError.value = '请选择当前方案、直播间和要上传的音频。'
+    customMainlineError.value = '请选择方案和要上传的音频。'
     return
   }
   if (recordingTabs.value.length >= 20) {
@@ -3295,7 +3253,7 @@ function buildOriginalTimeline(
 
 async function rebuildCustomMainline() {
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   const draft = activeRecordingOriginal.value
   const tab = activeRecordingTab.value
   if (!planId || !room || !draft || !tab || recordingOriginalBusy.value) return
@@ -3400,7 +3358,7 @@ async function applyCustomMainlineAsFormal() {
   if (!contentModeReady.value || !isUserAudioContentMode.value) return
   const draft = customMainlineDraft.value
   const identity = draft?.voice_identity
-  if (!draft || !identity || !currentPlan.value || !activeRoom.value || !customMainlineCanApply.value) {
+  if (!draft || !identity || !currentPlan.value || !planTenantId.value || !customMainlineCanApply.value) {
     customMainlineError.value = '自定义音稿、SRT 和自定义音色都准备完成后才能替换主线。'
     return
   }
@@ -3412,7 +3370,7 @@ async function applyCustomMainlineAsFormal() {
       plan_id: currentPlan.value.id,
       plan_name: currentPlan.value.name,
       plan_description: currentPlan.value.description,
-      room_id: activeRoom.value.id,
+      room_id: 0,
       policy_rule_count: 0,
       formal_facts: formalFacts.value.map((item) => ({ scope: item.scope, category: item.category, key: item.key, value: item.value, forbidden_wording: item.forbidden_wording, safe_rewrite: item.safe_rewrite, version: item.version_no })),
       benefits: activeFormalBenefits.value,
@@ -3651,7 +3609,7 @@ async function restoreRecordingOriginalSources(version: LiveAgentPlanVersion) {
 async function generateOriginalAiVoice() {
   const draft = customMainlineDraft.value
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   const text = customMainlineTranscript.value.trim() || draft?.transcript || ''
   if (!draft || !planId || !room || !text) {
     customMainlineError.value = '请先完成原始声音上传和话术校对。'
@@ -3664,7 +3622,7 @@ async function generateOriginalAiVoice() {
     customMainlineError.value = '请先保留话术优先模式，再生成录音原文的克隆声音。'
     return
   }
-  const identity = roomVoiceIdentity.value
+  const identity = planVoiceIdentity.value
   // 录音主线继续使用 user_audio，只替换 CUSTOM 的播放音频为克隆 TTS。
   const targetKey = 'CUSTOM'
   const existing = fullShowVoiceState(targetKey)
@@ -3733,7 +3691,7 @@ async function generateOriginalAiVoice() {
 
 async function acceptOriginalAiVoice() {
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   const key = originalAiCandidateKey.value
   const state = key ? fullShowVoiceState(key) : null
   if (!planId || !room || !key || !state?.candidate_asset_id || !state.candidate_timeline.length) {
@@ -3770,7 +3728,7 @@ async function acceptOriginalAiVoice() {
     adoptFullShowVoiceCandidate(key)
     fullShowFormalVariantKeys.value = [key]
     selectedFullShowVariantKey.value = key
-    fullShowWorkspaceVoiceIdentity.value = { ...roomVoiceIdentity.value }
+    fullShowWorkspaceVoiceIdentity.value = { ...currentVoiceIdentity.value }
     fullShowSavedVersion.value = null
     originalAiSrtProgress.value = { status: 'done', percent: 100, stage: 'SRT 已生成，可以展开查看', error: '' }
     fullShowNotice.value = '已采用 AI 声音并完成对应 SRT；上传的原始声音仍完整保留，可随时切回。'
@@ -3864,8 +3822,8 @@ async function generateFullShowVariantVoice(variant: LiveAgentFullShowVariant, r
   const generatedIdentityKey = currentVoiceIdentityKey.value
   try {
     const planId = currentRoomPlanId.value
-    const room = activeRoom.value
-    if (!planId || !room) throw new Error('当前直播间或直播方案不存在')
+    const room = planAssetContext.value
+    if (!planId || !room) throw new Error('当前方案不存在')
     const response = await generateLiveAgentFullShowVariantVoice(planId, variant.variant_key, {
       tenant_id: room.tenant_id,
       room_id: room.id,
@@ -4052,7 +4010,7 @@ async function previewFormalVoiceSet() {
 
 async function refreshFullShowVersionHistory() {
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   if (!planId || !room) {
     fullShowVersionHistory.value = []
     return
@@ -4118,6 +4076,8 @@ function resetFullShowWorkspaceState() {
   fullShowWorkspaceSource.value = ''
   fullShowWorkspaceChecks.value = []
   fullShowWorkspaceVoiceIdentity.value = null
+  voiceSaveError.value = ''
+  availablePlanVoices.value = []
   fullShowWorkspaceLegacyPartial.value = false
   fullShowWorkspaceInherited.value = false
   fullShowVersionError.value = ''
@@ -4157,7 +4117,7 @@ async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, so
       plan_id: Number(rawContext?.plan_id || version.plan_id),
       plan_name: String(rawContext?.plan_name || currentPlan.value?.name || ''),
       plan_description: String(rawContext?.plan_description || currentPlan.value?.description || ''),
-      room_id: Number(activeRoom.value?.id || version.room_id),
+      room_id: 0,
       policy_rule_count: Number(rawContext?.policy_rule_count || 0),
       style_overlay_prompt: String(rawContext?.style_overlay_prompt || ''),
       style_overlay_count: Number(rawContext?.style_overlay_count || 0),
@@ -4275,7 +4235,7 @@ async function restoreFullShowWorkspaceVersion(version: LiveAgentPlanVersion, so
 
 async function loadFullShowWorkspace() {
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   const token = ++fullShowWorkspaceLoadToken
   resetFullShowWorkspaceState()
   fullShowWorkspaceLoading.value = false
@@ -4285,12 +4245,13 @@ async function loadFullShowWorkspace() {
     const contentMode = contentModeAccess.value?.content_mode
     if (!contentMode) return
     const workspace = await getLiveAgentPlanWorkspace(planId, room.id, room.tenant_id, contentMode)
-    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
+    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || planTenantId.value !== room.tenant_id) return
+    if (workspace.version && (workspace.version.plan_id !== planId || workspace.version.tenant_id !== room.tenant_id)) throw new Error('返回的方案版本不属于当前账号和方案，请重新读取')
     fullShowWorkspaceChecks.value = workspace.checks || []
     const restoredOptions = realtimeOptionsFromVersion(workspace.version?.generation_context)
     if (restoredOptions) realtimeGenerationOptions.value = restoredOptions
     else await loadRealtimeOptionsDefaults()
-    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
+    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || planTenantId.value !== room.tenant_id) return
     // 进入方案时的恢复入口：标签与声音模式都必须回显，否则保存会把 AI 声音写回原声。
     restoreRecordingScript(workspace.version?.generation_context)
     const restoredEntryVoiceMode = String(
@@ -4299,13 +4260,13 @@ async function loadFullShowWorkspace() {
     if (restoredEntryVoiceMode === 'stream_clone' || restoredEntryVoiceMode === 'original') {
       recordingVoiceMode.value = restoredEntryVoiceMode
     }
-    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
+    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || planTenantId.value !== room.tenant_id) return
     if (!workspace.version || !workspace.source) {
       fullShowNotice.value = '当前方案还没有保存过智能体版本，可以从现有方案依据开始生成第一版。'
       return
     }
     await restoreFullShowWorkspaceVersion(workspace.version, workspace.source)
-    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || activeRoom.value?.id !== room.id) return
+    if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || planTenantId.value !== room.tenant_id) return
     if (workspace.inherited) {
       fullShowWorkspaceInherited.value = true
       fullShowSavedVersion.value = null
@@ -4335,6 +4296,9 @@ function cleanVersionVoiceIdentity(identity: LiveAgentVoiceIdentity) {
     profile_id: Number(identity.profile_id || 0) || undefined,
     binding_id: Number(identity.binding_id || 0) || undefined,
     model: String(identity.model || ''),
+    emotion: identity.emotion,
+    emotion_enabled: identity.emotion_enabled,
+    style: cloneVersionJSON(identity.style || {}, {}),
     rate: Number.isFinite(rate) && rate > 0 ? rate : 1,
   }
 }
@@ -4366,13 +4330,13 @@ function cleanVersionSafePoints(points: LiveAgentPlanSafePoint[]) {
 
 async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   const result = fullShowResult.value
   if (fullShowVersionSaving.value) return null
   fullShowVersionError.value = ''
   if (fullShowSaveBlockedReason.value || !planId || !room) {
     fullShowSaveReceipt.value = null
-    fullShowVersionError.value = fullShowSaveBlockedReason.value || '请先选择有效的直播间和方案，本次尚未保存。'
+    fullShowVersionError.value = fullShowSaveBlockedReason.value || '请先选择有效方案，本次尚未保存。'
     fullShowNotice.value = '本次未保存，原方案保持不变。'
     return null
   }
@@ -4381,19 +4345,20 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   const roomModeAtSave = contentModeAccess.value?.content_mode
   const current = () => !contentModeDisposed && ownerEpoch === planVersionSaveEpoch
   const assertCurrent = () => {
-    if (!current()) throw new Error('保存准备期间账号、房间、方案或直播模式已变化，本次保存已取消，请在当前方案重新保存。')
+    if (!current()) throw new Error('保存准备期间账号、方案或模式已变化，本次保存已取消，请在当前方案重新保存。')
   }
   fullShowSaveReceipt.value = null
   fullShowVersionSaving.value = true
-  fullShowNotice.value = '正在核对房间绑定关系与保存内容。'
+  fullShowNotice.value = '正在核对方案声音与保存内容。'
   try {
-    // The plan list is a summary: room_count does not imply it contains room_ids.
-    // Read the room's actual bindings rather than inferring them from that list.
-    const bindings = await getRoomLiveAgentPlans(room.id)
+    const voiceAtSave = cleanVersionVoiceIdentity(currentVoiceIdentity.value)
+    const [bindings, official] = await Promise.all([getLiveVoiceModelBindings(), getLiveOfficialVoices()])
     assertCurrent()
-    const planBoundToRoom = (bindings.items || []).some(item => item.id === planId && item.tenant_id === room.tenant_id)
-    const contentModeAtSave = planBoundToRoom ? roomModeAtSave : 'ai_pregenerated'
-    const realtimeActive = planBoundToRoom && roomModeAtSave === 'ai_dynamic'
+    availablePlanVoices.value = planVoiceChoices(bindings || [], official.items || [], official.configured === true)
+    voiceSaveError.value = planVoiceUnavailable(voiceAtSave, bindings || [], official.items || [], official.configured === true)
+    if (voiceSaveError.value) throw new Error(voiceSaveError.value)
+    const contentModeAtSave = roomModeAtSave
+    const realtimeActive = roomModeAtSave === 'ai_dynamic'
     const realtimeOptionsAtSave = realtimeActive ? validatedRealtimeOptions(realtimeGenerationOptions.value) : null
     fullShowNotice.value = realtimeActive ? '正在保存已核对的公共内容、商品专属内容与资料快照。' : '正在核对事实依据并保存声音方案。'
     const recordingOriginalSources = contentModeAtSave === 'user_audio' ? await recordingOriginalSourcesForSave() : []
@@ -4448,10 +4413,10 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     })
     const payload = {
       tenant_id: Math.round(Number(room.tenant_id || 0)) || undefined,
-      room_id: planBoundToRoom ? Math.round(Number(room.id || 0)) : 0,
+      room_id: Math.round(Number(room.id || 0)),
       duration_minutes: Math.round(Number(fullShowDuration.value || 0)),
       round_minutes: Math.round(Number(fullShowRoundMinutes.value || 0)),
-      voice_identity: cleanVersionVoiceIdentity(currentVoiceIdentity.value),
+      voice_identity: voiceAtSave,
       variants,
       generation_context: {
         content_mode: contentModeAtSave,
@@ -4501,9 +4466,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       ? ((saved.generation_context?.derived_safety as { removed_risks?: unknown[] }).removed_risks as Array<{ area: 'knowledge' | 'products' | 'benefits'; claim_sha256: string; text: string; reason: string }>)
       : []
     removedRisks.value = removed
-    fullShowNotice.value = planBoundToRoom
-      ? `${safetyNotice} 已保存“${room.name}”智能体方案 V${saved.version_no}，使用同一方案的直播间共用此版本。下一次开始直播直接使用本次保存内容，无需发布。正在直播的场次保持原配置，不会被本次保存打断。`
-      : `${safetyNotice} 已存档方案 V${saved.version_no}（未绑定当前直播间，仅保存方案内容，直播间暂不可用）。之后把方案绑定到直播间即可直接使用，无需再发布。`
+    fullShowNotice.value = `${safetyNotice} 已保存方案 V${saved.version_no}，账号下任意直播间均可选择使用。下次开播使用本次保存内容，当前场次保持原配置。`
     await Promise.all([refreshFullShowVersionHistory(), refreshCurrentRoomPlan()]).catch(() => {
       fullShowNotice.value += ' 方案已保存，但页面状态刷新失败，请刷新页面查看。'
     })
@@ -4526,7 +4489,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
 async function savePlanOneClick() {
   if (savePlanOneClickBusy.value || fullShowVersionSaving.value) return
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   if (!planId || !room) return
   const ownerEpoch = planVersionSaveEpoch
   const current = () => !contentModeDisposed && ownerEpoch === planVersionSaveEpoch
@@ -4557,7 +4520,7 @@ async function saveFullShowVariantEdit() {
   const result = fullShowResult.value
   const variant = selectedFullShowVariant.value
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   const text = fullShowEditingText.value.trim()
   if (!result || !variant || !planId || !room || fullShowEditSaving.value) return
   if (!text) {
@@ -4612,7 +4575,7 @@ async function regenerateFullShowVariant(variant: LiveAgentFullShowVariant) {
   if (!contentModeReady.value || isUserAudioContentMode.value) return
   const result = fullShowResult.value
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   if (!result || !planId || !room || fullShowRegeneratingVariantKey.value) return
   const analysis = currentAnalysis.value
   fullShowRegeneratingVariantKey.value = variant.variant_key
@@ -4751,12 +4714,12 @@ async function generateFullShowPreview() {
   if (contentModeAccess.value?.content_mode === 'user_audio') await chooseContentMode('ai_pregenerated')
   selectFullShowOutputMode('generated')
   if (!contentModeReady.value || contentModeLoading.value || contentModeSaving.value || isUserAudioContentMode.value) {
-    fullShowError.value = '当前直播间暂不能切换到 AI 话术模式，请刷新后重试。'
+    fullShowError.value = '当前方案暂不能切换到 AI 话术模式，请刷新后重试。'
     return
   }
   const planId = currentRoomPlanId.value
   if (!planId) {
-    fullShowError.value = '当前直播间还没有绑定直播方案'
+    fullShowError.value = '请先选择一个方案'
     return
   }
   const analysis = currentAnalysis.value
@@ -4771,8 +4734,8 @@ async function generateFullShowPreview() {
       ? (fullShowResult.value?.variants || []).slice(0, 5).map((item) => item.text)
       : []
     const result = await previewGenerateLiveAgentFullShow(planId, {
-      tenant_id: activeRoom.value?.tenant_id,
-      room_id: activeRoom.value?.id,
+      tenant_id: planTenantId.value,
+      room_id: 0,
       duration_minutes: fullShowDuration.value,
       round_minutes: fullShowRoundMinutes.value,
       variant_count: fullShowVariantCount.value,
@@ -4856,11 +4819,18 @@ async function refreshRoomPolicy() {
   }
 }
 
+let accountPlansLoadSequence = 0
 async function refreshLivePlans() {
+  const token = ++accountPlansLoadSequence, scopeKey = planSelectionPreferenceKey(planSelectionScope())
+  const ownerEpoch = planAssetScopeEpoch
+  const tenant = planSelectionScope().tenantId
+  const current = () => !contentModeDisposed && ownerEpoch === planAssetScopeEpoch && token === accountPlansLoadSequence && scopeKey === planSelectionPreferenceKey(planSelectionScope())
   try {
     const result = await getLiveAgentPlans(props.supportSession ? props.supportTenantId : undefined)
-    livePlans.value = (result.items || []).filter((item) => item.status === 'active')
+    if (!current()) return
+    livePlans.value = (result.items || []).filter(item => item.status === 'active' && item.tenant_id === tenant)
   } catch (err) {
+    if (!current()) return
     if (!settingsError.value) {
       settingsError.value = err instanceof Error ? err.message : '读取智能体直播方案失败'
     }
@@ -4868,44 +4838,9 @@ async function refreshLivePlans() {
 }
 
 async function refreshCurrentRoomPlan(preserveEditing = true) {
-  const roomId = activeRoomId.value
-  const scope = planSelectionScope(), scopeKey = planSelectionPreferenceKey(scope)
-  const token = ++roomPlanLoadSequence, editingAtStart = currentRoomPlanId.value
-  const current = () => token === roomPlanLoadSequence && scopeKey === planSelectionPreferenceKey(planSelectionScope()) && roomId === activeRoomId.value
-  if (!roomId) {
-    boundRoomPlans.value = []
-    publishedRoomPlans.value = []
-    roomRuntimeSnapshot.value = null
-    currentRoomPlanId.value = null
-    return
-  }
-  const remembered = readSelectedPlan(scope)
-  const selectable = (id: number | null) => livePlans.value.some(plan => plan.id === id && plan.tenant_id === scope.tenantId && plan.status === 'active')
-  if (remembered && selectable(remembered) && !selectable(currentRoomPlanId.value)) currentRoomPlanId.value = remembered
-  try {
-    const [boundResult, publishedResult, runtime] = await Promise.all([
-      getRoomLiveAgentPlans(roomId),
-      getRoomLiveAgentPlans(roomId, true),
-      getLiveRuntime(roomId),
-    ])
-    if (!current()) return
-    boundRoomPlans.value = boundResult.items || []
-    publishedRoomPlans.value = publishedResult.items || []
-    roomRuntimeSnapshot.value = runtime
-    const availableIds = new Set(livePlans.value.filter(item => item.tenant_id === scope.tenantId && item.status === 'active').map(item => item.id))
-    const runtimeId = runtime.agent_plan_id || 0
-    currentRoomPlanId.value = restoredPlanSelection(availableIds, currentRoomPlanId.value, readSelectedPlan(scope), runtimeId,
-      [...publishedRoomPlans.value.map(plan => plan.id), ...boundRoomPlans.value.map(plan => plan.id), ...availableIds],
-      preserveEditing || currentRoomPlanId.value !== editingAtStart)
-  } catch (err) {
-    if (!current()) return
-    boundRoomPlans.value = []
-    publishedRoomPlans.value = []
-    roomRuntimeSnapshot.value = null
-    if (!settingsError.value) {
-      settingsError.value = err instanceof Error ? err.message : '读取直播间方案关系失败'
-    }
-  }
+  const scope=planSelectionScope()
+  const available = new Set(livePlans.value.filter(plan=>plan.tenant_id===scope.tenantId&&plan.status==='active').map(plan=>plan.id))
+  currentRoomPlanId.value=restoredPlanSelection(available,preserveEditing?currentRoomPlanId.value:null,readSelectedPlan(scope),0,[...available],preserveEditing)
 }
 
 async function refreshPlanScripts() {
@@ -4919,7 +4854,7 @@ async function refreshPlanScripts() {
     return
   }
   try {
-    const result = await getLiveAgentPlanScripts(planId, activeRoom.value?.tenant_id)
+    const result = await getLiveAgentPlanScripts(planId, planTenantId.value)
     if (planId !== currentRoomPlanId.value) return
     planScripts.value = result.items || []
     if (!selectedScriptId.value || !planScripts.value.some((item) => item.id === selectedScriptId.value)) {
@@ -4942,17 +4877,17 @@ async function refreshFormalFacts() {
   const sequence = ++formalFactReadSequence
   const scopeSequence = factScopeSequence
   const planId = currentRoomPlanId.value
-  const tenantId = activeRoom.value?.tenant_id
+  const tenantId = planTenantId.value
   if (!planId) {
     formalFacts.value = []
     return
   }
   try {
     const result = await getLiveAgentPlanFacts(planId, tenantId)
-    if (sequence !== formalFactReadSequence || scopeSequence !== factScopeSequence || planId !== currentRoomPlanId.value || tenantId !== activeRoom.value?.tenant_id) return
+    if (sequence !== formalFactReadSequence || scopeSequence !== factScopeSequence || planId !== currentRoomPlanId.value || tenantId !== planTenantId.value) return
     formalFacts.value = result.items || []
   } catch (err) {
-    if (sequence !== formalFactReadSequence || scopeSequence !== factScopeSequence || planId !== currentRoomPlanId.value || tenantId !== activeRoom.value?.tenant_id) return
+    if (sequence !== formalFactReadSequence || scopeSequence !== factScopeSequence || planId !== currentRoomPlanId.value || tenantId !== planTenantId.value) return
     if (!settingsError.value) {
       settingsError.value = err instanceof Error ? err.message : '读取正式事实依据失败'
     }
@@ -4960,7 +4895,7 @@ async function refreshFormalFacts() {
 }
 
 async function onInteractionFactsUpdated(scope: { roomId: number; planId: number; tenantId: number }) {
-  if (scope.roomId !== activeRoomId.value || scope.planId !== currentRoomPlanId.value || scope.tenantId !== activeRoom.value?.tenant_id) return
+  if (scope.planId !== currentRoomPlanId.value || scope.tenantId !== planTenantId.value) return
   await Promise.all([refreshFormalFacts(), contentPools.refresh(true)])
 }
 
@@ -5052,7 +4987,7 @@ watch(activeMode, mode => {
 	if (pendingRiskLocation.value?.area !== mode) pendingRiskLocation.value = null
 	if (mode !== 'knowledge' && creatingFormalFact.value) cancelCreateFormalFact()
 })
-watch([activeRoomId, currentRoomPlanId], () => {
+watch([planTenantId, currentRoomPlanId], () => {
 	if (creatingFormalFact.value) cancelCreateFormalFact()
 	interactionLocationRequest.value = 0
 	pendingRiskLocation.value = null
@@ -5196,8 +5131,8 @@ async function createFormalFact() {
 	if (!planId || !creatingFormalFact.value || mutatingFormalFactId.value || factScopeSavingId.value !== null) return
 	const sequence = factScopeSequence
 	const draft = formalFactCreateDraft.value
-	const roomId = activeRoomId.value, tenantId = activeRoom.value?.tenant_id
-	const current = () => sequence === factScopeSequence && creatingFormalFact.value && planId === currentRoomPlanId.value && roomId === activeRoomId.value && tenantId === activeRoom.value?.tenant_id && draft === formalFactCreateDraft.value
+	const tenantId = planTenantId.value
+	const current = () => sequence === factScopeSequence && creatingFormalFact.value && planId === currentRoomPlanId.value && tenantId === planTenantId.value && draft === formalFactCreateDraft.value
 	const createdFromWheelGap = Boolean(formalFactCreateGuidance.value)
 	const value = draft.value.trim()
 	if (!value) {
@@ -5255,7 +5190,7 @@ async function saveInlineFormalFactValue(item: LiveAgentPlanFact, value: string)
   const planId = currentRoomPlanId.value
   const sequence = factScopeSequence
   const current = () => sequence === factScopeSequence && planId === currentRoomPlanId.value
-  if (!planId || item.plan_id !== planId || item.tenant_id !== activeRoom.value?.tenant_id || editingFormalFactId.value !== item.id || mutatingFormalFactId.value || inlineFactSavingId.value !== null) throw new Error('当前方案或编辑状态已变化，请重新编辑')
+  if (!planId || item.plan_id !== planId || item.tenant_id !== planTenantId.value || editingFormalFactId.value !== item.id || mutatingFormalFactId.value || inlineFactSavingId.value !== null) throw new Error('当前方案或编辑状态已变化，请重新编辑')
   if (!value.trim()) throw new Error('事实内容不能为空')
   inlineFactSavingId.value = item.id
   formalFactReadSequence++
@@ -5286,7 +5221,7 @@ async function deleteFormalFact(item: LiveAgentPlanFact) {
   mutatingFormalFactId.value = item.id
   settingsError.value = ''
   try {
-    await deleteLiveAgentPlanFact(planId, item.id, activeRoom.value?.tenant_id)
+    await deleteLiveAgentPlanFact(planId, item.id, planTenantId.value)
     if (editingFormalFactId.value === item.id) cancelFormalFactEdit()
     if (expandedFactRiskId.value === item.id) expandedFactRiskId.value = null
     await refreshFormalFacts()
@@ -5300,14 +5235,14 @@ async function deleteFormalFact(item: LiveAgentPlanFact) {
 
 async function refreshFormalBenefits() {
   const planId = currentRoomPlanId.value
-  const tenant = activeRoom.value?.tenant_id
+  const tenant = planTenantId.value
   if (!planId) {
     formalBenefits.value = []
     return
   }
   try {
     const result = await getLiveAgentPlanBenefits(planId, tenant)
-    if (currentRoomPlanId.value === planId && activeRoom.value?.tenant_id === tenant) formalBenefits.value = result.items || []
+    if (currentRoomPlanId.value === planId && planTenantId.value === tenant) formalBenefits.value = result.items || []
   } catch (err) {
     if (!settingsError.value) {
       settingsError.value = err instanceof Error ? err.message : '读取正式活动福利失败'
@@ -5322,7 +5257,7 @@ async function refreshFormalProductLinks() {
     return
   }
   try {
-    const result = await getLiveAgentPlanProductLinks(planId, activeRoom.value?.tenant_id)
+    const result = await getLiveAgentPlanProductLinks(planId, planTenantId.value)
     formalProductLinks.value = result.items || []
   } catch (err) {
     if (!settingsError.value) {
@@ -5360,10 +5295,10 @@ async function saveProductLinkField(
 
 async function duplicateProductLink(item: LiveAgentPlanProductLink) {
   const plan = currentRoomPlanId.value
-  const tenant = activeRoom.value?.tenant_id
+  const tenant = planTenantId.value
   if (!plan || item.plan_id !== plan || item.tenant_id !== tenant) throw new Error('当前方案已切换，请刷新后复制')
   const created = await copyLiveAgentPlanProductLink(plan, item)
-  if (currentRoomPlanId.value !== plan || activeRoom.value?.tenant_id !== tenant) return
+  if (currentRoomPlanId.value !== plan || planTenantId.value !== tenant) return
   const cards = [...formalProductLinks.value]
   const index = cards.findIndex(card => card.id === item.id)
   cards.splice(index < 0 ? cards.length : index + 1, 0, created)
@@ -5541,7 +5476,7 @@ async function adoptProductLinkCandidate(candidate: LiveAgentPlanProductLinkCand
     const result = await adoptLiveAgentPlanProductLinks(
       planId,
       [candidate],
-      activeRoom.value?.tenant_id,
+      planTenantId.value,
       sourceRef,
     )
     await refreshFormalProductLinks()
@@ -5571,7 +5506,7 @@ async function adoptBenefitCandidate(candidate: LiveAgentPlanBenefitCandidate) {
     const result = await adoptLiveAgentPlanBenefits(
       planId,
       [candidate],
-      activeRoom.value?.tenant_id,
+      planTenantId.value,
       sourceRef,
     )
     await refreshFormalBenefits()
@@ -5691,7 +5626,7 @@ async function deleteMemory(item: AgentMemoryItem) {
 async function handlePlanSwitch(event: Event) {
   const id = Number((event.target as HTMLSelectElement).value || 0)
   const plan = livePlans.value.find((item) => item.id === id)
-  if (!plan || plan.id === currentRoomPlanId.value) return
+  if (!plan || planBusy.value || plan.id === currentRoomPlanId.value) return
   deleteConfirmPlanId.value = null
   currentRoomPlanId.value = plan.id
   await refreshPlanScripts()
@@ -5707,7 +5642,7 @@ function loadCurrentPlanIntoManager() {
 }
 
 function nextPlanSequence(roomName: string) {
-  const prefix = `${roomName}直播间 智能体方案`
+  const prefix = `${roomName}智能体方案`
   const used = new Set<number>()
   for (const plan of livePlans.value) {
     const name = String(plan.name || '').trim()
@@ -5727,11 +5662,11 @@ function openCreatePlanManager() {
   planCreateReturnFocus.value = document.activeElement as HTMLElement | null
   deleteConfirmPlanId.value = null
   planCreateError.value = ''
-  const roomName = String(activeRoom.value?.name || '直播间').trim() || '直播间'
+  const roomName = ''
   const sequence = nextPlanSequence(roomName)
   planManagerMode.value = 'create'
-  newPlanName.value = `${roomName}直播间 智能体方案${sequence}`
-  newPlanDescription.value = `${roomName}话术 + 事实依据 + 链接`
+  newPlanName.value = `智能体方案${sequence}`
+  newPlanDescription.value = '话术 + 事实依据 + 链接'
   showPlanManager.value = true
 }
 
@@ -5841,7 +5776,7 @@ async function handlePlanScriptFile(event: Event) {
 
     scriptRecognizing.value = true
     scriptNotice.value = '正在识别“' + file.name + '”中的文字和可见内容，本次识别不会自动保存。'
-    const result = await previewRecognizeLiveAgentPlanImage(planId, file, activeRoom.value?.tenant_id)
+    const result = await previewRecognizeLiveAgentPlanImage(planId, file, planTenantId.value)
     const extractedText = result.text.trim()
     const visualContext = result.visual_context.trim()
     const readableParts: string[] = []
@@ -5889,7 +5824,7 @@ async function savePlanScript(showNotice = true) {
       originalName = scriptSourceFile.value.name
     }
     const payload = {
-      tenant_id: activeRoom.value?.tenant_id,
+      tenant_id: planTenantId.value,
       title: scriptTitle.value.trim(),
       source_type: scriptSourceType.value,
       source_asset_id: sourceAssetId,
@@ -5945,8 +5880,8 @@ async function analyzeCurrentPlanScript() {
 			: '正在识别商品链接、活动福利、事实、口播结构与主播风格'
     startScriptAnalysisProgressTimer()
 		const result = styleOnly
-			? await previewAnalyzeLiveAgentAnchorStyle(planId, text, activeRoom.value?.tenant_id)
-			: await previewAnalyzeLiveAgentPlanScript(planId, text, activeRoom.value?.tenant_id)
+			? await previewAnalyzeLiveAgentAnchorStyle(planId, text, planTenantId.value)
+			: await previewAnalyzeLiveAgentPlanScript(planId, text, planTenantId.value)
     if (planId !== currentRoomPlanId.value || text !== scriptReadableText.value.trim()) {
       throw new Error('方案或素材已变化，已忽略旧素材的分析结果，请重新分析。')
     }
@@ -6031,7 +5966,7 @@ async function applyAnchorStyleHot() {
     }
     const savedScript = await savePlanScript(false)
     if (!savedScript) return
-    const updated = await confirmLiveAgentPlanScriptAnalysis(planId, savedScript.id, scriptReadableText.value, confirmedAnalysis, activeRoom.value?.tenant_id)
+    const updated = await confirmLiveAgentPlanScriptAnalysis(planId, savedScript.id, scriptReadableText.value, confirmedAnalysis, planTenantId.value)
     const index = planScripts.value.findIndex((entry) => entry.id === updated.id)
     if (index >= 0) planScripts.value.splice(index, 1, updated)
     else planScripts.value.unshift(updated)
@@ -6060,47 +5995,37 @@ function reviewBucketLabel(bucket?: string) {
 
 async function createPlanForCurrentRoom() {
   const name = newPlanName.value.trim()
-  const room = activeRoom.value
   if (!name || planBusy.value) return
   planBusy.value = true
   planCreateError.value = ''
   settingsError.value = ''
+  const scope = planSelectionPreferenceKey(planSelectionScope())
+  const ownerEpoch = planAssetScopeEpoch
+  const current = () => !contentModeDisposed && ownerEpoch === planAssetScopeEpoch && scope === planSelectionPreferenceKey(planSelectionScope())
   let planCreated = false
   try {
     const created = await createLiveAgentPlan({
       name,
       description: newPlanDescription.value.trim(),
-      tenant_id: room?.tenant_id,
+      tenant_id: planSelectionScope().tenantId || undefined,
     }, { suppressErrorDialog: true })
     planCreated = true
+    if (!current()) return
     showPlanManager.value = false
     planManagerMode.value = 'edit'
-    if (room) {
-      try {
-        await bindRoomLiveAgentPlan(created.id, room.id, room.tenant_id)
-        currentRoomPlanId.value = created.id
-      } catch (bindErr) {
-        // 方案已创建成功，但自动绑定失败——不能让方案变成静默的 0 绑定孤儿。
-        settingsError.value = `方案“${created.name}”已创建，但绑定当前直播间失败：${bindErr instanceof Error ? bindErr.message : '绑定失败'}。请稍后在方案列表手动绑定房间。`
-        newPlanName.value = ''
-        newPlanDescription.value = ''
-        await Promise.all([refreshLivePlans(), refreshCurrentRoomPlan()])
-        return
-      }
-    } else {
-      // 没有可选直播间：方案本身是客户级资产，可先建后绑，但要明确告知用户当前无房间、暂不可用。
-      settingsError.value = `方案“${created.name}”已创建，但当前没有可用的直播间，未自动绑定。直播间就绪后，在方案列表绑定房间即可使用。`
-    }
     newPlanName.value = ''
     newPlanDescription.value = ''
     await Promise.all([refreshLivePlans(), refreshCurrentRoomPlan()])
+    if (!current()) return
     currentRoomPlanId.value = created.id
     await refreshPlanScripts()
+    if (!current()) return
     messages.value.push({
       role: 'agent',
-      text: `智能体直播方案“${created.name}”已创建${room ? '，并绑定到当前直播间' : '（当前无直播间，未绑定）'}。保存智能体方案后即可在直播间使用，无需单独发布。`,
+      text: `智能体直播方案“${created.name}”已创建。保存智能体方案后即可在直播间使用，无需单独发布。`,
     })
   } catch (err) {
+    if (!current()) return
     const message = err instanceof Error ? err.message : '创建智能体直播方案失败'
     if (planCreated) settingsError.value = message
     else planCreateError.value = message
@@ -6111,7 +6036,6 @@ async function createPlanForCurrentRoom() {
 
 async function saveCurrentPlan() {
   const plan = currentPlan.value
-  const room = activeRoom.value
   const name = newPlanName.value.trim()
   if (!plan || !name || planBusy.value) return
   planBusy.value = true
@@ -6120,7 +6044,7 @@ async function saveCurrentPlan() {
     const updated = await updateLiveAgentPlan(plan.id, {
       name,
       description: newPlanDescription.value.trim(),
-      tenant_id: room?.tenant_id,
+      tenant_id: planSelectionScope().tenantId || undefined,
     })
     const index = livePlans.value.findIndex((item) => item.id === updated.id)
     if (index >= 0) livePlans.value.splice(index, 1, updated)
@@ -6151,7 +6075,7 @@ async function deleteCurrentPlan() {
   deleteConfirmPlanId.value = null
   settingsError.value = ''
   try {
-    await archiveLiveAgentPlan(plan.id, activeRoom.value?.tenant_id)
+    await archiveLiveAgentPlan(plan.id, planTenantId.value)
     currentRoomPlanId.value = null
     showPlanManager.value = false
     newPlanName.value = ''
@@ -6175,63 +6099,6 @@ async function submitPlanManager() {
   await saveCurrentPlan()
 }
 
-async function usePlanForCurrentRoom(plan: LiveAgentPlan) {
-  const room = activeRoom.value
-  if (!room || planBusy.value || runtimePlanId.value === plan.id) return
-  if (!boundPlanIdSet.value.has(plan.id)) {
-    settingsError.value = '请先把这个方案绑定到当前直播间，再切换使用。'
-    return
-  }
-  planBusy.value = true
-  settingsError.value = ''
-  try {
-    await setLiveRuntimePlan(room.id, plan.id)
-    currentRoomPlanId.value = plan.id
-    await refreshCurrentRoomPlan()
-    currentRoomPlanId.value = plan.id
-    await refreshPlanScripts()
-    messages.value.push({ role: 'agent', text: `当前直播间运行方案已热切换到“${plan.name}”。其它已绑定方案仍然保留。` })
-  } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '切换智能体直播方案失败'
-  } finally {
-    planBusy.value = false
-  }
-}
-
-async function bindPlanToCurrentRoom(plan: LiveAgentPlan) {
-  const room = activeRoom.value
-  if (!room || planBusy.value || boundPlanIdSet.value.has(plan.id)) return
-  planBusy.value = true
-  settingsError.value = ''
-  try {
-    await bindRoomLiveAgentPlan(plan.id, room.id, room.tenant_id)
-    await Promise.all([refreshLivePlans(), refreshCurrentRoomPlan()])
-    if (!currentRoomPlanId.value) currentRoomPlanId.value = plan.id
-    await refreshPlanScripts()
-    messages.value.push({ role: 'agent', text: `已把“${plan.name}”绑定到“${room.name}”。现在这个房间可以使用该方案，但不会自动切换直播运行方案。` })
-  } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '绑定直播方案失败'
-  } finally {
-    planBusy.value = false
-  }
-}
-
-async function unbindPlanFromCurrentRoom(plan: LiveAgentPlan) {
-  const room = activeRoom.value
-  if (!room || planBusy.value || !boundPlanIdSet.value.has(plan.id)) return
-  planBusy.value = true
-  settingsError.value = ''
-  try {
-    await unbindRoomLiveAgentPlan(plan.id, room.id, room.tenant_id)
-    await Promise.all([refreshLivePlans(), refreshCurrentRoomPlan()])
-    await refreshPlanScripts()
-    messages.value.push({ role: 'agent', text: `已取消“${plan.name}”与“${room.name}”的绑定。方案本身没有删除，仍可绑定给其它直播间。` })
-  } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '取消方案绑定失败'
-  } finally {
-    planBusy.value = false
-  }
-}
 
 async function loadAgentSettings() {
   settingsError.value = ''
@@ -6268,12 +6135,8 @@ async function loadAgentSettings() {
     }
     persistSelectedRoomLocal(activeRoomId.value)
   } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '读取直播间失败'
-    if (props.supportSession) {
-      rooms.value = []
-      activeRoomId.value = null
-      return
-    }
+    rooms.value = []
+    activeRoomId.value = null
   }
 
   if (!props.supportSession) {
@@ -6295,11 +6158,9 @@ async function loadAgentSettings() {
       }
     }
   } else {
-    messages.value = [{ role: 'agent', text: '已进入客户授权协助模式，仅可维护当前已授权直播间的智能体方案和绑定关系。' }]
+    messages.value = [{ role: 'agent', text: '已进入客户授权协助模式，可维护客户授权范围内的账号方案。' }]
   }
 
-  await refreshRoomPolicy()
-  await refreshAgentVersions()
   await refreshLivePlans()
   await refreshCurrentRoomPlan()
   await Promise.all([refreshPlanScripts(), refreshMemories()])
@@ -6307,14 +6168,14 @@ async function loadAgentSettings() {
 
 async function executeAnchorStyleTest(options?: { lockedSampleText?: string; learnedRegeneration?: boolean }) {
   const planId = currentRoomPlanId.value
-  const room = activeRoom.value
+  const room = planAssetContext.value
   const sampledStyle = anchorRulebook.value ? anchorStyleProfile.value : null
   if (!planId) {
     anchorStyleTestError.value = '当前直播方案已变化，请刷新后重新测试。'
     return false
   }
   if (!room) {
-    anchorStyleTestError.value = '当前直播间已变化，请刷新后重新测试。'
+    anchorStyleTestError.value = '当前方案已变化，请刷新后重新测试。'
     return false
   }
   if (!sampledStyle && enabledStyleOverlayCount.value === 0) {
@@ -6335,7 +6196,7 @@ async function executeAnchorStyleTest(options?: { lockedSampleText?: string; lea
     candidate_patterns: [],
     excluded_from_style: [],
   }
-  const scope = `${room.id}:${planId}:${selectedReusableAnchorStyleId.value || 0}`
+  const scope = `${room.tenant_id}:${planId}:${selectedReusableAnchorStyleId.value || 0}`
   anchorStyleTestBusy.value = true
   anchorStyleTestError.value = ''
   anchorStyleTestResult.value = null
@@ -6362,18 +6223,18 @@ async function executeAnchorStyleTest(options?: { lockedSampleText?: string; lea
       transient_overlays: anchorStyleCorrectionCandidates.value,
       advisory_overrides: anchorStyleAdvisoryOverrides.value,
     }, (event) => {
-      if (`${activeRoomId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` !== scope) return
+      if (`${planTenantId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` !== scope) return
       if (event.type === 'progress') anchorStyleGenerationProgress.value = event.message
       if (event.type === 'segment') anchorStylePartialText.value = event.text
     })
-    if (`${activeRoomId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` === scope) {
+    if (`${planTenantId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` === scope) {
       anchorStyleTestResult.value = result
       anchorStylePartialText.value = result.text
       anchorStyleGenerationProgress.value = '生成完成'
     }
     return true
   } catch (err) {
-    if (`${activeRoomId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` === scope) {
+    if (`${planTenantId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` === scope) {
       anchorStyleTestError.value = err instanceof Error ? err.message : '风格测试失败'
       anchorStyleGenerationProgress.value = '生成未完成，已返回的文字保留供你查看'
     }
@@ -6417,7 +6278,7 @@ async function learnAndRegenerateAnchorStyle() {
       generated_text: result.text,
       feedback_text: feedback,
       strength: 50,
-    }, activeRoom.value?.tenant_id)
+    }, planTenantId.value)
     anchorStyleCorrectionCandidates.value = [...anchorStyleCorrectionCandidates.value, learned.item]
     anchorStyleCorrectionHistory.value = [...anchorStyleCorrectionHistory.value, {
       feedback,
@@ -6538,16 +6399,22 @@ async function refreshAgentVersions() {
   }
 }
 
-async function handleLiveVoiceChanged() {
-  fullShowWorkspaceVoiceIdentity.value = null
-  if (fullShowResult.value) {
-    fullShowSavedVersion.value = null
-    fullShowVersionError.value = ''
-    fullShowNotice.value = isUserAudioContentMode.value
-      ? '互动音色已变更；话术优先内容保持不变，无需重新生成录音，可保存发布。'
-      : '直播间声音身份已变更；原有正式声音仍保留供对比，但需要按新声音身份重新生成后才能保存发布。'
-  }
-  await refreshAgentVersions()
+const voiceSaveError = ref('')
+const availablePlanVoices = ref<LiveAgentVoiceIdentity[]>([])
+function handleLiveVoiceChanged(voice: LiveAgentVoiceIdentity) {
+  if (fullShowVersionSaving.value || fullShowWorkspaceLoading.value || fullShowWorkspaceHydrating.value) return
+  fullShowWorkspaceVoiceIdentity.value = { ...voice, rate: planVoiceRate.saved.value }
+  voiceSaveError.value = ''
+  fullShowSavedVersion.value = null
+  fullShowSaveReceipt.value = null
+  fullShowVersionError.value = ''
+  fullShowNotice.value = isUserAudioContentMode.value
+    ? '已选择方案互动声音，请点击保存方案。主线录音保持不变。'
+    : '已选择方案声音，请点击保存方案；已有正式声音需按所选音色核对或重新生成。'
+}
+function chooseAvailablePlanVoice(event: Event) {
+  const voice = availablePlanVoices.value[Number((event.target as HTMLSelectElement).value)]
+  if (voice) handleLiveVoiceChanged(voice)
 }
 
 async function saveAgentSettings() {
@@ -6569,14 +6436,6 @@ async function saveAgentSettings() {
   }
 }
 
-function roomStatusLabel(status: string) {
-  if (status === 'live') return '直播中'
-  if (status === 'connecting') return '连接中'
-  if (status === 'pending') return '等待连接'
-  if (status === 'offline') return '未开播'
-  if (status === 'error') return '连接异常'
-  return status || '未知'
-}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -6714,7 +6573,7 @@ function notifySystemAgentContext() {
     new CustomEvent('system-agent-live-strategy-context', {
       detail: {
         room_id: activeRoomId.value || 0,
-        tenant_id: activeRoom.value?.tenant_id || 0,
+        tenant_id: planTenantId.value || 0,
         mode: activeMode.value,
         module_label: activeModeLabel.value,
         plan_id: currentRoomPlanId.value || 0,
@@ -6756,7 +6615,7 @@ function handlePlanModuleUpdated(event: Event) {
     return
   }
   if (detail.module === 'knowledge') {
-    void Promise.all([loadFactCategories({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id }), refreshFormalFacts()])
+    void Promise.all([loadFactCategories({ planId: currentRoomPlanId.value, tenantId: planTenantId.value }), refreshFormalFacts()])
     return
   }
   if (detail.module === 'benefits') {
@@ -6765,20 +6624,10 @@ function handlePlanModuleUpdated(event: Event) {
   }
 }
 
-watch(activeRoomId, async () => {
-  contentModeSaving.value = false
-  contentModeNotice.value = ''
-  anchorInitializationNotice.value = ''
-  anchorInitializationError.value = ''
-  anchorInitializationSkipped.value = ''
-  anchorInitializationSteps.value = []
-  anchorSellingPointWheel.value = null
-  currentRoomPlanId.value = null
-  selectedScriptId.value = null
+watch([currentRoomPlanId,planTenantId], async () => {
+  contentModeSaving.value=false
   await refreshContentMode(true)
-  await Promise.all([refreshRoomPolicy(), refreshCurrentRoomPlan(false), refreshMemories()])
-  await refreshPlanScripts()
-  await Promise.all([loadFullShowWorkspace(), refreshFullShowVersionHistory()])
+  await Promise.all([loadFullShowWorkspace(),refreshFullShowVersionHistory()])
 })
 
 watch(
@@ -6804,15 +6653,15 @@ watch(
   { immediate: true },
 )
 
-watch(() => JSON.stringify([currentRoomPlanId.value, activeRoomId.value, activeRoom.value?.tenant_id, session.bootstrap?.actor.user_id, props.supportSession, props.supportTenantId]), () => {
-  void loadFactCategories({ planId: currentRoomPlanId.value, tenantId: activeRoom.value?.tenant_id })
+watch(() => JSON.stringify([currentRoomPlanId.value, planTenantId.value, session.bootstrap?.actor.user_id, props.supportSession, props.supportTenantId]), () => {
+  void loadFactCategories({ planId: currentRoomPlanId.value, tenantId: planTenantId.value })
 }, { immediate: true, flush: 'sync' })
 
 watch(currentRoomPlanId, () => {
   if (activeMode.value === 'fullshow') void refreshAnchorSellingPointWheel()
 })
 
-watch([activeRoomId, currentRoomPlanId, selectedReusableAnchorStyleId], () => {
+watch([planTenantId, currentRoomPlanId, selectedReusableAnchorStyleId], () => {
   anchorStyleOutputOpen.value = false
   anchorStylePartialText.value = ''
   anchorStyleGenerationProgress.value = ''
@@ -6820,7 +6669,7 @@ watch([activeRoomId, currentRoomPlanId, selectedReusableAnchorStyleId], () => {
   anchorStyleTestError.value = ''
 })
 
-watch([activeRoomId, currentRoomPlanId], () => {
+watch([planTenantId, currentRoomPlanId], () => {
   analysisDraft.value = null
   planScripts.value = []
   selectedScriptId.value = null
@@ -6836,8 +6685,6 @@ watch([activeRoomId, currentRoomPlanId], () => {
   anchorStyleSourceText.value = ''
   void loadStyleOverlays()
   void loadReusableAnchorStyleWorkspace()
-  void loadFullShowWorkspace()
-  void refreshFullShowVersionHistory()
   notifySystemAgentContext()
 })
 
@@ -6901,45 +6748,8 @@ onBeforeUnmount(() => {
   <div class="live-strategy-page">
 
 
-    <section class="live-strategy-shell" :class="{ 'rooms-collapsed': roomSidebarCollapsed }">
-      <aside class="live-strategy-rooms" :class="{ collapsed: roomSidebarCollapsed }">
-        <button
-          type="button"
-          class="live-strategy-rooms-toggle"
-          :class="{ collapsed: roomSidebarCollapsed }"
-          :aria-label="roomSidebarCollapsed ? '展开直播间侧栏' : '折叠直播间侧栏'"
-          :title="roomSidebarCollapsed ? '展开直播间侧栏' : '折叠到最左侧'"
-          @click="toggleRoomSidebar"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg>
-        </button>
-        <div class="live-strategy-rooms-rail" :class="{ visible: roomSidebarCollapsed }" aria-hidden="true">
-          <span>播</span><small>直播间</small>
-        </div>
-        <div class="live-strategy-rooms-content" :class="{ hidden: roomSidebarCollapsed }">
-          <div class="strategy-panel-title">
-            <span class="section-kicker">{{ props.supportSession ? 'CUSTOMER ROOMS' : 'MY ROOMS' }}</span>
-            <h2>{{ props.supportSession ? '客户直播间' : '我的直播间' }}</h2>
-          </div>
-          <button
-            v-for="room in rooms"
-            :key="room.id"
-            class="strategy-room-card"
-            :class="{ active: activeRoomId === room.id }"
-            type="button"
-            @click="selectLiveStrategyRoom(room.id)"
-          >
-            <span class="strategy-room-icon">播</span>
-            <span>
-              <strong>{{ room.name }}</strong>
-              <small>{{ room.platform }} · {{ roomStatusLabel(room.status) }}</small>
-            </span>
-          </button>
-          <section v-if="!props.supportSession" class="live-support-authorize-panel">
-            <SupportAssistantPicker :room-id="activeRoomId" />
-          </section>
-        </div>
-      </aside>
+    <section class="live-strategy-shell plan-assets-only">
+
 
       <main class="live-strategy-agent">
         <header class="strategy-agent-head strategy-plan-container-head plan-configuration-header">
@@ -6956,8 +6766,7 @@ onBeforeUnmount(() => {
               <button class="plan-title-edit" type="button" aria-label="修改方案名称与说明" title="修改方案名称与说明" :disabled="!currentPlan || planBusy" @click="toggleEditPlanManager"><PlanConfigurationIcon name="edit" /></button>
             </div>
             <div class="plan-configuration-meta">
-              <span v-if="currentPlan" class="plan-binding-status"><PlanConfigurationIcon name="link" />绑定 {{ currentPlan.room_count || 0 }} 个直播间</span>
-              <span v-if="currentPlan && !currentPlanIsBound">当前房间未绑定</span>
+              <span v-if="currentPlan" class="plan-binding-status"><PlanConfigurationIcon name="link" />账号方案 · 声音、事实和主播风格随方案共用</span>
               <LivePlanVersionBadge :plan-id="currentRoomPlanId || 0" :saved="latestSavedVersion" :loading="fullShowWorkspaceLoading" saved-only inline hero />
             </div>
             </div>
@@ -6969,22 +6778,26 @@ onBeforeUnmount(() => {
               <div class="plan-configuration-menu">
                 <button type="button" :disabled="planBusy" @click="openCreatePlanManager(); closePlanActionsMenu()">新建方案</button>
                 <button type="button" :disabled="!currentPlan || planBusy" @click="toggleEditPlanManager(); closePlanActionsMenu()">修改名称与说明</button>
-                <button v-if="currentPlan && currentPlanIsBound" type="button" :disabled="planBusy" @click="unbindPlanFromCurrentRoom(currentPlan); closePlanActionsMenu()">解除房间绑定</button>
-                <button v-else-if="currentPlan" type="button" :disabled="planBusy || !activeRoom" @click="bindPlanToCurrentRoom(currentPlan); closePlanActionsMenu()">绑定当前房间</button>
                 <button class="danger" type="button" :disabled="!currentPlan || planBusy" @click="deleteCurrentPlan">{{ planBusy ? '处理中…' : deleteConfirmPlanId === currentPlan?.id ? '再次确认删除' : '删除方案' }}</button>
               </div>
             </details>
             <span class="plan-hero-signature" aria-hidden="true">让直播更简单</span>
           </div>
           <p v-if="savePlanOneClickHint" id="plan-save-hint" class="plan-save-hint" role="status">{{ savePlanOneClickHint }}</p>
-          <p v-if="fullShowVersionError" class="plan-save-error" role="alert">{{ fullShowVersionError }}</p>
-          <p v-else-if="fullShowSaveReceipt" class="plan-save-success" role="status">本次保存成功 V{{ fullShowSaveReceipt.version_no }}。{{ fullShowSaveReceipt.room_id ? '下一次开播使用新版本，当前场次保持原快照。' : '方案内容已存档，尚未绑定当前直播间。' }}</p>
+          <label v-if="voiceSaveError" class="plan-save-error">{{ voiceSaveError }}
+            <select aria-label="改选可用方案声音" :disabled="fullShowVersionSaving" value="" @change="chooseAvailablePlanVoice">
+              <option value="" disabled>{{ availablePlanVoices.length ? '请选择可用声音，再保存方案' : '暂无可用声音，请到声音中心准备声音' }}</option>
+              <option v-for="(voice, index) in availablePlanVoices" :key="voice.binding_id || voice.voice_id" :value="index">{{ voice.name }}</option>
+            </select>
+          </label>
+          <p v-if="fullShowVersionError && fullShowVersionError !== voiceSaveError" class="plan-save-error" role="alert">{{ fullShowVersionError }}</p>
+          <p v-else-if="fullShowSaveReceipt" class="plan-save-success" role="status">本次保存成功 V{{ fullShowSaveReceipt.version_no }}。{{ fullShowSaveReceipt.room_id ? '下一次开播使用新版本，当前场次保持原快照。' : '任意直播间均可选择本方案，下次开播使用新版本。' }}</p>
         </header>
 
         <PlanCreateDialog
           v-if="showPlanManager && planManagerMode === 'create'"
           v-model:name="newPlanName" v-model:description="newPlanDescription"
-          :busy="planBusy" :room-name="activeRoom?.name" :error="planCreateError" :return-focus="planCreateReturnFocus"
+          :busy="planBusy" :error="planCreateError" :return-focus="planCreateReturnFocus"
           @close="closeCreatePlanManager" @create="createPlanForCurrentRoom"
         />
 
@@ -7002,7 +6815,7 @@ onBeforeUnmount(() => {
               {{
                 planBusy
                   ? (planManagerMode === 'edit' ? '保存中…' : '创建中…')
-                  : (planManagerMode === 'edit' ? '保存' : '创建并绑定当前直播间')
+                  : (planManagerMode === 'edit' ? '保存' : '创建方案')
               }}
             </button>
           </form>
@@ -7054,7 +6867,7 @@ onBeforeUnmount(() => {
           :saving="planBusinessMode.saving.value" :error="planBusinessMode.error.value" :disabled="!currentPlan"
           @select="planBusinessMode.select" @select-industry="planBusinessMode.selectIndustry" @retry="planBusinessMode.load"
         />
-        <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :visible="['knowledge','products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
+        <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="planTenantId" :visible="['knowledge','products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
 
         <div
           v-if="activeMode === 'plan' || activeMode === 'basic' || activeMode === 'strategy' || activeMode === 'anchor'"
@@ -7099,7 +6912,7 @@ onBeforeUnmount(() => {
         </div>
 
         <section v-show="activeMode === 'supplement'" class="strategy-v2-workspace strategy-product-supplement-workspace">
-          <ProductSupplementChat :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :room-id="activeRoom?.id" :product-links="formalProductLinks" :business-label="supplementBusinessLabel" :industry-name="supplementIndustryName" @updated="onInteractionFactsUpdated" />
+          <ProductSupplementChat :plan-id="currentRoomPlanId || 0" :tenant-id="planTenantId" :room-id="0" :product-links="formalProductLinks" :business-label="supplementBusinessLabel" :industry-name="supplementIndustryName" @updated="onInteractionFactsUpdated" />
         </section>
 
     <section v-if="activeMode === 'script'" class="strategy-v2-workspace strategy-script-workspace">
@@ -7302,7 +7115,7 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="strategy-benefit-formal-title">
                     <div class="strategy-benefit-formal-title-line">
-                      <BenefitScopeEditor v-if="currentRoomPlanId && activeRoom" :plan="currentRoomPlanId" :room="activeRoom.id" :tenant="activeRoom.tenant_id" :benefit="item.id" :entity-version="item.version_no" :scope="poolStatus?.benefits.find(scope => scope.benefit_id === item.id)" :products="poolStatus?.products || []" @saved="contentPools.scopeSaved" />
+                      <BenefitScopeEditor v-if="currentRoomPlanId" :plan="currentRoomPlanId" :room="0" :tenant="planTenantId" :benefit="item.id" :entity-version="item.version_no" :scope="poolStatus?.benefits.find(scope => scope.benefit_id === item.id)" :products="poolStatus?.products || []" @saved="contentPools.scopeSaved" />
                     </div>
                     <div class="strategy-benefit-formal-title-line strategy-benefit-formal-product-title">
                       <input v-if="isEditingFormalBenefit(item, 'product_name') && editingFormalBenefit" v-model="editingFormalBenefit.draft" v-focus :disabled="!!mutatingFormalBenefitId" maxlength="255" aria-label="编辑福利商品名称" @blur="saveFormalBenefitEdit(item)" @keydown.enter.prevent="saveFormalBenefitEdit(item)" @keydown.esc.prevent="cancelFormalBenefitEdit" />
@@ -7427,7 +7240,7 @@ onBeforeUnmount(() => {
 
         <section v-else-if="activeMode === 'knowledge'" class="strategy-v2-workspace">
           <section class="strategy-formal-facts facts-panel-redesign">
-            <div v-if="factCategoryState.error" class="strategy-fact-category-error" role="alert">分类配置读取失败：{{ factCategoryState.error }}<button type="button" :disabled="factCategoryState.loading" @click="loadFactCategories({ planId: currentRoomPlanId, tenantId: activeRoom?.tenant_id })">重新加载</button></div>
+            <div v-if="factCategoryState.error" class="strategy-fact-category-error" role="alert">分类配置读取失败：{{ factCategoryState.error }}<button type="button" :disabled="factCategoryState.loading" @click="loadFactCategories({ planId: currentRoomPlanId, tenantId: planTenantId })">重新加载</button></div>
             <div v-else-if="factCategoryState.loading && !factCategoryState.items.length" class="strategy-fact-category-loading" role="status">正在加载事实分类…</div>
             <div class="formal-facts-hero">
             <header class="strategy-formal-facts-head">
@@ -7458,7 +7271,7 @@ onBeforeUnmount(() => {
             </div>
             </div>
 
-            <FactSpeechPreviewDialog v-if="previewingFormalFact && currentRoomPlanId && activeRoomId" :fact="previewingFormalFact" :plan-id="currentRoomPlanId" :room-id="activeRoomId" :tenant-id="activeRoom?.tenant_id" @close="previewingFormalFact = null" />
+            <FactSpeechPreviewDialog v-if="previewingFormalFact && currentRoomPlanId" :fact="previewingFormalFact" :plan-id="currentRoomPlanId" :room-id="0" :tenant-id="planTenantId" @close="previewingFormalFact = null" />
 
             <div v-if="!formalFacts.length && !creatingFormalFact" class="strategy-v2-empty strategy-formal-facts-empty">
               <strong>当前方案还没有正式事实</strong>
@@ -7513,7 +7326,7 @@ onBeforeUnmount(() => {
                       <td>
                         <div class="strategy-formal-fact-operation">
                         <div class="strategy-formal-fact-actions">
-                          <button type="button" class="is-preview" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || !activeRoomId || !currentRoomPlanId" @click="previewFormalFact(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v13H8l-5 4V4Z"/><path d="m10 7 5 3-5 3Z"/></svg>话术预览</button>
+                          <button type="button" class="is-preview" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || !currentRoomPlanId" @click="previewFormalFact(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v13H8l-5 4V4Z"/><path d="m10 7 5 3-5 3Z"/></svg>话术预览</button>
                           <button
                             type="button"
                             :class="{ 'is-inline-save': editingFormalFactId === item.id }"
@@ -7580,7 +7393,7 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="activeMode === 'reading'" class="strategy-v2-workspace">
-        <RoomReadingRules :room-id="activeRoomId" />
+        <RoomReadingRules :plan-id="currentRoomPlanId" :tenant-id="planTenantId" />
       </section>
       <section v-else-if="activeMode === 'memory'" class="strategy-v2-workspace interaction-strategy-workspace">
           <div class="strategy-v2-section-head interaction-strategy-head">
@@ -7589,9 +7402,9 @@ onBeforeUnmount(() => {
               <p>这里只规定遇到什么情况要回应、优先级、频率和怎么组织回答；商品、履约、售后等回答内容只能来自“事实依据”。</p>
             </div>
           </div>
-          <QuestionLibraryPanel :room-id="activeRoomId" />
+          <QuestionLibraryPanel :plan-id="currentRoomPlanId" :tenant-id="planTenantId" />
           <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" :facts="formalFacts" :location-request="interactionLocationRequest" @refresh="refreshMemories" @adopted="refreshMemories" @facts-updated="onInteractionFactsUpdated">
-          <AnswerStrategyPanel :items="interactionMemories" :loading="memoriesLoading" :error="memoriesError" :scope-key="`${activeRoom?.tenant_id}:${activeRoomId}:${currentRoomPlanId}`" :editing-id="editingMemoryId" :mutating-id="memoryMutatingId" :delete-confirm-id="memoryDeleteConfirmId" @refresh="refreshMemories" @edit="editingMemoryId === $event.id ? resetMemoryEdit() : beginMemoryEdit($event)" @delete="deleteMemory">
+          <AnswerStrategyPanel :items="interactionMemories" :loading="memoriesLoading" :error="memoriesError" :scope-key="`${planTenantId}:${activeRoomId}:${currentRoomPlanId}`" :editing-id="editingMemoryId" :mutating-id="memoryMutatingId" :delete-confirm-id="memoryDeleteConfirmId" @refresh="refreshMemories" @edit="editingMemoryId === $event.id ? resetMemoryEdit() : beginMemoryEdit($event)" @delete="deleteMemory">
             <template #editor="{ item }">
               <div v-if="editingMemoryId === item.id" class="strategy-memory-edit-panel">
                 <label>
@@ -7740,50 +7553,22 @@ onBeforeUnmount(() => {
               v-for="plan in livePlans"
               :key="plan.id"
               class="strategy-plan-card"
-              :class="{ active: currentRoomPlanId === plan.id, bound: boundPlanIdSet.has(plan.id), runtime: runtimePlanId === plan.id }"
+              :class="{ active: currentRoomPlanId === plan.id,  }"
             >
               <div>
                 <span>
-                  {{ runtimePlanId === plan.id
-                    ? '当前直播使用中 · 已保存'
-                    : publishedPlanIdSet.has(plan.id)
-                      ? '已保存 · 可开播'
-                      : boundPlanIdSet.has(plan.id)
-                        ? '已绑定 · 待保存'
-                        : '未绑定当前直播间' }}
+                  {{ currentRoomPlanId === plan.id ? '正在编辑' : '账号方案' }}
                 </span>
                 <strong>{{ plan.name }}</strong>
                 <p>{{ plan.description || '暂无方案说明' }}</p>
-                <small>已用于 {{ plan.room_count || 0 }} 个直播间 · 专用词 {{ plan.term_count || 0 }} 条</small>
+                <small>账号方案 · 专用词 {{ plan.term_count || 0 }} 条</small>
               </div>
               <div class="strategy-plan-card-actions">
                 <button
-                  v-if="boundPlanIdSet.has(plan.id)"
                   type="button"
                   :disabled="planBusy || currentRoomPlanId === plan.id"
-                  @click="currentRoomPlanId = plan.id; refreshPlanScripts()"
+                  @click="handlePlanSwitch({ target: { value: String(plan.id) } } as unknown as Event)"
                 >{{ currentRoomPlanId === plan.id ? '正在编辑' : '编辑方案' }}</button>
-                <button
-                  v-if="publishedPlanIdSet.has(plan.id)"
-                  type="button"
-                  class="primary"
-                  :disabled="planBusy || runtimePlanId === plan.id"
-                  @click="usePlanForCurrentRoom(plan)"
-                >{{ runtimePlanId === plan.id ? '直播使用中' : '切换使用' }}</button>
-                <button
-                  v-if="boundPlanIdSet.has(plan.id)"
-                  type="button"
-                  class="danger"
-                  :disabled="planBusy"
-                  @click="unbindPlanFromCurrentRoom(plan)"
-                >取消绑定</button>
-                <button
-                  v-else
-                  type="button"
-                  class="primary"
-                  :disabled="planBusy || !activeRoom"
-                  @click="bindPlanToCurrentRoom(plan)"
-                >绑定当前房间</button>
               </div>
             </article>
           </div>
@@ -7858,7 +7643,7 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="activeMode === 'anchor'" class="strategy-v2-workspace strategy-anchor-style-workspace">
-          <AnchorRecommendationPicker v-if="anchorRecommendationsOpen" :tenant-id="activeRoom?.tenant_id" :styles="reusableAnchorStyles" @close="anchorRecommendationsOpen = false" @imported="acceptRecommendedAnchors" />
+          <AnchorRecommendationPicker v-if="anchorRecommendationsOpen" :tenant-id="planTenantId" :styles="reusableAnchorStyles" @close="anchorRecommendationsOpen = false" @imported="acceptRecommendedAnchors" />
           <div class="anchor-style-binding-status" :class="{ 'is-free': !currentBoundAnchorStyle }" role="status">
             <template v-if="currentBoundAnchorStyle">
               <strong>当前方案使用主播：{{ currentBoundAnchorStyle.name }}</strong>
@@ -8311,10 +8096,13 @@ onBeforeUnmount(() => {
           :ready="planVoiceRate.ready.value" :error="planVoiceRate.error.value" @change="planVoiceRate.save" @retry="planVoiceRate.load"
         />
         <LiveVoiceCenter
-          :room-id="activeRoomId"
-          :room-name="activeRoom?.name"
+          :plan-id="currentRoomPlanId"
+          :plan-name="currentPlan?.name"
+          :selected-voice="currentVoiceIdentity"
+          :scope-key="planSelectionPreferenceKey(planSelectionScope())"
+          :disabled="fullShowVersionSaving || fullShowWorkspaceLoading || fullShowWorkspaceHydrating"
           :support-session="props.supportSession"
-          @changed="handleLiveVoiceChanged"
+          @selected="handleLiveVoiceChanged"
         />
         </section>
 
@@ -8364,7 +8152,7 @@ onBeforeUnmount(() => {
           </section>
 
           <section v-if="isRealtimeVoiceContentMode" class="strategy-realtime-voice-page">
-            <RealtimeAnchorPreviewPanel :plan-id="currentRoomPlanId || 0" :tenant-id="activeRoom?.tenant_id" :voice-source-room-id="activeRoomId || undefined" :generation-options="realtimeGenerationOptions" />
+            <RealtimeAnchorPreviewPanel :plan-id="currentRoomPlanId || 0" :tenant-id="planTenantId"  :generation-options="realtimeGenerationOptions" />
             <RealtimeGenerationOptionsPanel :model-value="realtimeGenerationOptions" :loading="fullShowWorkspaceLoading || realtimeOptionsLoading" :disabled="fullShowVersionSaving" :load-error="realtimeOptionsLoadError" :changed="realtimeOptionsChanged" @update:model-value="updateRealtimeOptions" @retry="loadRealtimeOptionsDefaults" />
           </section>
 
@@ -8601,7 +8389,7 @@ onBeforeUnmount(() => {
                   <span>02</span>
                   <strong>本次生成依据</strong>
                 </div>
-                <small>{{ currentPlan?.name || '当前直播间还没有绑定直播方案' }}</small>
+                <small>{{ currentPlan?.name || '请先选择一个方案' }}</small>
               </header>
 
               <div class="strategy-fullshow-source-cards">
@@ -8779,7 +8567,7 @@ onBeforeUnmount(() => {
                     </button>
                   </header>
                   <RecordingScriptTabs
-                    :key="`${activeRoom?.tenant_id || 0}:${activeRoomId || 0}:${currentRoomPlanId || 0}`"
+                    :key="`${planTenantId || 0}:${currentRoomPlanId || 0}`"
                     :tabs="recordingTabs"
                     :active-id="activeRecordingTabId"
                     :disabled="fullShowVersionSaving || customMainlineStage === 'uploading' || customMainlineStage === 'analyzing' || customMainlineStage === 'saving'"
@@ -9124,7 +8912,7 @@ onBeforeUnmount(() => {
                       </div>
                       <button v-if="isUserAudioContentMode" type="button" @click="openCustomMainline">上传原始录音</button>
                       <button
-                        v-else-if="String(currentRoomSelectedVoice.source || '')"
+                        v-else-if="String(selectedPlanVoice.source || '')"
                         type="button"
                         @click="generateFullShowVariantVoice(selectedFullShowVariant)"
                       >
@@ -9367,6 +9155,7 @@ onBeforeUnmount(() => {
   max-width:100%;
   overflow-x:hidden;
 }
+.live-strategy-shell.plan-assets-only { grid-template-columns: minmax(0, 1fr); }
 .live-strategy-shell {
   min-width:0;
   max-width:100%;
@@ -11962,7 +11751,8 @@ onBeforeUnmount(() => {
 .plan-configuration-menu>button{display:block;width:100%;min-height:36px;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:#111;font:inherit;font-size:16px;font-weight:500;line-height:1.6;text-align:left;cursor:pointer}
 .plan-configuration-menu>button:hover:not(:disabled){background:#f2f5fc}.plan-configuration-menu>button:disabled{opacity:.5;cursor:default}
 .plan-version-record-list{left:0;right:auto;max-height:260px;overflow:auto}.plan-version-record-list>p{display:flex;justify-content:space-between;gap:20px;margin:0;padding:7px 8px;font-size:12px}.plan-version-record-list strong{font-weight:600}
-.plan-save-hint,.plan-save-error{grid-column:1/-1;margin:0!important;font-size:12px;line-height:1.6;color:#7b879a}.plan-save-error{color:#b4495b}
+.plan-save-hint,.plan-save-error{grid-column:1/-1;margin:0!important;font-size:12px;line-height:1.6;color:#7b879a}.plan-save-error{color:#b4495b;font-size:16px;overflow-wrap:anywhere}
+label.plan-save-error{display:grid;gap:8px;min-width:0}.plan-save-error select{min-width:0;max-width:100%;font:inherit;font-size:16px;min-height:44px}.plan-configuration-meta .plan-select-for-room{font-size:16px;min-height:44px;white-space:normal}
 .plan-save-success{grid-column:1/-1;margin:0!important;color:#157347;font-size:16px;line-height:1.6}
 .plan-configuration-layout{display:block!important;padding:0 24px 24px!important;background:transparent!important}
 .plan-configuration-layout .strategy-workflow-content{margin-top:18px;border:1px solid #e5e8fd!important;border-radius:17px;background:#fff!important;box-shadow:0 8px 24px #8499eb08!important;overflow:visible}

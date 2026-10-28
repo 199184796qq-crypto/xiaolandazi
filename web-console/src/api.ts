@@ -4729,6 +4729,40 @@ export function getRoomReadingRules(roomId: number) {
   return request<RoomReadingRules>('/api/v1/rooms/' + roomId + '/reading-rules')
 }
 
+export function getPlanContentMode(planId: number, tenantId?: number) {
+  return request<import('./liveContentModeOptions').LiveContentModeAccess>(planAssetURL(planId, tenantId, 'content-mode'))
+}
+export function setPlanContentMode(planId: number, mode: string, tenantId?: number) {
+  return request<import('./liveContentModeOptions').LiveContentModeAccess>(planAssetURL(planId, tenantId, 'content-mode'), { method: 'PUT', body: JSON.stringify({ content_mode: mode }) })
+}
+function planAssetURL(planId: number, tenantId: number | undefined, path: string, query?: string) {
+  const params = new URLSearchParams()
+  if (tenantId) params.set('tenant_id', String(tenantId))
+  if (query) params.set('q', query)
+  return `/api/v1/live-agent-plans/${planId}/${path}` + (params.size ? '?' + params : '')
+}
+export function getPlanReadingRules(planId: number, tenantId?: number) {
+  return request<RoomReadingRules>(planAssetURL(planId, tenantId, 'reading-rules'))
+}
+export function updatePlanReadingRules(planId: number, text: string, tenantId?: number) {
+  return request<RoomReadingRules>(planAssetURL(planId, tenantId, 'reading-rules'), { method: 'PUT', body: JSON.stringify({ rules_text: text }) })
+}
+export function getPlanQuestionPurposes(planId: number, tenantId?: number, query?: string, init?: APIRequestInit) {
+  return request<Awaited<ReturnType<typeof getPlanPurposes>>>(planAssetURL(planId, tenantId, 'purposes', query), init)
+}
+export function listPlanQuestionLibrary(planId: number, tenantId?: number) {
+  return request<{ items: QuestionLibraryEntry[] }>(planAssetURL(planId, tenantId, 'question-library'))
+}
+export function savePlanQuestionLibrary(planId: number, payload: Parameters<typeof saveQuestionLibrary>[1], id?: number, tenantId?: number) {
+  return request<QuestionLibraryEntry>(planAssetURL(planId, tenantId, 'question-library') + (id ? (tenantId ? '&' : '?') + 'id=' + id : ''), { method: id ? 'PUT' : 'POST', body: JSON.stringify(payload) })
+}
+export function deletePlanQuestionLibrary(planId: number, id: number, tenantId?: number) {
+  return request<{ ok: boolean }>(planAssetURL(planId, tenantId, 'question-library') + (tenantId ? '&' : '?') + 'id=' + id, { method: 'DELETE' })
+}
+export function classifyPlanQuestionType(planId: number, question: string, tenantId?: number) {
+  return request<{ type: string; types: string[] }>(planAssetURL(planId, tenantId, 'question-library/classify'), { method: 'POST', body: JSON.stringify({ question }) })
+}
+
 export function updateRoomReadingRules(roomId: number, rulesText: string) {
   return request<RoomReadingRules>('/api/v1/rooms/' + roomId + '/reading-rules', {
     method: 'PUT',

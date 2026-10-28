@@ -123,12 +123,12 @@ func (s *Server) generateFactSpeechPreviewOnce(ctx context.Context, state *ancho
 		rules = append(rules, map[string]string{"feedback": feedback, "constraint": constraint})
 	}
 	output := map[string]any{
-		"text":      text,
-		"raw_text":  text,
-		"title":     task.SellingPoint,
-		"purpose":   task.PainPoint,
-		"angle":     task.Angle,
-		"notice":    "使用当前方案和真实口播模型生成，仅预览文字。",
+		"text":                   text,
+		"raw_text":               text,
+		"title":                  task.SellingPoint,
+		"purpose":                task.PainPoint,
+		"angle":                  task.Angle,
+		"notice":                 "使用当前方案和真实口播模型生成，仅预览文字。",
 		"expression_constraints": rules,
 	}
 	output["model_alias"], output["model_name"] = state.TextModel.Name, state.TextModel.Model
@@ -154,20 +154,12 @@ func (s *Server) liveAgentPlanFactSpeechPreview(w http.ResponseWriter, r *http.R
 		RoomID    int64 `json:"room_id"`
 		VersionNo int64 `json:"version_no"`
 	}
-	if readJSON(w, r, &input) != nil || input.RoomID <= 0 || input.VersionNo <= 0 {
-		writeError(w, 400, "请明确当前直播间和事实版本")
+	if readJSON(w, r, &input) != nil || input.VersionNo <= 0 {
+		writeError(w, 400, "请明确事实版本")
 		return
 	}
 	tenant, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, false)
 	if !ok {
-		return
-	}
-	roomTenant, ok := s.tenantForRoom(w, r, actor, input.RoomID)
-	if !ok {
-		return
-	}
-	if roomTenant != tenant {
-		writeError(w, 403, "直播间与方案范围不一致")
 		return
 	}
 	planData, err := s.store.GetLiveAgentPlan(r.Context(), tenant, plan)
@@ -176,11 +168,6 @@ func (s *Server) liveAgentPlanFactSpeechPreview(w http.ResponseWriter, r *http.R
 		return
 	} else if err != nil {
 		writeError(w, 503, "读取方案失败")
-		return
-	}
-	room := s.loadSpeechAnalysisRoom(r.Context(), tenant, input.RoomID)
-	if room.Name == "" {
-		writeError(w, 404, "当前直播间不存在或不可访问")
 		return
 	}
 	items, err := s.store.ListLiveAgentPlanFacts(r.Context(), tenant, plan)
@@ -195,7 +182,7 @@ func (s *Server) liveAgentPlanFactSpeechPreview(w http.ResponseWriter, r *http.R
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
-	state, err := s.prepareFactSpeechPreview(ctx, tenant, plan, input.RoomID, fact, room.Name)
+	state, err := s.prepareFactSpeechPreview(ctx, tenant, plan, 0, fact, planData.Name)
 	if err != nil {
 		writeError(w, 409, err.Error())
 		return
@@ -214,6 +201,6 @@ func (s *Server) liveAgentPlanFactSpeechPreview(w http.ResponseWriter, r *http.R
 		writeError(w, 409, "生成期间事实已修改或删除，请刷新后重新预览")
 		return
 	}
-	output["fact_id"], output["version_no"], output["room_name"], output["plan_name"] = id, input.VersionNo, room.Name, planData.Name
+	output["fact_id"], output["version_no"], output["room_name"], output["plan_name"] = id, input.VersionNo, planData.Name, planData.Name
 	writeJSON(w, 200, output)
 }

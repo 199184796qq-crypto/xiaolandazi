@@ -1113,6 +1113,7 @@ func (s *Server) liveAgentPlanFullShowRegeneratePreview(w http.ResponseWriter, r
 		writeError(w, http.StatusBadRequest, "当前稿件集合必须为 3 到 5 套")
 		return
 	}
+	input.RoomID = 0
 	previewInput := model.LiveAgentFullShowPreviewInput{
 		TenantID:            input.TenantID,
 		RoomID:              input.RoomID,
@@ -1150,9 +1151,7 @@ func (s *Server) liveAgentPlanFullShowRegeneratePreview(w http.ResponseWriter, r
 	if !ok {
 		return
 	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
-		return
-	}
+	input.RoomID = 0 // Preview assets belong to the plan, never to a room.
 	plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
@@ -1160,17 +1159,6 @@ func (s *Server) liveAgentPlanFullShowRegeneratePreview(w http.ResponseWriter, r
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取直播智能体方案失败")
-		return
-	}
-	boundToRoom := false
-	for _, roomID := range plan.RoomIDs {
-		if roomID == input.RoomID {
-			boundToRoom = true
-			break
-		}
-	}
-	if !boundToRoom {
-		writeError(w, http.StatusBadRequest, "当前直播方案没有绑定到所选直播间")
 		return
 	}
 	facts, err := s.store.ListLiveAgentPlanFacts(r.Context(), tenantID, planID)
@@ -1248,10 +1236,6 @@ func (s *Server) liveAgentPlanFullShowAuditPreview(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, "文稿复核参数格式错误")
 		return
 	}
-	if input.RoomID <= 0 {
-		writeError(w, http.StatusBadRequest, "请选择当前直播间后再复核文稿")
-		return
-	}
 	if input.RoundMinutes <= 0 {
 		input.RoundMinutes = 7
 	}
@@ -1270,9 +1254,7 @@ func (s *Server) liveAgentPlanFullShowAuditPreview(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
-		return
-	}
+	input.RoomID = 0 // Preview assets belong to the plan, never to a room.
 	plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
@@ -1280,17 +1262,6 @@ func (s *Server) liveAgentPlanFullShowAuditPreview(w http.ResponseWriter, r *htt
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取直播智能体方案失败")
-		return
-	}
-	boundToRoom := false
-	for _, roomID := range plan.RoomIDs {
-		if roomID == input.RoomID {
-			boundToRoom = true
-			break
-		}
-	}
-	if !boundToRoom {
-		writeError(w, http.StatusBadRequest, "当前直播方案没有绑定到所选直播间")
 		return
 	}
 	facts, err := s.store.ListLiveAgentPlanFacts(r.Context(), tenantID, planID)
@@ -1355,9 +1326,7 @@ func (s *Server) liveAgentPlanFullShowPreview(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	if !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
-		return
-	}
+	input.RoomID = 0 // Preview assets belong to the plan, never to a room.
 	plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
 	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
 		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
@@ -1365,21 +1334,6 @@ func (s *Server) liveAgentPlanFullShowPreview(w http.ResponseWriter, r *http.Req
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取直播智能体方案失败")
-		return
-	}
-	if input.RoomID <= 0 {
-		writeError(w, http.StatusBadRequest, "请选择当前直播间后再生成整场话术")
-		return
-	}
-	boundToRoom := false
-	for _, roomID := range plan.RoomIDs {
-		if roomID == input.RoomID {
-			boundToRoom = true
-			break
-		}
-	}
-	if !boundToRoom {
-		writeError(w, http.StatusBadRequest, "当前直播方案没有绑定到所选直播间")
 		return
 	}
 	facts, err := s.store.ListLiveAgentPlanFacts(r.Context(), tenantID, planID)

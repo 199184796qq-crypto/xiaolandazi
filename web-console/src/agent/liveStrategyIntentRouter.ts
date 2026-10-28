@@ -306,7 +306,7 @@ export function liveStrategyIntentClarificationOptions(
     push(liveStrategyIntentOption('benefits', '活动福利', '作为活动/优惠信息处理，仍需核对时效和适用范围。', 'benefits'))
   }
   if (/方案|绑定|解绑|取消绑定|切换方案|使用方案|当前方案/.test(compact)) {
-    push(liveStrategyIntentOption('plan', '方案绑定 / 切换', '处理直播间与方案的绑定关系或当前运行方案。', 'plan'))
+    push(liveStrategyIntentOption('plan', '方案选择 / 切换', '选择账号下的已保存方案，下次开播使用。', 'plan'))
   }
 
   if (hasImages) {
@@ -334,7 +334,7 @@ export function liveStrategyIntentClarificationOptions(
     liveStrategyIntentOption('knowledge', '事实依据', '保存可核对的商品/直播事实。', 'knowledge'),
     liveStrategyIntentOption('benefits', '活动福利', '维护优惠、赠品、限时活动等。', 'benefits'),
     liveStrategyIntentOption('script', '口播样稿', '保存整篇口播范文，参考从开场到结尾的组织方式。', 'script'),
-    liveStrategyIntentOption('plan', '方案绑定 / 切换', '调整直播间和方案关系。', 'plan'),
+    liveStrategyIntentOption('plan', '方案选择 / 切换', '选择本直播间下次开播使用的方案。', 'plan'),
   ]
 }
 

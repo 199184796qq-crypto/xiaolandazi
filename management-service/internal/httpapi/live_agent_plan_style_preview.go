@@ -308,8 +308,8 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		Continuation        *speechruntime.Continuation           `json:"continuation,omitempty"`
 		AdvisoryOverrides   []string                              `json:"advisory_overrides,omitempty"`
 	}
-	if err := readJSON(w, r, &input); err != nil || input.RoomID <= 0 || utf8.RuneCountInString(input.Topic) > 300 || utf8.RuneCountInString(input.SourceText) > 60000 || len(input.AnchorStyle.Dimensions) > 40 || len(input.SelectedFacts) > 100 || len(input.TransientOverlays) > 6 || len(input.AdvisoryOverrides) > 20 {
-		writeError(w, http.StatusBadRequest, "请选择直播间，主题最多300字")
+	if err := readJSON(w, r, &input); err != nil || utf8.RuneCountInString(input.Topic) > 300 || utf8.RuneCountInString(input.SourceText) > 60000 || len(input.AnchorStyle.Dimensions) > 40 || len(input.SelectedFacts) > 100 || len(input.TransientOverlays) > 6 || len(input.AdvisoryOverrides) > 20 {
+		writeError(w, http.StatusBadRequest, "主题最多300字")
 		return
 	}
 	if input.TargetChars == 0 {
@@ -344,9 +344,10 @@ func (s *Server) liveAgentPlanAnchorStyleTest(w http.ResponseWriter, r *http.Req
 		return
 	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, input.TenantID, false)
-	if !ok || !s.requireLiveStrategyRoomAccess(w, r, actor, tenantID, input.RoomID) {
+	if !ok {
 		return
 	}
+	input.RoomID = 0
 	plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "直播方案不存在")
