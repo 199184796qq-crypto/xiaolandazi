@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"livecompanion/management/internal/agentgateway"
-	"livecompanion/management/internal/contentguard"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"log"
@@ -295,14 +294,9 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 		return
 	}
 	mother = append(append(policy, []byte("\n\n")...), mother...)
-	p0, e := interactionpolicy.Read("compliance/L1/p0-hard-block.md")
-	if e != nil {
-		return
-	}
-	if _, e = contentguard.Compile(string(p0)); e != nil {
-		return
-	}
-	mother = append(append(p0, []byte("\n\n")...), mother...)
+	// The 9k-character P0 block is not part of address selection: the addressing
+	// policy already carries the naming bans (digits, contacts, insults, masks).
+	// Sending it per nickname was the single largest interaction token cost.
 	identity := ""
 	if resolver, ok := w.agent.(interface {
 		ModelRoleIdentity(context.Context, string) (string, error)
@@ -348,27 +342,46 @@ func (w *Worker) planNicknameAddresses(ctx context.Context, s model.LiveRuntimeS
 	if len(pending) == 0 {
 		return
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	callCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	for i, name := range pending {
-		// One nickname per call: failures never shift another person's alias.
-		packet, _ := json.Marshal(map[string]any{"name": name, "preferred_terms": prefs.PreferredTerms, "blocked_terms": prefs.BlockedTerms, "shortening": nicknameShorteningHint(name.RawName)})
-		response, err := w.completePaidModel(callCtx, s, agentgateway.Request{Stage: "interaction_addressing_plan", Messages: []agentgateway.Message{{Role: "system", Content: string(mother)}, {Role: "user", Content: string(packet)}}, EnableThinking: false, MaxTokens: 160, Timeout: 8 * time.Second}, item.ID+":nickname:"+strconv.Itoa(positions[i]))
-		alias := ""
+	// One request covers several names: the rules are the same for every viewer,
+	// so sending them per nickname multiplied the prompt by the batch size.
+	const nicknameBatchSize = 8
+	for start := 0; start < len(pending); start += nicknameBatchSize {
+		end := min(start+nicknameBatchSize, len(pending))
+		chunk := pending[start:end]
+		names := make([]map[string]any, 0, len(chunk))
+		for i, input := range chunk {
+			names = append(names, map[string]any{
+				"index": i, "raw_name": input.RawName, "char_count": input.Chars,
+				"max_continuous_digits": input.Digits, "masked": input.Masked,
+				"shortening": nicknameShorteningHint(input.RawName),
+			})
+		}
+		packet, _ := json.Marshal(map[string]any{"names": names, "preferred_terms": prefs.PreferredTerms, "blocked_terms": prefs.BlockedTerms})
+		key := item.ID + ":nickname:" + strconv.Itoa(positions[start])
+		response, err := w.completePaidModel(callCtx, s, agentgateway.Request{Stage: "interaction_addressing_plan", Messages: []agentgateway.Message{{Role: "system", Content: string(mother)}, {Role: "user", Content: string(packet)}}, EnableThinking: false, MaxTokens: 60*len(chunk) + 80, Timeout: 12 * time.Second}, key)
+		var aliases []string
 		if err == nil {
-			alias, err = decodeNicknameAddress(response.Text)
+			aliases, err = decodeNicknamePlan(response.Text, len(chunk))
 		}
 		if err != nil {
-			log.Printf("nickname plan fallback tenant=%d room=%d decision=%s reason=planning_unavailable", s.TenantID, s.RoomID, item.ID)
+			log.Printf("nickname plan fallback tenant=%d room=%d decision=%s batch=%d reason=planning_unavailable", s.TenantID, s.RoomID, item.ID, len(chunk))
 			continue
 		}
-		pos := positions[i]
-		item.PromptNicknames[pos] = alias
 		w.addressMu.Lock()
-		if len(w.nicknameAliases) >= 512 {
-			w.nicknameAliases = map[string]nicknameAliasCacheEntry{}
+		for i, alias := range aliases {
+			alias = nicknameModelName(strings.TrimSpace(alias))
+			if alias == "" {
+				continue
+			}
+			pos := positions[start+i]
+			item.PromptNicknames[pos] = alias
+			if len(w.nicknameAliases) >= 512 {
+				w.nicknameAliases = map[string]nicknameAliasCacheEntry{}
+			}
+			w.nicknameAliases[keys[pos]] = nicknameAliasCacheEntry{Address: alias, Expires: now.Add(30 * time.Minute)}
 		}
-		w.nicknameAliases[keys[pos]] = nicknameAliasCacheEntry{Address: alias, Expires: now.Add(30 * time.Minute)}
 		w.addressMu.Unlock()
 	}
 }

@@ -2,6 +2,7 @@ package decisionexecutor
 
 import (
 	"context"
+	"encoding/json"
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
@@ -32,10 +33,20 @@ func (g *nicknameFixtureModel) Complete(_ context.Context, r agentgateway.Reques
 	if g.bad {
 		return agentgateway.Response{Text: "无法确认\n请重新输入"}, nil
 	}
-	if strings.Contains(r.Messages[1].Content, "\"index\"") {
-		panic("program index exposed")
+	var input struct {
+		Names []struct {
+			Index int `json:"index"`
+		} `json:"names"`
 	}
-	return agentgateway.Response{Text: "这位老乡"}, nil
+	if err := json.Unmarshal([]byte(r.Messages[1].Content), &input); err != nil {
+		return agentgateway.Response{}, err
+	}
+	aliases := make([]map[string]any, 0, len(input.Names))
+	for _, name := range input.Names {
+		aliases = append(aliases, map[string]any{"index": name.Index, "address": "这位老乡"})
+	}
+	raw, _ := json.Marshal(map[string]any{"aliases": aliases})
+	return agentgateway.Response{Text: string(raw)}, nil
 }
 func TestNicknamePlanningCachesByRoleAndLeavesOriginalNamesIntact(t *testing.T) {
 	modelAPI := &nicknameFixtureModel{identity: "max-one"}
@@ -210,4 +221,37 @@ func TestNicknameAddressSuffixAndShorteningHint(t *testing.T) {
 			t.Errorf("nicknameShorteningHint(%q)=%q want %q", c.name, got, c.expect)
 		}
 	}
+}
+
+func TestNicknamePlanningBatchesOneCallAndDropsP0Block(t *testing.T) {
+	modelAPI := &nicknameFixtureModel{identity: "batch"}
+	var systemPrompt string
+	agent := &nicknamePromptSpy{inner: modelAPI, capture: &systemPrompt}
+	w := &Worker{store: &nicknameFixtureStore{}, agent: agent}
+	item := decisionItem{Nicknames: []string{"小明", "老王", "爱吃苹果"}}
+	w.planNicknameAddresses(context.Background(), model.LiveRuntimeSession{TenantID: 14, RoomID: 26}, &item)
+	if modelAPI.calls != 1 {
+		t.Fatalf("calls=%d want one batched call", modelAPI.calls)
+	}
+	if len(item.PromptNicknames) != 3 || item.PromptNicknames[0] != "这位老乡" {
+		t.Fatalf("aliases=%v", item.PromptNicknames)
+	}
+	if len([]rune(systemPrompt)) > 4000 {
+		t.Fatalf("nickname prompt still carries the P0 block: %d runes", len([]rune(systemPrompt)))
+	}
+}
+
+type nicknamePromptSpy struct {
+	inner   *nicknameFixtureModel
+	capture *string
+}
+
+func (s *nicknamePromptSpy) ModelRoleIdentity(ctx context.Context, stage string) (string, error) {
+	return s.inner.ModelRoleIdentity(ctx, stage)
+}
+func (s *nicknamePromptSpy) Complete(ctx context.Context, r agentgateway.Request) (agentgateway.Response, error) {
+	if len(r.Messages) > 0 {
+		*s.capture = r.Messages[0].Content
+	}
+	return s.inner.Complete(ctx, r)
 }
