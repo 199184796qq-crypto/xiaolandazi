@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import { classifyQuestionType, deleteQuestionLibrary, getPlanPurposes, listQuestionLibrary, saveQuestionLibrary } from '../api'
 import type { QuestionLibraryEntry } from '../types'
 
 const props = defineProps<{ roomId: number | null }>()
+
+type Suggestion = { key: string; name: string; suggested_excludes: string[] }
 
 type Row = {
   id: number
@@ -13,6 +15,8 @@ type Row = {
   sense_key: string
   sense_name: string
   excludeText: string
+  suggestions: Suggestion[]
+  showAll: boolean
   saving?: boolean
   deleting?: boolean
 }
@@ -36,31 +40,47 @@ const purposes = ref<PurposeOption[]>([])
 const loading = ref(false)
 const error = ref('')
 const notice = ref('')
+let loadVersion = 0
 
 function blankRow(): Row {
-  return { id: 0, question_type: 'fact', question: '', answer: '', sense_key: '', sense_name: '', excludeText: '' }
+  return { id: 0, question_type: 'fact', question: '', answer: '', sense_key: '', sense_name: '', excludeText: '', suggestions: [], showAll: false }
 }
 
 function pickSense(row: Row, key: string) {
+  const selected = senseOptions(row).find(item => item.key === key)
   row.sense_key = key
-  row.sense_name = purposes.value.find(item => item.key === key)?.name || ''
+  row.sense_name = selected?.name || ''
+}
+
+function senseOptions(row: Row): PurposeOption[] {
+  if (row.sense_key && !purposes.value.some(item => item.key === row.sense_key)) {
+    return [{ key: row.sense_key, name: row.sense_name || '已绑定含义' }, ...purposes.value]
+  }
+  return purposes.value
 }
 
 async function load() {
-  if (!props.roomId) {
+  const roomId = props.roomId
+  const version = ++loadVersion
+  const isCurrent = () => version === loadVersion && props.roomId === roomId
+  error.value = ''
+  notice.value = ''
+  if (!roomId) {
     rows.value = []
+    purposes.value = []
+    loading.value = false
     return
   }
   loading.value = true
-  error.value = ''
+  // Purpose options are optional; a slow or failed request must not hide rows.
+  void getPlanPurposes(roomId).then(result => {
+    if (isCurrent()) purposes.value = (result.items || []).map(item => ({ key: item.key, name: item.name }))
+  }).catch(() => {
+    if (isCurrent()) purposes.value = []
+  })
   try {
-    const result = await listQuestionLibrary(props.roomId)
-    try {
-      const purposeResult = await getPlanPurposes(props.roomId)
-      purposes.value = (purposeResult.items || []).map(item => ({ key: item.key, name: item.name }))
-    } catch {
-      purposes.value = []
-    }
+    const result = await listQuestionLibrary(roomId)
+    if (!isCurrent()) return
     rows.value = (result.items || []).map((item: QuestionLibraryEntry) => ({
       id: item.id,
       question_type: item.question_type || 'fact',
@@ -69,11 +89,13 @@ async function load() {
       sense_key: item.sense_key || '',
       sense_name: item.sense_name || '',
       excludeText: (item.exclude_words || []).join('、'),
+      suggestions: [],
+      showAll: false,
     }))
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '读取问题库失败'
+    if (isCurrent()) error.value = e instanceof Error ? e.message : '读取问题库失败'
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 
@@ -146,7 +168,12 @@ async function classify(row: Row) {
   }
 }
 
-watch(() => props.roomId, load, { immediate: true })
+watch(() => props.roomId, () => {
+  rows.value = []
+  purposes.value = []
+  void load()
+}, { immediate: true })
+onBeforeUnmount(() => { loadVersion += 1 })
 </script>
 
 <template>
@@ -158,7 +185,7 @@ watch(() => props.roomId, load, { immediate: true })
       </div>
       <div class="ql-actions">
         <button type="button" class="ghost" :disabled="loading" @click="load">刷新</button>
-        <button type="button" class="primary" @click="addRow">添加一行</button>
+        <button type="button" class="primary" :disabled="loading" @click="addRow">添加一行</button>
       </div>
     </header>
     <table class="ql-table">
@@ -183,13 +210,14 @@ watch(() => props.roomId, load, { immediate: true })
               type="text"
               placeholder="如：上海、发货（右键让模型判断类型）"
               @contextmenu.prevent="classify(row)"
+              @blur="suggest(row)"
             />
           </td>
           <td>
             <div class="ql-sense">
               <select :value="row.sense_key" @change="pickSense(row, ($event.target as HTMLSelectElement).value)">
                 <option value="">指的是（可选）</option>
-                <option v-for="purpose in purposes" :key="purpose.key" :value="purpose.key">{{ purpose.name }}</option>
+                <option v-for="purpose in senseOptions(row)" :key="purpose.key" :value="purpose.key">{{ purpose.name }}</option>
               </select>
               <input v-model="row.excludeText" type="text" placeholder="排除词：价、便宜、优惠" />
             </div>
@@ -201,7 +229,13 @@ watch(() => props.roomId, load, { immediate: true })
             <button type="button" class="danger" :disabled="row.deleting" @click="removeRow(row)">{{ row.deleting ? '删除中…' : '删除' }}</button>
           </td>
         </tr>
-        <tr v-if="!rows.length && !loading">
+        <tr v-if="!rows.length && loading">
+          <td colspan="4" class="ql-empty">正在读取问题库…</td>
+        </tr>
+        <tr v-else-if="!rows.length && error">
+          <td colspan="4" class="ql-empty">问题库暂时无法读取，请点击“刷新”重试。</td>
+        </tr>
+        <tr v-else-if="!rows.length">
           <td colspan="4" class="ql-empty">还没有条目，点「添加一行」开始。</td>
         </tr>
       </tbody>
@@ -225,7 +259,11 @@ watch(() => props.roomId, load, { immediate: true })
 .ql-table input,.ql-table select,.ql-table textarea{width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #d9e0ea;border-radius:6px;font:inherit;background:#fff}
 .ql-table textarea{resize:vertical}
 .ql-row-actions{display:flex;gap:6px}
-.ql-sense{display:flex;gap:6px;margin-bottom:6px}
+.ql-sense{display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap}
+.ql-chips{display:flex;gap:6px;flex-wrap:wrap;flex:1}
+.ql-chip-btn{padding:4px 10px;border-radius:999px;border:1px solid #d9e0ea;background:#fff;color:#414a57;font:inherit;font-size:14px;cursor:pointer}
+.ql-chip-btn.active{border-color:#6b5cff;background:#efeaff;color:#4a3fd6;font-weight:600}
+.ql-chip-btn.ghost{color:#8a93a3}
 .ql-sense select,.ql-sense input{flex:1}
 button.primary,button.ghost,button.danger{padding:6px 12px;border-radius:6px;border:1px solid transparent;font:inherit;cursor:pointer}
 button.primary{background:#6b5cff;color:#fff}

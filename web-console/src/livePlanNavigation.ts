@@ -1,5 +1,5 @@
 export type PlanConfigurationSection = 'business' | 'facts' | 'interaction' | 'reading' | 'style' | 'voice' | 'live'
-export type PlanConfigurationMode = 'business' | 'products' | 'supplement' | 'benefits' | 'knowledge' | 'memory' | 'anchor' | 'voice' | 'fullshow'
+export type PlanConfigurationMode = 'business' | 'products' | 'supplement' | 'benefits' | 'knowledge' | 'memory' | 'reading' | 'anchor' | 'voice' | 'fullshow'
 export type PlanFactMode = Extract<PlanConfigurationMode, 'products' | 'supplement' | 'benefits' | 'knowledge'>
 
 export const planFactModes: readonly PlanFactMode[] = ['products', 'benefits', 'supplement', 'knowledge']

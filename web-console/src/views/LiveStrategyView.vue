@@ -266,6 +266,7 @@ type StrategyMode =
   | 'benefits'
   | 'knowledge'
   | 'memory'
+  | 'reading'
   | 'miner'
   | 'addressing'
   | 'anchor'

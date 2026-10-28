@@ -4,6 +4,8 @@ import { readPreviewStream, type PreviewStreamEvent } from './agent/previewStrea
 import { liveSupportRoomForRequest } from './liveSupportAccess'
 import { normalizeLiveAgentPlanVersion } from './liveAgentPlanVersion'
 import type {
+  RoomReadingRules,
+  QuestionLibraryEntry,
   AccountDashboard,
   AccountProfile,
   AuthSessionSummary,
@@ -4734,8 +4736,9 @@ export function updateRoomReadingRules(roomId: number, rulesText: string) {
   })
 }
 
-export function getPlanPurposes(roomId: number) {
-  return request<{ plan_id: number; items: { key: string; name: string; keywords: string[]; in_out: boolean }[] }>('/api/v1/rooms/' + roomId + '/purposes')
+export function getPlanPurposes(roomId: number, query?: string) {
+  const suffix = query ? '?q=' + encodeURIComponent(query) : ''
+  return request<{ plan_id: number; items?: { key: string; name: string; keywords: string[]; in_out: boolean }[]; suggestions?: { key: string; name: string; keywords: string[]; in_out: boolean; score: number; suggested_excludes: string[] }[] }>('/api/v1/rooms/' + roomId + '/purposes' + suffix)
 }
 
 export function listQuestionLibrary(roomId: number) {
