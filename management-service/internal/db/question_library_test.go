@@ -112,6 +112,9 @@ func TestQuestionLibraryReadsLegacyNullableExcludes(t *testing.T) {
 				} else if len(gotExcludes) != 0 {
 					t.Fatalf("unexpected exclusions=%v", gotExcludes)
 				}
+				if gotExcludes == nil {
+					t.Fatalf("exclude_words must marshal as [] not null")
+				}
 			})
 		}
 	}

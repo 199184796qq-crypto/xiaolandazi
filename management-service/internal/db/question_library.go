@@ -28,6 +28,9 @@ ORDER BY id`, tenantID, roomID)
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(exclude.String), &item.ExcludeWords)
+		if item.ExcludeWords == nil {
+			item.ExcludeWords = []string{}
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -70,6 +73,9 @@ SELECT id, tenant_id, room_id, plan_id, question_type, question, answer, sense_k
 FROM live_agent_question_library WHERE id = ?`, id).
 		Scan(&item.ID, &item.TenantID, &item.RoomID, &item.PlanID, &item.QuestionType, &item.Question, &item.Answer, &item.SenseKey, &item.SenseName, &exclude, &item.Status, &item.UpdatedAt)
 	_ = json.Unmarshal([]byte(exclude.String), &item.ExcludeWords)
+	if item.ExcludeWords == nil {
+		item.ExcludeWords = []string{}
+	}
 	return item, err
 }
 
@@ -171,6 +177,9 @@ ORDER BY id`, tenantID, planID)
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(exclude.String), &item.ExcludeWords)
+		if item.ExcludeWords == nil {
+			item.ExcludeWords = []string{}
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
