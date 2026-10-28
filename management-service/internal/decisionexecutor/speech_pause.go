@@ -3,9 +3,9 @@ package decisionexecutor
 import (
 	"encoding/json"
 	"livecompanion/management/internal/readingrules"
-	"sort"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"unicode"
@@ -14,11 +14,11 @@ import (
 // ttsPauseRules inserts breath/segment punctuation so the TTS engine does not
 // glue a product name to the phrase before it ("南充特产绸都杨鸭子").
 type ttsPauseRules struct {
-	Version            int      `json:"version"`
-	Pause              string   `json:"pause"`
-	AfterPhrases       []string `json:"after_phrases"`
-	BeforeTerms        []string `json:"before_terms"`
-	MaxPausesPerLine   int      `json:"max_pauses_per_line"`
+	Version          int      `json:"version"`
+	Pause            string   `json:"pause"`
+	AfterPhrases     []string `json:"after_phrases"`
+	BeforeTerms      []string `json:"before_terms"`
+	MaxPausesPerLine int      `json:"max_pauses_per_line"`
 }
 
 var (
@@ -65,6 +65,7 @@ func insertSpeechPauses(text string) string {
 	if len(rules.AfterPhrases) == 0 && len(rules.BeforeTerms) == 0 {
 		return text
 	}
+	text = repairSplitTerms(text, rules.BeforeTerms)
 	// 长词优先：先匹「绸都杨鸭子」再匹「杨鸭子」，避免在品牌中间插停顿。
 	beforeTerms := append([]string(nil), rules.BeforeTerms...)
 	sort.SliceStable(beforeTerms, func(i, j int) bool { return len([]rune(beforeTerms[i])) > len([]rune(beforeTerms[j])) })
@@ -94,7 +95,7 @@ func insertSpeechPauses(text string) string {
 				continue
 			}
 			before := trimmed
-			trimmed = pauseBefore(trimmed, term, rules.Pause)
+			trimmed = pauseBefore(trimmed, term, rules.Pause, beforeTerms)
 			if trimmed != before {
 				added++
 			}
@@ -127,11 +128,14 @@ func pauseAfter(text, phrase, pause string) string {
 	return text
 }
 
-func pauseBefore(text, term, pause string) string {
+func pauseBefore(text, term, pause string, terms []string) string {
 	runes := []rune(text)
 	target := []rune(term)
 	for i := 0; i+len(target) <= len(runes); i++ {
 		if string(runes[i:i+len(target)]) != term {
+			continue
+		}
+		if insideLongerTerm(runes, i, term, terms) {
 			continue
 		}
 		if i == 0 || isPauseRune(runes[i-1]) || unicode.IsSpace(runes[i-1]) {
@@ -142,6 +146,48 @@ func pauseBefore(text, term, pause string) string {
 		out = append(out, []rune(pause)...)
 		out = append(out, runes[i:]...)
 		return string(out)
+	}
+	return text
+}
+
+// insideLongerTerm prevents a shorter configured term ("杨鸭子") from matching
+// inside a longer configured brand ("绸都杨鸭子") after the longer term already
+// received its pause. The old long-first sort only controlled iteration order;
+// it did not stop the shorter term from splitting the brand on a second pass.
+func insideLongerTerm(runes []rune, at int, term string, terms []string) bool {
+	target := []rune(term)
+	for _, longer := range terms {
+		long := []rune(longer)
+		if len(long) <= len(target) || !strings.Contains(longer, term) {
+			continue
+		}
+		for j := 0; j+len(long) <= len(runes); j++ {
+			if string(runes[j:j+len(long)]) != longer {
+				continue
+			}
+			if at >= j && at+len(target) <= j+len(long) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// repairSplitTerms repairs a brand that a previous pass or the model separated
+// with punctuation, e.g. "绸都，杨鸭子" -> "绸都杨鸭子". It only touches
+// configured protected terms, never arbitrary text.
+func repairSplitTerms(text string, terms []string) string {
+	for _, term := range terms {
+		runes := []rune(term)
+		if len(runes) < 2 {
+			continue
+		}
+		for cut := 1; cut < len(runes); cut++ {
+			left, right := string(runes[:cut]), string(runes[cut:])
+			for _, sep := range []string{"，", ",", "、", "；", ";", " "} {
+				text = strings.ReplaceAll(text, left+sep+right, term)
+			}
+		}
 	}
 	return text
 }
