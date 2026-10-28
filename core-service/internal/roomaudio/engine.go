@@ -19,8 +19,9 @@ const (
 	VoiceGuardHeadMS = 120
 	// Keep the interrupt source alive briefly after its final spoken frame. The
 	// downstream device/output buffer can otherwise switch back to mainline on
-	// the same boundary and audibly swallow the final phoneme.
-	VoiceGuardTailMS = 300
+	// the same boundary and audibly swallow the final phoneme. 300ms still cut
+	// the tail on slower device buffers, so keep a 500ms guard.
+	VoiceGuardTailMS = 500
 )
 
 type Phase string
