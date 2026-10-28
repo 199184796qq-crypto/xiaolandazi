@@ -237,6 +237,29 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 			startedAt = session.StartedAt
 		}
 	}
+	startRound, startTabPos, startIndex := 0, 0, 0
+	var order []int
+	checkpoint, hasCheckpoint := loadRecordingSupplyCheckpoint(tenant, room, runtimeID)
+	if hasCheckpoint && !recordingSupplyCheckpointMatches(checkpoint, version.ID, len(tabs)) {
+		hasCheckpoint = false
+	}
+	if hasCheckpoint {
+		startRound, startTabPos, startIndex = checkpoint.Round, checkpoint.TabPos, checkpoint.Index
+		order = append([]int(nil), checkpoint.TabOrder...)
+		seq, previousLast = checkpoint.Sequence, checkpoint.PreviousLast
+		queue.blockSeq, queue.programID, queue.generation = checkpoint.BlockSeq, checkpoint.ProgramID, checkpoint.Generation
+		log.Printf("recording stream resume checkpoint tenant=%d room=%d session=%d version=%d round=%d tab=%d index=%d block=%d", tenant, room, runtimeID, version.ID, startRound, startTabPos, startIndex, queue.blockSeq)
+	}
+	saveCheckpoint := func(round, tabPos, index int) {
+		if err := saveRecordingSupplyCheckpoint(recordingSupplyCheckpoint{
+			TenantID: tenant, RoomID: room, SessionID: runtimeID, VersionID: version.ID,
+			ProgramID: queue.programID, Generation: queue.generation,
+			Round: round, TabOrder: append([]int(nil), order...), TabPos: tabPos, Index: index,
+			Sequence: seq, BlockSeq: queue.blockSeq, PreviousLast: previousLast,
+		}); err != nil {
+			log.Printf("recording stream checkpoint save failed tenant=%d room=%d session=%d: %v", tenant, room, runtimeID, err)
+		}
+	}
 	cacheCandidates := func(tabIndex, index int) []recordingcache.Entry {
 		if blueprint == nil {
 			return nil
@@ -259,7 +282,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		return nil
 	}
 
-	for round := 0; ; round++ {
+	for round := startRound; ; round++ {
 		queue.delivered = 0
 		if err := ctx.Err(); err != nil {
 			return err
@@ -267,16 +290,24 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		if err := waitLiveLeasePermit(ctx); err != nil {
 			return err
 		}
-		order := recordingStreamOrder(len(tabs), previousLast, recordingStreamPinned(version), rng)
+		if len(order) == 0 || round != startRound {
+			order = recordingStreamOrder(len(tabs), previousLast, recordingStreamPinned(version), rng)
+		}
 		refreshSchedule, updatePlans := s.prepareRecordingRefreshSchedule(ctx, tenant, room, version, polish, tabs, cacheCandidates,
 			&planner, tabIDs, fmt.Sprintf("%d:%d", runtimeID, round), time.Since(startedAt), round == 0, rng)
-		for _, tabIndex := range order {
+		for tabPos, tabIndex := range order {
+			if round == startRound && tabPos < startTabPos {
+				continue
+			}
 			roundPercent := refreshSchedule.Budget.Percent
 			updatePlan := updatePlans[tabIndex]
 			refresh := updatePlan.Selected
 			supplyStats = newRecordingSupplyStats(tenant, room, runtimeID, version.PlanID, round+1, tabIDs[tabIndex], tabs[tabIndex], refresh, roundPercent, roundPercent)
 			supplyStats.setSchedule(refreshSchedule)
 			for index := range tabs[tabIndex] {
+				if round == startRound && tabPos == startTabPos && index < startIndex {
+					continue
+				}
 				if err := ctx.Err(); err != nil {
 					return err
 				}
@@ -387,9 +418,15 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 				}
 				// The resolver selects a newly generated version directly this round.
 				queue.pending = append(queue.pending, result.Units...)
+				deliveredBefore := queue.delivered
 				if err := queue.flush(ctx, false); err != nil {
 					return err
 				}
+				nextIndex := index
+				if queue.delivered > deliveredBefore {
+					nextIndex = index + 1
+				}
+				saveCheckpoint(round, tabPos, nextIndex)
 			}
 			if err := saveCache(); err != nil {
 				return err
@@ -402,6 +439,7 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		if err := queue.flush(ctx, true); err != nil {
 			return err
 		}
+		saveCheckpoint(round, len(order), 0)
 		if queue.delivered == 0 {
 			if err := supplyWait(ctx, 16*time.Second); err != nil {
 				return err

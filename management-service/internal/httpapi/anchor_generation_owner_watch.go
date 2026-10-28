@@ -51,11 +51,25 @@ func (s *Server) RunLiveAnchorOwnerWatch(ctx context.Context) {
 				stop()
 				continue
 			}
-			// A lease expiry proves only missing liveness evidence. Existing Core
-			// audio must continue; it does not authorize a technical stop, a new
-			// producer, or recovery of a prior process's cursor. A surviving local
-			// producer renews/reclaims its exact same-session lease itself.
+			// A lease expiry proves only missing liveness evidence. A recording
+			// stream can resume only from its own durable checkpoint; without one,
+			// replaying the producer would restart the first round and duplicate
+			// content. Dynamic AI programs remain playback-retained.
 			log.Printf("formal owner lease missing tenant=%d room=%d session=%d local_producer=%t; playback retained", session.TenantID, session.RoomID, fresh.ID, s.hasLiveAnchorProducer(session.TenantID, session.RoomID))
+			if recordingVoiceMode(version) == recordingStreamMode && !s.hasLiveAnchorProducer(session.TenantID, session.RoomID) {
+				if checkpoint, ok := loadRecordingSupplyCheckpoint(session.TenantID, session.RoomID, fresh.ID); !ok || checkpoint.VersionID != version.ID {
+					log.Printf("recording supply recovery skipped tenant=%d room=%d session=%d reason=checkpoint_missing_or_stale", session.TenantID, session.RoomID, fresh.ID)
+				} else {
+					snapshot, snapErr := s.core.GetRoomProgramSnapshot(check, session.TenantID, session.RoomID)
+					if snapErr == nil && snapshot.Running && snapshot.VersionID == version.ID && snapshot.ProgramID == checkpoint.ProgramID {
+						if startErr := s.startLiveAnchorProducer(check, session.TenantID, session.RoomID, fresh.ID, version); startErr != nil {
+							log.Printf("recording supply recovery failed tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, fresh.ID, startErr)
+						} else {
+							log.Printf("recording supply recovered tenant=%d room=%d session=%d program=%s round=%d tab=%d index=%d", session.TenantID, session.RoomID, fresh.ID, snapshot.ProgramID, checkpoint.Round, checkpoint.TabPos, checkpoint.Index)
+						}
+					}
+				}
+			}
 			stop()
 		}
 	}
