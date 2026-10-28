@@ -120,7 +120,7 @@ func TestLightInteractionStrategies(t *testing.T) {
 
 	t.Run("关注策略点昵称带感谢", func(t *testing.T) {
 		s := likeFollowStrategy{}
-		got := s.Respond(ctx, session, decisionItem{MissionKind: "reply_follow", Nicknames: []string{"阿芳"}})
+		got := s.Respond(ctx, session, decisionItem{MissionKind: "reply_follow", Nicknames: []string{"阿芳"}, PromptNicknames: []string{"阿芳"}})
 		if !strings.Contains(got, "阿芳") || !strings.Contains(got, "关注") {
 			t.Fatalf("关注策略应点昵称+感谢，实际：%q", got)
 		}
@@ -128,7 +128,7 @@ func TestLightInteractionStrategies(t *testing.T) {
 
 	t.Run("欢迎策略点昵称带欢迎", func(t *testing.T) {
 		s := welcomeStrategy{}
-		got := s.Respond(ctx, session, decisionItem{MissionKind: "welcome_named", Nicknames: []string{"小陈"}})
+		got := s.Respond(ctx, session, decisionItem{MissionKind: "welcome_named", Nicknames: []string{"小陈"}, PromptNicknames: []string{"小陈"}})
 		if !strings.Contains(got, "小陈") || !strings.Contains(got, "欢迎") {
 			t.Fatalf("欢迎策略应点昵称+欢迎，实际：%q", got)
 		}
@@ -136,7 +136,7 @@ func TestLightInteractionStrategies(t *testing.T) {
 
 	t.Run("下单策略点昵称带承接", func(t *testing.T) {
 		s := orderStrategy{}
-		got := s.Respond(ctx, session, decisionItem{MissionKind: "conversion_signal", Nicknames: []string{"刘老板"}})
+		got := s.Respond(ctx, session, decisionItem{MissionKind: "conversion_signal", Nicknames: []string{"刘老板"}, PromptNicknames: []string{"刘老板"}})
 		if !strings.Contains(got, "刘老板") || !strings.Contains(got, "安排") {
 			t.Fatalf("下单策略应点昵称+承接，实际：%q", got)
 		}

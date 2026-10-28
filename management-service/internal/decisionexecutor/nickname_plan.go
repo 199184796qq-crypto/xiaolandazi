@@ -32,14 +32,11 @@ type nicknamePlanInput struct {
 }
 
 func (item decisionItem) promptNicknames() []string {
-	names := item.Nicknames
-	if item.PromptNicknames != nil {
-		names = item.PromptNicknames
-	}
-	// 兜底：上游任何环节丢了昵称，也绝不返回空，保证所有互动都有可播称呼。
-	if len(names) == 0 {
+	// 只使用程序校验过的基础昵称；未规划时一律用中性代称，绝不回退原文昵称。
+	if item.PromptNicknames == nil || len(item.PromptNicknames) == 0 {
 		return []string{"这位朋友"}
 	}
+	names := item.PromptNicknames
 	result := make([]string, 0, len(names))
 	seen := map[string]bool{}
 	for _, name := range names {

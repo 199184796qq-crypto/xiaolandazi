@@ -92,12 +92,12 @@ func TestPromptNicknamesNeverEmpty(t *testing.T) {
 		t.Fatalf("全违规昵称应兜底'这位朋友', got %v", got)
 	}
 	// 正常 + 违规混合 → 保留正常，违规降级代称（对应两个不同观众）
-	item = decisionItem{Nicknames: []string{"张三", "12345678"}}
+	item = decisionItem{Nicknames: []string{"张三", "12345678"}, PromptNicknames: []string{"张三", "这位朋友"}}
 	if got := item.promptNicknames(); len(got) != 2 || got[0] != "张三" || got[1] != "这位朋友" {
 		t.Fatalf("混合昵称应得 ['张三' '这位朋友'], got %v", got)
 	}
 	// 超过 3 个昵称 → 只保留前 3 个，其余交给群体称呼
-	item = decisionItem{Nicknames: []string{"张三", "李四", "王五", "赵六", "钱七"}}
+	item = decisionItem{Nicknames: []string{"张三", "李四", "王五", "赵六", "钱七"}, PromptNicknames: []string{"张三", "李四", "王五"}}
 	if got := item.promptNicknames(); len(got) != 3 || got[0] != "张三" || got[1] != "李四" || got[2] != "王五" {
 		t.Fatalf("超3个昵称应只保留前3个, got %v", got)
 	}

@@ -335,8 +335,18 @@ func (w *Worker) resolveInteractionAddressing(ctx context.Context, session model
 	if strings.TrimSpace(item.resolvedAddress) != "" || item.addressingGuidance != "" {
 		return item.resolvedAddress, item.addressingGuidance
 	}
-	// ① 昵称简称规划（填 PromptNicknames，带缓存）。
+	// ① 昵称简称规划（填 PromptNicknames/PromptShortNames），带缓存。
 	w.planNicknameAddresses(ctx, session, item)
+
+	// 新链路：称呼话术已经由程序选人 + 模型串句生成，直接冻结为唯一计划，
+	// 不再执行旧的 buildAddressingPlan 二次选择（否则点名频率会被覆盖）。
+	if phrase := strings.TrimSpace(item.PromptAddressPhrase); phrase != "" {
+		plan := frozenAddressingPlan(*item)
+		item.resolvedAddress = phrase
+		item.addressingGuidance = phrase
+		item.resolvedAddressingPlan = plan
+		return phrase, phrase
+	}
 
 	// ② 房间称呼偏好 + 主播主力称呼。
 	preferences := model.RoomAddressingPreferences{NamingPreference: "natural"}
@@ -357,17 +367,31 @@ func (w *Worker) resolveInteractionAddressing(ctx context.Context, session model
 	// 提取可播称呼：优先点名名单，其次群称词，最后主力称呼/「家人们」兜底。
 	address = playableAddressFromPlan(plan)
 
-	// 称呼话术（程序选人 + 模型串句）已生成时，所有策略统一复用它，避免二次
-	// 选择造成点名频率失效。
-	if phrase := strings.TrimSpace(item.PromptAddressPhrase); phrase != "" {
-		address = phrase
-		guidance = phrase
-	}
+
 
 	item.resolvedAddress = address
 	item.addressingGuidance = guidance
 	item.resolvedAddressingPlan = plan
 	return address, guidance
+}
+
+// frozenAddressingPlan projects the frozen phrase back into the legacy plan
+// shape so cooldown and diagnostics keep working without a second selection.
+func frozenAddressingPlan(item decisionItem) speechmission.AddressingPlan {
+	plan := speechmission.AddressingPlan{GroupLabel: "几位朋友"}
+	for i, name := range item.promptNicknames() {
+		if name == "" || name == "这位朋友" {
+			continue
+		}
+		if i >= 3 {
+			break
+		}
+		plan.SelectedNames = append(plan.SelectedNames, name)
+	}
+	if len(plan.SelectedNames) == 1 {
+		plan.GroupLabel = ""
+	}
+	return plan
 }
 
 // playableAddressFromPlan 从称呼计划里取一个可直接拼进话术的称呼字符串。

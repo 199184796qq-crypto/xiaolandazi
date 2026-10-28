@@ -181,6 +181,7 @@ func TestBuildAddressingPlanUsesMixedForBatchWelcome(t *testing.T) {
 		MissionKind:       "welcome_batch",
 		MissionEventCount: 12,
 		Nicknames:         []string{"小陈", "阿芳", "老周"},
+		PromptNicknames:   []string{"小陈", "阿芳", "老周"},
 	}, "friend", "朋友们", model.RoomAddressingPreferences{NamingPreference: "natural"}, nil)
 	if plan.Mode != "MIXED" {
 		t.Fatalf("mode=%q want MIXED, plan=%#v", plan.Mode, plan)
@@ -214,6 +215,7 @@ func TestAddressingPreferenceMoreUsesMixedWhenAggregateQuestionHasNames(t *testi
 		MissionKind:       "reply_chat",
 		MissionEventCount: 3,
 		Nicknames:         []string{"小陈", "阿芳"},
+		PromptNicknames:   []string{"小陈", "阿芳"},
 		SampleQuestions:   []string{"多少钱", "怎么发货"},
 	}, "friends", "朋友们", model.RoomAddressingPreferences{NamingPreference: "more"}, nil)
 	if plan.Mode != "MIXED" || len(plan.SelectedNames) != 2 {
@@ -1166,7 +1168,7 @@ func TestTTSInstructionIncludesHostStateAndTTSStyleReaction(t *testing.T) {
 
 func TestMergedNamedWelcomeCoversGroupInsteadOfSingleViewer(t *testing.T) {
 	w := New(readyVoiceStore(), nil, &fakeAgent{}, nil)
-	item := decisionItem{ID: "merged", MissionKind: "welcome_named", MissionEventCount: 7, Nicknames: []string{"星夜", "一期", "秀丽江山"}}
+	item := decisionItem{ID: "merged", MissionKind: "welcome_named", MissionEventCount: 7, Nicknames: []string{"星夜", "一期", "秀丽江山"}, PromptNicknames: []string{"星夜", "一期", "秀丽江山"}}
 	plan := w.buildAddressingPlan(11, item, "", "", model.RoomAddressingPreferences{}, nil)
 	if plan.Mode == "SINGLE" || len(plan.SelectedNames) < 2 || len(plan.SelectedNames) > 3 {
 		t.Fatal("merged welcome collapsed into one named viewer", plan)
@@ -1174,6 +1176,7 @@ func TestMergedNamedWelcomeCoversGroupInsteadOfSingleViewer(t *testing.T) {
 	single := item
 	single.MissionEventCount = 1
 	single.Nicknames = []string{"星夜"}
+	single.PromptNicknames = []string{"星夜"}
 	plan = w.buildAddressingPlan(11, single, "", "", model.RoomAddressingPreferences{}, nil)
 	if plan.Mode != "SINGLE" || len(plan.SelectedNames) != 1 {
 		t.Fatal("single viewer changed unnecessarily", plan)
