@@ -50,5 +50,5 @@ func sanitizeSpokenText(text string) string {
 			out = append(out, line)
 		}
 	}
-	return strings.Join(out, "\n")
+	return insertSpeechPauses(strings.Join(out, "\n"))
 }

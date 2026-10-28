@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "pause": "，",
+  "after_phrases": ["咱卖的是", "我们卖的是", "咱们卖的是", "卖的是", "这是"],
+  "before_terms": ["绸都杨鸭子", "杨鸭子"],
+  "max_pauses_per_line": 2
+}
