@@ -114,3 +114,30 @@ func containsString(values []string, want string) bool {
 	}
 	return false
 }
+
+func TestResolveScopeUsesMinedPurposeForTerseQuestion(t *testing.T) {
+	facts := []Fact{
+		{ID: "F008", Text: "川渝地区隔天送达；本地发货不抽真空，外地发货采用真空包装。"},
+		{ID: "F009", Text: "快递选择只有京东物流。"},
+		{ID: "F026", Text: "新疆、西藏只能发空运，需要补空运费。"},
+		{ID: "F017", Text: "线上售价85.6元。"},
+	}
+	card := &Card{Dimensions: []Dimension{
+		{Name: "发货与快递", Phrases: []string{"发什么快递", "多久到"}, FactIDs: []string{"F008", "F009"}},
+		{Name: "偏远地区空运", Phrases: []string{"新疆能发吗"}, FactIDs: []string{"F026"}},
+		{Name: "价格与优惠", Phrases: []string{"多少钱"}, FactIDs: []string{"F017"}},
+	}}
+	scope := ResolveScope("成都发吗 确认发货地能否发往成都", card, facts)
+	if !containsString(scope.Allowed, "发货与快递") {
+		t.Fatalf("shipping dimension not allowed: %+v", scope)
+	}
+	if containsString(scope.Allowed, "价格与优惠") {
+		t.Fatalf("price dimension must not be allowed: %+v", scope)
+	}
+	if !containsString(scope.Forbidden, "价格与优惠") {
+		t.Fatalf("price dimension must be forbidden: %+v", scope)
+	}
+	if len(scope.Facts) == 0 {
+		t.Fatal("scope returned no facts")
+	}
+}

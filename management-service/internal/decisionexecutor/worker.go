@@ -142,6 +142,8 @@ type decisionItem struct {
 	SelectedContentPlan *contentstrategy.Selection `json:"-"`
 	FullFacts           string                     `json:"-"`
 	DomainCard          *domaincard.Card           `json:"-"`
+	ScopedFacts         string                     `json:"-"`
+	AnswerScope         string                     `json:"-"`
 	ExpiresAt           time.Time                  `json:"expires_at,omitempty"`
 	Scene               string                     `json:"scene,omitempty"`
 	OrderSource         string                     `json:"order_source,omitempty"`

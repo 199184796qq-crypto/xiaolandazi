@@ -124,6 +124,7 @@ func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.Liv
 		fullFacts, scopeLinks = scopes[0].FullFacts, scopes[0].Links
 		if item != nil {
 			item.DomainCard = scopes[0].Card
+			applyDomainAnswerScope(item)
 		}
 	}
 	if source, ok := w.store.(expressionConstraintStore); ok {
@@ -189,4 +190,45 @@ func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.Liv
 		log.Printf("interaction content strategy fallback tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, session.ID, strategyErr)
 	}
 	return result, nil
+}
+
+// applyDomainAnswerScope turns the matched card dimensions into a compact
+// answer boundary: only the matched dimensions are allowed, the other
+// dimensions must not be volunteered. No per-question text is written by hand.
+func applyDomainAnswerScope(item *decisionItem) {
+	if item == nil || item.DomainCard == nil || strings.TrimSpace(item.FullFacts) == "" {
+		return
+	}
+	parsed := contentstrategy.Facts(item.FullFacts)
+	all := make([]domaincard.Fact, 0, len(parsed))
+	for _, fact := range parsed {
+		all = append(all, domaincard.Fact{ID: fact.ID, Text: fact.Text})
+	}
+	context := strings.Join(item.SampleQuestions, " ")
+	if item.PurposeID != "" {
+		context += " " + item.PurposeID
+	}
+	if len(item.PurposeKnowledge) > 0 {
+		context += " " + string(item.PurposeKnowledge)
+	}
+	context += " " + item.Title + " " + item.Summary + " " + item.ReplyHint + " " + item.ContentGoal
+	for _, angle := range item.IntentAngles {
+		context += " " + angle.Angle + " " + angle.Task
+	}
+	scope := domaincard.ResolveScope(context, item.DomainCard, all)
+	if len(scope.Facts) == 0 {
+		return
+	}
+	var b strings.Builder
+	for _, fact := range scope.Facts {
+		b.WriteString(fact.ID)
+		b.WriteString(" ")
+		b.WriteString(strings.TrimSpace(fact.Text))
+		b.WriteString("\n")
+	}
+	item.ScopedFacts = strings.TrimSpace(b.String())
+	item.AnswerScope = "只回答：" + strings.Join(scope.Allowed, "、")
+	if len(scope.Forbidden) > 0 {
+		item.AnswerScope += "；不要主动提：" + strings.Join(scope.Forbidden, "、")
+	}
 }

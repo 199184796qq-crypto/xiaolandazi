@@ -248,6 +248,9 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	}
 	voiceCard, _ := w.welcomeVoiceCard(ctx, session)
 	system := "你是直播口播合成器。根据答案事实直接回答观众，第一句必须给出答案，不要先评价问题，也不要宣布“我这就讲/确认”。"
+	if item.AnswerScope != "" {
+		system += "\n【本题回答范围】" + item.AnswerScope + "。只回答这些维度，其他维度的事实不要主动带出。"
+	}
 	if questionContext.Prompt != "" {
 		system += "\n" + questionContext.Prompt
 	}
@@ -473,6 +476,9 @@ func (w *Worker) generateSingleInteractionAnswer(ctx context.Context, session mo
 // 由 generateSingleInteractionAnswer 返回空 → 只出接住句）。
 func (w *Worker) singleAnswerFacts(item decisionItem) string {
 	question := primaryQuestion(item)
+	if strings.TrimSpace(item.ScopedFacts) != "" {
+		return item.ScopedFacts
+	}
 	// The saved domain card is the recall layer for the question's dimension.
 	// When it matches, its facts are used as a set (including condition and
 	// complement rules) instead of the old place-conflict filter.

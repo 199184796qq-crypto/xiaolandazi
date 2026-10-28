@@ -213,6 +213,74 @@ func ExpandSharedFacts(card *Card, facts []Fact) {
 	}
 }
 
+// Scope is the answer boundary derived from the matched card dimensions.
+type Scope struct {
+	Allowed   []string
+	Forbidden []string
+	Facts     []Fact
+}
+
+// ResolveScope returns the dimensions this question may answer and the other
+// dimensions the answer must not volunteer. The caller can pass the question
+// plus its mined purpose/angles so a terse "成都发吗" still reaches 发货.
+func ResolveScope(context string, card *Card, facts []Fact) Scope {
+	if card == nil || len(card.Dimensions) == 0 {
+		return Scope{}
+	}
+	ExpandSharedFacts(card, facts)
+	q := normalize(context)
+	if q == "" {
+		return Scope{}
+	}
+	type scored struct {
+		dimension Dimension
+		score     float64
+	}
+	candidates := make([]scored, 0, len(card.Dimensions))
+	for _, dimension := range card.Dimensions {
+		if score := dimensionScore(q, dimension); score > 0 {
+			candidates = append(candidates, scored{dimension: dimension, score: score})
+		}
+	}
+	if len(candidates) == 0 {
+		return Scope{}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
+	if len(candidates) > 2 {
+		candidates = candidates[:2]
+	}
+	allowed := make([]string, 0, len(candidates))
+	allowedSet := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		allowed = append(allowed, candidate.dimension.Name)
+		allowedSet[candidate.dimension.Name] = true
+	}
+	forbidden := make([]string, 0, len(card.Dimensions))
+	for _, dimension := range card.Dimensions {
+		if !allowedSet[dimension.Name] && dimension.Name != "其他" {
+			forbidden = append(forbidden, dimension.Name)
+		}
+	}
+	known := make(map[string]Fact, len(facts))
+	for _, fact := range facts {
+		known[fact.ID] = fact
+	}
+	selected := make([]Fact, 0, 8)
+	seen := make(map[string]bool, 8)
+	for _, candidate := range candidates {
+		for _, id := range candidate.dimension.FactIDs {
+			if fact, ok := known[id]; ok && !seen[id] {
+				seen[id] = true
+				selected = append(selected, fact)
+				if len(selected) >= 10 {
+					return Scope{Allowed: allowed, Forbidden: forbidden, Facts: selected}
+				}
+			}
+		}
+	}
+	return Scope{Allowed: allowed, Forbidden: forbidden, Facts: selected}
+}
+
 // Match returns the facts belonging to the question's dimensions. It is a
 // recall layer only: applicability/conditions are still judged by the answer
 // model.
@@ -283,8 +351,18 @@ func dimensionScore(question string, dimension Dimension) float64 {
 		}
 	}
 	name := normalize(dimension.Name)
-	if name != "" && strings.Contains(question, name) {
-		score += 2
+	if name != "" {
+		if strings.Contains(question, name) {
+			score += 2
+		} else if len([]rune(name)) >= 2 {
+			runes := []rune(name)
+			for i := 0; i+1 < len(runes); i++ {
+				if strings.Contains(question, string(runes[i:i+2])) {
+					score += 1.5
+					break
+				}
+			}
+		}
 	}
 	return score
 }
