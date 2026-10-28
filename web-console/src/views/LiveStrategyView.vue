@@ -7584,7 +7584,7 @@ onBeforeUnmount(() => {
       <section v-else-if="activeMode === 'memory'" class="strategy-v2-workspace interaction-strategy-workspace">
           <div class="strategy-v2-section-head interaction-strategy-head">
             <div>
-              <h3>互动策略</h3>
+              <h3 style="font-size:20px">互动策略</h3>
               <p>这里只规定遇到什么情况要回应、优先级、频率和怎么组织回答；商品、履约、售后等回答内容只能来自“事实依据”。</p>
             </div>
           </div>
