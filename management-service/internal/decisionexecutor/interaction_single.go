@@ -498,19 +498,22 @@ func (w *Worker) singleAnswerFacts(item decisionItem) string {
 	return strings.TrimSpace(b.String())
 }
 
-// regionTerms lists delivery regions that change shipping rules.
-var regionTerms = []string{"新疆", "西藏", "内蒙古", "海南", "黑龙江", "吉林", "辽宁", "青海", "甘肃", "宁夏"}
+// regionTerms lists delivery regions mentioned by viewers.
+var regionTerms = []string{"新疆", "西藏", "内蒙古", "海南", "黑龙江", "吉林", "辽宁", "青海", "甘肃", "宁夏", "上海", "北京", "天津", "重庆", "广东", "江苏", "浙江", "山东", "河南", "四川", "湖北", "湖南", "福建", "安徽", "陕西", "山西", "河北", "江西", "云南", "贵州", "广西", "辽宁"}
 
-// preferRegionFacts puts region-specific shipping facts in front when the
-// viewer asks whether their region is supported ("新疆可以吗").
+// remoteRegions need air freight plus an extra fee.
+var remoteRegions = map[string]bool{"新疆": true, "西藏": true, "内蒙古": true, "海南": true, "黑龙江": true, "吉林": true, "辽宁": true, "青海": true, "甘肃": true, "宁夏": true}
+
+// preferRegionFacts puts region-appropriate shipping facts in front.
 func (w *Worker) preferRegionFacts(ctx context.Context, session model.LiveRuntimeSession, question, current string) string {
 	regions := detectRegions(question)
 	if len(regions) == 0 {
 		return current
 	}
+	remote := make([]string, 0, 2)
 	for _, term := range regions {
-		if strings.Contains(current, term) {
-			return current
+		if remoteRegions[term] {
+			remote = append(remote, term)
 		}
 	}
 	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
@@ -522,19 +525,40 @@ func (w *Worker) preferRegionFacts(ctx context.Context, session model.LiveRuntim
 		return current
 	}
 	picked := make([]string, 0, 2)
-	for _, line := range strings.Split(facts, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		for _, term := range regions {
-			if strings.Contains(line, term) {
-				picked = append(picked, line)
+	if len(remote) > 0 {
+		for _, line := range strings.Split(facts, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			for _, term := range remote {
+				if strings.Contains(line, term) {
+					picked = append(picked, line)
+					break
+				}
+			}
+			if len(picked) >= 2 {
 				break
 			}
 		}
-		if len(picked) >= 2 {
-			break
+		if len(picked) > 0 {
+			picked = append([]string{"偏远地区按空运并补运费处理："}, picked...)
+		}
+	} else {
+		for _, line := range strings.Split(facts, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if strings.Contains(line, "发货") || strings.Contains(line, "京东物流") || strings.Contains(line, "快递") {
+				picked = append(picked, line)
+			}
+			if len(picked) >= 3 {
+				break
+			}
+		}
+		if len(picked) > 0 {
+			picked = append([]string{regions[0] + "属于普通地区，按常规发货，不需要空运补运费："}, picked...)
 		}
 	}
 	if len(picked) == 0 {

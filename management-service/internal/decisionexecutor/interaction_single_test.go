@@ -209,3 +209,15 @@ func TestDetectRegions(t *testing.T) {
 		t.Fatalf("regions=%v", got)
 	}
 }
+
+func TestRemoteRegionClassification(t *testing.T) {
+	if !remoteRegions["新疆"] || !remoteRegions["西藏"] {
+		t.Fatal("remote regions missing")
+	}
+	if remoteRegions["上海"] {
+		t.Fatal("Shanghai must not be treated as remote")
+	}
+	if got := detectRegions("上海好久发"); len(got) != 1 || got[0] != "上海" {
+		t.Fatalf("regions=%v", got)
+	}
+}
