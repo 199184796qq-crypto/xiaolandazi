@@ -136,4 +136,5 @@ function onAdopted() {
 .rule-tabs button:focus-visible { outline: 2px solid #4e5bd6; outline-offset: 3px; }
 @media(max-width:1100px){.rule-navigation-assistant{display:none}}
 @media (max-width: 600px) { .rules-head { flex-wrap: wrap; } .rule-navigation{display:block}.rule-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; box-sizing: border-box; gap:8px; } .rule-tabs button { padding: 10px 6px;gap:8px;font-size:16px }.rule-tabs button svg{width:20px;height:20px} }
+.rule-tabs button{font-size:20px}
 </style>
