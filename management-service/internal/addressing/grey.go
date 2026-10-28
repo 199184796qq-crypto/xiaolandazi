@@ -1,4 +1,4 @@
-﻿package addressing
+package addressing
 
 import (
 	"encoding/json"
@@ -76,6 +76,15 @@ func ParseGrey(raw string, items []GreyCandidate, rules *Rules) ([]GreyDecision,
 		}
 		base := strings.TrimSpace(row.Base)
 		if err := rules.ValidateBase(base, item.Candidate); err != nil {
+			// An over-long answer is salvaged with a real segment of the original
+			// name instead of dropping the viewer; anything else stays rejected.
+			if salvaged, ok := rules.SalvageBase(base, item.RawName); ok {
+				decision.OK = true
+				decision.Base = salvaged
+				decision.Reason = "model_ok_salvaged"
+				decisions[row.Index] = decision
+				continue
+			}
 			decision.Reason = "invalid_base:" + err.Error()
 			decisions[row.Index] = decision
 			continue
@@ -120,6 +129,68 @@ func (r Rules) ValidateBase(base, raw string) error {
 		return fmt.Errorf("base 不是原昵称的子序列")
 	}
 	return nil
+}
+
+// SalvageBase keeps an over-long answer usable by taking a real segment of the
+// original name ("创科电池:张云锋" -> "张云锋") instead of dropping the viewer.
+func (r Rules) SalvageBase(base, raw string) (string, bool) {
+	limit := r.baseLimit()
+	for _, part := range strings.Fields(base) {
+		if utf8.RuneCountInString(part) >= 2 && r.ValidateBase(part, raw) == nil {
+			return part, true
+		}
+	}
+	segments := nicknameSegments(raw)
+	for i := len(segments) - 1; i >= 0; i-- {
+		if utf8.RuneCountInString(segments[i]) >= 2 && r.ValidateBase(segments[i], raw) == nil {
+			return segments[i], true
+		}
+	}
+	for _, segment := range segments {
+		if utf8.RuneCountInString(segment) >= 2 && r.ValidateBase(segment, raw) == nil {
+			return segment, true
+		}
+	}
+	runes := []rune(base)
+	for n := min(limit, len(runes)); n >= 2; n-- {
+		candidate := string(runes[:n])
+		if r.ValidateBase(candidate, raw) == nil {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// nicknameSegments splits a name on separator runes, keeping Han, Latin words
+// and digits so a shop:person name can become just the person.
+func nicknameSegments(raw string) []string {
+	var segments []string
+	var current strings.Builder
+	flush := func() {
+		text := strings.TrimSpace(current.String())
+		current.Reset()
+		if text != "" {
+			segments = append(segments, text)
+		}
+	}
+	for _, ch := range raw {
+		switch {
+		case unicode.Is(unicode.Han, ch), unicode.Is(unicode.Latin, ch), unicode.IsDigit(ch):
+			current.WriteRune(ch)
+		default:
+			flush()
+		}
+	}
+	flush()
+	return segments
+}
+
+func (r Rules) baseLimit() int {
+	limit := r.Rewrite.LongNameMax + 2
+	if limit < 6 {
+		limit = 6
+	}
+	return limit
 }
 
 func nicknameVisible(name string) string {

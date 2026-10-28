@@ -42,3 +42,11 @@ func TestParseGreyRejectsInventedBase(t *testing.T) {
 		t.Fatalf("kinship term accepted: %+v", got[1])
 	}
 }
+
+func TestSalvageBaseUsesOriginalSegment(t *testing.T) {
+	rules := testRules(t)
+	got, ok := rules.SalvageBase("创科电池张云锋", "创科电池:张云锋")
+	if !ok || got != "张云锋" {
+		t.Fatalf("salvage=%q ok=%v", got, ok)
+	}
+}
