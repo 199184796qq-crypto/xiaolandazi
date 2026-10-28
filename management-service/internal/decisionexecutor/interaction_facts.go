@@ -7,6 +7,7 @@ import (
 	"livecompanion/management/internal/contentpools"
 	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/domaincard"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"log"
@@ -63,6 +64,7 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 					return "", fmt.Errorf("互动测试不能混用另一方案的商品范围")
 				}
 				facts, scope = narrowInteractionFacts(version.GenerationContext, facts, strings.Join(item.SampleQuestions, "\n"))
+				scope.Card = domaincard.FromGeneration(version.GenerationContext)
 			}
 			return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy, scope)
 		}
@@ -74,9 +76,10 @@ func (w *Worker) interactionFactSnapshot(ctx context.Context, session model.Live
 	if err != nil || facts == "" {
 		return "", err
 	}
-	scope := interactionFactScope{FullFacts: facts}
+	scope := interactionFactScope{FullFacts: facts, Card: domaincard.FromGeneration(published.GenerationContext)}
 	if item != nil && isViewerQuestionAnswer(*item) && !skipStrategy {
 		facts, scope = narrowInteractionFacts(published.GenerationContext, facts, strings.Join(item.SampleQuestions, "\n"))
+		scope.Card = domaincard.FromGeneration(published.GenerationContext)
 	}
 	return w.interactionFactsGuidance(ctx, session, planID, facts, item, skipStrategy, scope)
 }
@@ -119,6 +122,9 @@ func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.Liv
 	var scopeLinks []string
 	if len(scopes) > 0 {
 		fullFacts, scopeLinks = scopes[0].FullFacts, scopes[0].Links
+		if item != nil {
+			item.DomainCard = scopes[0].Card
+		}
 	}
 	if source, ok := w.store.(expressionConstraintStore); ok {
 		constraints, err := source.CurrentSpeechExpressionConstraints(ctx, session.TenantID, planID)

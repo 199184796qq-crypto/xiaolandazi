@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"livecompanion/management/internal/contentstrategy"
+	"livecompanion/management/internal/domaincard"
 	"livecompanion/management/internal/factbound"
 	"livecompanion/management/internal/factguard"
 	"livecompanion/management/internal/factselect"
@@ -471,6 +472,30 @@ func (w *Worker) generateSingleInteractionAnswer(ctx context.Context, session mo
 // 无事实返回空（对应「相关但缺事实」与「夸赞闲聊无答案」两种情形，
 // 由 generateSingleInteractionAnswer 返回空 → 只出接住句）。
 func (w *Worker) singleAnswerFacts(item decisionItem) string {
+	question := primaryQuestion(item)
+	// The saved domain card is the recall layer for the question's dimension.
+	// When it matches, its facts are used as a set (including condition and
+	// complement rules) instead of the old place-conflict filter.
+	if item.DomainCard != nil && strings.TrimSpace(item.FullFacts) != "" {
+		parsed := contentstrategy.Facts(item.FullFacts)
+		all := make([]domaincard.Fact, 0, len(parsed))
+		for _, fact := range parsed {
+			all = append(all, domaincard.Fact{ID: fact.ID, Text: fact.Text})
+		}
+		if matched := domaincard.Match(question, item.DomainCard, all); len(matched) > 0 {
+			var b strings.Builder
+			for _, fact := range matched {
+				if strings.TrimSpace(fact.ID) == "" || strings.TrimSpace(fact.Text) == "" {
+					continue
+				}
+				b.WriteString(fact.ID)
+				b.WriteString(" ")
+				b.WriteString(strings.TrimSpace(fact.Text))
+				b.WriteString("\n")
+			}
+			return strings.TrimSpace(b.String())
+		}
+	}
 	// Only the facts selected for this question count as answer evidence. The
 	// full package is a fact pool, never a fallback: handing it to the model is
 	// exactly how an unconfirmed region becomes "包邮".
@@ -491,7 +516,7 @@ func (w *Worker) singleAnswerFacts(item decisionItem) string {
 	}
 	// Narrow the selection to what the question actually asks: angle facts and
 	// lexical matches only, never a fact about another region.
-	picked := factselect.Select(primaryQuestion(item), angleTexts, angleIDs, facts, 3)
+	picked := factselect.Select(question, angleTexts, angleIDs, facts, 3)
 	var b strings.Builder
 	for _, f := range picked {
 		if strings.TrimSpace(f.ID) == "" || strings.TrimSpace(f.Text) == "" {

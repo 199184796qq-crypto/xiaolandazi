@@ -28,6 +28,7 @@ import (
 	"livecompanion/management/internal/anchorstylescore"
 	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/domaincard"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/semantic"
@@ -123,7 +124,7 @@ type Worker struct {
 	nicknameRulesValue   *addressing.Rules
 	nicknameRandSeed     int64
 	recentPhrases        map[int64][]string
-	readingRules         map[int64]readingRulesCacheEntry
+	readingRules         map[string]readingRulesCacheEntry
 	benefitRedis         *redis.Client
 	prepared             map[preparedInteractionKey]preparedInteraction
 }
@@ -140,6 +141,7 @@ type decisionItem struct {
 	IntentAngles        []contentstrategy.Row      `json:"-"`
 	SelectedContentPlan *contentstrategy.Selection `json:"-"`
 	FullFacts           string                     `json:"-"`
+	DomainCard          *domaincard.Card           `json:"-"`
 	ExpiresAt           time.Time                  `json:"expires_at,omitempty"`
 	Scene               string                     `json:"scene,omitempty"`
 	OrderSource         string                     `json:"order_source,omitempty"`
@@ -442,7 +444,6 @@ func openingIntentForMission(item decisionItem) (string, string, string) {
 	}
 }
 
-
 func addressingModeForMission(item decisionItem, candidate string) string {
 	if strings.TrimSpace(candidate) == "" {
 		return "NONE"
@@ -493,8 +494,6 @@ func choosePreferredAddressingTerm(preferredTerms, blockedTerms []string, seed s
 	sum := sha256.Sum256([]byte(seed))
 	return candidates[int(binary.BigEndian.Uint32(sum[:4])%uint32(len(candidates)))]
 }
-
-
 
 // anchorStyleAddressTerms 从主播风格评分基准解析主力/辅助/候选称呼。
 // 每个直播间的主播风格不同，主力称呼也不同，不能写死。
@@ -554,7 +553,6 @@ func (w *Worker) fetchAnchorAddressTerms(ctx context.Context, session model.Live
 	}
 	return anchorStyleAddressTerms(style.Profile)
 }
-
 
 func (w *Worker) recentGreetingPhrases(roomID int64) []string {
 	if w == nil {
@@ -694,8 +692,6 @@ func addressingModeForPlan(item decisionItem, candidate string, selectedNames []
 	return "NONE"
 }
 
-
-
 func normalizePlayableNickname(raw string) (string, bool) {
 	value := strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
 	runes := []rune(value)
@@ -724,9 +720,6 @@ func normalizePlayableNickname(raw string) (string, bool) {
 	}
 	return value, true
 }
-
-
-
 
 func (w *Worker) applyResumeStrategyStage(
 	ctx context.Context,
@@ -2324,32 +2317,7 @@ func (w *Worker) readyVoice(ctx context.Context, tenantID, roomID int64) (model.
 		return model.VoiceProfile{}, false, publishedErr
 	}
 
-	versions, err := w.store.ListLiveAgentConfigVersions(ctx, tenantID)
-	if err != nil {
-		return model.VoiceProfile{}, false, err
-	}
-	selected := selectedRoomVoice(versions, roomID)
-	if len(selected) > 0 {
-		source := strings.ToLower(strings.TrimSpace(fmt.Sprint(selected["source"])))
-		if source == "clone" {
-			if profileID := mapInt64(selected["profile_id"]); profileID > 0 {
-				profile, profileErr := w.store.GetVoiceProfile(ctx, tenantID, profileID)
-				if profileErr == nil && strings.EqualFold(strings.TrimSpace(profile.CloneStatus), "ready") && strings.TrimSpace(profile.VoiceID) != "" {
-					return profile, true, nil
-				}
-			}
-		}
-		if source == "official" {
-			if voice, exists := voicecatalog.Find(strings.TrimSpace(fmt.Sprint(selected["voice_id"]))); exists {
-				return officialVoiceProfile(voice), true, nil
-			}
-		}
-	}
-	voice := voicecatalog.Default()
-	if strings.TrimSpace(voice.ID) == "" || strings.TrimSpace(voice.Model) == "" {
-		return model.VoiceProfile{}, false, nil
-	}
-	return officialVoiceProfile(voice), true, nil
+	return model.VoiceProfile{}, false, fmt.Errorf("请先为当前方案保存可用声音")
 }
 
 func selectedRoomVoice(versions []model.AgentConfigVersion, roomID int64) map[string]any {

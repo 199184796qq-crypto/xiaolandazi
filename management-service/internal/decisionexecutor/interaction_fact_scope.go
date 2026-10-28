@@ -9,11 +9,13 @@ import (
 
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/contentstrategy"
+	"livecompanion/management/internal/domaincard"
 )
 
 type interactionFactScope struct {
 	FullFacts string
 	Links     []string
+	Card      *domaincard.Card
 }
 
 var interactionSpokenLink = regexp.MustCompile(`([0-9０-９]+|[一二三四五六七八九十百零〇两]+)\s*号(?:\s*链接)?`)
