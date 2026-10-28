@@ -2,6 +2,7 @@
   "version": 1,
   "dice": {
     "max": 5,
+    "min_ratio": 0.3,
     "pick": "recent"
   },
   "hard_block": {

@@ -1,6 +1,7 @@
 package addressing
 
 import (
+	"math"
 	"math/rand"
 	"strings"
 	"unicode"
@@ -33,9 +34,19 @@ func Pick(viewers []Viewer, rules *Rules, r *rand.Rand) []Viewer {
 	if n <= 0 {
 		return nil
 	}
-	k := 1
-	if r != nil {
-		k = 1 + r.Intn(n)
+	minK := 1
+	if rules != nil && rules.Dice.MinRatio > 0 {
+		minK = int(math.Ceil(float64(len(viewers)) * rules.Dice.MinRatio))
+	}
+	if minK > n {
+		minK = n
+	}
+	if minK < 1 {
+		minK = 1
+	}
+	k := minK
+	if r != nil && n > minK {
+		k = minK + r.Intn(n-minK+1)
 	}
 	if pick == "random" {
 		perm := r.Perm(len(viewers))

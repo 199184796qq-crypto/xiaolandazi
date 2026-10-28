@@ -25,8 +25,9 @@ type Rules struct {
 }
 
 type DiceRules struct {
-	Max  int    `json:"max"`
-	Pick string `json:"pick"` // recent | random
+	Max      int     `json:"max"`
+	MinRatio float64 `json:"min_ratio"` // 抽中人数下限占总人数比例
+	Pick     string  `json:"pick"`      // recent | random
 }
 
 type HardBlock struct {
@@ -50,7 +51,7 @@ type Rewrite struct {
 func DefaultRules() Rules {
 	return Rules{
 		Version: 1,
-		Dice:    DiceRules{Max: 5, Pick: "recent"},
+		Dice:    DiceRules{Max: 5, MinRatio: 0.3, Pick: "recent"},
 		HardBlock: HardBlock{
 			ContactTerms:        []string{"微信", "加v", "vx", "手机", "电话", "qq", "联系我", "专卖店", "出租"},
 			GenericPrefixes:     []string{"用户", "抖音用户", "游客", "访客"},
