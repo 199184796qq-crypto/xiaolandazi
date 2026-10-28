@@ -1,4 +1,4 @@
-package addressing
+﻿package addressing
 
 import "testing"
 
@@ -12,7 +12,7 @@ func TestTermFallbackChain(t *testing.T) {
 		{"room wins", AddressTermSources{Room: []string{"老乡"}, Style: []string{"宝宝"}, Script: []string{"朋友"}}, "老乡", "room"},
 		{"style when room empty", AddressTermSources{Style: []string{"宝宝"}, Script: []string{"朋友"}}, "宝宝", "style"},
 		{"script when both empty", AddressTermSources{Script: []string{"朋友"}}, "朋友", "script"},
-		{"nothing", AddressTermSources{}, "", ""},
+		{"nothing", AddressTermSources{}, "老乡", "default"},
 	}
 	for _, tc := range cases {
 		got, from := tc.src.Resolve()

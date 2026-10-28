@@ -1,4 +1,4 @@
-package addressing
+﻿package addressing
 
 import (
 	"encoding/json"
@@ -77,7 +77,7 @@ func PhrasePrompt(in PhraseInput, r *rand.Rand) (string, string) {
 2. 多人时最多点 1-2 个人名，其余人用集体称呼或“你们”覆盖。
 3. 单人时只叫这一个人，禁止出现“你们/几位/大家”或集体称呼，直接叫他/她。
 4. 多人时最多点 1-2 个人名，其余人用集体称呼或“你们”覆盖。
-5. 同一个称谓词不要出现两次（例如“梅梅朋友，几位朋友”）。
+5. 同一个称谓词不要出现两次；性别称谓必须成对（哥姐、哥哥姐姐），禁止单独用“哥”或“姐”（昵称本身带有的除外）。
 6. 结尾要落到集体称呼或“你们”，不要只说名字就结束。
 7. 口语化、热情、接地气，不要书面腔；不超过 20 个字。
 8. 不要输出解释、不要引号外的内容。
@@ -168,5 +168,38 @@ func ValidatePhrase(address string, in PhraseInput) error {
 			return fmt.Errorf("称谓词重复：%s", term)
 		}
 	}
+	if err := validateGenderPairs(address, in); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateGenderPairs rejects a lone 哥/姐/弟/妹: when the title does not come
+// from the person's own name, both genders must be addressed together (哥姐).
+func validateGenderPairs(address string, in PhraseInput) error {
+	pairs := map[rune]rune{'哥': '姐', '姐': '哥', '弟': '妹', '妹': '弟'}
+	for _, ch := range address {
+		counterpart, ok := pairs[ch]
+		if !ok {
+			continue
+		}
+		if strings.ContainsRune(address, counterpart) || nameCarries(address, ch, in) {
+			continue
+		}
+		return fmt.Errorf("性别称谓必须成对出现：%c", ch)
+	}
+	return nil
+}
+
+// nameCarries reports whether this title is part of a person's own provided
+// form, e.g. the nickname 王哥, so it is not a generic gender title.
+func nameCarries(address string, title rune, in PhraseInput) bool {
+	for _, person := range in.People {
+		for _, form := range person.Forms {
+			if strings.ContainsRune(form, title) && strings.Contains(address, form) {
+				return true
+			}
+		}
+	}
+	return false
 }
