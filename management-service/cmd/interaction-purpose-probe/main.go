@@ -134,6 +134,7 @@ func main() {
 	systemFile := flag.String("system-file", "", "send this system prompt verbatim to the review model")
 	userFile := flag.String("user-file", "", "send this user prompt verbatim to the review model")
 	repeats := flag.Int("repeats", 1, "how many times to repeat the verbatim call")
+	boundaryClass := flag.String("class", "", "generate only a boundary line for this class (no_dimension/complaint/location/identity)")
 	flag.Parse()
 	if *tenant <= 0 || *room <= 0 || *text == "" {
 		fmt.Println("usage: -tenant N -room N -text 观众原话")
@@ -179,6 +180,28 @@ func main() {
 		panic("intent model connection unavailable")
 	}
 
+	if *boundaryClass != "" {
+		request := fallbackline.Request{Class: *boundaryClass, Question: *text}
+		system, user := fallbackline.CandidatesPrompt(request, 4)
+		out, callErr := agentgateway.CompleteSpeechEndpoint(ctx, *profile, agentgateway.Request{
+			Stage:          "interaction_boundary_line",
+			Model:          profile.Model,
+			Messages:       []agentgateway.Message{{Role: "system", Content: system}, {Role: "user", Content: user}},
+			MaxTokens:      240,
+			ResponseFormat: agentgateway.ResponseText,
+		})
+		if callErr != nil {
+			fmt.Printf("BOUNDARY ERROR: %v\n", callErr)
+			os.Exit(1)
+		}
+		candidates := fallbackline.ParseCandidates(out.Text)
+		line, pickErr := fallbackline.Pick(request, candidates)
+		payload, _ := json.MarshalIndent(map[string]any{
+			"class": *boundaryClass, "candidates": candidates, "picked": line, "pick_error": fmt.Sprint(pickErr),
+		}, "", "  ")
+		fmt.Println(string(payload))
+		return
+	}
 	if *systemFile != "" || *userFile != "" {
 		system, _ := os.ReadFile(*systemFile)
 		user, _ := os.ReadFile(*userFile)
