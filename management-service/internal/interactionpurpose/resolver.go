@@ -56,6 +56,15 @@ type Input struct {
 	// dimension this question likely belongs to.
 	DomainCard *domaincard.Card
 	CardFacts  []domaincard.Fact
+	// Semantics is the plan's question-library sense table (keywords, sense,
+	// exclusions). It disambiguates local slang without becoming an answer.
+	Semantics []SemanticEntry
+}
+
+type SemanticEntry struct {
+	Keywords []string `json:"keywords"`
+	Sense    string   `json:"sense,omitempty"`
+	Exclude  []string `json:"exclude,omitempty"`
 }
 
 func Normalize(text string) string {
@@ -138,9 +147,12 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 			}
 		}
 	}
-	// The model no longer sees the fact package: it only says why the viewer
-	// asks. Facts are assigned on the program side, which keeps the prompt small.
-	payloadMap := map[string]any{"观众原话": input.Text, "已有目的": input.Purposes}
+	// Intent mining gets the full atomic facts plus the plan's sense table. The
+	// answer stage gets only the facts selected for this intent.
+	payloadMap := map[string]any{"观众原话": input.Text, "已有目的": input.Purposes, "全量事实": input.Facts}
+	if len(input.Semantics) > 0 {
+		payloadMap["语义库"] = input.Semantics
+	}
 	if input.DomainCard != nil {
 		dimensions := make([]map[string]any, 0, len(input.DomainCard.Dimensions))
 		for _, dimension := range input.DomainCard.Dimensions {
@@ -284,6 +296,24 @@ func assignAngleFacts(input Input, result Result) []contentstrategy.Row {
 	for _, fact := range input.CardFacts {
 		if known[fact.ID] {
 			cardIDs = append(cardIDs, fact.ID)
+		}
+	}
+	if input.DomainCard != nil {
+		domainFacts := make([]domaincard.Fact, 0, len(facts))
+		for _, fact := range facts {
+			domainFacts = append(domainFacts, domaincard.Fact{ID: fact.ID, Text: fact.Text})
+		}
+		context := input.Text + " " + result.Purpose
+		for _, angle := range result.Angles {
+			context += " " + angle.Angle + " " + angle.Task
+		}
+		if scope := domaincard.ResolveScope(context, input.DomainCard, domainFacts); len(scope.Facts) > 0 {
+			cardIDs = cardIDs[:0]
+			for _, fact := range scope.Facts {
+				if known[fact.ID] {
+					cardIDs = append(cardIDs, fact.ID)
+				}
+			}
 		}
 	}
 	var purpose *contentstrategy.Purpose

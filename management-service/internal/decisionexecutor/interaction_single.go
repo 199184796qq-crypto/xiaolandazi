@@ -214,11 +214,13 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		address = "朋友"
 	}
 	question := strings.TrimSpace(primaryQuestion(item))
+	libraryFallback := ""
 	if entry, hit := w.matchQuestionLibrary(ctx, session, question); hit {
-		if entry.QuestionType == "unknown" {
-			return address + "，" + strings.TrimSpace(entry.Answer)
+		// Sense/exclusion entries only disambiguate; facts stay authoritative.
+		// A plain entry is the fallback when no fact covers the question.
+		if !semanticQuestionEntry(entry) && strings.TrimSpace(entry.Answer) != "" {
+			libraryFallback = address + "，" + strings.TrimSpace(entry.Answer)
 		}
-		return address + "，" + strings.TrimSpace(entry.Answer)
 	}
 	answerText := w.singleAnswerFacts(item)
 	answerText = w.preferRegionFacts(ctx, session, question, answerText)
@@ -228,6 +230,9 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		answerText = w.retrievedAnswerFacts(ctx, session, question)
 	}
 	if strings.TrimSpace(answerText) == "" {
+		if libraryFallback != "" {
+			return libraryFallback
+		}
 		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
 	}
 	// A sold-out question should not be answered with shipping times: narrow the

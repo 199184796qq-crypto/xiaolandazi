@@ -73,6 +73,13 @@ func splitQuestionKeywords(value string) []string {
 // matchLibraryEntry reports the longest keyword hit for one entry. Entries with
 // exclusion words are skipped when any exclusion appears in the question, so
 // "砍" no longer matches "砍价".
+// semanticQuestionEntry entries only disambiguate a term; they must not
+// short-circuit a fact answer. Entries without a sense/exclusions keep the
+// canonical-answer path.
+func semanticQuestionEntry(entry model.QuestionLibraryEntry) bool {
+	return strings.TrimSpace(entry.SenseKey) != "" || len(entry.ExcludeWords) > 0
+}
+
 func matchLibraryEntry(entry model.QuestionLibraryEntry, normalized string) (int, bool) {
 	if strings.TrimSpace(entry.Answer) == "" {
 		return 0, false

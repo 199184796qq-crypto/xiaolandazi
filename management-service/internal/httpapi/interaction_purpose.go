@@ -121,6 +121,24 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	query := interactionpurpose.Input{Tenant: input.Tenant, Room: input.Room, Plan: input.Plan, Text: input.Text, Facts: intentFacts, Prompt: string(prompt)}
+	// The question library is the plan's sense table: keywords + sense + exclusions.
+	// It must not become a direct answer here.
+	if entries, listErr := s.store.ListQuestionLibraryByPlan(ctx, input.Tenant, input.Plan); listErr == nil {
+		for _, entry := range entries {
+			if strings.TrimSpace(entry.Question) == "" {
+				continue
+			}
+			semantic := interactionpurpose.SemanticEntry{
+				Keywords: splitSemanticKeywords(entry.Question),
+				Sense:    strings.TrimSpace(entry.SenseName),
+				Exclude:  entry.ExcludeWords,
+			}
+			if semantic.Sense == "" && len(semantic.Exclude) == 0 {
+				continue
+			}
+			query.Semantics = append(query.Semantics, semantic)
+		}
+	}
 	// The saved card is a recall index, not a replacement for the approved
 	// facts. Give the intent model only the card's dimensions and the facts that
 	// match this question.
@@ -179,6 +197,18 @@ func refineGapQuestion(result interactionpurpose.Result) string {
 		text = strings.TrimSpace(result.Purpose)
 	}
 	return text
+}
+
+func splitSemanticKeywords(value string) []string {
+	replacer := strings.NewReplacer("，", "、", ",", "、", "/", "、", "；", "、", ";", "、", "|", "、", " ", "、")
+	parts := strings.Split(replacer.Replace(value), "、")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // inferGapType maps an uncovered question to a question-library type.
