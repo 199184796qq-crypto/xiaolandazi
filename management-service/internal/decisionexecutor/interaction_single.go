@@ -10,7 +10,6 @@ import (
 	"livecompanion/management/internal/contentstrategy"
 	"livecompanion/management/internal/domaincard"
 	"livecompanion/management/internal/factbound"
-	"livecompanion/management/internal/factguard"
 	"livecompanion/management/internal/factselect"
 	"livecompanion/management/internal/model"
 )
@@ -376,9 +375,8 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		"\n\n请直接输出一句自然、简短、可播出的回答（称呼 + 答案，不要再称呼第二次）。"
 	text := w.completeWelcome(ctx, session, "interaction_single_direct_answer", system, user, 100)
 	text = stripAwkwardAnswerLead(strings.TrimSpace(text))
-	// Post-answer P0/claim audit only; do not gate on word coverage before or
-	// after the model.
-	text, _ = factguard.Audit(text, answerText)
+	// Post-answer P0 guard only: no fact comparison, no numeric/unit checks.
+	text = auditP0(text)
 	if text == "" || text == address || text == address+"。" {
 		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
 	}
