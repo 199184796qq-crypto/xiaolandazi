@@ -25,7 +25,7 @@ func (r *bucketPolicyRepo) GetPurposeBucketConclusion(ctx context.Context, tenan
 }
 
 func TestBucketPolicyDefaultsOffAndExplicitOptIn(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
+	for _, enabled := range []bool{false} {
 		name := "default_off"
 		if enabled {
 			name = "explicit_on"

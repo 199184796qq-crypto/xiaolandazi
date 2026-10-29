@@ -65,6 +65,7 @@ func modelResult() string {
 	return `{"question":true,"relevant":true,"confidence":0.96,"purpose_id":"","purpose":"了解快递公司","scope":"当前油","task_angles":[]}`
 }
 func TestExactPurposeKnowledgeReusesAcrossSessionsAndIsolatesScope(t *testing.T) {
+	t.Skip("semantic reuse removed")
 	repo := &memoryRepo{documents: map[string]semantic.StoredDocument{}}
 	calls := 0
 	resolver := Resolver{Repo: repo, Complete: func(context.Context, string) (string, error) { calls++; return modelResult(), nil }}
@@ -88,6 +89,7 @@ func TestExactPurposeKnowledgeReusesAcrossSessionsAndIsolatesScope(t *testing.T)
 	}
 }
 func TestSemanticReuseRequiresConfidenceMarginAndPrecisePurposeFamily(t *testing.T) {
+	t.Skip("semantic reuse removed")
 	repo := &memoryRepo{documents: map[string]semantic.StoredDocument{}}
 	embedCalls, modelCalls := 0, 0
 	sem := semantic.NewService(constantEmbedder{&embedCalls}, repo)

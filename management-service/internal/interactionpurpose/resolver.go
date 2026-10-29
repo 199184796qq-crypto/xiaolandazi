@@ -130,44 +130,9 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	}
 	id := SourceID(input)
 	factsSHA := contentstrategy.SHA(input.Facts)
-	if raw, err := r.Repo.GetInteractionPurpose(ctx, input.Tenant, input.Room, input.Plan, id); err == nil && raw != "" {
-		var cached Result
-		if json.Unmarshal([]byte(raw), &cached) == nil && cached.FactsSHA == factsSHA && Normalize(cached.Input) == Normalize(input.Text) {
-			cached.Source = "exact"
-			return cached, nil
-		}
-	}
-	// 判断模型层：拿新问题跟本房间的语义桶比对，命中同类就复用结论，省掉完整解意图。
-	// 只喂问题原文（不带事实包），判断模型远比解意图便宜。宁可 miss 也不误命中。
-	if r.BucketEnabled && r.Judge != nil {
-		if result, ok := r.judgeReuse(ctx, input, factsSHA); ok {
-			return result, nil
-		}
-	}
-	if r.Semantic != nil && r.Semantic.Enabled() {
-		matches, err := r.Semantic.Search(ctx, input.Text, semantic.Query{TenantID: input.Tenant, RoomID: input.Room, PlanID: input.Plan, ContentType: ContentType, Limit: 12, MinScore: .80})
-		if err == nil {
-			var best Result
-			bestScore, competitor := 0.0, 0.0
-			for _, match := range matches {
-				var cached Result
-				if json.Unmarshal([]byte(match.Document.Text), &cached) != nil || cached.FactsSHA != factsSHA || cached.Confidence < .85 || preciseFamily(input.Text) != preciseFamily(cached.Input) {
-					continue
-				}
-				if bestScore == 0 {
-					best, bestScore = cached, match.Score
-				} else if cached.Topic != best.Topic && match.Score > competitor {
-					competitor = match.Score
-				}
-			}
-			if bestScore >= .94 && bestScore-competitor >= .08 {
-				best.Input = input.Text
-				best.Source = "semantic"
-				r.save(ctx, input, id, best)
-				return best, nil
-			}
-		}
-	}
+	// Semantic reuse is intentionally disabled: every viewer question gets a
+	// fresh intent call. Region/person/link context must never be reused from a
+	// different question.
 	// Intent mining gets the full atomic facts plus the plan's sense table. The
 	// answer stage gets only the facts selected for this intent.
 	payloadMap := map[string]any{"观众原话": input.Text, "已有目的": input.Purposes, "全量事实": input.Facts}
