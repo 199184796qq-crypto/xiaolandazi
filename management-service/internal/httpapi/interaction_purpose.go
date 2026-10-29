@@ -83,6 +83,10 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		writeError(w, 409, "published facts unavailable")
 		return
 	}
+	intentFacts := asset.SafeFacts
+	if atomic, ok := published.GenerationContext["atomic_facts"].(string); ok && strings.TrimSpace(atomic) != "" {
+		intentFacts = atomic
+	}
 	prompt, err := interactionpolicy.Read("interaction-purpose-resolution.md")
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -116,12 +120,12 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 			return result.Text, err
 		}
 	}
-	query := interactionpurpose.Input{Tenant: input.Tenant, Room: input.Room, Plan: input.Plan, Text: input.Text, Facts: asset.SafeFacts, Prompt: string(prompt)}
+	query := interactionpurpose.Input{Tenant: input.Tenant, Room: input.Room, Plan: input.Plan, Text: input.Text, Facts: intentFacts, Prompt: string(prompt)}
 	// The saved card is a recall index, not a replacement for the approved
 	// facts. Give the intent model only the card's dimensions and the facts that
 	// match this question.
 	if card := domaincard.FromGeneration(published.GenerationContext); card != nil {
-		parsed := contentstrategy.Facts(asset.SafeFacts)
+		parsed := contentstrategy.Facts(intentFacts)
 		all := make([]domaincard.Fact, 0, len(parsed))
 		for _, fact := range parsed {
 			all = append(all, domaincard.Fact{ID: fact.ID, Text: fact.Text})

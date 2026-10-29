@@ -59,7 +59,7 @@ func (s *Server) buildPlanDomainCard(ctx context.Context, safety model.LiveDeriv
 			{Role: "system", Content: domainCardPrompt},
 			{Role: "user", Content: "以下是本方案的审核事实，请生成领域卡：\n" + factLines.String()},
 		},
-		MaxTokens:      4000,
+		MaxTokens:      6000,
 		ResponseFormat: agentgateway.ResponseJSON,
 	}
 	response, err := agentgateway.CompleteSpeechEndpoint(callCtx, *profile, request)
