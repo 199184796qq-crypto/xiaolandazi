@@ -79,9 +79,19 @@ func BuildPhrase(in PhraseInput, r *rand.Rand) string {
 	names := make([]string, 0, len(in.People))
 	for _, person := range in.People {
 		name := strings.TrimSpace(person.Base)
-		for _, form := range person.Forms {
-			if strings.HasSuffix(form, "老乡") || strings.HasSuffix(form, "朋友") {
-				name = form
+		// Use the room/plan's resolved address terms; never hardcode 老乡.
+		for _, term := range in.Terms {
+			term = strings.TrimSpace(term)
+			if term == "" {
+				continue
+			}
+			for _, form := range person.Forms {
+				if strings.HasSuffix(form, term) {
+					name = form
+					break
+				}
+			}
+			if name != strings.TrimSpace(person.Base) {
 				break
 			}
 		}
