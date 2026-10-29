@@ -2027,24 +2027,24 @@ func (w *Worker) SimulateAnswerWithPreview(
 	question, previewInstruction, previewMemoryType, previewMemoryKey string,
 	previewMatchedMemoryID int64,
 ) (SimulationOutput, error) {
-	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, previewMemoryType, previewMemoryKey, previewMatchedMemoryID, nil, nil)
+	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, previewMemoryType, previewMemoryKey, previewMatchedMemoryID, nil, nil, "")
 }
 
 func (w *Worker) SimulateInteraction(ctx context.Context, tenantID, roomID int64, question, previewInstruction string, recent []InteractionRecentAnswer) (SimulationOutput, error) {
 	if err := ValidateInteractionRecentAnswers(recent); err != nil {
 		return SimulationOutput{}, err
 	}
-	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, "semantic", "", 0, recent, nil)
+	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, "semantic", "", 0, recent, nil, "")
 }
 
 // SimulateInteractionWithIntent runs the test-mode answer through the real
 // intent result (purpose + angles), so test mode and live chat share the same
 // fact selection instead of bypassing intent with a bare manual question.
-func (w *Worker) SimulateInteractionWithIntent(ctx context.Context, tenantID, roomID int64, question, previewInstruction string, recent []InteractionRecentAnswer, intent interactionpurpose.Result) (SimulationOutput, error) {
+func (w *Worker) SimulateInteractionWithIntent(ctx context.Context, tenantID, roomID int64, question, previewInstruction string, recent []InteractionRecentAnswer, intent interactionpurpose.Result, nickname string) (SimulationOutput, error) {
 	if err := ValidateInteractionRecentAnswers(recent); err != nil {
 		return SimulationOutput{}, err
 	}
-	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, "semantic", "", 0, recent, &intent)
+	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, "semantic", "", 0, recent, &intent, nickname)
 }
 
 func (w *Worker) simulateAnswer(
@@ -2054,6 +2054,7 @@ func (w *Worker) simulateAnswer(
 	previewMatchedMemoryID int64,
 	recent []InteractionRecentAnswer,
 	intent *interactionpurpose.Result,
+	nickname string,
 ) (SimulationOutput, error) {
 	question = strings.TrimSpace(question)
 	if tenantID <= 0 || roomID <= 0 || question == "" {
@@ -2074,6 +2075,7 @@ func (w *Worker) simulateAnswer(
 	item := decisionItem{
 		BusinessCoreOnly:       true,
 		RecentAnswers:          recent,
+		Nicknames:              []string{},
 		PurposeID:              purposeID,
 		PurposeKnowledge:       purposeKnowledge,
 		IntentAngles:           intentAngles,
@@ -2089,6 +2091,9 @@ func (w *Worker) simulateAnswer(
 		PreviewMemoryType:      strings.TrimSpace(previewMemoryType),
 		PreviewMemoryKey:       strings.TrimSpace(previewMemoryKey),
 		PreviewMatchedMemoryID: previewMatchedMemoryID,
+	}
+	if nickname = strings.TrimSpace(nickname); nickname != "" {
+		item.Nicknames = []string{nickname}
 	}
 	text, err := w.generateDecisionTextMutable(ctx, session, &item)
 	if err != nil {

@@ -85,7 +85,7 @@ func (s *Server) internalTestInteraction(w http.ResponseWriter, r *http.Request)
 	// 2. Real answer generation using the same plan-scoped test store as the
 	// existing simulation endpoint, now carrying the real intent.
 	worker := decisionexecutor.New(&planSpeechTestStore{Store: s.store, tenantID: tenantID, roomID: roomID, plan: plan}, nil, s.speechGateway(), nil)
-	result, err := worker.SimulateInteractionWithIntent(ctx, tenantID, roomID, input.Text, "", nil, intent)
+	result, err := worker.SimulateInteractionWithIntent(ctx, tenantID, roomID, input.Text, "", nil, intent, input.Nickname)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "answer generation failed: "+err.Error())
 		return

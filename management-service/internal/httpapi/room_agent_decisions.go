@@ -138,7 +138,7 @@ func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 	var result decisionexecutor.SimulationOutput
 	var err error
 	if intentResult != nil {
-		result, err = worker.SimulateInteractionWithIntent(ctx, tenantID, roomID, input.Question, input.PreviewInstruction, input.RecentAnswers, *intentResult)
+		result, err = worker.SimulateInteractionWithIntent(ctx, tenantID, roomID, input.Question, input.PreviewInstruction, input.RecentAnswers, *intentResult, "")
 	} else {
 		result, err = worker.SimulateInteraction(ctx, tenantID, roomID, input.Question, input.PreviewInstruction, input.RecentAnswers)
 	}
