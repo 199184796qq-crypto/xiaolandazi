@@ -17,20 +17,27 @@ import (
 const ContentType = "interaction_purpose"
 
 type Result struct {
-	Question   bool                  `json:"question"`
-	Relevant   bool                  `json:"relevant"`
-	Confidence float64               `json:"confidence"`
-	PurposeID  string                `json:"purpose_id"`
-	Purpose    string                `json:"purpose"`
-	Scope      string                `json:"scope"`
-	Angles     []contentstrategy.Row `json:"task_angles"`
-	Ambiguous  bool                  `json:"ambiguous,omitempty"`
-	Clarify    string                `json:"clarify,omitempty"`
-	Options    []string              `json:"options,omitempty"`
-	Topic      string                `json:"topic,omitempty"`
-	Source     string                `json:"source,omitempty"`
-	FactsSHA   string                `json:"facts_sha256,omitempty"`
-	Input      string                `json:"input,omitempty"`
+	Question    bool                  `json:"question"`
+	Relevant    bool                  `json:"relevant"`
+	Confidence  float64               `json:"confidence"`
+	PurposeID   string                `json:"purpose_id"`
+	Purpose     string                `json:"purpose"`
+	Scope       string                `json:"scope"`
+	Angles      []contentstrategy.Row `json:"task_angles"`
+	Ambiguous   bool                  `json:"ambiguous,omitempty"`
+	Clarify     string                `json:"clarify,omitempty"`
+	Options     []string              `json:"options,omitempty"`
+	Constraints *Constraints          `json:"constraints,omitempty"`
+	Topic       string                `json:"topic,omitempty"`
+	Source      string                `json:"source,omitempty"`
+	FactsSHA    string                `json:"facts_sha256,omitempty"`
+	Input       string                `json:"input,omitempty"`
+}
+
+type Constraints struct {
+	Region  string   `json:"region,omitempty"`
+	Include []string `json:"include,omitempty"`
+	Exclude []string `json:"exclude,omitempty"`
 }
 type Repository interface {
 	GetInteractionPurpose(context.Context, int64, int64, int64, string) (string, error)
@@ -193,7 +200,7 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	if err = contentstrategy.Decode(raw, &fields); err != nil {
 		return Result{}, err
 	}
-	allowed := map[string]bool{"question": true, "relevant": true, "confidence": true, "purpose_id": true, "purpose": true, "scope": true, "task_angles": true, "ambiguous": true, "clarify": true, "options": true}
+	allowed := map[string]bool{"question": true, "relevant": true, "confidence": true, "purpose_id": true, "purpose": true, "scope": true, "task_angles": true, "ambiguous": true, "clarify": true, "options": true, "constraints": true}
 	for _, name := range []string{"question", "relevant", "confidence", "purpose_id", "purpose", "scope", "task_angles"} {
 		if _, ok := fields[name]; !ok {
 			return Result{}, fmt.Errorf("目的返回字段缺失：%s", name)

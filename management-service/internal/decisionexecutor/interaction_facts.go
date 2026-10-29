@@ -2,6 +2,7 @@ package decisionexecutor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"livecompanion/management/internal/contentpools"
@@ -233,5 +234,76 @@ func applyDomainAnswerScope(item *decisionItem) {
 	item.AnswerScope = "只回答：" + strings.Join(scope.Allowed, "、")
 	if len(scope.Forbidden) > 0 {
 		item.AnswerScope += "；不要主动提：" + strings.Join(scope.Forbidden, "、")
+	}
+	applyDerivedShippingScope(item)
+}
+
+// applyDerivedShippingScope converts the explicit remote-region exception and
+// the general free-shipping fact into a program conclusion. This is a rule over
+// existing facts (remote set vs complement), not a per-city fact.
+func applyDerivedShippingScope(item *decisionItem) {
+	if item == nil || len(item.PurposeKnowledge) == 0 {
+		return
+	}
+	var intent struct {
+		Scope       string `json:"scope"`
+		Constraints *struct {
+			Region  string   `json:"region"`
+			Include []string `json:"include"`
+			Exclude []string `json:"exclude"`
+		} `json:"constraints"`
+	}
+	if json.Unmarshal(item.PurposeKnowledge, &intent) != nil {
+		return
+	}
+	region := strings.TrimSpace(intent.Scope)
+	include, exclude := "", ""
+	if intent.Constraints != nil {
+		if strings.TrimSpace(intent.Constraints.Region) != "" {
+			region = strings.TrimSpace(intent.Constraints.Region)
+		}
+		include = strings.Join(intent.Constraints.Include, " ")
+		exclude = strings.Join(intent.Constraints.Exclude, " ")
+	}
+	question := strings.Join(item.SampleQuestions, " ")
+	if region == "" || (!strings.Contains(question+" "+include, "包邮") && !strings.Contains(question, "运费")) {
+		return
+	}
+	facts := item.FullFacts
+	if strings.TrimSpace(facts) == "" {
+		facts = item.ScopedFacts
+	}
+	if strings.TrimSpace(facts) == "" {
+		return
+	}
+	general, remoteLine := false, ""
+	for _, line := range strings.Split(facts, "\n") {
+		if strings.Contains(line, "包邮") {
+			general = true
+		}
+		if strings.Contains(line, "只能发空运") && strings.Contains(line, "海南") {
+			remoteLine = line
+		}
+	}
+	if !general || remoteLine == "" {
+		return
+	}
+	for _, part := range strings.FieldsFunc(remoteLine, func(r rune) bool {
+		return r == '、' || r == '，' || r == ',' || r == ' ' || r == '；' || r == ';'
+	}) {
+		if strings.TrimSpace(part) == region || strings.Contains(part, region) {
+			return
+		}
+	}
+	conclusion := fmt.Sprintf("SYS-REGION %s不属于事实里的偏远地区名单；当前活动包邮，因此%s包邮，不需要补空运费。", region, region)
+	if !strings.Contains(item.ScopedFacts, conclusion) {
+		if strings.TrimSpace(item.ScopedFacts) != "" {
+			item.ScopedFacts += "\n"
+		}
+		item.ScopedFacts += conclusion
+	}
+	item.AnswerScope += "；地区结论：" + conclusion
+	if strings.Contains(exclude, "空运") || strings.Contains(exclude, "运费") {
+		item.AnswerScope += "；不要主动提：空运、补运费"
 	}
 }
