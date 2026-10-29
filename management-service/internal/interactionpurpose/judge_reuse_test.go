@@ -19,7 +19,9 @@ type bucketRepo struct {
 func (r *bucketRepo) GetInteractionPurpose(context.Context, int64, int64, int64, string) (string, error) {
 	return "", semantic.ErrDocumentNotFound
 }
-func (r *bucketRepo) UpsertSemanticDocument(context.Context, semantic.StoredDocument) error { return nil }
+func (r *bucketRepo) UpsertSemanticDocument(context.Context, semantic.StoredDocument) error {
+	return nil
+}
 func (r *bucketRepo) GetSemanticDocument(context.Context, semantic.Lookup) (semantic.StoredDocument, error) {
 	return semantic.StoredDocument{}, semantic.ErrDocumentNotFound
 }
@@ -62,7 +64,8 @@ func TestJudgeReuseHitsMatchingBucket(t *testing.T) {
 		conclMap: map[string]string{"bucket:a": bucketConclusion(fa)},
 	}
 	resolver := Resolver{
-		Repo: repo,
+		Repo:          repo,
+		BucketEnabled: true,
 		Judge: func(context.Context, string) (string, error) {
 			return `{"same":true,"match_index":0}`, nil
 		},
@@ -85,7 +88,8 @@ func TestJudgeReuseRejectsWhenFactsChanged(t *testing.T) {
 		conclMap: map[string]string{"bucket:a": bucketConclusion(fa)},
 	}
 	resolver := Resolver{
-		Repo: repo,
+		Repo:          repo,
+		BucketEnabled: true,
 		Judge: func(context.Context, string) (string, error) {
 			return `{"same":true,"match_index":0}`, nil
 		},
@@ -105,7 +109,8 @@ func TestJudgeReuseRejectsMissingMatchIndex(t *testing.T) {
 		conclMap: map[string]string{"bucket:a": bucketConclusion(fa)},
 	}
 	resolver := Resolver{
-		Repo: repo,
+		Repo:          repo,
+		BucketEnabled: true,
 		Judge: func(context.Context, string) (string, error) {
 			return `{"same":true}`, nil // 缺 match_index
 		},
@@ -123,7 +128,8 @@ func TestJudgeReuseRejectsOutOfRangeMatchIndex(t *testing.T) {
 		conclMap: map[string]string{"bucket:a": bucketConclusion(fa)},
 	}
 	resolver := Resolver{
-		Repo: repo,
+		Repo:          repo,
+		BucketEnabled: true,
 		Judge: func(context.Context, string) (string, error) {
 			return `{"same":true,"match_index":3}`, nil // 只有 1 个桶
 		},
@@ -141,7 +147,8 @@ func TestJudgeReuseRejectsWhenNotSame(t *testing.T) {
 		conclMap: map[string]string{"bucket:a": bucketConclusion(fa)},
 	}
 	resolver := Resolver{
-		Repo: repo,
+		Repo:          repo,
+		BucketEnabled: true,
 		Judge: func(context.Context, string) (string, error) {
 			return `{"same":false}`, nil
 		},
@@ -157,7 +164,8 @@ func TestJudgeReuseSkipsWhenNoBuckets(t *testing.T) {
 	repo := &bucketRepo{buckets: nil, conclMap: map[string]string{}}
 	judgeCalled := false
 	resolver := Resolver{
-		Repo: repo,
+		Repo:          repo,
+		BucketEnabled: true,
 		Judge: func(context.Context, string) (string, error) {
 			judgeCalled = true
 			return `{"same":true,"match_index":0}`, nil

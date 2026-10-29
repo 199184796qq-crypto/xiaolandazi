@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"livecompanion/management/internal/purposelib"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -95,9 +96,10 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		writeError(w, 500, err.Error())
 		return
 	}
-	judgePrompt, judgeErr := interactionpolicy.Read("interaction-purpose-judge.md")
-	if judgeErr != nil {
-		judgePrompt = nil // 判断母版缺失时降级：不启用判断模型层，仍走完整解意图
+	bucketEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv("INTERACTION_PURPOSE_BUCKET_ENABLED")), "true")
+	var judgePrompt []byte
+	if bucketEnabled {
+		judgePrompt, _ = interactionpolicy.Read("interaction-purpose-judge.md")
 	}
 	settings, err := s.store.AnchorGenerationSettings(ctx)
 	if err != nil {
@@ -112,7 +114,7 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 			return withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: input.Tenant, RoomID: input.Room, PlanID: input.Plan}), nil
 		}
 	}
-	resolver := interactionpurpose.Resolver{Repo: s.store, Semantic: s.purposeSemantic, Complete: func(ctx context.Context, payload string) (string, error) {
+	resolver := interactionpurpose.Resolver{Repo: s.store, Semantic: s.purposeSemantic, BucketEnabled: bucketEnabled, Complete: func(ctx context.Context, payload string) (string, error) {
 		ctx, err := bindCost(ctx)
 		if err != nil {
 			return "", err

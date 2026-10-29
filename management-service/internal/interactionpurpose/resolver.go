@@ -52,6 +52,9 @@ type Resolver struct {
 	Repo     Repository
 	Semantic *semantic.Service
 	Complete Complete
+	// BucketEnabled explicitly opts into judge-based bucket reads and writes.
+	// Existing bucket records are retained while this policy is disabled.
+	BucketEnabled bool
 	// Judge, when non-nil, classifies whether a new question is semantically the
 	// same as one of the room's existing purpose buckets, so the resolution model
 	// can be skipped for repeats. It consumes only question text (no fact bundle).
@@ -136,7 +139,7 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	}
 	// 判断模型层：拿新问题跟本房间的语义桶比对，命中同类就复用结论，省掉完整解意图。
 	// 只喂问题原文（不带事实包），判断模型远比解意图便宜。宁可 miss 也不误命中。
-	if r.Judge != nil {
+	if r.BucketEnabled && r.Judge != nil {
 		if result, ok := r.judgeReuse(ctx, input, factsSHA); ok {
 			return result, nil
 		}
@@ -457,6 +460,9 @@ func (r *Resolver) save(ctx context.Context, input Input, id string, result Resu
 // conclusion; on a miss it returns ok=false so the caller falls through to the
 // full resolution model.
 func (r *Resolver) judgeReuse(ctx context.Context, input Input, factsSHA string) (Result, bool) {
+	if !r.BucketEnabled {
+		return Result{}, false
+	}
 	buckets, err := r.Repo.ListPurposeBuckets(ctx, input.Tenant, input.Room, input.Plan, 20)
 	if err != nil || len(buckets) == 0 {
 		return Result{}, false
@@ -511,6 +517,9 @@ func bucketQuestions(buckets []semantic.PurposeBucket) []string {
 // storeBucket records the current question + conclusion as a semantic bucket for
 // future judge-model reuse. Called after a successful resolution.
 func (r *Resolver) storeBucket(ctx context.Context, input Input, result Result) {
+	if !r.BucketEnabled {
+		return
+	}
 	if result.Confidence < .85 {
 		return
 	}
