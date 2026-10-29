@@ -139,9 +139,17 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 			query.Semantics = append(query.Semantics, semantic)
 		}
 	}
-	// The saved card is a recall index, not a replacement for the approved
-	// facts. Give the intent model only the card's dimensions and the facts that
-	// match this question.
+	if turns, listErr := s.store.ListRecentInteractionTurns(ctx, input.Tenant, input.Room, 3); listErr == nil {
+		for _, turn := range turns {
+			if strings.TrimSpace(turn.Question) == input.Text {
+				continue
+			}
+			query.Recent = append(query.Recent, interactionpurpose.RecentTurn{
+				Question: truncateRunes(strings.TrimSpace(turn.Question), 120),
+				Answer:   truncateRunes(strings.TrimSpace(turn.Answer), 180),
+			})
+		}
+	}
 	if card := domaincard.FromGeneration(published.GenerationContext); card != nil {
 		parsed := contentstrategy.Facts(intentFacts)
 		all := make([]domaincard.Fact, 0, len(parsed))
@@ -197,6 +205,14 @@ func refineGapQuestion(result interactionpurpose.Result) string {
 		text = strings.TrimSpace(result.Purpose)
 	}
 	return text
+}
+
+func truncateRunes(value string, limit int) string {
+	runes := []rune(value)
+	if limit <= 0 || len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
 }
 
 func splitSemanticKeywords(value string) []string {

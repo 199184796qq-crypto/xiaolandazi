@@ -59,6 +59,14 @@ type Input struct {
 	// Semantics is the plan's question-library sense table (keywords, sense,
 	// exclusions). It disambiguates local slang without becoming an answer.
 	Semantics []SemanticEntry
+	// Recent is the last few viewer/answer turns. It resolves pronouns and
+	// follow-ups; it is never used as fact evidence.
+	Recent []RecentTurn
+}
+
+type RecentTurn struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
 }
 
 type SemanticEntry struct {
@@ -152,6 +160,9 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	payloadMap := map[string]any{"观众原话": input.Text, "已有目的": input.Purposes, "全量事实": input.Facts}
 	if len(input.Semantics) > 0 {
 		payloadMap["语义库"] = input.Semantics
+	}
+	if len(input.Recent) > 0 {
+		payloadMap["最近对话"] = input.Recent
 	}
 	if input.DomainCard != nil {
 		dimensions := make([]map[string]any, 0, len(input.DomainCard.Dimensions))

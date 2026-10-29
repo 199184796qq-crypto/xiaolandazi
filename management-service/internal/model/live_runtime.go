@@ -309,19 +309,25 @@ type RoomReadingRulesInput struct {
 	RulesText string `json:"rules_text"`
 }
 
+type InteractionRecentTurn struct {
+	Question string    `json:"question"`
+	Answer   string    `json:"answer"`
+	At       time.Time `json:"at"`
+}
+
 type QuestionLibraryEntry struct {
-	ID          int64     `json:"id"`
-	TenantID    int64     `json:"tenant_id"`
-	RoomID      int64     `json:"room_id"`
-	PlanID      int64     `json:"plan_id"`
-	QuestionType string   `json:"question_type"`
-	Question    string    `json:"question"`
-	Answer      string    `json:"answer"`
-	SenseKey    string    `json:"sense_key"`
-	SenseName   string    `json:"sense_name"`
-	ExcludeWords []string `json:"exclude_words"`
-	Status      string    `json:"status"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID           int64     `json:"id"`
+	TenantID     int64     `json:"tenant_id"`
+	RoomID       int64     `json:"room_id"`
+	PlanID       int64     `json:"plan_id"`
+	QuestionType string    `json:"question_type"`
+	Question     string    `json:"question"`
+	Answer       string    `json:"answer"`
+	SenseKey     string    `json:"sense_key"`
+	SenseName    string    `json:"sense_name"`
+	ExcludeWords []string  `json:"exclude_words"`
+	Status       string    `json:"status"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type QuestionLibraryInput struct {
