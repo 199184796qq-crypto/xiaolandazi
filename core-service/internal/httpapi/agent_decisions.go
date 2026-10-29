@@ -198,7 +198,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "mainline_unavailable", "item": queue[0]})
 		return
 	}
-	lowFlow := queue[0].InteractionDecision.UniqueChatters30s <= 2 && queue[0].AudioPrepared
+	lowFlow := queue[0].InteractionDecision.UniqueChatters30s <= 2
 	// Do not start an ordinary interaction on the last few seconds of mainline.
 	// The old path could start a 13s answer while only 5s of mainline remained,
 	// then exhaust the queue and strand the engine in interrupt.
