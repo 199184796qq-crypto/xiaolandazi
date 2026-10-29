@@ -358,6 +358,7 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		"\n如果意图是 chat，且 purpose 是疲惫、放松、情绪表达：先接住情绪，可以轻接商品（例如吃点鸭子、配点小酒、解解馋），但不得说消除疲劳、提神、补身体等功效，不硬推、不逼单；用户不想聊商品就停。" +
 		"\n【确定性规则】已确认事实用确定表达；事实未覆盖的部分不得用肯定、承诺、完成态表达，只能说“需要确认/以实际为准/以客服确认为准”；允许在已确认事实后给建议、操作路径和下一步动作，但不得新增业务结论。不要把未确认说成已确认。" +
 		"\n【通用服务规则】特殊订单要求（延期、改地址、包装破损、特殊时效等）可引导联系商家客服/店铺客服申请或核实；商家是否批准、具体结果以客服确认为准。不要指定具体物流商客服或平台客服，除非事实明确。不要编造退款、赔偿、免费服务或保证日期。" +
+		"\n【当前时间】观众说的早上/中午/下午/晚上与当前北京时间不一致时，先自然纠正到真实时段，不要照抄观众说错的时段。" +
 		"\n按【本题意图】里的 need 和 product_relevance 处理：empathy 先安慰，acknowledgement 先接住，information 回答事实，action 确认并说明安排，complaint 先承接再核实；product_relevance=none 不转商品，optional 可轻带，high 可自然关联。"
 	if item.ClarificationQuestion != "" {
 		system += "\n【澄清上下文】主播刚才问：" + item.ClarificationQuestion +

@@ -57,6 +57,7 @@
 20. 不是所有话都是问题。先判断 intent_type：request 是要求/催/加急，不要反问“您是想问……吗”；statement 是陈述，不要强行当提问；order_statement 是已下单，不要问“您下单了吗”。
 21. 即使是 chat、statement、order_statement，也要输出非空 purpose，写清观众在分享什么、表达什么情绪、和主播/品牌是什么关系；relevant 可以按是否涉及商品/购物判断，但不要把整句判成无信息。
 22. need 只写需求类型，不写回答话术；product_relevance 判断商品关联度，不按 intent_type 一刀切。例如“今天好累”是 empathy + optional，“今天好累想吃点啥”是 empathy + high，“在吗”是 acknowledgement + none。
+23. 输入里带“当前北京时间”时，观众说的早上/中午/下午/晚上如果和真实时间不符，不要沿用错误时段写 purpose；按真实时间理解，并在角度里提示需要自然纠正。
 
 
 ## 红线

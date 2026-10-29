@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 	"unicode"
 
 	"livecompanion/management/internal/contentstrategy"
@@ -138,7 +139,8 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	// different question.
 	// Intent mining gets the full atomic facts plus the plan's sense table. The
 	// answer stage gets only the facts selected for this intent.
-	payloadMap := map[string]any{"观众原话": input.Text, "已有目的": input.Purposes, "全量事实": input.Facts}
+	payloadMap := map[string]any{"观众原话": input.Text, "已有目的": input.Purposes, "全量事实": input.Facts,
+		"当前北京时间": time.Now().In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format("2006-01-02 15:04")}
 	if len(input.Semantics) > 0 {
 		payloadMap["语义库"] = input.Semantics
 	}
