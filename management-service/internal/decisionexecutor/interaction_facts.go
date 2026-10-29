@@ -12,6 +12,7 @@ import (
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -236,6 +237,57 @@ func applyDomainAnswerScope(item *decisionItem) {
 		item.AnswerScope += "；不要主动提：" + strings.Join(scope.Forbidden, "、")
 	}
 	applyDerivedShippingScope(item)
+	applyDerivedLinkScope(item)
+}
+
+var answerLinkPattern = regexp.MustCompile(`([0-9]+)\s*号链接`)
+
+// applyDerivedLinkScope resolves "N号链接还上吗" from the approved link record:
+// if the link exists in facts, it is already listed; otherwise the promised
+// fallback is to ask the control room to restock it. This is a program rule, not
+// a per-question answer.
+func applyDerivedLinkScope(item *decisionItem) {
+	if item == nil || len(item.PurposeKnowledge) == 0 {
+		return
+	}
+	var intent struct {
+		Scope   string `json:"scope"`
+		Purpose string `json:"purpose"`
+	}
+	if json.Unmarshal(item.PurposeKnowledge, &intent) != nil {
+		return
+	}
+	text := strings.Join(item.SampleQuestions, " ") + " " + intent.Scope + " " + intent.Purpose
+	match := answerLinkPattern.FindStringSubmatch(text)
+	if len(match) < 2 {
+		return
+	}
+	link := match[1]
+	if !strings.Contains(text, "上") && !strings.Contains(text, "补货") && !strings.Contains(text, "在售") {
+		return
+	}
+	facts := item.FullFacts
+	if strings.TrimSpace(facts) == "" {
+		facts = item.ScopedFacts
+	}
+	listed := false
+	for _, line := range strings.Split(facts, "\n") {
+		if strings.Contains(line, "链接="+link) {
+			listed = true
+			break
+		}
+	}
+	conclusion := fmt.Sprintf("SYS-LINK %s号链接当前未上架，需要中控补货。", link)
+	if listed {
+		conclusion = fmt.Sprintf("SYS-LINK %s号链接已经上架，可以拍。", link)
+	}
+	if !strings.Contains(item.ScopedFacts, conclusion) {
+		if strings.TrimSpace(item.ScopedFacts) != "" {
+			item.ScopedFacts += "\n"
+		}
+		item.ScopedFacts += conclusion
+	}
+	item.AnswerScope += "；链接状态：" + conclusion
 }
 
 // applyDerivedShippingScope converts the explicit remote-region exception and
