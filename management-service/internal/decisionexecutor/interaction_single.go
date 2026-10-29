@@ -294,6 +294,7 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	text = stripAwkwardAnswerLead(strings.TrimSpace(text))
 	// Remove sentences that invent numbers, promises or timings.
 	text, _ = factguard.Audit(text, answerText)
+	text = arbitrateAnswerClaims(text, question, answerText)
 	if text == "" || text == address || text == address+"。" {
 		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
 	}
