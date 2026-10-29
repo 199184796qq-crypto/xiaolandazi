@@ -180,6 +180,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerAnchorRecommendationRoutes(mux)
 
 	mux.HandleFunc("POST /internal/v1/interaction-purpose/resolve", s.resolveInteractionPurpose)
+	mux.HandleFunc("POST /internal/v1/rooms/{roomID}/test-interaction", s.internalTestInteraction)
 	mux.HandleFunc("POST /internal/v1/model-analysis/chat/completions", s.internalModelAnalysis)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /internal/v1/tts-audio/{audioID}", ttsgateway.ServeTencentAudio)
