@@ -234,16 +234,8 @@ func escapeSSML(text string) string {
 // buildTTSText applies the room's reading rules and, when the voice supports
 // SSML, wraps everything with a native break after the address.
 func buildTTSText(text, address string, rules []readingrules.Rule, ssml bool) (string, bool) {
-	plain, body := readingrules.Apply(text, rules)
-	if !ssml {
-		return ensureAddressPunctuation(plain, address), false
-	}
-	doc := "<speak>" + body + "</speak>"
-	if address = strings.TrimSpace(address); address != "" {
-		escaped := escapeSSML(address)
-		if strings.Contains(doc, escaped) {
-			doc = strings.Replace(doc, escaped, escaped+`<break time="200ms"/>`, 1)
-		}
-	}
-	return doc, true
+	plain, _ := readingrules.Apply(text, rules)
+	// SSML address breaks are disabled: all voices use the same plain text and
+	// punctuation-based pauses, independent of provider SSML support.
+	return ensureAddressPunctuation(plain, address), false
 }
