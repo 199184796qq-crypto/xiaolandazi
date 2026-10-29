@@ -1150,6 +1150,8 @@ export interface GeneratedSpeechHistoryItem {
   source_type: string
   question_text?: string
   generated_text: string
+  intent_json?: string
+  suggestion_json?: string
   correction_count: number
   adopted_correction_count: number
   editing_correction_count: number

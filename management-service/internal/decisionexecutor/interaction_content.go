@@ -25,6 +25,8 @@ func interactionScene(kind string) string {
 		return "like_follow"
 	case "reply_chat":
 		return "smalltalk"
+	case "warmup", "time_report":
+		return "warmup"
 	default:
 		return kind
 	}

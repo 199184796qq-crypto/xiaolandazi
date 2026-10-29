@@ -1540,8 +1540,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 			Rate: voiceRate(voice), Instruction: ttsInstruction,
 		}
 	})
-	ttsCtx, ttsCancel := context.WithTimeout(ctx, 35*time.Second)
-	defer ttsCancel()
+	ttsCtx := ttsgateway.WithSynthesisTimeout(ctx, 35*time.Second)
 	ttsText, ssmlUsed := buildTTSText(text, item.PromptAddressPhrase, w.readingRulesFor(ctx, session), ttsgateway.SupportsSSML(ttsModel))
 	audio, err := w.synthesizeInteractionAudio(ttsCtx, item, ttsgateway.SynthesizeRequest{
 		Provider:    voiceProvider(voice),

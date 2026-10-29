@@ -1030,6 +1030,26 @@ function generatedSpeechCorrectionLabel(item: GeneratedSpeechHistoryItem) {
   return '未纠正'
 }
 
+function prettyGeneratedSpeechJSON(raw?: string) {
+  if (!raw) return ''
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2)
+  } catch {
+    return raw
+  }
+}
+
+function generatedSpeechIntentSummary(raw?: string) {
+  if (!raw) return ''
+  try {
+    const value = JSON.parse(raw) as { purpose?: string; task_angles?: Array<Record<string, unknown>> }
+    const angles = (value.task_angles || []).map(angle => String(angle['角度'] || angle['angle'] || '')).filter(Boolean)
+    return [value.purpose, angles.length ? `角度：${angles.join('、')}` : ''].filter(Boolean).join('；')
+  } catch {
+    return raw
+  }
+}
+
 function openGeneratedSpeechCorrection(input: {
   decisionId?: string
   question?: string
@@ -5131,6 +5151,14 @@ onBeforeUnmount(() => {
                 </span>
               </div>
               <p v-if="item.question_text" class="speech-history-question"><strong>关联问题：</strong>{{ item.question_text }}</p>
+              <details v-if="item.intent_json" class="speech-history-json">
+                <summary>意图：{{ generatedSpeechIntentSummary(item.intent_json) }}</summary>
+                <pre>{{ prettyGeneratedSpeechJSON(item.intent_json) }}</pre>
+              </details>
+              <details v-if="item.suggestion_json" class="speech-history-json">
+                <summary>回答建议</summary>
+                <pre>{{ prettyGeneratedSpeechJSON(item.suggestion_json) }}</pre>
+              </details>
               <p class="speech-history-reply">{{ item.generated_text }}</p>
               <div class="speech-history-item-actions">
                 <button v-if="canConfigureRoomStrategy" type="button" @click="correctGeneratedSpeechHistoryItem(item)">纠正</button>
@@ -7348,6 +7376,28 @@ onBeforeUnmount(() => {
   font-size: 16px;
   font-weight: 700;
   line-height: 1.7;
+}
+.speech-history-json {
+  margin: 6px 0;
+  color: #697590;
+  font-size: 13px;
+}
+.speech-history-json summary {
+  cursor: pointer;
+  color: #3d5a8a;
+}
+.speech-history-json pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #f5f7fb;
+  color: #2e3954;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .speech-history-item-actions {
   display: flex;
