@@ -60,12 +60,16 @@ func matchClarificationOption(text string, options []string) string {
 	}
 	best, bestLen := "", 0
 	for _, option := range options {
-		key := normalizeClarifyText(option)
-		if key == "" {
-			continue
-		}
-		if strings.Contains(text, key) && len([]rune(key)) > bestLen {
-			best, bestLen = option, len([]rune(key))
+		for _, term := range strings.FieldsFunc(option, func(r rune) bool {
+			return r == '/' || r == '、' || r == '，' || r == ',' || r == ' ' || r == '或'
+		}) {
+			key := normalizeClarifyText(term)
+			if key == "" {
+				continue
+			}
+			if (strings.Contains(text, key) || strings.Contains(key, text)) && len([]rune(key)) > bestLen {
+				best, bestLen = strings.TrimSpace(term), len([]rune(key))
+			}
 		}
 	}
 	return best
