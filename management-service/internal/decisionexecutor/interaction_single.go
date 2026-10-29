@@ -244,6 +244,9 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	if slot := missingInteractionSlot(question); slot != "" {
 		return address + "，" + slot
 	}
+	if reply, ok := lightChatFallback(question, address); ok {
+		return reply
+	}
 	libraryFallback := ""
 	if entry, hit := w.matchQuestionLibrary(ctx, session, question); hit {
 		// Sense/exclusion entries only disambiguate; facts stay authoritative.
