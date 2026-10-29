@@ -269,9 +269,10 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
 	}
 	// A sold-out question should not be answered with shipping times: narrow the
-	// facts to the aspect the viewer actually asked about.
+	// facts to the aspect the viewer actually asked about. Skip this legacy
+	// filter when using the full fact package; it can remove broad overview facts.
 	contextName, questionContext := factbound.MatchContext(question)
-	if contextName != "" {
+	if contextName != "" && strings.TrimSpace(item.FullFacts) == "" {
 		if filtered := strings.TrimSpace(factbound.FilterFactsForContext(answerText, questionContext)); filtered != "" {
 			answerText = filtered
 		}
