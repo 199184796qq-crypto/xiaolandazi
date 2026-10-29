@@ -216,6 +216,15 @@ func (w *Worker) retrievedAnswerFacts(ctx context.Context, session model.LiveRun
 	return strings.TrimSpace(b.String())
 }
 
+func (w *Worker) boundaryOrClarify(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, class, question string, missing []string) string {
+	if !item.ClarificationAsked && !identityQuestionPattern.MatchString(question) && !upsetQuestionPattern.MatchString(question) {
+		if saveFallbackClarification(session, item, question) {
+			return "您是想问“" + strings.TrimSpace(question) + "”，对吗？"
+		}
+	}
+	return w.boundaryLine(ctx, session, class, question, missing)
+}
+
 func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
 	if w == nil || w.agent == nil {
 		return ""
@@ -265,7 +274,7 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	// When nothing in the facts supports it, answer with the boundary instead of
 	// letting the model agree.
 	if assertion := factguard.Assertions(question, answerText); len(assertion.Missing) > 0 {
-		return address + "，" + w.boundaryLine(ctx, session, "partial_value", question, assertion.Missing)
+		return address + "，" + w.boundaryOrClarify(ctx, session, item, "partial_value", question, assertion.Missing)
 	}
 	voiceCard, _ := w.welcomeVoiceCard(ctx, session)
 	system := "你是直播口播合成器。根据答案事实直接回答观众，第一句必须给出答案，不要先评价问题，也不要宣布“我这就讲/确认”。"
