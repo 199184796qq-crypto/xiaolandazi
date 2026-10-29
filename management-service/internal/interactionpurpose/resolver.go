@@ -24,6 +24,9 @@ type Result struct {
 	Purpose    string                `json:"purpose"`
 	Scope      string                `json:"scope"`
 	Angles     []contentstrategy.Row `json:"task_angles"`
+	Ambiguous  bool                  `json:"ambiguous,omitempty"`
+	Clarify    string                `json:"clarify,omitempty"`
+	Options    []string              `json:"options,omitempty"`
 	Topic      string                `json:"topic,omitempty"`
 	Source     string                `json:"source,omitempty"`
 	FactsSHA   string                `json:"facts_sha256,omitempty"`
@@ -190,9 +193,11 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	if err = contentstrategy.Decode(raw, &fields); err != nil {
 		return Result{}, err
 	}
-	allowed := map[string]bool{"question": true, "relevant": true, "confidence": true, "purpose_id": true, "purpose": true, "scope": true, "task_angles": true}
-	if len(fields) != len(allowed) {
-		return Result{}, fmt.Errorf("目的返回字段缺失或多余")
+	allowed := map[string]bool{"question": true, "relevant": true, "confidence": true, "purpose_id": true, "purpose": true, "scope": true, "task_angles": true, "ambiguous": true, "clarify": true, "options": true}
+	for _, name := range []string{"question", "relevant", "confidence", "purpose_id", "purpose", "scope", "task_angles"} {
+		if _, ok := fields[name]; !ok {
+			return Result{}, fmt.Errorf("目的返回字段缺失：%s", name)
+		}
 	}
 	for name, value := range fields {
 		if !allowed[name] || strings.TrimSpace(string(value)) == "null" {
@@ -202,6 +207,14 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 	result, decodeErr := decodeIntentResult(raw, input.Facts)
 	if decodeErr != nil {
 		return Result{}, fmt.Errorf("目的返回协议无效：%w", decodeErr)
+	}
+	if result.Ambiguous {
+		if strings.TrimSpace(result.Clarify) == "" || len(result.Options) < 2 || len(result.Options) > 3 {
+			return Result{}, fmt.Errorf("澄清问题缺少选项或澄清话术")
+		}
+		result.FactsSHA, result.Input, result.Source = factsSHA, input.Text, "model"
+		result.Topic = "CLARIFY:" + contentstrategy.SHA(input.Text)[:16]
+		return result, nil
 	}
 	if result.Confidence < 0 || result.Confidence > 1 || len([]rune(result.Purpose)) > 80 || len([]rune(result.Scope)) > 120 || len(result.Angles) > 3 {
 		return Result{}, fmt.Errorf("目的返回字段越界")

@@ -58,6 +58,7 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		Tenant int64  `json:"tenant_id"`
 		Room   int64  `json:"room_id"`
 		Plan   int64  `json:"plan_id"`
+		UserID string `json:"user_id"`
 		Text   string `json:"text"`
 	}
 	if readJSON(w, r, &input) != nil || input.Tenant <= 0 || input.Room <= 0 || input.Plan <= 0 || len([]rune(input.Text)) > 500 {
@@ -120,6 +121,13 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 			return result.Text, err
 		}
 	}
+	if strings.TrimSpace(input.UserID) != "" {
+		if pending, ok := s.takeClarification(input.Tenant, input.Room, input.UserID); ok {
+			if selected := matchClarificationOption(input.Text, pending.Options); selected != "" {
+				input.Text = pending.Original + "（澄清选择：" + selected + "）"
+			}
+		}
+	}
 	query := interactionpurpose.Input{Tenant: input.Tenant, Room: input.Room, Plan: input.Plan, Text: input.Text, Facts: intentFacts, Prompt: string(prompt)}
 	// The question library is the plan's sense table: keywords + sense + exclusions.
 	// It must not become a direct answer here.
@@ -169,6 +177,21 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 	result, err := resolver.Resolve(ctx, query)
 	if err != nil {
 		writeError(w, 502, fmt.Sprintf("purpose resolution failed: %v", err))
+		return
+	}
+	if result.Ambiguous && len(result.Options) > 0 {
+		s.saveClarification(pendingClarification{
+			TenantID: input.Tenant, RoomID: input.Room, UserID: input.UserID,
+			Original: input.Text, Clarify: result.Clarify, Options: result.Options,
+			Expires: time.Now().Add(45 * time.Second),
+		})
+		knowledge, _ := json.Marshal(result)
+		writeJSON(w, 200, map[string]any{
+			"question": result.Question, "relevant": result.Relevant, "topic": result.Topic,
+			"purpose_id": result.PurposeID, "source": result.Source,
+			"ambiguous": true, "clarify": result.Clarify, "options": result.Options,
+			"knowledge": json.RawMessage(knowledge),
+		})
 		return
 	}
 	// 未覆盖问题自动进问题库：只记分类和问题，答案留空等运营补。

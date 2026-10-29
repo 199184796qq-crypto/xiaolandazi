@@ -42,7 +42,7 @@ type HTTPPurposeResolver struct {
 }
 
 func (h HTTPPurposeResolver) Resolve(ctx context.Context, event model.RoomEvent, plan int64) (messagecaptain.PurposeResult, error) {
-	input, _ := json.Marshal(map[string]any{"tenant_id": event.TenantID, "room_id": event.RoomID, "plan_id": plan, "text": event.Content})
+	input, _ := json.Marshal(map[string]any{"tenant_id": event.TenantID, "room_id": event.RoomID, "plan_id": plan, "user_id": event.UserID, "nickname": event.Nickname, "text": event.Content})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(h.URL, "/")+"/internal/v1/interaction-purpose/resolve", bytes.NewReader(input))
 	if err != nil {
 		return messagecaptain.PurposeResult{}, err

@@ -43,4 +43,7 @@ type PurposeResult struct {
 	Topic     string          `json:"topic"`
 	PurposeID string          `json:"purpose_id,omitempty"`
 	Source    string          `json:"source"`
+	Ambiguous bool            `json:"ambiguous,omitempty"`
+	Clarify   string          `json:"clarify,omitempty"`
+	Options   []string        `json:"options,omitempty"`
 }

@@ -49,6 +49,8 @@ type Server struct {
 	agentGateway         *agentgateway.Gateway
 	purposeInternalToken string
 	purposeSemantic      *semantic.Service
+	clarifyMu            sync.Mutex
+	clarifyPending       map[string]pendingClarification
 	inbox                *workinbox.Service
 	store                *appdb.Store
 	auth                 *auth.Resolver
