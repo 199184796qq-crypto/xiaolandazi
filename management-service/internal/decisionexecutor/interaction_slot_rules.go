@@ -31,6 +31,15 @@ func hasPackagingRegion(text string) bool {
 // missingInteractionSlot returns a slot question only when the question hits a
 // known attribute and the slot that changes its answer is absent. It deliberately
 // avoids asking when the question already contains the slot.
+func specialServiceRequest(question string) bool {
+	for _, marker := range []string{"发货", "地址", "包装", "退", "换", "延期", "晚点", "备注", "改"} {
+		if strings.Contains(question, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func missingInteractionSlot(question string) string {
 	text := strings.TrimSpace(question)
 	for _, rule := range interactionSlotRules {

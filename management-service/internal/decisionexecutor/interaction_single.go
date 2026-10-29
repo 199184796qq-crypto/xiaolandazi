@@ -162,6 +162,13 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 	if question == "" {
 		return interactionNoFactBoundary
 	}
+	// A special order request can still be handled when the general facts are
+	// known: answer the confirmed part, then route the exception to support.
+	if strings.TrimSpace(item.FullFacts) != "" && specialServiceRequest(question) {
+		if lead := strings.TrimSpace(w.coveredFactsLine(ctx, session, item.FullFacts, nil)); lead != "" {
+			return lead + "。这个特殊要求可以联系客服申请，具体安排以客服确认为准。"
+		}
+	}
 	class := "no_dimension"
 	if identityQuestionPattern.MatchString(question) {
 		// No facts can name the anchor, so the model must not invent one; the
