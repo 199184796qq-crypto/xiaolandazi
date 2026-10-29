@@ -22,6 +22,9 @@ func fallbackClarificationKey(session model.LiveRuntimeSession, item decisionIte
 		user = strings.TrimSpace(item.Nicknames[0])
 	}
 	if user == "" {
+		user = strings.TrimSpace(item.resolvedAddress)
+	}
+	if user == "" {
 		return ""
 	}
 	return strings.Join([]string{
@@ -59,8 +62,16 @@ func takeFallbackClarification(session model.LiveRuntimeSession, item *decisionI
 	q := strings.TrimSpace(question)
 	affirmative := q == "是" || q == "对" || q == "嗯" || q == "是的" || q == "对的" || q == "要" || q == "可以"
 	if !affirmative {
+		negative := strings.Contains(q, "不是") || strings.Contains(q, "不对") || strings.Contains(q, "算了") || strings.Contains(q, "不要")
+		if negative || len([]rune(q)) == 0 || len([]rune(q)) > 8 {
+			fallbackClarifications.Delete(key)
+			return ""
+		}
+		// A short candidate ("半只"/"新建区") is the answer to the clarification,
+		// not a brand-new question. Keep the original question and append it.
 		fallbackClarifications.Delete(key)
-		return ""
+		item.ClarificationAsked = true
+		return pending.Original + "（澄清补充：" + q + "）"
 	}
 	fallbackClarifications.Delete(key)
 	item.ClarificationAsked = true
