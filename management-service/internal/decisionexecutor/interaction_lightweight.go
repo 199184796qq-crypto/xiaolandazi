@@ -163,7 +163,13 @@ func (w *Worker) dispatchLightInteraction(ctx context.Context, session model.Liv
 		} else {
 			strategy = w.orderStrategy
 		}
-	case "welcome_named", "welcome_batch", "warmup":
+	case "warmup":
+		// Warmup must continue the current explanation, not greet or ask an
+		// empty engagement question.
+		if w.agent != nil {
+			strategy = warmupStrategy{worker: w}
+		}
+	case "welcome_named", "welcome_batch":
 		// 欢迎：独立策略（称呼 + 介绍当前活动/优惠）。
 		// 优先走模型实现（modelWelcomeStrategy），无福利/模型失败时内部降级到骨架。
 		if w.agent != nil {
@@ -429,5 +435,3 @@ func frozenAddressingPlan(item decisionItem) speechmission.AddressingPlan {
 	}
 	return plan
 }
-
-
