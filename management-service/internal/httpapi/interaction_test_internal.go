@@ -82,9 +82,13 @@ func (s *Server) internalTestInteraction(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadGateway, "intent knowledge invalid")
 		return
 	}
+	effectiveQuestion := strings.TrimSpace(intent.Input)
+	if effectiveQuestion == "" {
+		effectiveQuestion = input.Text
+	}
 	if intent.Ambiguous && strings.TrimSpace(intent.Clarify) != "" {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"question": input.Text, "intent": intent, "reply": intent.Clarify,
+			"question": effectiveQuestion, "intent": intent, "reply": intent.Clarify,
 			"execution_mode": "clarify", "plan_name": plan.Name,
 		})
 		return
@@ -92,7 +96,7 @@ func (s *Server) internalTestInteraction(w http.ResponseWriter, r *http.Request)
 	// 2. Real answer generation using the same plan-scoped test store as the
 	// existing simulation endpoint, now carrying the real intent.
 	worker := decisionexecutor.New(&planSpeechTestStore{Store: s.store, tenantID: tenantID, roomID: roomID, plan: plan}, nil, s.speechGateway(), nil)
-	result, err := worker.SimulateInteractionWithIntent(ctx, tenantID, roomID, input.Text, "", nil, intent, input.Nickname)
+	result, err := worker.SimulateInteractionWithIntent(ctx, tenantID, roomID, effectiveQuestion, "", nil, intent, input.Nickname)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "answer generation failed: "+err.Error())
 		return
