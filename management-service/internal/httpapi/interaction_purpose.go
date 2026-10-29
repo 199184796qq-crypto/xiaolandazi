@@ -55,11 +55,12 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var input struct {
-		Tenant int64  `json:"tenant_id"`
-		Room   int64  `json:"room_id"`
-		Plan   int64  `json:"plan_id"`
-		UserID string `json:"user_id"`
-		Text   string `json:"text"`
+		Tenant   int64  `json:"tenant_id"`
+		Room     int64  `json:"room_id"`
+		Plan     int64  `json:"plan_id"`
+		UserID   string `json:"user_id"`
+		Nickname string `json:"nickname"`
+		Text     string `json:"text"`
 	}
 	if readJSON(w, r, &input) != nil || input.Tenant <= 0 || input.Room <= 0 || input.Plan <= 0 || len([]rune(input.Text)) > 500 {
 		writeError(w, 400, "invalid purpose scope or text")
