@@ -296,7 +296,8 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		"允许用地区归属、词义、选项互斥做安全推断，但不得编造价格、库存、到货时效、承诺或售后政策。" +
 		"\n如果意图是 request（要求/催/加急），先确认收到，再按事实说明能做到的安排，不要反问。" +
 		"\n如果意图是 order_statement（已下单/已拍），第一句必须先感谢对方下单，再说明下单后的服务安排（发货时间、物流、售后），不要反问，不要转推其他商品。" +
-		"\n如果意图是 chat，且 purpose 是疲惫、放松、情绪表达：先接住情绪，可以轻接商品（例如吃点鸭子、配点小酒、解解馋），但不得说消除疲劳、提神、补身体等功效，不硬推、不逼单；用户不想聊商品就停。"
+		"\n如果意图是 chat，且 purpose 是疲惫、放松、情绪表达：先接住情绪，可以轻接商品（例如吃点鸭子、配点小酒、解解馋），但不得说消除疲劳、提神、补身体等功效，不硬推、不逼单；用户不想聊商品就停。" +
+		"\n按【本题意图】里的 need 和 product_relevance 处理：empathy 先安慰，acknowledgement 先接住，information 回答事实，action 确认并说明安排，complaint 先承接再核实；product_relevance=none 不转商品，optional 可轻带，high 可自然关联。"
 	if item.ClarificationQuestion != "" {
 		system += "\n【澄清上下文】主播刚才问：" + item.ClarificationQuestion +
 			"；用户回答：" + item.ClarificationAnswer + "。这是对原问题的确认，不是新问题；请按原问题回答。"
@@ -541,9 +542,11 @@ func itemIntentConstraint(item decisionItem) string {
 		return ""
 	}
 	var intent struct {
-		IntentType string `json:"intent_type"`
-		Purpose    string `json:"purpose"`
-		Angles     []struct {
+		IntentType       string `json:"intent_type"`
+		Need             string `json:"need"`
+		ProductRelevance string `json:"product_relevance"`
+		Purpose          string `json:"purpose"`
+		Angles           []struct {
 			Angle string `json:"角度"`
 			Task  string `json:"讲述任务"`
 		} `json:"task_angles"`
@@ -554,6 +557,12 @@ func itemIntentConstraint(item decisionItem) string {
 	parts := []string{}
 	if t := strings.TrimSpace(intent.IntentType); t != "" {
 		parts = append(parts, "话语行为="+t)
+	}
+	if n := strings.TrimSpace(intent.Need); n != "" {
+		parts = append(parts, "需求="+n)
+	}
+	if r := strings.TrimSpace(intent.ProductRelevance); r != "" {
+		parts = append(parts, "商品关联="+r)
 	}
 	if p := strings.TrimSpace(intent.Purpose); p != "" {
 		parts = append(parts, p)
