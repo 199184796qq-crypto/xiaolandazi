@@ -336,6 +336,14 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 			return address + "，" + line
 		}
 		text = strings.TrimRight(text, "。！？!?；; ") + "。" + line
+		// A boundary-only answer still has a confirmed part. Put the confirmed
+		// fact first, then the specific unconfirmed point, instead of leading
+		// with a vague "说不好".
+		if strings.Contains(text, "说不好") || strings.Contains(text, "没底") || strings.Contains(text, "不确定") {
+			if lead := strings.TrimSpace(w.coveredFactsLine(ctx, session, answerText, uncoveredTexts)); lead != "" {
+				text = lead + "。" + text
+			}
+		}
 	}
 	// The boundary line is appended after the first arbitration pass; arbitrate
 	// again so a positive recommendation and the appended denial cannot coexist.
