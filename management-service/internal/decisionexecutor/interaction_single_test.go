@@ -107,7 +107,7 @@ func TestDirectQuestionWithoutFactsUsesBoundaryNotGreeting(t *testing.T) {
 	worker := &Worker{agent: agent}
 	item := decisionItem{MissionKind: "reply_question", resolvedAddress: "小陈"}
 	got := worker.generateSingleInteractionDirectAnswer(context.Background(), model.LiveRuntimeSession{}, item)
-	if !strings.Contains(got, "小陈") || !strings.Contains(got, "还没") {
+	if !strings.Contains(got, "小陈") || !strings.Contains(got, "中控") || !strings.Contains(got, "不清楚") {
 		t.Fatalf("got %q", got)
 	}
 	if strings.Contains(got, "问得好") || strings.Contains(got, "我这就") {

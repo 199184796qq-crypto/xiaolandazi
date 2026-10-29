@@ -152,7 +152,7 @@ func (w *Worker) generateSingleInteractionText(ctx context.Context, session mode
 
 // generateSingleInteractionDirectAnswer 是事实问答的一步式回答：
 // 称呼 + 答案；没有事实时直接给边界，不再先生成“问得好/我这就讲”的接住句。
-const interactionNoFactBoundary = "这个我还没确认，先不跟你说死。"
+const interactionNoFactBoundary = "这个问题我这边不清楚哈，等下我安排我们中控来回答你哈，他们会给你讲明白。"
 
 // generateNoFactBoundary 不再按行业词分类。
 // 没有事实时，让模型只针对当前这句话说“哪一点还没确认”，程序负责兜底和拦截承诺。
@@ -171,6 +171,10 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 		class = "complaint"
 	} else if locationQuestionPattern.MatchString(question) {
 		class = "location"
+	}
+	if class == "no_dimension" {
+		// The operator's fixed hand-off line, not a model paraphrase.
+		return interactionNoFactBoundary
 	}
 	return w.boundaryLine(ctx, session, class, question, nil)
 }
