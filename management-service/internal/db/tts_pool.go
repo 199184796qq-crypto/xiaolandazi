@@ -48,6 +48,9 @@ func (s *Store) MigrateTTSPool(ctx context.Context, apiKey string) error {
 			return fmt.Errorf("创建TTS账户池: %w", err)
 		}
 	}
+	if err := s.upgradeTTSPoolSchema(ctx); err != nil {
+		return fmt.Errorf("升级TTS账户池: %w", err)
+	}
 	fingerprint := "current-environment"
 	if key := strings.TrimSpace(apiKey); key != "" {
 		fingerprint = modelPoolFingerprint(key)
@@ -61,6 +64,63 @@ func (s *Store) MigrateTTSPool(ctx context.Context, apiKey string) error {
 	}
 	_, err = s.db.ExecContext(ctx, `UPDATE mgmt_tts_pool_accounts SET configured=?,key_fingerprint=? WHERE id=?`, strings.TrimSpace(apiKey) != "", fingerprint, ttsscheduler.CurrentAccountID)
 	return err
+}
+
+// Older pool previews stored only the current environment account. Add fields
+// in place: pauses, quota history, revisions and existing job receipts survive.
+func (s *Store) upgradeTTSPoolSchema(ctx context.Context) error {
+	for _, field := range []struct{ table, name, definition string }{
+		{"mgmt_tts_pool_accounts", "account_uid", "VARCHAR(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''"},
+		{"mgmt_tts_pool_accounts", "sealed_key", "BLOB NULL"},
+		{"mgmt_tts_pool_accounts", "key_fingerprint", "CHAR(64) NOT NULL DEFAULT ''"},
+		{"mgmt_tts_pool_accounts", "voices_json", "JSON NULL"},
+		{"mgmt_tts_pool_jobs", "provider", "VARCHAR(32) NOT NULL DEFAULT 'aliyun'"},
+		{"mgmt_tts_pool_jobs", "voice_id", "VARCHAR(200) NOT NULL DEFAULT ''"},
+		{"mgmt_tts_pool_jobs", "heartbeat_at", "DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"},
+	} {
+		exists, err := s.columnExists(ctx, field.table, field.name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := s.db.ExecContext(ctx, "ALTER TABLE "+field.table+" ADD COLUMN "+field.name+" "+field.definition); err != nil {
+				return err
+			}
+		}
+	}
+	for _, statement := range []string{
+		`UPDATE mgmt_tts_pool_accounts SET account_uid=CASE WHEN id='current-aliyun-tts' THEN 'current' ELSE CONCAT('legacy:',id) END WHERE account_uid=''`,
+		`UPDATE mgmt_tts_pool_accounts SET key_fingerprint=SHA2(CONCAT('legacy:',id),256) WHERE key_fingerprint=''`,
+		`UPDATE mgmt_tts_pool_accounts SET voices_json=JSON_OBJECT() WHERE voices_json IS NULL`,
+	} {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	var nullable string
+	if err := s.db.QueryRowContext(ctx, `SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='mgmt_tts_pool_accounts' AND COLUMN_NAME='voices_json'`).Scan(&nullable); err != nil {
+		return err
+	}
+	if nullable == "YES" {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE mgmt_tts_pool_accounts MODIFY COLUMN voices_json JSON NOT NULL`); err != nil {
+			return err
+		}
+	}
+	for _, index := range []struct{ name, definition string }{
+		{"uk_tts_account_uid", "UNIQUE KEY uk_tts_account_uid(account_uid)"},
+		{"uk_tts_key", "UNIQUE KEY uk_tts_key(key_fingerprint)"},
+	} {
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='mgmt_tts_pool_accounts' AND INDEX_NAME=?`, index.name).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			if _, err := s.db.ExecContext(ctx, "ALTER TABLE mgmt_tts_pool_accounts ADD "+index.definition); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 func lockTTSPool(ctx context.Context, tx *sql.Tx) (time.Time, error) {
 	var id int

@@ -40,6 +40,54 @@ func TestTTSPoolAccountValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTTSPoolMySQLUpgradeLegacySchema(t *testing.T) {
+	t.Setenv("MODEL_CONFIG_ENCRYPTION_KEY", strings.Repeat("fixture-key-", 4))
+	s := salesIsolatedMySQL(t)
+	ctx := t.Context()
+	for _, statement := range []string{
+		`CREATE TABLE mgmt_tts_pool_accounts(id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,name VARCHAR(80) NOT NULL,provider VARCHAR(32) NOT NULL,credential_source VARCHAR(32) NOT NULL,configured BOOLEAN NOT NULL,enabled BOOLEAN NOT NULL,rpm INT NOT NULL,rps INT NOT NULL,revision BIGINT UNSIGNED NOT NULL,updated_by_user_id BIGINT NOT NULL,updated_at DATETIME(6) NOT NULL)`,
+		`CREATE TABLE mgmt_tts_pool_jobs(seq BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,account_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',model VARCHAR(160) NOT NULL,tenant_id BIGINT NOT NULL DEFAULT 0,room_id BIGINT NOT NULL DEFAULT 0,session_id BIGINT NOT NULL DEFAULT 0,status VARCHAR(16) NOT NULL,queued_at DATETIME(6) NOT NULL,expires_at DATETIME(6) NOT NULL,admitted_at DATETIME(6) NULL,finished_at DATETIME(6) NULL,UNIQUE KEY uk_tts_pool_job(id),KEY idx_tts_pool_fifo(status,seq),KEY idx_tts_pool_window(account_id,admitted_at),KEY idx_tts_pool_expiry(expires_at))`,
+		`INSERT INTO mgmt_tts_pool_accounts VALUES('current-aliyun-tts','旧名称','aliyun','current',TRUE,FALSE,120,2,7,9,'2026-10-29 12:00:00.123456')`,
+		`INSERT INTO mgmt_tts_pool_jobs(id,account_id,model,status,queued_at,expires_at,admitted_at,finished_at) VALUES('legacy-receipt','current-aliyun-tts','qwen-audio-3.1-tts-flash','completed','2026-10-29 12:00:00.123456','2026-10-29 12:02:00.123456','2026-10-29 12:00:01.123456','2026-10-29 12:00:02.123456')`,
+	} {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for pass := 0; pass < 2; pass++ {
+		if err := s.MigrateTTSPool(ctx, "current-fixture-key"); err != nil {
+			t.Fatal(err)
+		}
+		var name, uid, fingerprint, status, model, provider, voice string
+		var enabled bool
+		var rpm, rps, revision, actor, accounts, jobs int
+		if err := s.db.QueryRowContext(ctx, `SELECT name,account_uid,key_fingerprint,enabled,rpm,rps,revision,updated_by_user_id FROM mgmt_tts_pool_accounts WHERE id='current-aliyun-tts'`).Scan(&name, &uid, &fingerprint, &enabled, &rpm, &rps, &revision, &actor); err != nil {
+			t.Fatal(err)
+		}
+		if name != "旧名称" || uid != "current" || fingerprint != modelPoolFingerprint("current-fixture-key") || enabled || rpm != 120 || rps != 2 || revision != 7 || actor != 9 {
+			t.Fatal("migration overwrote existing account state")
+		}
+		if err := s.db.QueryRowContext(ctx, `SELECT status,model,provider,voice_id FROM mgmt_tts_pool_jobs WHERE id='legacy-receipt' AND queued_at='2026-10-29 12:00:00.123456' AND admitted_at='2026-10-29 12:00:01.123456' AND finished_at='2026-10-29 12:00:02.123456'`).Scan(&status, &model, &provider, &voice); err != nil {
+			t.Fatal("legacy receipt changed", err)
+		}
+		if status != "completed" || model != "qwen-audio-3.1-tts-flash" || provider != "aliyun" || voice != "" {
+			t.Fatal("legacy quota history was changed")
+		}
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mgmt_tts_pool_accounts`).Scan(&accounts); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mgmt_tts_pool_jobs`).Scan(&jobs); err != nil {
+			t.Fatal(err)
+		}
+		if accounts != 1 || jobs != 1 {
+			t.Fatal("migration duplicated account or deleted history")
+		}
+		if _, err := s.TTSPoolSnapshot(ctx); err != nil {
+			t.Fatal("upgraded schema cannot serve account pool", err)
+		}
+	}
+}
 func ttsPoolFixture(t *testing.T) (*Store, string) {
 	t.Helper()
 	t.Setenv("MODEL_CONFIG_ENCRYPTION_KEY", strings.Repeat("fixture-key-", 4))
