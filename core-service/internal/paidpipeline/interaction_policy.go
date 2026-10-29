@@ -287,6 +287,10 @@ func (p *Processor) flushWarmups(now time.Time) {
 		if heat != "COLD" && heat != "WARM" {
 			continue
 		}
+		// Do not warm up an empty room; there is nobody to hear it.
+		if view, viewErr := p.brain.Snapshot(r.RoomID); viewErr != nil || view.Intelligence.OnlineCount <= 0 {
+			continue
+		}
 		p.scheduleMu.Lock()
 		last := p.activity[r.RoomID]
 		p.scheduleMu.Unlock()
@@ -294,8 +298,8 @@ func (p *Processor) flushWarmups(now time.Time) {
 			last = *r.WorkingSince
 		}
 		wait := time.Duration(e.MaxWaitSeconds) * time.Second
-		if wait < 30*time.Second {
-			wait = 30 * time.Second
+		if wait < 45*time.Second {
+			wait = 45 * time.Second
 		}
 		if last.IsZero() || now.Sub(last) < wait {
 			continue
