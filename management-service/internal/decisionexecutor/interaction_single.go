@@ -313,6 +313,9 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		}
 		text = strings.TrimRight(text, "。！？!?；; ") + "。" + line
 	}
+	// The boundary line is appended after the first arbitration pass; arbitrate
+	// again so a positive recommendation and the appended denial cannot coexist.
+	text = arbitrateAnswerClaims(text, question, answerText)
 	if answerStartsAsQuestionFragment(text, question) {
 		// 复述了观众原话的残片（如「个107的」），改用边界句，避免播半句。
 		text = ""
