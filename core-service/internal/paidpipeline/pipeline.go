@@ -28,7 +28,7 @@ type Processor struct {
 	schedules      map[int64]sessionSchedule
 	completedSeen  map[int64]map[string]bool
 	activity       map[int64]time.Time
-	timeReports    map[int64]time.Time
+	timeReportDue  map[int64]time.Time
 	contextReader  func(int64) (string, string)
 	tenantResolver func(int64) (int64, bool)
 	warmupEligible func(int64) bool
@@ -58,7 +58,7 @@ func New(runtime *agentwork.Registry, decisions *agentdecision.Queue, policies .
 	p := &Processor{
 		cutMessages: cutMessageState{intents: make(map[int64]*cutIntent), samples: make(map[int64][]messagecaptain.Preparation)},
 		schedules:   make(map[int64]sessionSchedule), completedSeen: make(map[int64]map[string]bool), activity: make(map[int64]time.Time),
-		timeReports:           make(map[int64]time.Time),
+		timeReportDue:         make(map[int64]time.Time),
 		runtime:               runtime,
 		decisions:             decisions,
 		stageAt:               make(map[int64]time.Time),

@@ -9,6 +9,7 @@ import (
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/strategycenter"
 	"log"
+	"math/rand"
 	"strings"
 	"time"
 )
@@ -244,8 +245,12 @@ func (p *Processor) syncPlayed(roomID int64, now time.Time) {
 	}
 }
 
-// flushTimeReports queues a natural time-check roughly every two hours. It is
-// time-driven, not entry-driven, and never reports a bare clock reading.
+func nextTimeReportDelay() time.Duration {
+	// 2 hours + a random 0..120 minutes, independently chosen each round.
+	return 2*time.Hour + time.Duration(rand.Intn(121))*time.Minute
+}
+
+// flushTimeReports queues a natural time-check after a randomized 2h–4h gap.
 func (p *Processor) flushTimeReports(now time.Time) {
 	if p.brain == nil {
 		return
@@ -261,18 +266,17 @@ func (p *Processor) flushTimeReports(now time.Time) {
 			continue
 		}
 		p.scheduleMu.Lock()
-		last := p.timeReports[r.RoomID]
-		if last.IsZero() {
+		due := p.timeReportDue[r.RoomID]
+		if due.IsZero() {
+			base := now
 			if r.WorkingSince != nil {
-				last = *r.WorkingSince
-			} else {
-				last = now
+				base = *r.WorkingSince
 			}
-			p.timeReports[r.RoomID] = last
+			p.timeReportDue[r.RoomID] = base.Add(nextTimeReportDelay())
 			p.scheduleMu.Unlock()
 			continue
 		}
-		if now.Sub(last) < 2*time.Hour {
+		if now.Before(due) {
 			p.scheduleMu.Unlock()
 			continue
 		}
@@ -309,7 +313,7 @@ func (p *Processor) flushTimeReports(now time.Time) {
 		if p.decorateCandidate(r.RoomID, prefs.TenantID, &c) {
 			p.decisions.Enqueue(r.RoomID, c)
 			p.scheduleMu.Lock()
-			p.timeReports[r.RoomID] = now
+			p.timeReportDue[r.RoomID] = now.Add(nextTimeReportDelay())
 			p.scheduleMu.Unlock()
 		}
 	}
