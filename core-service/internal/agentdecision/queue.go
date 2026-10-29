@@ -1084,6 +1084,9 @@ func normalizePriority(input Candidate) int {
 	if priority <= 0 {
 		priority = 30
 	}
+	if strings.HasPrefix(input.Topic, "CLARIFY") {
+		return QuickAnswerPriority + 10
+	}
 	if strings.HasPrefix(input.Topic, "FAMILY:售后") {
 		priority = maxInt(priority, 70)
 	}

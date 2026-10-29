@@ -177,7 +177,21 @@ func (p *Processor) enqueueDirectEvent(event model.RoomEvent, signal basepipelin
 		}
 		topic = "SIGNAL:ORDER:" + source
 	}
-	c := agentdecision.Candidate{PurposeID: signal.PurposeID, PurposeKnowledge: signal.PurposeKnowledge, Source: agentdecision.SourceAgent, Topic: topic, Title: title, Question: signal.Content, Summary: "事件已筛选，进入现有队列，由队列管理播放顺序", MissionKind: kind, MissionEventCount: 1, Priority: 30, EventID: event.ID, UserID: event.UserID, Nicknames: []string{event.Nickname}, InteractionDecision: decision, OrderSource: source}
+	priority := 30
+	executionMode, fixedText := "", ""
+	manualAction := ""
+	if signal.Clarification && strings.TrimSpace(signal.ClarifyText) != "" {
+		priority = 130
+		executionMode = "verbatim"
+		fixedText = strings.TrimSpace(signal.ClarifyText)
+		manualAction = "quick"
+		topic = fmt.Sprintf("CLARIFY:%d", event.ID)
+	} else if signal.ClarificationReply {
+		priority = 130
+		manualAction = "quick"
+		topic = fmt.Sprintf("CLARIFY_REPLY:%d", event.ID)
+	}
+	c := agentdecision.Candidate{PurposeID: signal.PurposeID, PurposeKnowledge: signal.PurposeKnowledge, Source: agentdecision.SourceAgent, Topic: topic, Title: title, Question: signal.Content, Summary: "事件已筛选，进入现有队列，由队列管理播放顺序", MissionKind: kind, MissionEventCount: 1, Priority: priority, EventID: event.ID, UserID: event.UserID, Nicknames: []string{event.Nickname}, InteractionDecision: decision, OrderSource: source, ExecutionMode: executionMode, FixedText: fixedText, ManualAction: manualAction}
 	if kind == "complaint" {
 		c.Priority = 90
 	}

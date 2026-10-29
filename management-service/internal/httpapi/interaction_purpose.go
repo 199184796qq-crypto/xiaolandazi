@@ -121,10 +121,12 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 			return result.Text, err
 		}
 	}
+	clarificationReply := false
 	if strings.TrimSpace(input.UserID) != "" {
 		if pending, ok := s.takeClarification(input.Tenant, input.Room, input.UserID); ok {
 			if selected := matchClarificationOption(input.Text, pending.Options); selected != "" {
 				input.Text = pending.Original + "（澄清选择：" + selected + "）"
+				clarificationReply = true
 			}
 		}
 	}
@@ -204,7 +206,7 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	knowledge, _ := json.Marshal(result)
-	writeJSON(w, 200, map[string]any{"question": result.Question, "relevant": result.Relevant, "topic": result.Topic, "purpose_id": result.PurposeID, "source": result.Source, "knowledge": json.RawMessage(knowledge)})
+	writeJSON(w, 200, map[string]any{"question": result.Question, "relevant": result.Relevant, "topic": result.Topic, "purpose_id": result.PurposeID, "source": result.Source, "clarification_reply": clarificationReply, "knowledge": json.RawMessage(knowledge)})
 }
 
 // refineGapQuestion turns an intent result into a short, reusable question.

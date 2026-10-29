@@ -173,7 +173,7 @@ func (p *Processor) acceptPurpose(msg messagecaptain.Message) error {
 	if !p.InteractionsAllowed(msg.RoomID, result.Event.TenantID) {
 		return nil
 	}
-	signal := basepipeline.Signal{RoomID: msg.RoomID, EventID: result.Event.ID, Content: result.Event.Content, Topic: result.Topic, IsQuestion: result.Question, PurposeID: result.PurposeID, PurposeKnowledge: result.Knowledge}
+	signal := basepipeline.Signal{RoomID: msg.RoomID, EventID: result.Event.ID, Content: result.Event.Content, Topic: result.Topic, IsQuestion: result.Question, PurposeID: result.PurposeID, PurposeKnowledge: result.Knowledge, Clarification: result.Ambiguous, ClarifyText: result.Clarify, ClarificationReply: result.ClarificationReply}
 	if result.Question {
 		p.enqueueDirectEvent(result.Event, signal, "reply_question", "回答问题", p.clock())
 	} else if result.Relevant {

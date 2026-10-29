@@ -35,15 +35,16 @@ type Preparation struct {
 }
 
 type PurposeResult struct {
-	Knowledge json.RawMessage `json:"knowledge,omitempty"`
-	Event     model.RoomEvent `json:"event"`
-	Epoch     string          `json:"epoch"`
-	Question  bool            `json:"question"`
-	Relevant  bool            `json:"relevant"`
-	Topic     string          `json:"topic"`
-	PurposeID string          `json:"purpose_id,omitempty"`
-	Source    string          `json:"source"`
-	Ambiguous bool            `json:"ambiguous,omitempty"`
-	Clarify   string          `json:"clarify,omitempty"`
-	Options   []string        `json:"options,omitempty"`
+	Knowledge          json.RawMessage `json:"knowledge,omitempty"`
+	Event              model.RoomEvent `json:"event"`
+	Epoch              string          `json:"epoch"`
+	Question           bool            `json:"question"`
+	Relevant           bool            `json:"relevant"`
+	Topic              string          `json:"topic"`
+	PurposeID          string          `json:"purpose_id,omitempty"`
+	Source             string          `json:"source"`
+	Ambiguous          bool            `json:"ambiguous,omitempty"`
+	Clarify            string          `json:"clarify,omitempty"`
+	Options            []string        `json:"options,omitempty"`
+	ClarificationReply bool            `json:"clarification_reply,omitempty"`
 }
