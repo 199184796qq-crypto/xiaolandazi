@@ -334,14 +334,6 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 			answerText = filtered
 		}
 	}
-	// The program owns the three-state fact check; the model only phrases it.
-	bound := factbound.Evaluate(question, answerText, true)
-	// A yes/no question can presume something the facts never say ("是当天发货吗").
-	// When nothing in the facts supports it, answer with the boundary instead of
-	// letting the model agree.
-	if assertion := factguard.Assertions(question, answerText); len(assertion.Missing) > 0 {
-		return address + "，" + w.boundaryOrClarify(ctx, session, item, "partial_value", question, assertion.Missing)
-	}
 	voiceCard, _ := w.welcomeVoiceCard(ctx, session)
 	system := "你是直播口播合成器。根据答案事实直接回答观众，第一句必须给出答案，不要先评价问题，也不要宣布“我这就讲/确认”。"
 	system += "\n" + beijingTimeLine()
@@ -378,51 +370,16 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		"\n【表达】第一句先直接回答对方问的点；不要先夸问题，不要幽默、调侃、夸张比喻或自嘲，用大白话口语说清楚。" +
 		"\n【不提】不要用“新鲜、品质有保障”等话绕开未知，不暗示已经核实，不假装查过，不承诺稍后回复；不要输出内部标题、策略名称、字段名或分析过程。" +
 		"\n【改写】答案用口语自然表达，通常一两句；事实里的价格、规格、时效不得改动；回答到位就结束，不主动转商品、问需求、催下单。"
-	uncoveredTexts := make([]string, 0, len(bound.Uncovered))
-	for _, value := range bound.Uncovered {
-		uncoveredTexts = append(uncoveredTexts, value.Text)
-	}
-	if instruction := factbound.BoundaryInstruction(bound.Uncovered); instruction != "" {
-		// Partial evidence is not a reason to refuse. Answer the confirmed part,
-		// then use the generic service path for the unconfirmed part.
-		system += "\n【部分确认】先回答已确认事实；对未确认部分（" + strings.Join(uncoveredTexts, "、") + "）可以给出通用处理建议（联系客服申请/核实），但不得说已经批准，具体结果以客服确认为准。"
-	}
 	user := "观众问题：" + question + recentContextLine(item) + "\n【当前答案事实】\n" + factbound.SpeakableFacts(answerText) +
 		"\n\n请直接输出一句自然、简短、可播出的回答（称呼 + 答案，不要再称呼第二次）。"
 	text := w.completeWelcome(ctx, session, "interaction_single_direct_answer", system, user, 100)
 	text = stripAwkwardAnswerLead(strings.TrimSpace(text))
-	// Remove sentences that invent numbers, promises or timings.
+	// Post-answer P0/claim audit only; do not gate on word coverage before or
+	// after the model.
 	text, _ = factguard.Audit(text, answerText)
-	text = arbitrateAnswerClaims(text, question, answerText)
 	if text == "" || text == address || text == address+"。" {
 		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
 	}
-	if bound.NeedsBoundary() && !answerDeniesUncovered(text, uncoveredTexts) && !answerHasServicePath(text) {
-		// The covered part must not confirm the missing scope; the separately
-		// generated line below is the only place it is named.
-		text = softenTerms(text, uncoveredTexts)
-		text = stripHedges(text)
-		if strings.TrimSpace(text) == "" {
-			// The whole covered sentence was hedging; ask once for facts only.
-			text = w.coveredFactsLine(ctx, session, answerText, uncoveredTexts)
-		}
-		line := w.boundaryLine(ctx, session, "partial_value", question, uncoveredTexts)
-		if strings.TrimSpace(text) == "" {
-			return address + "，" + line
-		}
-		text = strings.TrimRight(text, "。！？!?；; ") + "。" + line
-		// A boundary-only answer still has a confirmed part. Put the confirmed
-		// fact first, then the specific unconfirmed point, instead of leading
-		// with a vague "说不好".
-		if strings.Contains(text, "说不好") || strings.Contains(text, "没底") || strings.Contains(text, "不确定") {
-			if lead := strings.TrimSpace(w.coveredFactsLine(ctx, session, answerText, uncoveredTexts)); lead != "" {
-				text = lead + "。" + text
-			}
-		}
-	}
-	// The boundary line is appended after the first arbitration pass; arbitrate
-	// again so a positive recommendation and the appended denial cannot coexist.
-	text = arbitrateAnswerClaims(text, question, answerText)
 	if answerStartsAsQuestionFragment(text, question) {
 		// 复述了观众原话的残片（如「个107的」），改用边界句，避免播半句。
 		text = ""
