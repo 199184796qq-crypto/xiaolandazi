@@ -702,6 +702,27 @@ func validInteractionSwitchLead(currentMS, switchMS int) bool {
 	return leadMS > 0 && leadMS <= maxInteractionSwitchLeadMS
 }
 
+// nextPauseCut returns the first timeline segment end after the current point
+// that closes a spoken clause/sentence. Quick mode may cut at commas, but never
+// in the middle of a phrase when no punctuation boundary exists.
+func nextPauseCut(program audioout.RoomProgramSnapshot, currentMS int) (int, bool) {
+	for _, segment := range program.Timeline {
+		if segment.EndMS <= currentMS {
+			continue
+		}
+		text := strings.TrimSpace(segment.Text)
+		if text == "" {
+			continue
+		}
+		runes := []rune(text)
+		switch runes[len(runes)-1] {
+		case '，', ',', '。', '！', '!', '？', '?', '；', ';', '：', ':':
+			return segment.EndMS, true
+		}
+	}
+	return 0, false
+}
+
 // Resume dedup may advance to another sentence or to the next track. It must
 // never move the point at which the current mainline is actually interrupted.
 func roomInteractionCutOffsets(cutMS int) (switchAtMS, resumeOffsetMS *int) {
@@ -1157,12 +1178,13 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			}
 		}
 		if input.Action == "quick" {
-			// Low-flow/manual quick answers cut the mainline now; no semantic
-			// safe point and no forward wait.
-			immediate := currentMS
-			switchAtMS = &immediate
-			if resumeOffsetMS != nil {
-				resumeOffsetMS = &immediate
+			// Low-flow/manual quick answers cut at the next spoken pause
+			// (comma or sentence end), never in the middle of a phrase.
+			if cutMS, ok := nextPauseCut(program, currentMS); ok {
+				switchAtMS = &cutMS
+				if resumeOffsetMS != nil {
+					resumeOffsetMS = &cutMS
+				}
 			}
 		}
 		if switchAtMS != nil {
