@@ -241,6 +241,9 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		item.SampleQuestions = []string{original}
 		question = original
 	}
+	if slot := missingInteractionSlot(question); slot != "" {
+		return address + "，" + slot
+	}
 	libraryFallback := ""
 	if entry, hit := w.matchQuestionLibrary(ctx, session, question); hit {
 		// Sense/exclusion entries only disambiguate; facts stay authoritative.
