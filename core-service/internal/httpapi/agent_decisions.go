@@ -198,7 +198,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "mainline_unavailable", "item": queue[0]})
 		return
 	}
-	lowFlow := queue[0].InteractionDecision.UniqueChatters30s > 0 && queue[0].InteractionDecision.UniqueChatters30s <= 2 && queue[0].AudioPrepared
+	lowFlow := queue[0].InteractionDecision.UniqueChatters30s <= 2 && queue[0].AudioPrepared
 	// Do not start an ordinary interaction on the last few seconds of mainline.
 	// The old path could start a 13s answer while only 5s of mainline remained,
 	// then exhaust the queue and strand the engine in interrupt.
@@ -239,8 +239,10 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 	}
 	item, claimed := s.agentDecisions.ClaimNext(roomID)
 	if lowFlow && item != nil {
-		// Low-flow rooms do not wait for a semantic safe point once the answer
-		// audio is ready; the current sentence may be cut and skipped.
+		// Low-flow rooms (including an empty room with only a greeting event) do
+		// not wait for a semantic safe point once the answer audio is ready; the
+		// current sentence may be cut and skipped. This applies to both answers
+		// and named/batch greetings so a new viewer hears a reply immediately.
 		item.ManualAction = "quick"
 	}
 	s.refreshClaimInteractionContext(roomID, item)
