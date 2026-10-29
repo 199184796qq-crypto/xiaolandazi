@@ -170,9 +170,7 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 	}
 	if facts != "" && specialServiceRequest(question) {
 		item.FullFacts = facts
-		if lead := strings.TrimSpace(w.coveredFactsLine(ctx, session, facts, nil)); lead != "" {
-			return lead + "。这个特殊要求可以联系客服申请，具体安排以客服确认为准。"
-		}
+		return w.partialAnswerLine(ctx, session, item, question, facts, nil)
 	}
 	class := "no_dimension"
 	if identityQuestionPattern.MatchString(question) {
@@ -212,7 +210,7 @@ func (w *Worker) retrievedAnswerFacts(ctx context.Context, session model.LiveRun
 	for _, fact := range contentstrategy.Facts(facts) {
 		all = append(all, factselect.Fact{ID: fact.ID, Text: fact.Text})
 	}
-	picked := factselect.Select(question, nil, nil, all, 3)
+	picked := factselect.Select(question, nil, nil, all, 2)
 	var b strings.Builder
 	for _, fact := range picked {
 		b.WriteString(fact.ID)
@@ -224,6 +222,13 @@ func (w *Worker) retrievedAnswerFacts(ctx context.Context, session model.LiveRun
 }
 
 func (w *Worker) boundaryOrClarify(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, class, question string, missing []string) string {
+	facts := strings.TrimSpace(w.retrievedAnswerFacts(ctx, session, question))
+	if facts == "" {
+		facts = strings.TrimSpace(item.FullFacts)
+	}
+	if facts != "" && specialServiceRequest(question) {
+		return w.partialAnswerLine(ctx, session, item, question, facts, missing)
+	}
 	return w.boundaryLine(ctx, session, class, question, missing)
 }
 

@@ -2,6 +2,7 @@ package decisionexecutor
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"livecompanion/management/internal/factbound"
@@ -51,7 +52,8 @@ func (w *Worker) recentBoundaryLines(roomID int64) []string {
 	return append([]string(nil), w.recentBoundary[roomID]...)
 }
 
-func (w *Worker) rememberBoundaryLine(roomID int64, line string) {	if strings.TrimSpace(line) == "" {
+func (w *Worker) rememberBoundaryLine(roomID int64, line string) {
+	if strings.TrimSpace(line) == "" {
 		return
 	}
 	w.addressMu.Lock()
@@ -64,6 +66,34 @@ func (w *Worker) rememberBoundaryLine(roomID int64, line string) {	if strings.Tr
 		lines = lines[len(lines)-boundaryRecentLimit:]
 	}
 	w.recentBoundary[roomID] = lines
+}
+
+// partialAnswerLine answers the viewer's actual question with the confirmed
+// facts, then gives a generic next step for the unconfirmed part. The model
+// must see the question and intent; facts alone can only produce a summary.
+func (w *Worker) partialAnswerLine(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, question, facts string, missing []string) string {
+	purpose := ""
+	var intent struct {
+		Purpose string `json:"purpose"`
+	}
+	if json.Unmarshal(item.PurposeKnowledge, &intent) == nil {
+		purpose = strings.TrimSpace(intent.Purpose)
+	}
+	system := "你是直播口播合成器。观众的问题已经理解，请直接回答。" +
+		"\n先回答已确认事实；对未确认部分，可以给通用处理建议（例如联系客服申请或核实），但不得说已经批准；具体结果以客服/实际确认为准。" +
+		"\n不要罗列无关事实，不要反问，不要编造退款、赔偿、免费服务或保证日期。" +
+		"\n只输出一句自然、简短、可播出的回答。"
+	user := "观众问题：" + question
+	if purpose != "" {
+		user += "\n意图：" + purpose
+	}
+	user += "\n已确认事实：\n" + factbound.SpeakableFacts(facts)
+	if len(missing) > 0 {
+		user += "\n未确认：" + strings.Join(missing, "、")
+	}
+	user += "\n请先答已确认部分，再针对未确认部分给下一步，并说明需要确认。"
+	text := strings.TrimSpace(w.completeWelcome(ctx, session, "interaction_partial_answer", system, user, 140))
+	return strings.TrimSpace(stripAwkwardAnswerLead(text))
 }
 
 // coveredFactsLine is the second try when the covered answer consisted only of

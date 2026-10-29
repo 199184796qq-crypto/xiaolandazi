@@ -40,6 +40,19 @@ func specialServiceRequest(question string) bool {
 	return false
 }
 
+func filterLinesContaining(text string, markers ...string) string {
+	var kept []string
+	for _, line := range strings.Split(text, "\n") {
+		for _, marker := range markers {
+			if strings.Contains(line, marker) {
+				kept = append(kept, line)
+				break
+			}
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
 func missingInteractionSlot(question string) string {
 	text := strings.TrimSpace(question)
 	for _, rule := range interactionSlotRules {
