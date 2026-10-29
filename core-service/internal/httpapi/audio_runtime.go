@@ -1157,17 +1157,16 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			}
 		}
 		if input.Action == "quick" {
-			// Low-flow/manual quick answers must cut now, not at the next
-			// semantic safe point. Without this the answer can wait tens of
-			// seconds while the mainline continues.
-			immediate := currentMS + 200
+			// Low-flow/manual quick answers cut the mainline now; no semantic
+			// safe point and no forward wait.
+			immediate := currentMS
 			switchAtMS = &immediate
 			if resumeOffsetMS != nil {
 				resumeOffsetMS = &immediate
 			}
 		}
 		if switchAtMS != nil {
-			if !validInteractionSwitchLead(currentMS, *switchAtMS) {
+			if input.Action != "quick" && !validInteractionSwitchLead(currentMS, *switchAtMS) {
 				log.Printf(
 					"core audio interaction rejected unsafe switch lead room=%d action=%s current_ms=%d switch_ms=%d lead_ms=%d",
 					roomID, input.Action, currentMS, *switchAtMS, *switchAtMS-currentMS,
