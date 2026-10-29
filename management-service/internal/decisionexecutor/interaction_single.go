@@ -333,6 +333,12 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	if !strings.HasPrefix(text, address) {
 		text = address + "，" + text
 	}
+	if !item.ClarificationAsked && !identityQuestionPattern.MatchString(question) && !upsetQuestionPattern.MatchString(question) &&
+		answerNegativePattern.MatchString(text) && !answerPositivePattern.MatchString(text) {
+		if saveFallbackClarification(session, item, question) {
+			return address + "，您是想问“" + question + "”，对吗？"
+		}
+	}
 	return text
 }
 
