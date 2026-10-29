@@ -50,6 +50,8 @@ func InteractionScene(kind string) string {
 		return "order"
 	case "welcome_named", "welcome_batch":
 		return "welcome"
+	case "warmup", "time_report":
+		return "warmup"
 	case "reply_like", "reply_follow":
 		return "like_follow"
 	case "reply_chat":

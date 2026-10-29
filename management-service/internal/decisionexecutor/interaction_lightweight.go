@@ -38,7 +38,7 @@ func classifyInteraction(item decisionItem) interactionTier {
 		return tierFactAnswer
 	case "reply_follow", "reply_like",
 		"welcome_named", "welcome_batch",
-		"conversion_signal", "warmup":
+		"conversion_signal", "warmup", "time_report":
 		// 礼仪性回应：接住 + 给情绪，不需要事实。
 		return tierAcknowledge
 	case "reply_chat":
@@ -169,6 +169,8 @@ func (w *Worker) dispatchLightInteraction(ctx context.Context, session model.Liv
 		if w.agent != nil {
 			strategy = warmupStrategy{worker: w}
 		}
+	case "time_report":
+		strategy = timeReportStrategy{worker: w}
 	case "welcome_named", "welcome_batch":
 		// 欢迎：独立策略（称呼 + 介绍当前活动/优惠）。
 		// 优先走模型实现（modelWelcomeStrategy），无福利/模型失败时内部降级到骨架。

@@ -118,6 +118,7 @@ func (p *Processor) Run(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			p.flushWarmups(now.UTC())
+			p.flushTimeReports(now.UTC())
 			p.FlushInteractionWindows(now.UTC())
 			p.FlushDebtBacklog(now.UTC())
 		}

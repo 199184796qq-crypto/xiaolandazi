@@ -243,6 +243,78 @@ func (p *Processor) syncPlayed(roomID int64, now time.Time) {
 		p.recordInteractionBudgetUse(roomID, p.interactionSignals(roomID).Heat, r.Scene == "complaint" || r.Scene == "product_question" || r.Scene == "order", r.AnsweredAt)
 	}
 }
+
+// flushTimeReports queues a natural time-check roughly every two hours. It is
+// time-driven, not entry-driven, and never reports a bare clock reading.
+func (p *Processor) flushTimeReports(now time.Time) {
+	if p.brain == nil {
+		return
+	}
+	for _, r := range p.runtime.Snapshots() {
+		if r.State != agentwork.StateWorking || r.Mode != agentwork.ModeAnchor || r.PlanID <= 0 {
+			continue
+		}
+		if view, err := p.brain.Snapshot(r.RoomID); err != nil || view.Intelligence.OnlineCount <= 0 {
+			continue
+		}
+		if len(p.decisions.Snapshot(r.RoomID).Queue) > 0 {
+			continue
+		}
+		p.scheduleMu.Lock()
+		last := p.timeReports[r.RoomID]
+		if last.IsZero() {
+			if r.WorkingSince != nil {
+				last = *r.WorkingSince
+			} else {
+				last = now
+			}
+			p.timeReports[r.RoomID] = last
+			p.scheduleMu.Unlock()
+			continue
+		}
+		if now.Sub(last) < 2*time.Hour {
+			p.scheduleMu.Unlock()
+			continue
+		}
+		p.scheduleMu.Unlock()
+		prefs := strategycenter.RoomInteractionPreferences{}
+		if p.policies != nil {
+			prefs = p.policies.RoomInteractionPreferences(r.RoomID)
+		}
+		if prefs.TenantID <= 0 {
+			p.scheduleMu.Lock()
+			resolver := p.tenantResolver
+			p.scheduleMu.Unlock()
+			if resolver == nil {
+				continue
+			}
+			tenantID, ok := resolver(r.RoomID)
+			if !ok || tenantID <= 0 {
+				continue
+			}
+			prefs.TenantID = tenantID
+		}
+		c := agentdecision.Candidate{
+			Source:      agentdecision.SourceAgent,
+			Topic:       "INTERACTION:TIME_REPORT",
+			Title:       "时间互动",
+			MissionKind: "time_report",
+			Question:    "结合当前时间自然提一句时间，不要像报时钟",
+			Priority:    15,
+			Scene:       "time_report",
+			InteractionDecision: agentdecision.InteractionDecision{
+				Handle: true, PrimaryEvent: "time_report", Reason: "每两小时一次的自然时间互动",
+			},
+		}
+		if p.decorateCandidate(r.RoomID, prefs.TenantID, &c) {
+			p.decisions.Enqueue(r.RoomID, c)
+			p.scheduleMu.Lock()
+			p.timeReports[r.RoomID] = now
+			p.scheduleMu.Unlock()
+		}
+	}
+}
+
 func (p *Processor) cancelWarmup(roomID int64) {
 	for _, i := range p.decisions.Snapshot(roomID).Queue {
 		if i.Scene == "warmup" && i.Status == agentdecision.StatusPending {
