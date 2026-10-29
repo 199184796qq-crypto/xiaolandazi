@@ -66,6 +66,57 @@ func FormsFor(base, short string, terms []string) FormSet {
 	return FormSet{Base: base, Short: short, Forms: forms}
 }
 
+// BuildPhrase picks one of several program-owned address templates. The model
+// does not choose the shape; the random source only rotates templates.
+func BuildPhrase(in PhraseInput, r *rand.Rand) string {
+	group := ""
+	if len(in.GroupLabels) > 0 {
+		group = strings.TrimSpace(in.GroupLabels[0])
+	}
+	if group == "" {
+		group = "朋友们"
+	}
+	names := make([]string, 0, len(in.People))
+	for _, person := range in.People {
+		name := strings.TrimSpace(person.Base)
+		for _, form := range person.Forms {
+			if strings.HasSuffix(form, "老乡") || strings.HasSuffix(form, "朋友") {
+				name = form
+				break
+			}
+		}
+		if name != "" {
+			names = append(names, name)
+			if len(names) == 3 {
+				break
+			}
+		}
+	}
+	if len(names) == 0 {
+		return group
+	}
+	if len(names) == 1 {
+		if in.Scene == "answer" {
+			return names[0]
+		}
+		return names[0] + "来啦"
+	}
+	joined := strings.Join(names, "、")
+	if in.Scene == "answer" {
+		return joined + "，" + group
+	}
+	templates := []string{
+		joined + "，" + group + "来啦",
+		group + "，" + joined + "来啦",
+		joined + "，" + group + "来了啊",
+		joined + "，" + group + "欢迎欢迎",
+	}
+	if r == nil {
+		return templates[0]
+	}
+	return templates[r.Intn(len(templates))]
+}
+
 // PhrasePrompt builds the one-shot address sentence request.
 func PhrasePrompt(in PhraseInput, r *rand.Rand) (string, string) {
 	style := strings.TrimSpace(in.Style)

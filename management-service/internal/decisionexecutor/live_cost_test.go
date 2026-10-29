@@ -154,7 +154,7 @@ func TestPaidWorkerNicknameProgramPathNeedsNoModel(t *testing.T) {
 			t.Fatal(item.PromptNicknames)
 		}
 	}
-	if trace.models != 2 || trace.voices != 0 || agent.calls != 2 {
+	if trace.models != 0 || trace.voices != 0 || agent.calls != 0 {
 		t.Fatal(trace, agent.calls)
 	}
 }

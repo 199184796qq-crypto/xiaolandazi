@@ -442,21 +442,12 @@ func (w *Worker) phraseAddress(ctx context.Context, s model.LiveRuntimeSession, 
 	if w.nicknameRandSeed != 0 {
 		r = rand.New(rand.NewSource(w.nicknameRandSeed))
 	}
-	system, user := addressing.PhrasePrompt(in, r)
-	response, err := w.completePaidModel(ctx, s, agentgateway.Request{
-		Stage:          "interaction_addressing_plan",
-		Messages:       []agentgateway.Message{{Role: "system", Content: system}, {Role: "user", Content: user}},
-		EnableThinking: false,
-		MaxTokens:      120,
-		Timeout:        10 * time.Second,
-	}, item.ID+":phrase")
-	if err == nil {
-		if phrase, parseErr := addressing.ParsePhrase(response.Text, in); parseErr == nil {
-			phrase = ensureSpokenTerm(phrase, resolvedTerms)
-			item.PromptAddressPhrase = phrase
-			w.rememberPhrase(s.RoomID, phrase)
-			return
-		}
+	phrase := addressing.BuildPhrase(in, r)
+	if parsed, parseErr := addressing.ParsePhrase(`{"address":`+strconv.Quote(phrase)+`}`, in); parseErr == nil {
+		phrase = ensureSpokenTerm(parsed, resolvedTerms)
+		item.PromptAddressPhrase = phrase
+		w.rememberPhrase(s.RoomID, phrase)
+		return
 	}
 	item.PromptAddressPhrase = ensureSpokenTerm(fallbackAddressPhrase(in), resolvedTerms)
 	w.rememberPhrase(s.RoomID, item.PromptAddressPhrase)
