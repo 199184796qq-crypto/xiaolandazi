@@ -60,6 +60,7 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		Plan     int64  `json:"plan_id"`
 		UserID   string `json:"user_id"`
 		Nickname string `json:"nickname"`
+		Test     bool   `json:"test_simulation"`
 		Text     string `json:"text"`
 	}
 	if readJSON(w, r, &input) != nil || input.Tenant <= 0 || input.Room <= 0 || input.Plan <= 0 || len([]rune(input.Text)) > 500 {
@@ -104,6 +105,13 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	bindCost := interactionPurposeCostBinder(s.store.GetLiveRuntimeByRoom, input.Tenant, input.Room, input.Plan)
+	if input.Test {
+		// Test mode has no live session; keep the model call scoped to the plan
+		// but skip runtime/billing admission.
+		bindCost = func(ctx context.Context) (context.Context, error) {
+			return withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: input.Tenant, RoomID: input.Room, PlanID: input.Plan}), nil
+		}
+	}
 	resolver := interactionpurpose.Resolver{Repo: s.store, Semantic: s.purposeSemantic, Complete: func(ctx context.Context, payload string) (string, error) {
 		ctx, err := bindCost(ctx)
 		if err != nil {

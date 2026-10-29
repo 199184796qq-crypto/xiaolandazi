@@ -116,7 +116,7 @@ func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 	if input.PlanID > 0 {
 		body, _ := json.Marshal(map[string]any{
 			"tenant_id": tenantID, "room_id": roomID, "plan_id": input.PlanID,
-			"user_id": "simulation", "nickname": "测试模式", "text": input.Question,
+			"user_id": "simulation", "nickname": "测试模式", "test_simulation": true, "text": input.Question,
 		})
 		req := httptest.NewRequest(http.MethodPost, "/internal/v1/interaction-purpose/resolve", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
