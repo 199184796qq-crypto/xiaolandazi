@@ -966,7 +966,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 			cut = *input.ResumeOffsetMS
 		}
 		reservedID := fmt.Sprintf("core-interaction-%d-%s-%06d", input.RoomID, program.ID, program.Sequence+1)
-		reservedReturn = buildInteractionReturn(program, reservedID, input.Text, cut, durationMS, input.AllowConsecutiveRepeat)
+		reservedReturn = buildInteractionReturn(program, reservedID, input.Text, cut, durationMS, input.AllowConsecutiveRepeat, input.SkipCurrentSentence)
 		reservedReturn.pendingMainlineTask = currentTaskID
 		reservedReturn.snapshot.DecisionID = input.DecisionID
 		reservedReturn.snapshot.Deadline = c.now().Add(time.Duration(waitMS+durationMS-800) * time.Millisecond)

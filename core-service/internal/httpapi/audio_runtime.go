@@ -40,6 +40,7 @@ type roomAudioInteractionInput struct {
 	Topic                  string          `json:"topic,omitempty"`
 	InterruptStrategy      string          `json:"interrupt_strategy,omitempty"`
 	ResumeStrategy         string          `json:"resume_strategy,omitempty"`
+	SkipCurrentSentence    bool            `json:"skip_current_sentence,omitempty"`
 	BridgeText             string          `json:"bridge_text,omitempty"`
 	HumanizationStrategy   string          `json:"humanization_strategy,omitempty"`
 	HumanizationKind       string          `json:"humanization_kind,omitempty"`
@@ -1249,10 +1250,11 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			Label:          fmt.Sprintf("%s · %s", label, input.Topic),
 			AudioURL:       input.AudioURL,
 			DeferredReturn: input.DeferredReturn, DecisionID: input.DecisionID, AllowConsecutiveRepeat: input.AllowConsecutiveRepeat,
-			Text:           strings.TrimSpace(input.ReplyText),
-			CallbackURL:    callbackURL,
-			ResumeOffsetMS: resumeOffsetMS,
-			SwitchAtMS:     switchAtMS,
+			Text:                strings.TrimSpace(input.ReplyText),
+			CallbackURL:         callbackURL,
+			ResumeOffsetMS:      resumeOffsetMS,
+			SwitchAtMS:          switchAtMS,
+			SkipCurrentSentence: input.SkipCurrentSentence || strings.EqualFold(input.ResumeStrategy, "FUSION_SKIP"),
 		})
 		if err == nil && snapshot.Task != nil {
 			task = *snapshot.Task

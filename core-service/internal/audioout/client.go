@@ -42,6 +42,7 @@ type CreateExternalTaskInput struct {
 type InsertInteractionInput struct {
 	AllowConsecutiveRepeat bool
 	DeferredReturn         bool
+	SkipCurrentSentence    bool
 	DecisionID             string
 	ExpectedTaskID         string
 	RoomID                 int64

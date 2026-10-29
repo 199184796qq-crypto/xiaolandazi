@@ -32,7 +32,7 @@ type BridgeReady struct {
 	DurationMS int    `json:"duration_ms"`
 }
 
-func buildInteractionReturn(program *programState, taskID, reply string, cutMS, durationMS int, allowRepeat bool) *interactionReturn {
+func buildInteractionReturn(program *programState, taskID, reply string, cutMS, durationMS int, allowRepeat bool, skipCurrent ...bool) *interactionReturn {
 	state := &interactionReturn{resumePosition: programPositionAt(program, program.TrackIndex), resumeMS: cutMS, snapshot: audioout.InteractionReturnSnapshot{ProgramID: program.ID, TaskID: taskID, ReplyText: reply, AllowConsecutiveRepeat: allowRepeat, AnswerDurationMS: durationMS, Units: []audioout.ReturnUnit{}}}
 	if program.TrackIndex < 0 || program.TrackIndex >= len(program.Tracks) {
 		return state
@@ -75,6 +75,10 @@ func buildInteractionReturn(program *programState, taskID, reply string, cutMS, 
 	}
 	// Never skip the last buffered unit without a known complete return entry.
 	for !allowRepeat && len(state.snapshot.Units) > 1 && !program.Tracks[state.snapshot.Units[0].TrackIndex].AllowConsecutiveRepeat && audioout.CompleteUnitCovered(reply, state.snapshot.Units[0].Text) {
+		state.snapshot.SkippedUnits = append(state.snapshot.SkippedUnits, state.snapshot.Units[0].ID)
+		state.snapshot.Units = state.snapshot.Units[1:]
+	}
+	if len(skipCurrent) > 0 && skipCurrent[0] && len(state.snapshot.Units) > 1 {
 		state.snapshot.SkippedUnits = append(state.snapshot.SkippedUnits, state.snapshot.Units[0].ID)
 		state.snapshot.Units = state.snapshot.Units[1:]
 	}

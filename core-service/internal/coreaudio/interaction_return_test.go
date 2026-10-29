@@ -34,6 +34,17 @@ func TestCompleteUnitCoveragePreservesNewPricesAndQualifiers(t *testing.T) {
 	}
 }
 
+func TestSkipCurrentSentenceStartsAtNextUnit(t *testing.T) {
+	p := &programState{ID: "run", Tracks: []programTrack{{ID: "a", Timeline: []audioout.ProgramTimelineSegment{
+		{SegmentID: "1", StartMS: 0, EndMS: 100, Text: "第一句。", SafeCut: true},
+		{SegmentID: "2", StartMS: 100, EndMS: 200, Text: "第二句。", SafeCut: true},
+	}}}}
+	state := buildInteractionReturn(p, "task", "回答", 0, 2000, false, true)
+	if len(state.snapshot.Units) != 1 || state.snapshot.Units[0].Text != "第二句。" || state.resumeMS != 100 {
+		t.Fatalf("skip did not start at next sentence: units=%+v resume=%d skipped=%v", state.snapshot.Units, state.resumeMS, state.snapshot.SkippedUnits)
+	}
+}
+
 func TestDeferredBridgeSharesTaskAndReturnsWithoutWaiting(t *testing.T) {
 	for _, c := range []struct {
 		name, bridgeText, entry string
