@@ -27,6 +27,7 @@ func TestResolveCarriesDomainCardAndMatchedFacts(t *testing.T) {
 		Facts: "- [包装] 本地发货不抽真空，外地发货采用真空包装。", Prompt: "v1",
 		DomainCard: card,
 		CardFacts:  []domaincard.Fact{{ID: "F001", Text: "本地发货不抽真空，外地发货采用真空包装。"}},
+		Semantics:  []SemanticEntry{{Keywords: []string{"砍", "切块"}, Sense: "规格与切块", Exclude: []string{"价", "便宜"}}},
 	}
 	result, err := resolver.Resolve(context.Background(), input)
 	if err != nil {
@@ -34,6 +35,12 @@ func TestResolveCarriesDomainCardAndMatchedFacts(t *testing.T) {
 	}
 	if !strings.Contains(payload, "领域卡") || !strings.Contains(payload, "本问题命中事实") {
 		t.Fatalf("intent payload missing card context: %s", payload)
+	}
+	if !strings.Contains(payload, "全量事实") {
+		t.Fatalf("intent payload missing full facts: %s", payload)
+	}
+	if !strings.Contains(payload, "语义库") || !strings.Contains(payload, "规格与切块") {
+		t.Fatalf("intent payload missing semantics: %s", payload)
 	}
 	if len(result.Angles) == 0 {
 		t.Fatal("card facts should produce an angle")
