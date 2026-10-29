@@ -83,12 +83,12 @@ func PhrasePrompt(in PhraseInput, r *rand.Rand) (string, string) {
 		title = "回答开头称呼"
 		sceneRule = "不要出现问候词（来啦、来了、欢迎、哈喽），不超过 16 个字。"
 		examples = `{"address":"小斌老乡"}
-{"address":"小斌、阿芳，几位朋友"}
+{"address":"小斌老乡、阿芳老乡，几位朋友"}
 {"address":"这位朋友"}`
 	case "thanks":
 		title = "感谢开头称呼"
-		sceneRule = "用于“谢谢…的点赞/关注”开头，不要出现问候词，不超过 16 个字。"
-		examples = `{"address":"丽子、心房客，几位朋友"}
+		sceneRule = "用于“谢谢…的点赞/关注”开头，不要出现问候词，不超过 24 个字。"
+		examples = `{"address":"丽子老乡、心房客老乡，几位朋友"}
 {"address":"丽子老乡"}
 {"address":"几位朋友"}`
 	}
@@ -96,8 +96,8 @@ func PhrasePrompt(in PhraseInput, r *rand.Rand) (string, string) {
 
 规则（所有场景一致）：
 1. 只能用给定的人名形式和集体称呼，不能编造、不能改字、不能加数字。
-2. 单人时只叫这一个人，不出现集体称呼；多人时点 1-5 个人名，每个名字后面可带同一个称谓（如“平安无事老乡、jk老乡”），其余用集体称呼覆盖。
-3. 同一条里称谓词统一，可以给每个点名的人重复同一个称谓；同一个人名不出现两次。
+2. 单人时只叫这一个人，不出现集体称呼；多人时固定点 2-3 个人名，每个人名后面必须带同一个称谓（如“王卫成老乡、红豆老乡”），最后用集体称呼覆盖其他人。
+3. 同一条里称谓词统一，每个点名的人都要带同一个称谓；昵称本身已带称谓（哥/姐/老板/师傅）时不再叠加；同一个人名不出现两次。
 4. 昵称本身已带称谓（哥/姐/老板/师傅）时不要再叠加；性别称谓必须成对（哥姐、哥哥姐姐），禁止单独用“哥”或“姐”。
 5. 只能用一个集体称呼，不要同时用“老乡们”和“几位朋友”。
 6. %s
@@ -191,11 +191,25 @@ func ValidatePhrase(address string, in PhraseInput) error {
 	if in.Mode != "single" {
 		mentioned := 0
 		for _, person := range in.People {
+			matched := ""
 			for _, form := range person.Forms {
-				if form != "" && strings.Contains(address, form) {
-					mentioned++
+				if form != "" && strings.Contains(address, form) && len([]rune(form)) > len([]rune(matched)) {
+					matched = form
+				}
+			}
+			if matched == "" {
+				continue
+			}
+			mentioned++
+			hasTerm := false
+			for _, term := range in.Terms {
+				if term != "" && strings.HasSuffix(matched, term) {
+					hasTerm = true
 					break
 				}
+			}
+			if !hasTerm && !containsHonorific(matched) {
+				return fmt.Errorf("多人称呼中每个人名后必须带统一称谓: %s", matched)
 			}
 		}
 		if mentioned > 5 {
@@ -296,7 +310,17 @@ func validateAnswerAddress(address string, in PhraseInput) error {
 	}
 	return nil
 }
+
 // validateNoRepeats rejects the same name twice and stacked group labels.
+func containsHonorific(text string) bool {
+	for _, term := range []string{"哥", "姐", "老板", "师傅", "老师"} {
+		if strings.Contains(text, term) {
+			return true
+		}
+	}
+	return false
+}
+
 func validateNoRepeats(address string, in PhraseInput) error {
 	for _, person := range in.People {
 		for _, form := range person.Forms {
