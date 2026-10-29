@@ -1156,6 +1156,16 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 				)
 			}
 		}
+		if input.Action == "quick" {
+			// Low-flow/manual quick answers must cut now, not at the next
+			// semantic safe point. Without this the answer can wait tens of
+			// seconds while the mainline continues.
+			immediate := currentMS + 200
+			switchAtMS = &immediate
+			if resumeOffsetMS != nil {
+				resumeOffsetMS = &immediate
+			}
+		}
 		if switchAtMS != nil {
 			if !validInteractionSwitchLead(currentMS, *switchAtMS) {
 				log.Printf(
