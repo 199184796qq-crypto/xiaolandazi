@@ -162,7 +162,7 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 	if question == "" {
 		return interactionNoFactBoundary
 	}
-	if !item.ClarificationAsked && saveFallbackClarification(session, item, question) {
+	if !item.ClarificationAsked && !identityQuestionPattern.MatchString(question) && !upsetQuestionPattern.MatchString(question) && saveFallbackClarification(session, item, question) {
 		return "您是想问“" + question + "”，对吗？"
 	}
 	class := "no_dimension"
