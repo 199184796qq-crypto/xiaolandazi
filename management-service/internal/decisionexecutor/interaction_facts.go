@@ -222,6 +222,8 @@ func applyDomainAnswerScope(item *decisionItem) {
 	}
 	scope := domaincard.ResolveScope(context, item.DomainCard, all)
 	if len(scope.Facts) == 0 {
+		applyDerivedShippingScope(item)
+		applyDerivedLinkScope(item)
 		return
 	}
 	var b strings.Builder
