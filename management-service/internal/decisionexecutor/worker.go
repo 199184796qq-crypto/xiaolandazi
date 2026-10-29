@@ -30,6 +30,7 @@ import (
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/domaincard"
 	"livecompanion/management/internal/interactionpolicy"
+	"livecompanion/management/internal/interactionpurpose"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/semantic"
 	"livecompanion/management/internal/speechmission"
@@ -2026,14 +2027,24 @@ func (w *Worker) SimulateAnswerWithPreview(
 	question, previewInstruction, previewMemoryType, previewMemoryKey string,
 	previewMatchedMemoryID int64,
 ) (SimulationOutput, error) {
-	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, previewMemoryType, previewMemoryKey, previewMatchedMemoryID, nil)
+	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, previewMemoryType, previewMemoryKey, previewMatchedMemoryID, nil, nil)
 }
 
 func (w *Worker) SimulateInteraction(ctx context.Context, tenantID, roomID int64, question, previewInstruction string, recent []InteractionRecentAnswer) (SimulationOutput, error) {
 	if err := ValidateInteractionRecentAnswers(recent); err != nil {
 		return SimulationOutput{}, err
 	}
-	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, "semantic", "", 0, recent)
+	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, "semantic", "", 0, recent, nil)
+}
+
+// SimulateInteractionWithIntent runs the test-mode answer through the real
+// intent result (purpose + angles), so test mode and live chat share the same
+// fact selection instead of bypassing intent with a bare manual question.
+func (w *Worker) SimulateInteractionWithIntent(ctx context.Context, tenantID, roomID int64, question, previewInstruction string, recent []InteractionRecentAnswer, intent interactionpurpose.Result) (SimulationOutput, error) {
+	if err := ValidateInteractionRecentAnswers(recent); err != nil {
+		return SimulationOutput{}, err
+	}
+	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, "semantic", "", 0, recent, &intent)
 }
 
 func (w *Worker) simulateAnswer(
@@ -2042,6 +2053,7 @@ func (w *Worker) simulateAnswer(
 	question, previewInstruction, previewMemoryType, previewMemoryKey string,
 	previewMatchedMemoryID int64,
 	recent []InteractionRecentAnswer,
+	intent *interactionpurpose.Result,
 ) (SimulationOutput, error) {
 	question = strings.TrimSpace(question)
 	if tenantID <= 0 || roomID <= 0 || question == "" {
@@ -2051,9 +2063,20 @@ func (w *Worker) simulateAnswer(
 		return SimulationOutput{}, fmt.Errorf("测试智能体未初始化")
 	}
 	session := model.LiveRuntimeSession{TenantID: tenantID, RoomID: roomID}
+	var purposeID string
+	var purposeKnowledge json.RawMessage
+	var intentAngles []contentstrategy.Row
+	if intent != nil {
+		purposeID = intent.PurposeID
+		purposeKnowledge, _ = json.Marshal(intent)
+		intentAngles = intent.Angles
+	}
 	item := decisionItem{
 		BusinessCoreOnly:       true,
 		RecentAnswers:          recent,
+		PurposeID:              purposeID,
+		PurposeKnowledge:       purposeKnowledge,
+		IntentAngles:           intentAngles,
 		MissionKind:            "reply_question",
 		Scene:                  "product_question",
 		Title:                  "测试模拟观众提问",

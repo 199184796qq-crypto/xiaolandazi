@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"livecompanion/management/internal/decisionexecutor"
+	"livecompanion/management/internal/interactionpurpose"
 )
 
 func (s *Server) getRoomAgentDecisions(w http.ResponseWriter, r *http.Request) {
@@ -108,9 +112,36 @@ func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 		}
 		worker = decisionexecutor.New(&planSpeechTestStore{Store: s.store, tenantID: tenantID, roomID: roomID, plan: plan}, nil, s.speechGateway(), nil)
 	}
+	var intentResult *interactionpurpose.Result
+	if input.PlanID > 0 {
+		body, _ := json.Marshal(map[string]any{
+			"tenant_id": tenantID, "room_id": roomID, "plan_id": input.PlanID,
+			"user_id": "simulation", "nickname": "测试模式", "text": input.Question,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/internal/v1/interaction-purpose/resolve", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Core-Token", s.purposeInternalToken)
+		rec := httptest.NewRecorder()
+		s.resolveInteractionPurpose(rec, req)
+		if rec.Code == http.StatusOK {
+			var response struct {
+				Knowledge json.RawMessage `json:"knowledge"`
+			}
+			if json.Unmarshal(rec.Body.Bytes(), &response) == nil && len(response.Knowledge) > 0 {
+				var intent interactionpurpose.Result
+				if json.Unmarshal(response.Knowledge, &intent) == nil {
+					intentResult = &intent
+				}
+			}
+		}
+	}
 	var result decisionexecutor.SimulationOutput
 	var err error
-	result, err = worker.SimulateInteraction(ctx, tenantID, roomID, input.Question, input.PreviewInstruction, input.RecentAnswers)
+	if intentResult != nil {
+		result, err = worker.SimulateInteractionWithIntent(ctx, tenantID, roomID, input.Question, input.PreviewInstruction, input.RecentAnswers, *intentResult)
+	} else {
+		result, err = worker.SimulateInteraction(ctx, tenantID, roomID, input.Question, input.PreviewInstruction, input.RecentAnswers)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "测试智能体处理失败："+err.Error())
 		return
@@ -134,22 +165,22 @@ func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.R
 		return
 	}
 	var input struct {
-		Question      string `json:"question"`
-		Topic         string `json:"topic"`
-		Title         string `json:"title"`
-		Summary       string `json:"summary"`
-		ReplyHint     string `json:"reply_hint"`
+		Question      string   `json:"question"`
+		Topic         string   `json:"topic"`
+		Title         string   `json:"title"`
+		Summary       string   `json:"summary"`
+		ReplyHint     string   `json:"reply_hint"`
 		EventID       int64    `json:"event_id"`
 		UserID        string   `json:"user_id"`
 		Nickname      string   `json:"nickname,omitempty"`
 		Nicknames     []string `json:"nicknames,omitempty"`
 		ForceReopen   bool     `json:"force_reopen"`
-		ManualAction  string `json:"manual_action"`
-		ManualOrigin  string `json:"manual_origin"`
-		MissionKind   string `json:"mission_kind"`
-		ExecutionMode string `json:"execution_mode"`
-		FixedText     string `json:"fixed_text"`
-		TTLSeconds    int    `json:"ttl_seconds"`
+		ManualAction  string   `json:"manual_action"`
+		ManualOrigin  string   `json:"manual_origin"`
+		MissionKind   string   `json:"mission_kind"`
+		ExecutionMode string   `json:"execution_mode"`
+		FixedText     string   `json:"fixed_text"`
+		TTLSeconds    int      `json:"ttl_seconds"`
 	}
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "人工挑选信息格式错误")
