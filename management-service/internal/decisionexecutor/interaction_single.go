@@ -158,6 +158,13 @@ func (w *Worker) generateSingleInteractionText(ctx context.Context, session mode
 	greet = strings.TrimSpace(greet)
 	answer = strings.TrimSpace(answer)
 	if greet == "" && answer == "" {
+		if kind == "reply_chat" || kind == "statement" {
+			address := strings.TrimSpace(resolvedAddress(item))
+			if address != "" && address != "家人们" {
+				return address + "，在呢，慢慢看，有啥想聊的直接说。"
+			}
+			return "在呢，慢慢看，有啥想聊的直接说。"
+		}
 		return ""
 	}
 	if greet == "" {
