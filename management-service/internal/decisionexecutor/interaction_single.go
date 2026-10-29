@@ -236,6 +236,8 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	item.resolvedAddress = address
 	question := strings.TrimSpace(primaryQuestion(item))
 	if original := takeFallbackClarification(session, &item, question); original != "" {
+		item.ClarificationQuestion = "您是想问“" + original + "”，对吗？"
+		item.ClarificationAnswer = question
 		item.SampleQuestions = []string{original}
 		question = original
 	}
@@ -283,6 +285,10 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	}
 	if intent := itemIntentConstraint(item); intent != "" {
 		system += "\n【本题意图】" + intent + "。按这个含义回答，不要换成其他含义。"
+	}
+	if item.ClarificationQuestion != "" {
+		system += "\n【澄清上下文】主播刚才问：" + item.ClarificationQuestion +
+			"；用户回答：" + item.ClarificationAnswer + "。这是对原问题的确认，不是新问题；请按原问题回答。"
 	}
 	if questionContext.Prompt != "" {
 		system += "\n" + questionContext.Prompt
