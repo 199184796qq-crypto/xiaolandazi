@@ -1964,6 +1964,13 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	if item.contentError != nil {
 		return "", item.contentError
 	}
+	// Facts are hydrated here as a final guarantee. A branch may have skipped
+	// prepareSingleInteractionFacts; without this an intent with valid fact IDs
+	// can still reach the answer layer with an empty fact package and fall back
+	// to clarification/hand-off.
+	if strings.TrimSpace(item.FullFacts) == "" && len(item.PurposeKnowledge) > 0 {
+		w.prepareSingleInteractionFacts(ctx, session, item)
+	}
 	text := w.lightweightInteractionText(ctx, session, *item)
 	text = item.nicknameSpeechText(text)
 	text = ensureAddressPunctuation(text, item.PromptAddressPhrase)
