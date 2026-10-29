@@ -8,6 +8,13 @@
 
 基础字段：
 - question：是否真实提问（布尔）
+- intent_type：话语行为，只能是 question、request、statement、complaint、chat、order_statement
+  - question：在问信息
+  - request：在要求/催/加急/让主播做动作
+  - statement：在陈述事实或感受
+  - complaint：在表达不满/投诉
+  - chat：打招呼、闲聊
+  - order_statement：说自己已下单/已拍
 - relevant：是否与业务相关（布尔）
 - confidence：置信度 0~1
 - purpose_id：已有目的编号，或空字符串
@@ -45,6 +52,7 @@
 17. 追问必须说清候选之间的区别，例如“您说的是新建区这个地方，还是新疆呀？”；不得为了凑选项编造低可能性解释。
 18. 无法提出可靠候选时，改用开放式询问缺少的信息，例如“您想问哪个地区能不能发货？”；不要硬猜。
 19. 事实库恰好有某地区的配送资料，不能证明观众说的就是该地区；不能把“新建”直接当成“新疆”或“新建区”。
+20. 不是所有话都是问题。先判断 intent_type：request 是要求/催/加急，不要反问“您是想问……吗”；statement 是陈述，不要强行当提问；order_statement 是已下单，不要问“您下单了吗”。
 
 
 ## 红线
