@@ -1671,6 +1671,7 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 		sourceType = "interrupt_quick"
 	}
 	historyCtx, historyCancel := context.WithTimeout(ctx, 3*time.Second)
+	suggestionJSON, _ := json.Marshal(item.IntentAngles)
 	historyErr := w.store.RecordGeneratedSpeechHistory(historyCtx, model.GeneratedSpeechHistoryInput{
 		TenantID:          session.TenantID,
 		RoomID:            session.RoomID,
@@ -1680,6 +1681,8 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 		SourceType:        sourceType,
 		QuestionText:      primaryQuestion(*item),
 		GeneratedText:     text,
+		IntentJSON:        string(item.PurposeKnowledge),
+		SuggestionJSON:    string(suggestionJSON),
 	})
 	historyCancel()
 	if historyErr != nil {

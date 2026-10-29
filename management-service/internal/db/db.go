@@ -129,6 +129,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("apply management schema: %w", err)
 		}
 	}
+	if err := s.ensureGeneratedSpeechHistoryColumns(ctx); err != nil {
+		return fmt.Errorf("migrate generated speech history columns: %w", err)
+	}
 	return nil
 }
 

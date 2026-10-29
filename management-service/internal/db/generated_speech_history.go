@@ -24,16 +24,36 @@ func (s *Store) RecordGeneratedSpeechHistory(ctx context.Context, input model.Ge
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO live_generated_speech_history (
 			tenant_id, room_id, runtime_session_id, runtime_external_id,
-			decision_id, source_type, question_text, generated_text
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			decision_id, source_type, question_text, generated_text, intent_json, suggestion_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			runtime_external_id=VALUES(runtime_external_id),
 			source_type=VALUES(source_type),
 			question_text=VALUES(question_text),
-			generated_text=VALUES(generated_text)
+			generated_text=VALUES(generated_text),
+			intent_json=VALUES(intent_json),
+			suggestion_json=VALUES(suggestion_json)
 	`, input.TenantID, input.RoomID, input.RuntimeSessionID, input.RuntimeExternalID,
-		input.DecisionID, input.SourceType, input.QuestionText, input.GeneratedText)
+		input.DecisionID, input.SourceType, input.QuestionText, input.GeneratedText, input.IntentJSON, input.SuggestionJSON)
 	return err
+}
+
+func (s *Store) ensureGeneratedSpeechHistoryColumns(ctx context.Context) error {
+	for _, column := range []struct{ name, ddl string }{
+		{"intent_json", "ALTER TABLE live_generated_speech_history ADD COLUMN intent_json MEDIUMTEXT NULL"},
+		{"suggestion_json", "ALTER TABLE live_generated_speech_history ADD COLUMN suggestion_json MEDIUMTEXT NULL"},
+	} {
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='live_generated_speech_history' AND column_name=?`, column.name).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			if _, err := s.db.ExecContext(ctx, column.ddl); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func normalizeGeneratedSpeechHistoryPage(page, pageSize int) (int, int) {
@@ -95,7 +115,8 @@ func (s *Store) ListGeneratedSpeechHistory(
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			h.id, h.tenant_id, h.room_id, h.runtime_session_id, h.runtime_external_id,
-			h.decision_id, h.source_type, h.question_text, h.generated_text, h.created_at,
+			h.decision_id, h.source_type, h.question_text, h.generated_text,
+			COALESCE(h.intent_json,''), COALESCE(h.suggestion_json,''), h.created_at,
 			(SELECT COUNT(*) FROM agent_learning_sessions a
 			 WHERE a.tenant_id=h.tenant_id AND a.room_id=h.room_id
 			   AND a.source_ref=CONCAT('generated_speech:', h.decision_id)),
@@ -120,7 +141,8 @@ func (s *Store) ListGeneratedSpeechHistory(
 		var item model.GeneratedSpeechHistoryItem
 		if err := rows.Scan(
 			&item.ID, &item.TenantID, &item.RoomID, &item.RuntimeSessionID, &item.RuntimeExternalID,
-			&item.DecisionID, &item.SourceType, &item.QuestionText, &item.GeneratedText, &item.CreatedAt,
+			&item.DecisionID, &item.SourceType, &item.QuestionText, &item.GeneratedText,
+			&item.IntentJSON, &item.SuggestionJSON, &item.CreatedAt,
 			&item.CorrectionCount, &item.AdoptedCorrectionCount, &item.EditingCorrectionCount,
 		); err != nil {
 			return model.GeneratedSpeechHistoryPage{}, err

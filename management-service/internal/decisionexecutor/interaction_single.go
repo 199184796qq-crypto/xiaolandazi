@@ -337,9 +337,11 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	voiceCard, _ := w.welcomeVoiceCard(ctx, session)
 	system := "你是直播口播合成器。根据答案事实直接回答观众，第一句必须给出答案，不要先评价问题，也不要宣布“我这就讲/确认”。"
 	system += "\n" + beijingTimeLine()
-	if item.AnswerScope != "" {
-		system += "\n【本题回答范围】" + item.AnswerScope + "。只回答这些维度，其他维度的事实不要主动带出。"
-	}
+	// AnswerScope is intentionally not injected into the answer prompt. It was
+	// derived from a domain card and could exclude a dimension the intent
+	// explicitly asked for (e.g. cut blocks + out-of-town packaging). The intent
+	// and full fact package are the source of truth; scope may only suggest
+	// restraint, not remove required points.
 	if intent := itemIntentConstraint(item); intent != "" {
 		system += "\n【本题意图】" + intent + "。按这个含义回答，不要换成其他含义。"
 	}

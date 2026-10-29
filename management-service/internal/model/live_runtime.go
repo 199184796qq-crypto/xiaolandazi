@@ -75,6 +75,8 @@ type GeneratedSpeechHistoryInput struct {
 	SourceType        string
 	QuestionText      string
 	GeneratedText     string
+	IntentJSON        string
+	SuggestionJSON    string
 }
 
 type GeneratedSpeechHistoryItem struct {
@@ -87,6 +89,8 @@ type GeneratedSpeechHistoryItem struct {
 	SourceType             string    `json:"source_type"`
 	QuestionText           string    `json:"question_text,omitempty"`
 	GeneratedText          string    `json:"generated_text"`
+	IntentJSON             string    `json:"intent_json,omitempty"`
+	SuggestionJSON         string    `json:"suggestion_json,omitempty"`
 	CorrectionCount        uint64    `json:"correction_count"`
 	AdoptedCorrectionCount uint64    `json:"adopted_correction_count"`
 	EditingCorrectionCount uint64    `json:"editing_correction_count"`
