@@ -286,6 +286,8 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	if intent := itemIntentConstraint(item); intent != "" {
 		system += "\n【本题意图】" + intent + "。按这个含义回答，不要换成其他含义。"
 	}
+	system += "\n【全局约束】只回答观众问的那一点；全量事实是证据池，不要罗列无关事实；" +
+		"允许用地区归属、词义、选项互斥做安全推断，但不得编造价格、库存、到货时效、承诺或售后政策。"
 	if item.ClarificationQuestion != "" {
 		system += "\n【澄清上下文】主播刚才问：" + item.ClarificationQuestion +
 			"；用户回答：" + item.ClarificationAnswer + "。这是对原问题的确认，不是新问题；请按原问题回答。"
@@ -553,6 +555,19 @@ func itemIntentConstraint(item decisionItem) string {
 
 func (w *Worker) singleAnswerFacts(item decisionItem) string {
 	question := primaryQuestion(item)
+	// After intent, the answer stage receives the full atomic fact package plus
+	// the program-derived conclusions. The answer scope constrains what may be
+	// used; the full package is evidence, not a list to read out.
+	if strings.TrimSpace(item.FullFacts) != "" {
+		full := item.FullFacts
+		for _, line := range strings.Split(item.ScopedFacts, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "SYS-") && !strings.Contains(full, line) {
+				full += "\n" + line
+			}
+		}
+		return strings.TrimSpace(full)
+	}
 	if strings.TrimSpace(item.ScopedFacts) != "" {
 		return item.ScopedFacts
 	}
