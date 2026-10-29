@@ -51,3 +51,21 @@ func TestBuildWithModelRejectsParaphrase(t *testing.T) {
 		t.Fatalf("paraphrase was not rejected: %s", rendered)
 	}
 }
+
+func TestBuildWithModelDoesNotSendRewriteMetadata(t *testing.T) {
+	raw := `- [公共] 川渝地区隔天送达；本地发货不抽真空。；安全改写=咱们川渝隔天到；禁说=不得承诺当日达。`
+	var prompt string
+	complete := func(_ context.Context, value string) (string, error) {
+		prompt = value
+		return `{"facts":[
+			{"source_fact_id":"F001","text":"川渝地区隔天送达","attribute":"时效"},
+			{"source_fact_id":"F001","text":"本地发货不抽真空","attribute":"包装"}
+		]}`, nil
+	}
+	if _, _, err := BuildWithModel(context.Background(), raw, complete); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "安全改写") || strings.Contains(prompt, "禁说") {
+		t.Fatalf("metadata leaked into model prompt: %s", prompt)
+	}
+}

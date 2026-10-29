@@ -41,7 +41,8 @@ func BuildWithModel(ctx context.Context, raw string, complete CompleteFunc) (str
 	byID := make(map[string]sourceFact, len(source))
 	for _, fact := range source {
 		prefix, body := splitPrefix(fact.Text)
-		byID[fact.ID] = sourceFact{id: fact.ID, prefix: prefix, body: body}
+		core, _ := splitCoreAndMetadata(body)
+		byID[fact.ID] = sourceFact{id: fact.ID, prefix: prefix, body: core}
 	}
 	lines := make([]string, 0, len(source))
 	rendered := make([]string, 0, len(source)+8)
