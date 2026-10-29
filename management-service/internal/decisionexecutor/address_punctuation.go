@@ -2,6 +2,27 @@ package decisionexecutor
 
 import "strings"
 
+// normalizeNameListSeparators keeps multiple addressed names separated by the
+// Chinese enumeration comma, even when the model writes a normal comma between
+// them.
+func normalizeNameListSeparators(text string, names []string) string {
+	text = strings.TrimSpace(text)
+	if len(names) < 2 || text == "" {
+		return text
+	}
+	for i := 0; i+1 < len(names); i++ {
+		left := strings.TrimSpace(names[i])
+		right := strings.TrimSpace(names[i+1])
+		if left == "" || right == "" {
+			continue
+		}
+		for _, sep := range []string{"，", ",", "、", " ", "\n"} {
+			text = strings.ReplaceAll(text, left+sep+right, left+"、"+right)
+		}
+	}
+	return text
+}
+
 // ensureAddressPunctuation inserts a comma after the frozen address when the
 // model runs the next phrase straight into it, so TTS hears a break instead of
 // one long run-on ("可爱噜健康一生老乡们来了").

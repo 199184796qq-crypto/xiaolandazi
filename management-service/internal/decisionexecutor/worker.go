@@ -1973,6 +1973,7 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	}
 	text := w.lightweightInteractionText(ctx, session, *item)
 	text = item.nicknameSpeechText(text)
+	text = normalizeNameListSeparators(text, item.resolvedAddressingPlan.SelectedNames)
 	text = ensureAddressPunctuation(text, item.PromptAddressPhrase)
 	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("轻量互动策略机未产出可播文字")
