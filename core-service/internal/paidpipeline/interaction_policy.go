@@ -246,8 +246,8 @@ func (p *Processor) syncPlayed(roomID int64, now time.Time) {
 }
 
 func nextTimeReportDelay() time.Duration {
-	// 2 hours + a random 0..120 minutes, independently chosen each round.
-	return 2*time.Hour + time.Duration(rand.Intn(121))*time.Minute
+	// 2 hours plus a random -30..+120 minutes, independently each round.
+	return 2*time.Hour + time.Duration(rand.Intn(151)-30)*time.Minute
 }
 
 // flushTimeReports queues a natural time-check after a randomized 2h–4h gap.
@@ -259,7 +259,7 @@ func (p *Processor) flushTimeReports(now time.Time) {
 		if r.State != agentwork.StateWorking || r.Mode != agentwork.ModeAnchor || r.PlanID <= 0 {
 			continue
 		}
-		if view, err := p.brain.Snapshot(r.RoomID); err != nil || view.Intelligence.OnlineCount <= 0 {
+		if view, err := p.brain.Snapshot(r.RoomID); err != nil || view.Intelligence.OnlineCount < 0 {
 			continue
 		}
 		if len(p.decisions.Snapshot(r.RoomID).Queue) > 0 {
