@@ -12,6 +12,15 @@ var (
 	answerValuePattern    = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?\s*(?:g|G|克|元|天|号|个)|[0-9]+号`)
 )
 
+func answerHasServicePath(answer string) bool {
+	for _, marker := range []string{"联系客服", "找客服", "客服确认", "备注", "帮您问", "帮您记"} {
+		if strings.Contains(answer, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // answerDeniesUncovered reports whether the model already named the missing
 // condition and denied it (e.g. "今天发不了"), rather than confirming it.
 // In that case appending a boundary line would turn a correct answer into a
