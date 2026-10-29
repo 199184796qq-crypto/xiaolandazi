@@ -173,7 +173,7 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 	} else if locationQuestionPattern.MatchString(question) {
 		class = "location"
 	}
-	if class == "no_dimension" {
+	if class == "no_dimension" || class == "location" {
 		if !item.ClarificationAsked && saveFallbackClarification(session, item, question) {
 			return "您是想问“" + question + "”，对吗？"
 		}
