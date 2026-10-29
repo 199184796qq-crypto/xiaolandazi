@@ -11,15 +11,23 @@ import (
 // intent context. Generated warm-up/filler prompts are deliberately excluded;
 // chat history only resolves pronouns/follow-ups and never becomes fact
 // evidence.
-func (s *Store) ListRecentInteractionTurns(ctx context.Context, tenantID, roomID int64, limit int) ([]model.InteractionRecentTurn, error) {
+func (s *Store) ListRecentInteractionTurns(ctx context.Context, tenantID, roomID int64, userID string, limit int) ([]model.InteractionRecentTurn, error) {
 	if limit <= 0 || limit > 5 {
-		limit = 3
+		limit = 5
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	userID = strings.TrimSpace(userID)
+	query := `
 SELECT content, occurred_at
 FROM live_room_event_archive
-WHERE tenant_id=? AND room_id=? AND event_type='chat' AND content IS NOT NULL AND content <> ''
-ORDER BY occurred_at DESC, id DESC LIMIT ?`, tenantID, roomID, limit)
+WHERE tenant_id=? AND room_id=? AND event_type='chat' AND content IS NOT NULL AND content <> ''`
+	args := []any{tenantID, roomID}
+	if userID != "" {
+		query += ` AND user_id=?`
+		args = append(args, userID)
+	}
+	query += ` ORDER BY occurred_at DESC, id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -160,7 +160,7 @@ func (s *Server) resolveInteractionPurpose(w http.ResponseWriter, r *http.Reques
 			query.Semantics = append(query.Semantics, semantic)
 		}
 	}
-	if turns, listErr := s.store.ListRecentInteractionTurns(ctx, input.Tenant, input.Room, 3); listErr == nil {
+	if turns, listErr := s.store.ListRecentInteractionTurns(ctx, input.Tenant, input.Room, input.UserID, 5); listErr == nil {
 		for _, turn := range turns {
 			if strings.TrimSpace(turn.Question) == input.Text {
 				continue
