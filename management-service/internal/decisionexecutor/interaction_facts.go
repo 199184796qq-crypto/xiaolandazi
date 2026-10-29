@@ -201,7 +201,12 @@ func (w *Worker) interactionFactsGuidance(ctx context.Context, session model.Liv
 // answer boundary: only the matched dimensions are allowed, the other
 // dimensions must not be volunteered. No per-question text is written by hand.
 func applyDomainAnswerScope(item *decisionItem) {
-	if item == nil || item.DomainCard == nil || strings.TrimSpace(item.FullFacts) == "" {
+	if item == nil || strings.TrimSpace(item.FullFacts) == "" {
+		return
+	}
+	if item.DomainCard == nil {
+		applyDerivedShippingScope(item)
+		applyDerivedLinkScope(item)
 		return
 	}
 	parsed := contentstrategy.Facts(item.FullFacts)
