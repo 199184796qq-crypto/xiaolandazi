@@ -401,7 +401,7 @@ func (w *Worker) phraseAddress(ctx context.Context, s model.LiveRuntimeSession, 
 	if prefs, err := w.store.GetRoomAddressingPreferences(ctx, s.TenantID, s.RoomID); err == nil {
 		terms = prefs.PreferredTerms
 	}
-	resolvedTerms, _ := addressing.AddressTermSources{Room: terms}.Resolve()
+	resolvedTerms, _ := addressing.AddressTermSources{Room: terms, Style: w.fetchAnchorAddressTerms(ctx, s)}.Resolve()
 	groupLabels := addressing.GroupLabelsFrom(resolvedTerms)
 	for i, base := range item.PromptNicknames {
 		if base == "" || base == "这位朋友" {

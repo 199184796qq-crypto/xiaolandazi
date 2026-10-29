@@ -79,29 +79,33 @@ func BuildPhrase(in PhraseInput, r *rand.Rand) string {
 	}
 	baseNames := make([]string, 0, len(in.People))
 	termNames := make([]string, 0, len(in.People))
+	terms := make([]string, 0, len(in.Terms))
+	for _, term := range in.Terms {
+		if term = strings.TrimSpace(term); term != "" {
+			terms = append(terms, term)
+		}
+	}
+	selectedTerm := ""
+	if len(terms) > 0 {
+		selectedTerm = terms[0]
+		if r != nil {
+			selectedTerm = terms[r.Intn(len(terms))]
+		}
+	}
 	for _, person := range in.People {
 		base := strings.TrimSpace(person.Base)
 		if base == "" {
 			continue
 		}
 		withTerm := base
-		for _, term := range in.Terms {
-			term = strings.TrimSpace(term)
-			if term == "" {
-				continue
-			}
+		if selectedTerm != "" {
+			withTerm = base + selectedTerm
 			for _, form := range person.Forms {
-				if strings.HasSuffix(form, term) {
+				if strings.HasSuffix(form, selectedTerm) {
 					withTerm = form
 					break
 				}
 			}
-			if withTerm != base {
-				break
-			}
-		}
-		if withTerm == base && len(in.Terms) > 0 {
-			withTerm = base + strings.TrimSpace(in.Terms[0])
 		}
 		baseNames = append(baseNames, base)
 		termNames = append(termNames, withTerm)
