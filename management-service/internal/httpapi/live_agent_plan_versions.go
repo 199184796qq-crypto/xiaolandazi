@@ -12,7 +12,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"livecompanion/management/internal/atomicfacts"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
@@ -442,7 +441,7 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 	// The answer path uses one-attribute facts; the mainline keeps SafeFacts.
 	// Building atomic facts here means the card, intent context and answer all
 	// reference the same IDs.
-	atomicText, _ := atomicfacts.Build(safety.SafeFacts)
+	atomicText := s.buildAtomicFacts(r.Context(), safety.SafeFacts)
 	if strings.TrimSpace(atomicText) == "" {
 		atomicText = safety.SafeFacts
 	}

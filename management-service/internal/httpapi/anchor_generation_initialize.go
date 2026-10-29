@@ -8,7 +8,6 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/anchorstylescore"
-	"livecompanion/management/internal/atomicfacts"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/stylecontract"
@@ -203,7 +202,7 @@ func (s *Server) initializeSellingPointWheel(ctx context.Context, tenant, plan, 
 	if err != nil {
 		return 0, 0, err
 	}
-	if atomic, _ := atomicfacts.Build(source.Facts); atomic != "" {
+	if atomic := s.buildAtomicFacts(ctx, source.Facts); atomic != "" {
 		source.AtomicFacts = atomic
 	}
 	prompt, promptSource, err := loadSellingPointExtractionPrompt()
