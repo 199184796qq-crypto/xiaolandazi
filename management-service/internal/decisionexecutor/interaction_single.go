@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"time"
 
 	"livecompanion/management/internal/contentstrategy"
 	"livecompanion/management/internal/domaincard"
@@ -180,6 +181,36 @@ func (w *Worker) generateSingleInteractionText(ctx context.Context, session mode
 // 称呼 + 答案；没有事实时直接给边界，不再先生成“问得好/我这就讲”的接住句。
 const interactionNoFactBoundary = "这个问题我这边不清楚哈，等下我安排我们中控来回答你哈，他们会给你讲明白。"
 
+var beijingZone = time.FixedZone("Asia/Shanghai", 8*60*60)
+
+func beijingTimeLine() string {
+	now := time.Now().In(beijingZone)
+	return "当前北京时间：" + now.Format("2006-01-02 15:04") + "。判断早上/上午/中午/下午/晚上必须以这个时间为准，不要跟着观众的问候照抄时段。"
+}
+
+func recentContextLine(item decisionItem) string {
+	if len(item.RecentAnswers) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, turn := range item.RecentAnswers {
+		q := strings.TrimSpace(turn.Question)
+		a := strings.TrimSpace(turn.Reply)
+		if q == "" {
+			continue
+		}
+		if a == "" {
+			parts = append(parts, "观众："+q)
+		} else {
+			parts = append(parts, "观众："+q+"；主播："+a)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\n最近互动上下文：\n" + strings.Join(parts, "\n")
+}
+
 // generateNoFactBoundary 不再按行业词分类。
 // 没有事实时，让模型只针对当前这句话说“哪一点还没确认”，程序负责兜底和拦截承诺。
 func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
@@ -313,6 +344,7 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	}
 	voiceCard, _ := w.welcomeVoiceCard(ctx, session)
 	system := "你是直播口播合成器。根据答案事实直接回答观众，第一句必须给出答案，不要先评价问题，也不要宣布“我这就讲/确认”。"
+	system += "\n" + beijingTimeLine()
 	if item.AnswerScope != "" {
 		system += "\n【本题回答范围】" + item.AnswerScope + "。只回答这些维度，其他维度的事实不要主动带出。"
 	}
@@ -354,7 +386,7 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		// then use the generic service path for the unconfirmed part.
 		system += "\n【部分确认】先回答已确认事实；对未确认部分（" + strings.Join(uncoveredTexts, "、") + "）可以给出通用处理建议（联系客服申请/核实），但不得说已经批准，具体结果以客服确认为准。"
 	}
-	user := "观众问题：" + question + "\n【当前答案事实】\n" + factbound.SpeakableFacts(answerText) +
+	user := "观众问题：" + question + recentContextLine(item) + "\n【当前答案事实】\n" + factbound.SpeakableFacts(answerText) +
 		"\n\n请直接输出一句自然、简短、可播出的回答（称呼 + 答案，不要再称呼第二次）。"
 	text := w.completeWelcome(ctx, session, "interaction_single_direct_answer", system, user, 100)
 	text = stripAwkwardAnswerLead(strings.TrimSpace(text))
@@ -486,6 +518,7 @@ func (w *Worker) generateSingleInteractionGreet(ctx context.Context, session mod
 	}
 
 	system := "你是直播口播合成器。根据互动事件生成一句自然、简短、可直接播出的回应话术，只负责「接住刚发言的观众、表达回应态度」，不回答任何问题、不给出任何答案、不介绍任何商品/活动/价格。" +
+		"\n" + beijingTimeLine() +
 		"\n\n" + attitude
 
 	if voiceCard != "" {
@@ -502,7 +535,7 @@ func (w *Worker) generateSingleInteractionGreet(ctx context.Context, session mod
 	// 称呼由 addressingGuidance（称呼策略算好的「本轮称呼谁 + 可简称可代称」）决定；
 	// 点名名单仍单独在 user 里给出，让模型明确知道「叫谁」，但附加一条硬约束：
 	// 性别未知时禁止单用「哥」或「姐」，改用「哥姐」「老乡」「老板」「朋友」等中性词。
-	user := "事件类型：" + kind
+	user := "事件类型：" + kind + recentContextLine(item)
 	if phrase := strings.TrimSpace(item.PromptAddressPhrase); phrase != "" {
 		user += "\n开头称呼（原样使用）：" + phrase
 	} else if names := item.resolvedAddressingPlan.SelectedNames; len(names) >= 2 {
@@ -536,7 +569,8 @@ func (w *Worker) generateSingleInteractionAnswer(ctx context.Context, session mo
 
 	voiceCard, _ := w.welcomeVoiceCard(ctx, session)
 
-	system := "你是直播口播合成器。根据互动答案事实生成一句自然、简短、可直接播出的回答话术，给刚提问/反馈的观众一个交代。"
+	system := "你是直播口播合成器。根据互动答案事实生成一句自然、简短、可直接播出的回答话术，给刚提问/反馈的观众一个交代。" +
+		"\n" + beijingTimeLine()
 
 	if voiceCard != "" {
 		system += "\n\n【主播腔调】按下面的说话风格、语气词、口头禅自然表达，让人一听就是这位主播：" +
@@ -553,7 +587,8 @@ func (w *Worker) generateSingleInteractionAnswer(ctx context.Context, session mo
 		"\n【改写】" + rewrite +
 		"\n\n最终答案禁止输出任何内部标题、策略名称、概率、系统说明、字段名或分析过程。只输出主播真正会说的那一句。"
 
-	user := "【当前答案事实（可直接用来回答）】\n" + answerText +
+	user := "观众原话：" + strings.TrimSpace(primaryQuestion(item)) + recentContextLine(item) +
+		"\n【当前答案事实（可直接用来回答）】\n" + answerText +
 		"\n\n请直接输出一句自然、简短、可播出的回答话术（先用承接句自然过渡，再交代答案，不要再称呼观众）。"
 
 	return w.completeWelcome(ctx, session, "interaction_single_answer", system, user, 100)
