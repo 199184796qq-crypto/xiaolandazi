@@ -162,6 +162,9 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 	if question == "" {
 		return interactionNoFactBoundary
 	}
+	if !item.ClarificationAsked && saveFallbackClarification(session, item, question) {
+		return "您是想问“" + question + "”，对吗？"
+	}
 	class := "no_dimension"
 	if identityQuestionPattern.MatchString(question) {
 		// No facts can name the anchor, so the model must not invent one; the
