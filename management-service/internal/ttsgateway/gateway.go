@@ -58,6 +58,7 @@ type Provider interface {
 }
 
 type Gateway struct {
+	scheduler       synthesisScheduler
 	mu              sync.RWMutex
 	providers       map[string]Provider
 	aliases         map[string]string
@@ -84,6 +85,7 @@ func NewFromEnv() *Gateway {
 		model = DefaultQwenTTSModel
 	}
 	g := New(name, model)
+	g.scheduler = currentScheduler()
 	g.Register(NewQwenProvider(QwenConfigFromEnv()), "qwen", "dashscope", "qwen_audio_3_0")
 	g.Register(NewCosyVoiceProvider(QwenConfigFromEnv()), "aliyun_cosyvoice", "aliyun_cosyvoice_clone")
 	g.Register(NewTencentProvider(TencentConfigFromEnv()), "tencent", "tencent_cloud")
@@ -149,7 +151,7 @@ func (g *Gateway) SynthesizeURL(ctx context.Context, request SynthesizeRequest) 
 		return SynthesizeResponse{}, err
 	}
 	request.Provider = canonical
-	return observeSynthesis(ctx, p, request)
+	return g.scheduledSynthesis(ctx, p, request)
 }
 
 func (g *Gateway) CloneVoice(ctx context.Context, request CloneRequest) (CloneResponse, error) {

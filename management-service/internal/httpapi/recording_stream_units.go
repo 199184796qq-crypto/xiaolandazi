@@ -16,6 +16,7 @@ import (
 	"livecompanion/management/internal/livecost"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/recordingcache"
+	"livecompanion/management/internal/ttsscheduler"
 )
 
 // 话术优先的供料链路：源文本 → 完整句单元 → 逐句合成 → 就绪单元 → 合块追加。
@@ -150,18 +151,24 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	seq, previousLast := 0, -1
 	queue := recordingReadyQueue{startedAt: time.Now(), tenant: tenant, room: room}
+	continuity := &ttsWaitContinuity{}
 	queue.combine = func(ctx context.Context, ready []recordingReadyUnit, block int) (coreclient.ProgramRefreshTrack, int, error) {
 		return s.combineRecordingStreamBlockSafe(ctx, tenant, version, toRecordingCacheEntries(ready), seq, block)
 	}
 	queue.start = func(ctx context.Context, track coreclient.ProgramRefreshTrack) (coreclient.ProgramRefreshSnapshot, error) {
 		snapshot, err := s.startRecordingStreamProgram(ctx, tenant, room, runtimeID, version, track)
 		if err == nil {
+			continuity.remember(track)
 			s.reportLiveStartup(ctx, tenant, room, runtimeID, "sending_audio")
 		}
 		return snapshot, err
 	}
 	queue.append = func(ctx context.Context, program string, track coreclient.ProgramRefreshTrack) (uint64, error) {
-		return s.appendRecordingStreamTrack(ctx, tenant, room, version, program, track)
+		generation, err := s.appendRecordingStreamTrack(ctx, tenant, room, version, program, track)
+		if err == nil {
+			continuity.remember(track)
+		}
+		return generation, err
 	}
 	queue.buffer = func(ctx context.Context, program string) error {
 		return waitRecordingStreamBuffer(ctx, s, tenant, room, program, version.ID)
@@ -274,6 +281,44 @@ func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, r
 		saveCheckpoint(startRound, startTabPos, startIndex)
 	}
 	checkpointRound, checkpointTabPos, checkpointIndex := startRound, startTabPos, startIndex
+	continuity.accepted = func(c context.Context, track coreclient.ProgramRefreshTrack) {
+		s.archiveTTSCacheReplay(c, tenant, room, runtimeID, queue.programID, track)
+	}
+	continuity.snapshot = func(c context.Context) (coreclient.ProgramRefreshSnapshot, error) {
+		if err := waitLiveLeasePermit(c); err != nil {
+			return coreclient.ProgramRefreshSnapshot{}, err
+		}
+		paused, err := s.checkLiveAnchorOwner(c, tenant, room, runtimeID, version.ID)
+		if err != nil {
+			return coreclient.ProgramRefreshSnapshot{}, err
+		}
+		if paused || queue.programID == "" {
+			return coreclient.ProgramRefreshSnapshot{}, nil
+		}
+		snapshot, err := s.core.GetRoomProgramSnapshot(c, tenant, room)
+		if snapshot.ProgramID != queue.programID || snapshot.VersionID != version.ID {
+			return coreclient.ProgramRefreshSnapshot{}, anchorcycle.ErrStale
+		}
+		return snapshot, err
+	}
+	continuity.append = func(c context.Context, track coreclient.ProgramRefreshTrack) error {
+		// Cached replay does not finish the source unit currently waiting on TTS.
+		block := queue.blockSeq + 1
+		if err := saveCheckpointWithPending(checkpointRound, checkpointTabPos, checkpointIndex, block, &recordingSupplyPendingAppend{Track: track, ProgramID: queue.programID, BlockSeq: block}); err != nil {
+			return err
+		}
+		generation, err := s.appendRecordingStreamTrack(c, tenant, room, version, queue.programID, track)
+		if err != nil {
+			return err
+		}
+		queue.generation = generation
+		if err = saveCheckpointWithPending(checkpointRound, checkpointTabPos, checkpointIndex, block, nil); err != nil {
+			return err
+		}
+		queue.blockSeq = block
+		return nil
+	}
+	ctx = ttsscheduler.WithWaitHook(ctx, continuity.wait)
 	queue.beforeAppend = func(_ context.Context, track coreclient.ProgramRefreshTrack) error {
 		return saveCheckpointWithPending(checkpointRound, checkpointTabPos, checkpointIndex+1, queue.blockSeq+1, &recordingSupplyPendingAppend{
 			Track: track, ProgramID: queue.programID, BlockSeq: queue.blockSeq + 1,

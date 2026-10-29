@@ -29,6 +29,7 @@ import (
 	"livecompanion/management/internal/semantic"
 	assetstorage "livecompanion/management/internal/storage"
 	"livecompanion/management/internal/ttsgateway"
+	"livecompanion/management/internal/ttsscheduler"
 	"livecompanion/management/internal/wechatpay"
 	"livecompanion/management/internal/workinbox"
 )
@@ -149,6 +150,10 @@ func main() {
 	if err := store.MigrateModelPool(ctx); err != nil {
 		log.Fatalf("migrate model pool: %v", err)
 	}
+	if err := store.MigrateTTSPool(ctx, ttsgateway.QwenConfigFromEnv().APIKey); err != nil {
+		log.Fatalf("migrate TTS account pool: %v", err)
+	}
+	ttsgateway.ConfigureScheduler(ttsscheduler.New(appCtx, store))
 	if err := store.MigrateSpeechLibrary(ctx); err != nil {
 		log.Fatalf("migrate speech library: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"livecompanion/management/internal/coreclient"
 	"livecompanion/management/internal/errordetail"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/ttsscheduler"
 	"net/http"
 	"sync"
 	"time"
@@ -31,6 +32,49 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 	delivery := *state.Delivery
 	var actualReceipts []anchorcycle.AnglePlaybackReceipt
 	var archivedPlaybackSequence uint64
+	continuity := &ttsWaitContinuity{}
+	continuity.accepted = func(c context.Context, track coreclient.ProgramRefreshTrack) {
+		mu.Lock()
+		program := delivery.ProgramID
+		mu.Unlock()
+		s.archiveTTSCacheReplay(c, tenant, room, runtimeID, program, track)
+	}
+	continuity.snapshot = func(c context.Context) (coreclient.ProgramRefreshSnapshot, error) {
+		if err := waitLiveLeasePermit(c); err != nil {
+			return coreclient.ProgramRefreshSnapshot{}, err
+		}
+		paused, err := s.checkLiveAnchorOwner(c, tenant, room, runtimeID, version.ID)
+		if err != nil {
+			return coreclient.ProgramRefreshSnapshot{}, err
+		}
+		if paused {
+			return coreclient.ProgramRefreshSnapshot{}, nil
+		}
+		mu.Lock()
+		program := delivery.ProgramID
+		mu.Unlock()
+		if program == "" {
+			return coreclient.ProgramRefreshSnapshot{}, nil
+		}
+		snapshot, err := s.core.GetRoomProgramSnapshot(c, tenant, room)
+		if snapshot.ProgramID != program || snapshot.VersionID != version.ID {
+			return coreclient.ProgramRefreshSnapshot{}, anchorcycle.ErrStale
+		}
+		return snapshot, err
+	}
+	continuity.append = func(c context.Context, track coreclient.ProgramRefreshTrack) error {
+		mu.Lock()
+		program := delivery.ProgramID
+		mu.Unlock()
+		generation, err := s.appendRecordingStreamTrack(c, tenant, room, version, program, track)
+		if err == nil {
+			mu.Lock()
+			delivery.Generation = generation
+			mu.Unlock()
+		}
+		return err
+	}
+	ctx = ttsscheduler.WithWaitHook(ctx, continuity.wait)
 	supply := newCycleSupply(s, ctx, state)
 	defer supply.stop()
 	supply.startup = func(ctx context.Context, stage string) {
@@ -176,6 +220,7 @@ func (s *Server) runLiveAnchorProducer(ctx context.Context, tenant, room, runtim
 			delivery.DeliveredCandidates = delivery.DeliveredCandidates[len(delivery.DeliveredCandidates)-256:]
 		}
 		mu.Unlock()
+		continuity.remember(track)
 		if program == "" {
 			s.reportLiveStartup(ctx, tenant, room, runtimeID, "waiting_playback")
 		}

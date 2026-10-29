@@ -22,6 +22,7 @@ import (
 	"livecompanion/management/internal/livecost"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
+	"livecompanion/management/internal/ttsscheduler"
 )
 
 type liveCostCallScope struct {
@@ -264,6 +265,7 @@ type liveTTSCostAttempt struct {
 func (s *Server) withLiveCostTTS(ctx context.Context, scope liveCostCallScope) context.Context {
 	ctx = withLiveCostScope(ctx, scope)
 	scope = liveCostScope(ctx)
+	ctx = ttsgateway.WithQueueScope(ctx, ttsscheduler.Scope{TenantID: scope.TenantID, RoomID: scope.RoomID, SessionID: scope.SessionID})
 	if scope.TenantID <= 0 || scope.RoomID <= 0 || s.liveCostController() == nil {
 		return ctx
 	}

@@ -276,6 +276,12 @@ export const router = createRouter({
       meta: { systemSettingsEntry: true, internalStaffOnly: true, superAdminOnly: true },
     },
     {
+      path: '/system/settings/intelligence/tts-pool',
+      name: 'system-tts-pool',
+      component: () => import('./views/TTSPoolSettingsView.vue'),
+      meta: { systemSettingsEntry: true, internalStaffOnly: true, superAdminOnly: true },
+    },
+    {
       path: '/system/settings/live/anchor-recommendations',
       name: 'system-anchor-recommendations',
       component: () => import('./views/AnchorRecommendationsAdminView.vue'),

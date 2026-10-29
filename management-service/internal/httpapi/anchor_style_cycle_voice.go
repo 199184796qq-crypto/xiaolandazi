@@ -143,7 +143,7 @@ func (s *Server) synthesizeAnchorCycleVoice(ctx context.Context, state *anchorcy
 	text := cycleVoiceText(segment.Selected)
 	gateway := ttsgateway.NewFromEnv()
 	qwenConfig := ttsgateway.QwenConfigFromEnv()
-	if qwenConfig.APIKey == "" {
+	if qwenConfig.APIKey == "" && !gateway.UsesAccountPool() {
 		// Reuse the explicitly selected Ali credential from the system; never
 		// expose it to the browser or require a second plaintext key.
 		profile, e := s.store.ResolveSpeechModel(ctx, state.Config.CredentialID)

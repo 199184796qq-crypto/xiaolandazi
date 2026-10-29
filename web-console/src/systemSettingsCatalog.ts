@@ -123,6 +123,12 @@ export const systemSettingsCategories: SystemSettingsCategory[] = [
             superAdminOnly: true,
           },
           {
+            key: 'tts-pool', title: 'TTS账户池与调度',
+            description: '管理阿里语音合成账号、逐账号额度、音色对应关系与等待队列。',
+            icon: '声', to: '/system/settings/intelligence/tts-pool',
+            badge: '账号池', superAdminOnly: true,
+          },
+          {
             key: 'live-analysis',
             title: '直播录音分析',
             description: '配置录音分析使用的模型、提示词版本和启用状态。',

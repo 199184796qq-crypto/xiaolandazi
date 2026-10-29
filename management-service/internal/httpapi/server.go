@@ -243,6 +243,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/system/speech-models", s.systemSpeechModelsSave)
 	mux.HandleFunc("POST /api/v1/system/speech-models/test", s.systemSpeechModelsTest)
 	mux.HandleFunc("GET /api/v1/system/model-pool", s.systemModelPoolGet)
+	mux.HandleFunc("GET /api/v1/system/tts-pool", s.systemTTSPoolGet)
+	mux.HandleFunc("PUT /api/v1/system/tts-pool", s.systemTTSPoolSave)
 	mux.HandleFunc("POST /api/v1/system/model-pool/entries", s.systemModelPoolSave)
 	mux.HandleFunc("DELETE /api/v1/system/model-pool/entries/{entryID}", s.systemModelPoolDelete)
 	mux.HandleFunc("POST /api/v1/system/model-pool/models", s.systemModelPoolModels)
