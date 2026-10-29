@@ -174,6 +174,9 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 		class = "location"
 	}
 	if class == "no_dimension" {
+		if !item.ClarificationAsked && saveFallbackClarification(session, item, question) {
+			return "您是想问“" + question + "”，对吗？"
+		}
 		// The operator's fixed hand-off line, not a model paraphrase.
 		return interactionNoFactBoundary
 	}
@@ -219,6 +222,10 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 		address = "朋友"
 	}
 	question := strings.TrimSpace(primaryQuestion(item))
+	if original := takeFallbackClarification(session, &item, question); original != "" {
+		item.SampleQuestions = []string{original}
+		question = original
+	}
 	libraryFallback := ""
 	if entry, hit := w.matchQuestionLibrary(ctx, session, question); hit {
 		// Sense/exclusion entries only disambiguate; facts stay authoritative.

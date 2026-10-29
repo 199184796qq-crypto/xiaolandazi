@@ -188,6 +188,7 @@ type decisionItem struct {
 	HumanizationDelivery   string                                `json:"-"`
 	HumanizationApplied    bool                                  `json:"-"`
 	resolvedAddress        string                                `json:"-"`
+	ClarificationAsked     bool                                  `json:"-"`
 	addressingGuidance     string                                `json:"-"`
 	resolvedAddressingPlan speechmission.AddressingPlan          `json:"-"`
 	EmotionDisabled        bool                                  `json:"-"`
