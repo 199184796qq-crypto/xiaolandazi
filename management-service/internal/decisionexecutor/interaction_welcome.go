@@ -119,8 +119,10 @@ type welcomeBenefit struct {
 }
 
 // generateWelcomeText 是欢迎策略的模型调用核心，拆两次模型调用（用户 2026-10-20 拍板）：
-//   第一次「欢迎称呼」：接住人——欢迎前缀（「欢迎 XX」或「XX 欢迎」随机）+ 点名 +（多人时）群称带过，不带福利。
-//   第二次「活动钩子」：给留下来的理由——纯福利，不带任何称呼/群称（群称只在第一句多人时带）。
+//
+//	第一次「欢迎称呼」：接住人——欢迎前缀（「欢迎 XX」或「XX 欢迎」随机）+ 点名 +（多人时）群称带过，不带福利。
+//	第二次「活动钩子」：给留下来的理由——纯福利，不带任何称呼/群称（群称只在第一句多人时带）。
+//
 // 两次结果合并成一段（换行分隔），TTS 读出两个气口，避免「称呼 + 福利」挤在一句里称呼密度过高。
 //
 // 仍走话术基座（与主线一致）：内容四层（必说/可说/不提/改写），P0 与 pUser 拆进四层。
@@ -471,19 +473,26 @@ func (w *Worker) generateWelcomeGreeting(ctx context.Context, session model.Live
 	system += "\n\n按四层约束生成："
 	if noAudience {
 		system += "\n【必说】本轮没有任何观众进入或互动：不要称呼任何人，不要出现「来啦」「欢迎」「这位朋友」「某位朋友」，直接讲品或抛一个问题暖场。"
+	} else if item.WelcomeOrder == "welcome_first" {
+		system += "\n【必说】先欢迎，再在第二句原样使用给定称呼；欢迎语气自然热情，不要漏掉称呼。" + addressingGuidance
 	} else {
-		system += "\n【必说】开头必须带一个合规称呼，不得裸奔；欢迎语气自然热情。" + addressingGuidance
+		system += "\n【必说】开头先说给定称呼，再欢迎；欢迎语气自然热情。" + addressingGuidance
 	}
 	system +=
 		"\n【不提】" + notMention +
-		"\n【改写】" + rewrite +
-		"\n\n最终答案禁止输出任何内部标题、策略名称、概率、系统说明、字段名或分析过程。只输出主播真正会说的那一句。"
+			"\n【改写】" + rewrite +
+			"\n\n最终答案禁止输出任何内部标题、策略名称、概率、系统说明、字段名或分析过程。只输出主播真正会说的那一句。"
 
 	// 称呼已在前置阶段冻结成一句短句；欢迎生成只能原样复用它，不能再补名单。
 	user := "事件类型：" + kind
 	if phrase := strings.TrimSpace(item.PromptAddressPhrase); phrase != "" {
-		system += "\n【必说】开头必须原样使用这句称呼：" + phrase + "；不得改写、不得增删人名、不得再加其他昵称。"
-		user += "\n开头称呼（原样使用）：" + phrase
+		if item.WelcomeOrder == "welcome_first" {
+			system += "\n【必说】先欢迎，再原样使用这句称呼：" + phrase + "；不得改写、不得增删人名、不得再加其他昵称，也不要拆成两个人分别欢迎。"
+			user += "\n第二句称呼（原样使用）：" + phrase
+		} else {
+			system += "\n【必说】开头必须原样使用这句称呼：" + phrase + "；不得改写、不得增删人名、不得再加其他昵称，也不要拆成两个人分别欢迎。"
+			user += "\n开头称呼（原样使用）：" + phrase
+		}
 	} else if names := item.resolvedAddressingPlan.SelectedNames; len(names) >= 2 {
 		user += "\n本次要称呼的对象（逐个点到，可自然带过）：" + strings.Join(names, "、")
 	} else if len(names) == 1 {
@@ -633,9 +642,10 @@ func (w *Worker) InvalidateBenefitCache(ctx context.Context, tenantID, planID in
 // 与 interactionApprovedFacts 的区别：那条链路要经过「本场方案未改变」的 PlanID 严格校验、
 // 事实边界复核（interaction-facts-boundary.md）、内容策略选材等一串处理，任何一环失败都返回空。
 // 福利识别只要「事实里有哪些优惠」，不需要那一整套，所以这里直读：
-//   1. GetPublishedLiveAgentPlanVersionForRoom 拿 published 版本的 generation_context；
-//   2. 取 derived_safety.source_sha256；
-//   3. GetLiveDerivedSafety 拿 SafeFacts 正文。
+//  1. GetPublishedLiveAgentPlanVersionForRoom 拿 published 版本的 generation_context；
+//  2. 取 derived_safety.source_sha256；
+//  3. GetLiveDerivedSafety 拿 SafeFacts 正文。
+//
 // 任何一步失败返回错误，调用方（welcomeBenefits）据此走程序兜底，不会卡死欢迎。
 func (w *Worker) welcomeSafeFacts(ctx context.Context, session model.LiveRuntimeSession, planID int64) (string, error) {
 	if w == nil || w.store == nil {

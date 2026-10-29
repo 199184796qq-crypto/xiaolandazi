@@ -167,6 +167,7 @@ type decisionItem struct {
 	PromptNicknames        []string                              `json:"-"`
 	PromptShortNames       []string                              `json:"-"`
 	PromptAddressPhrase    string                                `json:"-"`
+	WelcomeOrder           string                                `json:"-"`
 	ManualAction           string                                `json:"manual_action"`
 	ManualOrigin           string                                `json:"manual_origin"`
 	ExecutionMode          string                                `json:"execution_mode"`

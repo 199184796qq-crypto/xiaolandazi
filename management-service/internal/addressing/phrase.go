@@ -66,8 +66,9 @@ func FormsFor(base, short string, terms []string) FormSet {
 	return FormSet{Base: base, Short: short, Forms: forms}
 }
 
-// BuildPhrase picks one of several program-owned address templates. The model
-// does not choose the shape; the random source only rotates templates.
+// BuildPhrase returns only the address, never a welcome sentence. For a named
+// audience it randomly chooses between bare names and name+title; the model
+// owns the welcome and the business transition.
 func BuildPhrase(in PhraseInput, r *rand.Rand) string {
 	group := ""
 	if len(in.GroupLabels) > 0 {
@@ -76,10 +77,14 @@ func BuildPhrase(in PhraseInput, r *rand.Rand) string {
 	if group == "" {
 		group = "朋友们"
 	}
-	names := make([]string, 0, len(in.People))
+	baseNames := make([]string, 0, len(in.People))
+	termNames := make([]string, 0, len(in.People))
 	for _, person := range in.People {
-		name := strings.TrimSpace(person.Base)
-		// Use the room/plan's resolved address terms; never hardcode 老乡.
+		base := strings.TrimSpace(person.Base)
+		if base == "" {
+			continue
+		}
+		withTerm := base
 		for _, term := range in.Terms {
 			term = strings.TrimSpace(term)
 			if term == "" {
@@ -87,44 +92,31 @@ func BuildPhrase(in PhraseInput, r *rand.Rand) string {
 			}
 			for _, form := range person.Forms {
 				if strings.HasSuffix(form, term) {
-					name = form
+					withTerm = form
 					break
 				}
 			}
-			if name != strings.TrimSpace(person.Base) {
+			if withTerm != base {
 				break
 			}
 		}
-		if name != "" {
-			names = append(names, name)
-			if len(names) == 3 {
-				break
-			}
+		if withTerm == base && len(in.Terms) > 0 {
+			withTerm = base + strings.TrimSpace(in.Terms[0])
+		}
+		baseNames = append(baseNames, base)
+		termNames = append(termNames, withTerm)
+		if len(baseNames) == 3 {
+			break
 		}
 	}
-	if len(names) == 0 {
+	if len(baseNames) == 0 {
 		return group
 	}
-	if len(names) == 1 {
-		if in.Scene == "answer" {
-			return names[0]
-		}
-		return names[0] + "来啦"
+	names := termNames
+	if in.Scene == "greeting" && r != nil && r.Intn(2) == 0 {
+		names = baseNames
 	}
-	joined := strings.Join(names, "、")
-	if in.Scene == "answer" {
-		return joined + "，" + group
-	}
-	templates := []string{
-		joined + "，" + group + "来啦",
-		group + "，" + joined + "来啦",
-		joined + "，" + group + "来了啊",
-		joined + "，" + group + "欢迎欢迎",
-	}
-	if r == nil {
-		return templates[0]
-	}
-	return templates[r.Intn(len(templates))]
+	return strings.Join(names, "、")
 }
 
 // PhrasePrompt builds the one-shot address sentence request.
@@ -246,9 +238,6 @@ func ValidatePhrase(address string, in PhraseInput) error {
 	if in.Mode == "single" && hasGroup {
 		return fmt.Errorf("单人称呼不应使用集体称呼")
 	}
-	if in.Mode != "single" && !hasGroup {
-		return fmt.Errorf("多人称呼缺少集体称呼")
-	}
 	if in.Mode != "single" {
 		mentioned := 0
 		for _, person := range in.People {
@@ -262,16 +251,6 @@ func ValidatePhrase(address string, in PhraseInput) error {
 				continue
 			}
 			mentioned++
-			hasTerm := false
-			for _, term := range in.Terms {
-				if term != "" && strings.HasSuffix(matched, term) {
-					hasTerm = true
-					break
-				}
-			}
-			if !hasTerm && !containsHonorific(matched) {
-				return fmt.Errorf("多人称呼中每个人名后必须带统一称谓: %s", matched)
-			}
 		}
 		expected := len(in.People)
 		if expected > 3 {
@@ -311,39 +290,31 @@ func phraseHasGroup(address string, in PhraseInput) bool {
 // FallbackPhrase is used when the model is unavailable or its answer fails
 // validation; it still produces a speakable address.
 func FallbackPhrase(in PhraseInput) string {
-	if in.Scene == "answer" {
-		group := "这位朋友"
-		if len(in.People) > 0 {
-			return in.People[0].Base
-		}
-		return group
+	term := ""
+	if len(in.Terms) > 0 {
+		term = strings.TrimSpace(in.Terms[0])
 	}
-	group := ""
+	names := make([]string, 0, 3)
+	for _, person := range in.People {
+		name := strings.TrimSpace(person.Base)
+		if name == "" {
+			continue
+		}
+		if term != "" {
+			name += term
+		}
+		names = append(names, name)
+		if len(names) == 3 {
+			break
+		}
+	}
+	if len(names) > 0 {
+		return strings.Join(names, "、")
+	}
 	if len(in.GroupLabels) > 0 {
-		group = in.GroupLabels[0]
+		return strings.TrimSpace(in.GroupLabels[0])
 	}
-	if group == "" {
-		group = "几位朋友"
-	}
-	switch in.Mode {
-	case "single":
-		if len(in.People) > 0 {
-			return in.People[0].Base + "来啦"
-		}
-		return group + "来啦"
-	default:
-		if len(in.People) == 0 {
-			return group + "，你们来啦"
-		}
-		names := make([]string, 0, 2)
-		for i, person := range in.People {
-			if i >= 2 {
-				break
-			}
-			names = append(names, person.Base)
-		}
-		return strings.Join(names, "、") + "，" + group + "来啦"
-	}
+	return "朋友们"
 }
 
 // validateAnswerAddress covers answer/thanks openings: no greeting words, one
@@ -358,9 +329,6 @@ func validateAnswerAddress(address string, in PhraseInput) error {
 		return fmt.Errorf("称呼过长")
 	}
 	if len(in.People) <= 1 {
-		if phraseHasGroup(address, in) {
-			return fmt.Errorf("单人称呼不应使用集体称呼")
-		}
 		for _, person := range in.People {
 			for _, form := range person.Forms {
 				if form != "" && strings.Contains(address, form) {
@@ -369,9 +337,6 @@ func validateAnswerAddress(address string, in PhraseInput) error {
 			}
 		}
 		return fmt.Errorf("称呼没有使用提问者名字")
-	}
-	if !phraseHasGroup(address, in) {
-		return fmt.Errorf("多人称呼缺少集体称呼")
 	}
 	return nil
 }

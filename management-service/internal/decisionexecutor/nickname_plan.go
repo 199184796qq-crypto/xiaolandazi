@@ -443,13 +443,19 @@ func (w *Worker) phraseAddress(ctx context.Context, s model.LiveRuntimeSession, 
 		r = rand.New(rand.NewSource(w.nicknameRandSeed))
 	}
 	phrase := addressing.BuildPhrase(in, r)
+	if scene == "greeting" {
+		if r.Intn(2) == 0 {
+			item.WelcomeOrder = "address_first"
+		} else {
+			item.WelcomeOrder = "welcome_first"
+		}
+	}
 	if parsed, parseErr := addressing.ParsePhrase(`{"address":`+strconv.Quote(phrase)+`}`, in); parseErr == nil {
-		phrase = ensureSpokenTerm(parsed, resolvedTerms)
-		item.PromptAddressPhrase = phrase
+		item.PromptAddressPhrase = parsed
 		w.rememberPhrase(s.RoomID, phrase)
 		return
 	}
-	item.PromptAddressPhrase = ensureSpokenTerm(fallbackAddressPhrase(in), resolvedTerms)
+	item.PromptAddressPhrase = fallbackAddressPhrase(in)
 	w.rememberPhrase(s.RoomID, item.PromptAddressPhrase)
 }
 
