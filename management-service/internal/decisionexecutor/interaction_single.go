@@ -111,6 +111,24 @@ func (m modelSingleInteractionStrategy) Respond(ctx context.Context, session mod
 	return text
 }
 
+func shouldUseDirectAnswer(item decisionItem) bool {
+	if len(item.PurposeKnowledge) == 0 {
+		return false
+	}
+	var intent struct {
+		IntentType       string `json:"intent_type"`
+		Need             string `json:"need"`
+		ProductRelevance string `json:"product_relevance"`
+	}
+	if json.Unmarshal(item.PurposeKnowledge, &intent) != nil {
+		return false
+	}
+	if strings.EqualFold(intent.ProductRelevance, "high") {
+		return true
+	}
+	return strings.EqualFold(intent.IntentType, "statement") && strings.EqualFold(intent.Need, "information")
+}
+
 // generateSingleInteractionText 是单一互动策略的模型调用核心，拆两次模型调用（照欢迎两段式）：
 //
 //	第一次「接住」：称呼 + 回应态度（问答=接住提问、投诉=安抚、chat=看到对方），不带答案。
@@ -125,9 +143,9 @@ func (w *Worker) generateSingleInteractionText(ctx context.Context, session mode
 	}
 
 	kind := strings.ToLower(strings.TrimSpace(item.MissionKind))
-	if kind == "reply_question" {
-		// 事实问答不再先调“接住句”：一句“称呼 + 答案”或“称呼 + 边界”，
-		// 避免“问得好，我这就给你讲”这种只评价问题、不回答的客服腔。
+	if kind == "reply_question" || shouldUseDirectAnswer(item) {
+		// Fact questions, and statements with high product relevance, answer
+		// directly with the fact package. They must not be reduced to a greeting.
 		if direct := w.generateSingleInteractionDirectAnswer(ctx, session, item); strings.TrimSpace(direct) != "" {
 			return direct
 		}
