@@ -100,6 +100,14 @@ func (p *Processor) decorateCandidate(roomID, tenantID int64, c *agentdecision.C
 	}
 	scene := strategycenter.InteractionScene(c.MissionKind)
 	e, ok := cfg.Events[scene]
+	if c.MissionKind == "time_report" {
+		// Time reports are mandatory: do not depend on the warmup toggle.
+		e = strategycenter.InteractionEventRule{
+			Name: "时间互动", Enabled: true, Priority: "P0", Weight: 100,
+			TTLSeconds: 20 * 60, MaxWaitSeconds: 20 * 60,
+		}
+		ok = true
+	}
 	if !ok || !e.Enabled || e.Weight == 0 {
 		return false
 	}
@@ -110,7 +118,7 @@ func (p *Processor) decorateCandidate(roomID, tenantID int64, c *agentdecision.C
 	if scene == "complaint" {
 		kind = "complaint"
 	}
-	if p.policies != nil && p.policies.InteractionPreferenceFactor(roomID, kind) <= 0 {
+	if c.MissionKind != "time_report" && p.policies != nil && p.policies.InteractionPreferenceFactor(roomID, kind) <= 0 {
 		return false
 	}
 	if p.brain != nil {
@@ -262,9 +270,6 @@ func (p *Processor) flushTimeReports(now time.Time) {
 		if view, err := p.brain.Snapshot(r.RoomID); err != nil || view.Intelligence.OnlineCount < 0 {
 			continue
 		}
-		if len(p.decisions.Snapshot(r.RoomID).Queue) > 0 {
-			continue
-		}
 		p.scheduleMu.Lock()
 		due := p.timeReportDue[r.RoomID]
 		if due.IsZero() {
@@ -311,6 +316,7 @@ func (p *Processor) flushTimeReports(now time.Time) {
 			},
 		}
 		if p.decorateCandidate(r.RoomID, prefs.TenantID, &c) {
+			c.Priority = 100
 			p.decisions.Enqueue(r.RoomID, c)
 			p.scheduleMu.Lock()
 			p.timeReportDue[r.RoomID] = now.Add(nextTimeReportDelay())
