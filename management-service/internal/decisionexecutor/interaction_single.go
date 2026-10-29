@@ -337,7 +337,7 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	if text == "" || text == address || text == address+"。" {
 		return address + "，" + w.generateNoFactBoundary(ctx, session, item)
 	}
-	if bound.NeedsBoundary() {
+	if bound.NeedsBoundary() && !answerDeniesUncovered(text, uncoveredTexts) {
 		// The covered part must not confirm the missing scope; the separately
 		// generated line below is the only place it is named.
 		text = softenTerms(text, uncoveredTexts)

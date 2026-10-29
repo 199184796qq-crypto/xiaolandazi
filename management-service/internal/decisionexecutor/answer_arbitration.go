@@ -12,7 +12,27 @@ var (
 	answerValuePattern    = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?\s*(?:g|G|克|元|天|号|个)|[0-9]+号`)
 )
 
-// arbitrateAnswerClaims is a program-side fact arbitration, not a general
+// answerDeniesUncovered reports whether the model already named the missing
+// condition and denied it (e.g. "今天发不了"), rather than confirming it.
+// In that case appending a boundary line would turn a correct answer into a
+// contradiction.
+func answerDeniesUncovered(answer string, uncovered []string) bool {
+	if len(uncovered) == 0 {
+		return false
+	}
+	for _, term := range uncovered {
+		if !strings.Contains(answer, term) {
+			return false
+		}
+	}
+	for _, marker := range []string{"不", "没", "没法", "不能", "来不及"} {
+		if strings.Contains(answer, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // contradiction filter. When one answer contains both a positive recommendation
 // and a denial, it keeps the side supported by the selected facts:
 // supported recommendation -> drop denial; unsupported recommendation -> drop it
