@@ -224,6 +224,7 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	if address == "" {
 		address = "朋友"
 	}
+	item.resolvedAddress = address
 	question := strings.TrimSpace(primaryQuestion(item))
 	if original := takeFallbackClarification(session, &item, question); original != "" {
 		item.SampleQuestions = []string{original}
