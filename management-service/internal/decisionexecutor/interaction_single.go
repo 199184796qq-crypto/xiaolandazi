@@ -162,9 +162,6 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 	if question == "" {
 		return interactionNoFactBoundary
 	}
-	if !item.ClarificationAsked && !identityQuestionPattern.MatchString(question) && !upsetQuestionPattern.MatchString(question) && saveFallbackClarification(session, item, question) {
-		return "您是想问“" + question + "”，对吗？"
-	}
 	class := "no_dimension"
 	if identityQuestionPattern.MatchString(question) {
 		// No facts can name the anchor, so the model must not invent one; the
@@ -177,10 +174,8 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 		class = "location"
 	}
 	if class == "no_dimension" || class == "location" {
-		if !item.ClarificationAsked && saveFallbackClarification(session, item, question) {
-			return "您是想问“" + question + "”，对吗？"
-		}
-		// The operator's fixed hand-off line, not a model paraphrase.
+		// Missing business facts are a system gap. Never turn that gap into a
+		// question that repeats the viewer's own question.
 		return interactionNoFactBoundary
 	}
 	return w.boundaryLine(ctx, session, class, question, nil)
@@ -217,11 +212,6 @@ func (w *Worker) retrievedAnswerFacts(ctx context.Context, session model.LiveRun
 }
 
 func (w *Worker) boundaryOrClarify(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, class, question string, missing []string) string {
-	if !item.ClarificationAsked && !identityQuestionPattern.MatchString(question) && !upsetQuestionPattern.MatchString(question) {
-		if saveFallbackClarification(session, item, question) {
-			return "您是想问“" + strings.TrimSpace(question) + "”，对吗？"
-		}
-	}
 	return w.boundaryLine(ctx, session, class, question, missing)
 }
 
@@ -235,12 +225,6 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	}
 	item.resolvedAddress = address
 	question := strings.TrimSpace(primaryQuestion(item))
-	if original := takeFallbackClarification(session, &item, question); original != "" {
-		item.ClarificationQuestion = "您是想问“" + original + "”，对吗？"
-		item.ClarificationAnswer = question
-		item.SampleQuestions = []string{original}
-		question = original
-	}
 	if slot := missingInteractionSlot(question); slot != "" {
 		return address + "，" + slot
 	}
@@ -365,12 +349,6 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	}
 	if !strings.HasPrefix(text, address) {
 		text = address + "，" + text
-	}
-	if !item.ClarificationAsked && !identityQuestionPattern.MatchString(question) && !upsetQuestionPattern.MatchString(question) &&
-		answerNegativePattern.MatchString(text) && !answerPositivePattern.MatchString(text) {
-		if saveFallbackClarification(session, item, question) {
-			return address + "，您是想问“" + question + "”，对吗？"
-		}
 	}
 	return text
 }

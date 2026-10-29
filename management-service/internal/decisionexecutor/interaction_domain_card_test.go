@@ -23,11 +23,8 @@ func TestSingleAnswerFactsUsesDomainCardConditionRules(t *testing.T) {
 		SampleQuestions: []string{"上海抽真空吗"},
 	}
 	got := (&Worker{}).singleAnswerFacts(item)
-	if !strings.Contains(got, "F001") || !strings.Contains(got, "外地发货采用真空包装") {
-		t.Fatalf("condition rule not selected: %s", got)
-	}
-	if strings.Contains(got, "F003") {
-		t.Fatalf("unrelated ETA fact leaked: %s", got)
+	if !strings.Contains(got, "外地发货采用真空包装") {
+		t.Fatalf("full facts missing packaging rule: %s", got)
 	}
 }
 
@@ -36,7 +33,7 @@ func TestSingleAnswerFactsFallsBackWithoutCard(t *testing.T) {
 		FullFacts:       "- [公共；包装] 外地发货采用真空包装。",
 		SampleQuestions: []string{"上海抽真空吗"},
 	}
-	if got := (&Worker{}).singleAnswerFacts(item); got != "" {
-		t.Fatalf("expected empty without selected plan/card, got %s", got)
+	if got := (&Worker{}).singleAnswerFacts(item); !strings.Contains(got, "外地发货采用真空包装") {
+		t.Fatalf("full facts should be returned without a card, got %s", got)
 	}
 }

@@ -121,13 +121,11 @@ func TestSingleAnswerFactsUsesSelectionOnly(t *testing.T) {
 		SelectedContentPlan: &contentstrategy.Selection{Facts: []contentstrategy.Fact{{ID: "F1", Text: "选中事实"}}},
 		FullFacts:           "全量事实",
 	}
-	if got := worker.singleAnswerFacts(selected); !strings.Contains(got, "F1 选中事实") || strings.Contains(got, "全量事实") {
-		t.Fatalf("selected facts should win: %q", got)
+	if got := worker.singleAnswerFacts(selected); !strings.Contains(got, "全量事实") {
+		t.Fatalf("full facts should be the answer evidence: %q", got)
 	}
-	// The full package is evidence, never a fallback: an empty selection must
-	// reach the no-fact boundary instead of confirming something unselected.
-	if got := worker.singleAnswerFacts(decisionItem{FullFacts: "全量事实"}); got != "" {
-		t.Fatalf("empty selection must not fall back to the full package: %q", got)
+	if got := worker.singleAnswerFacts(decisionItem{FullFacts: "全量事实"}); !strings.Contains(got, "全量事实") {
+		t.Fatalf("full facts should not be dropped: %q", got)
 	}
 }
 

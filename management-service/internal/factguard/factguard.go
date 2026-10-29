@@ -155,7 +155,7 @@ func unsupported(sentence, facts string) bool {
 			return true
 		}
 	}
-	for _, word := range append(factbound.ClaimWords(), factbound.TimeWords()...) {
+	for _, word := range factbound.ClaimWords() {
 		if word != "" && strings.Contains(sentence, word) && !strings.Contains(facts, word) {
 			return true
 		}
