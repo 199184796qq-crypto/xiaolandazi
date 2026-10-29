@@ -2331,6 +2331,10 @@ func (w *Worker) emotionEnabledForRoom(ctx context.Context, tenantID, roomID int
 	return published.VoiceIdentity.EmotionEnabled != nil && *published.VoiceIdentity.EmotionEnabled, nil
 }
 
+type planVoiceRateSource interface {
+	GetPlanVoiceRate(context.Context, int64, int64) (model.PlanVoiceRate, error)
+}
+
 func (w *Worker) readyVoice(ctx context.Context, tenantID, roomID int64) (model.VoiceProfile, bool, error) {
 	// The published live-agent version is the immutable contract for realtime
 	// interaction audio. Pre-recorded/generated mainline audio is an independent
@@ -2341,6 +2345,11 @@ func (w *Worker) readyVoice(ctx context.Context, tenantID, roomID int64) (model.
 			return model.VoiceProfile{}, false, fmt.Errorf("已发布智能体版本缺少可用声音身份")
 		}
 		rate := identity.Rate
+		if rates, ok := w.store.(planVoiceRateSource); ok && published.PlanID > 0 {
+			if settings, rateErr := rates.GetPlanVoiceRate(ctx, tenantID, published.PlanID); rateErr == nil && settings.Rate >= 0.5 && settings.Rate <= 2 {
+				rate = settings.Rate
+			}
+		}
 		if rate < 0.5 || rate > 2 {
 			rate = 1
 		}
