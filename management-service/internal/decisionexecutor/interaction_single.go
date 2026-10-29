@@ -164,8 +164,13 @@ func (w *Worker) generateNoFactBoundary(ctx context.Context, session model.LiveR
 	}
 	// A special order request can still be handled when the general facts are
 	// known: answer the confirmed part, then route the exception to support.
-	if strings.TrimSpace(item.FullFacts) != "" && specialServiceRequest(question) {
-		if lead := strings.TrimSpace(w.coveredFactsLine(ctx, session, item.FullFacts, nil)); lead != "" {
+	facts := strings.TrimSpace(item.FullFacts)
+	if facts == "" {
+		facts = w.retrievedAnswerFacts(ctx, session, question)
+	}
+	if facts != "" && specialServiceRequest(question) {
+		item.FullFacts = facts
+		if lead := strings.TrimSpace(w.coveredFactsLine(ctx, session, facts, nil)); lead != "" {
 			return lead + "。这个特殊要求可以联系客服申请，具体安排以客服确认为准。"
 		}
 	}
