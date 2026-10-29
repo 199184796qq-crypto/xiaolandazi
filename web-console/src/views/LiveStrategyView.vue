@@ -148,6 +148,7 @@ import {
   updateLiveAgentPlanScript,
   updateLiveAgentSettings,
   updateLiveAddressingStrategy,
+  publishLiveAgentVoiceBinding,
   updateUserUIPreferences,
   uploadLiveAgentCustomMainline,
   uploadLiveMediaAsset,
@@ -1677,7 +1678,10 @@ async function updateReusableAnchorBinding(style: LiveAnchorStyle, unbind: boole
     else await bindLiveAnchorStyleToPlan(style.id, planID, tenantID)
     if (!current()) return
     currentBoundAnchorId.value = unbind ? 0 : style.id
-    reusableAnchorStyleNotice.value = unbind ? `已取消使用主播“${style.name}”：本方案改为模型自由发挥，不打分，照常开播。想再用就选一个主播点“设为当前智能体主播”。` : `主播“${style.name}”已作为当前智能体方案的主播风格。点顶部“初始化方案”，让新腔调和评分基准写进当前方案后再生效。`
+    await savePlanOneClick()
+    reusableAnchorStyleNotice.value = unbind
+      ? `已取消使用主播“${style.name}”，当前方案已直接保存。`
+      : `主播“${style.name}”已直接写入当前方案，无需再点保存。`
     await loadReusableAnchorStyleWorkspace(selectedReusableAnchorStyleId.value)
   } catch (err) {
     if (!current()) return
@@ -6409,8 +6413,26 @@ function handleLiveVoiceChanged(voice: LiveAgentVoiceIdentity) {
   fullShowSaveReceipt.value = null
   fullShowVersionError.value = ''
   fullShowNotice.value = isUserAudioContentMode.value
-    ? '已选择方案互动声音，请点击保存方案。主线录音保持不变。'
-    : '已选择方案声音，请点击保存方案；已有正式声音需按所选音色核对或重新生成。'
+    ? '已选择方案互动声音，正在直接写入当前方案…'
+    : '已选择方案声音，正在直接写入当前方案…'
+  void persistPlanVoice(voice)
+}
+
+async function persistPlanVoice(voice: LiveAgentVoiceIdentity) {
+  const roomID = activeRoomId.value
+  const bindingID = Number(voice.binding_id || 0)
+  if (!roomID || !bindingID) {
+    fullShowNotice.value = '声音已选中；当前声音没有可发布的绑定，请重新选择后再试。'
+    return
+  }
+  try {
+    const published = await publishLiveAgentVoiceBinding(roomID, bindingID)
+    fullShowSavedVersion.value = published
+    fullShowNotice.value = '声音已直接写入当前方案，无需再点保存。'
+  } catch (err) {
+    fullShowVersionError.value = err instanceof Error ? err.message : '声音写入方案失败'
+    fullShowNotice.value = '声音未写入，原方案保持不变。'
+  }
 }
 function chooseAvailablePlanVoice(event: Event) {
   const voice = availablePlanVoices.value[Number((event.target as HTMLSelectElement).value)]
