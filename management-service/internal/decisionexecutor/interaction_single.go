@@ -2,6 +2,7 @@ package decisionexecutor
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
 	"strings"
 
@@ -260,6 +261,9 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	if item.AnswerScope != "" {
 		system += "\n【本题回答范围】" + item.AnswerScope + "。只回答这些维度，其他维度的事实不要主动带出。"
 	}
+	if intent := itemIntentConstraint(item); intent != "" {
+		system += "\n【本题意图】" + intent + "。按这个含义回答，不要换成其他含义。"
+	}
 	if questionContext.Prompt != "" {
 		system += "\n" + questionContext.Prompt
 	}
@@ -483,6 +487,34 @@ func (w *Worker) generateSingleInteractionAnswer(ctx context.Context, session mo
 // 拼成「F编号 + 正文」喂模型（带编号不带角度标签，编号供程序核对、正文干净）。
 // 无事实返回空（对应「相关但缺事实」与「夸赞闲聊无答案」两种情形，
 // 由 generateSingleInteractionAnswer 返回空 → 只出接住句）。
+// itemIntentConstraint gives the answer model the already-resolved intent, so a
+// short/dialect question ("砍不砍") is not re-interpreted from its bare words.
+func itemIntentConstraint(item decisionItem) string {
+	if len(item.PurposeKnowledge) == 0 {
+		return ""
+	}
+	var intent struct {
+		Purpose string `json:"purpose"`
+		Angles  []struct {
+			Angle string `json:"角度"`
+			Task  string `json:"讲述任务"`
+		} `json:"task_angles"`
+	}
+	if json.Unmarshal(item.PurposeKnowledge, &intent) != nil {
+		return ""
+	}
+	parts := []string{}
+	if p := strings.TrimSpace(intent.Purpose); p != "" {
+		parts = append(parts, p)
+	}
+	for _, angle := range intent.Angles {
+		if a := strings.TrimSpace(angle.Angle); a != "" {
+			parts = append(parts, a)
+		}
+	}
+	return strings.Join(parts, "；")
+}
+
 func (w *Worker) singleAnswerFacts(item decisionItem) string {
 	question := primaryQuestion(item)
 	if strings.TrimSpace(item.ScopedFacts) != "" {
