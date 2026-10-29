@@ -40,6 +40,19 @@ func specialServiceRequest(question string) bool {
 	return false
 }
 
+func appendDerivedTimeFacts(full, question string) string {
+	if !strings.Contains(full, "第二天上午") {
+		return full
+	}
+	switch {
+	case strings.Contains(question, "今天"):
+		full += "\nSYS-TIME 今天下单今天不发，第二天上午发货。"
+	case strings.Contains(question, "明天"):
+		full += "\nSYS-TIME 今天下单的话，明天上午发货。"
+	}
+	return full
+}
+
 func filterLinesContaining(text string, markers ...string) string {
 	var kept []string
 	for _, line := range strings.Split(text, "\n") {

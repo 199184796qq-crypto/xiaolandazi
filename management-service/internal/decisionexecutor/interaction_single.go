@@ -647,7 +647,7 @@ func (w *Worker) singleAnswerFacts(item decisionItem) string {
 	// the program-derived conclusions. The answer scope constrains what may be
 	// used; the full package is evidence, not a list to read out.
 	if strings.TrimSpace(item.FullFacts) != "" {
-		full := item.FullFacts
+		full := appendDerivedTimeFacts(item.FullFacts, question)
 		for _, line := range strings.Split(item.ScopedFacts, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "SYS-") && !strings.Contains(full, line) {
