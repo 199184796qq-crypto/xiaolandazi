@@ -291,7 +291,8 @@ func (w *Worker) generateSingleInteractionDirectAnswer(ctx context.Context, sess
 	}
 	system += "\n【全局约束】只回答观众问的那一点；全量事实是证据池，不要罗列无关事实；" +
 		"允许用地区归属、词义、选项互斥做安全推断，但不得编造价格、库存、到货时效、承诺或售后政策。" +
-		"\n如果意图是 request（要求/催/加急），先确认收到，再按事实说明能做到的安排，不要反问。"
+		"\n如果意图是 request（要求/催/加急），先确认收到，再按事实说明能做到的安排，不要反问。" +
+		"\n如果意图是 order_statement（已下单/已拍），第一句必须先感谢对方下单，再说明下单后的服务安排（发货时间、物流、售后），不要反问，不要转推其他商品。"
 	if item.ClarificationQuestion != "" {
 		system += "\n【澄清上下文】主播刚才问：" + item.ClarificationQuestion +
 			"；用户回答：" + item.ClarificationAnswer + "。这是对原问题的确认，不是新问题；请按原问题回答。"
