@@ -439,6 +439,10 @@ func normalizeProgramTimeline(input []audioout.ProgramTimelineSegment, durationM
 		// Older published versions marked every generated chunk as a safe cut.
 		// Runtime only accepts a real sentence/semantic ending so an interaction
 		// never cuts after a comma or an arbitrary max-length chunk.
+		// Preserve the published pause marker before tightening SafeCut to a
+		// semantic sentence end. Quick mode may use PauseCut; ordinary playback
+		// still requires SafeCut.
+		segment.PauseCut = segment.PauseCut || segment.SafeCut
 		segment.SafeCut = segment.SafeCut && strongSemanticEnding(segment.Text)
 		if segment.Index != index+1 {
 			return nil, errors.New("timeline index is not sequential")
@@ -873,7 +877,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	if input.ExpectedTaskID != "" && input.ExpectedTaskID != currentTaskID {
 		return audioout.RoomProgramSnapshot{}, audioout.ErrInteractionSwitchStale
 	}
-	if sequential && (input.SwitchAtMS == nil || !verifiedInteractionSentenceEnd(track, *input.SwitchAtMS)) {
+	if sequential && (input.SwitchAtMS == nil || !verifiedInteractionSentenceEnd(track, *input.SwitchAtMS, input.SkipCurrentSentence)) {
 		return audioout.RoomProgramSnapshot{}, fmt.Errorf("%w: live interaction requires a verified sentence end", audioout.ErrInteractionSwitchStale)
 	}
 
@@ -1170,7 +1174,7 @@ func (c *Client) waitForRoomAudioSwitchPoint(ctx context.Context, roomID int64, 
 	}
 }
 
-func verifiedInteractionSentenceEnd(track programTrack, cutMS int) bool {
+func verifiedInteractionSentenceEnd(track programTrack, cutMS int, allowPause bool) bool {
 	if cutMS <= 0 || cutMS > track.DurationMS {
 		return false
 	}
@@ -1182,6 +1186,9 @@ func verifiedInteractionSentenceEnd(track programTrack, cutMS int) bool {
 	}
 	for _, unit := range track.Timeline {
 		if unit.EndMS == cutMS && unit.SafeCut && strongSemanticEnding(unit.Text) {
+			return true
+		}
+		if allowPause && unit.EndMS == cutMS && unit.PauseCut {
 			return true
 		}
 	}

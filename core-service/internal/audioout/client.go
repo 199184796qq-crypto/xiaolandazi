@@ -73,6 +73,7 @@ type ProgramTimelineSegment struct {
 	EndMS     int    `json:"end_ms"`
 	Text      string `json:"text"`
 	SafeCut   bool   `json:"safe_cut"`
+	PauseCut  bool   `json:"pause_cut,omitempty"`
 }
 
 type ProgramSafePoint struct {

@@ -1091,7 +1091,13 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			}
 			cutMS, exists = resolveRoomProgramSafeCutAfterGeneration(program, preferred, currentMS)
 		} else {
-			cutMS, exists = resolveQuickRoomProgramSafeCut(program, input.SwitchAtMS, currentMS)
+			// Quick mode chooses the nearest pause directly; do not require a
+			// complete sentence before nextPauseCut gets a chance.
+			if cut, ok := nextPauseCut(program, currentMS); ok {
+				cutMS, exists = cut, true
+			} else {
+				cutMS, exists = resolveQuickRoomProgramSafeCut(program, input.SwitchAtMS, currentMS)
+			}
 		}
 		if !exists {
 			// Keep the existing management retry contract; its prepared audio
@@ -1285,7 +1291,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 			CallbackURL:         callbackURL,
 			ResumeOffsetMS:      resumeOffsetMS,
 			SwitchAtMS:          switchAtMS,
-			SkipCurrentSentence: input.SkipCurrentSentence || strings.EqualFold(input.ResumeStrategy, "FUSION_SKIP"),
+			SkipCurrentSentence: input.SkipCurrentSentence || input.Action == "quick" || strings.EqualFold(input.ResumeStrategy, "FUSION_SKIP"),
 		})
 		if err == nil && snapshot.Task != nil {
 			task = *snapshot.Task
