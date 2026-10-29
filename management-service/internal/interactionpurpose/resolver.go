@@ -230,13 +230,17 @@ func (r *Resolver) Resolve(ctx context.Context, input Input) (Result, error) {
 		}
 	}
 	// relevant=false（超出事实包范围/与当前直播无关）时，目的编号没有意义：
-	// 不该有 purpose_id，也不该触发 L 兜底生成假 ID。直接清空，让下游走「缺事实兜底」。
-	if !result.Relevant {
+	// 不该有 purpose_id，也不该触发 L 兜底生成假 ID。但 chat/statement 仍需要
+	// purpose 和角度来指导“如何接话”，不能把整段语义一起清掉。
+	if !result.Relevant && !strings.EqualFold(result.IntentType, "chat") && !strings.EqualFold(result.IntentType, "statement") {
 		result.PurposeID = ""
 		result.Purpose = ""
 		result.Angles = nil
 	}
-	if result.PurposeID == "" && result.Purpose != "" {
+	if !result.Relevant {
+		result.PurposeID = ""
+	}
+	if result.PurposeID == "" && result.Purpose != "" && result.Relevant {
 		result.PurposeID = "L" + contentstrategy.SHA(result.Purpose)[:12]
 	}
 	for i := range result.Angles {
