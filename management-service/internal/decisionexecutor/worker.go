@@ -2061,6 +2061,34 @@ func (w *Worker) SimulateInteractionWithIntent(ctx context.Context, tenantID, ro
 	return w.simulateAnswer(ctx, tenantID, roomID, question, previewInstruction, "semantic", "", 0, recent, &intent, nickname)
 }
 
+// SimulateTimeReport exercises the same time-report strategy used by the
+// scheduler, without creating a room event or touching the live queue.
+func (w *Worker) SimulateTimeReport(ctx context.Context, tenantID, roomID int64, mainline, nickname string) (SimulationOutput, error) {
+	if w == nil || w.store == nil || w.agent == nil {
+		return SimulationOutput{}, fmt.Errorf("测试智能体未初始化")
+	}
+	session := model.LiveRuntimeSession{TenantID: tenantID, RoomID: roomID}
+	item := decisionItem{
+		BusinessCoreOnly: true,
+		MissionKind:      "time_report",
+		Scene:            "time_report",
+		Title:            "时间互动测试",
+		Summary:          "模拟定时时间互动",
+		SampleQuestions:  []string{"结合当前时间自然提一句时间"},
+		OriginMainline:   strings.TrimSpace(mainline),
+		ManualAction:     "quick",
+		ExecutionMode:    "intent",
+	}
+	if name := strings.TrimSpace(nickname); name != "" {
+		item.Nicknames = []string{name}
+	}
+	text, err := w.generateDecisionTextMutable(ctx, session, &item)
+	if err != nil {
+		return SimulationOutput{}, err
+	}
+	return SimulationOutput{Question: item.SampleQuestions[0], Reply: text, ExecutionMode: "time_report"}, nil
+}
+
 func (w *Worker) simulateAnswer(
 	ctx context.Context,
 	tenantID, roomID int64,

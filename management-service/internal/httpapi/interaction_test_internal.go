@@ -34,10 +34,11 @@ func (s *Server) internalTestInteraction(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var input struct {
-		PlanID   int64  `json:"plan_id"`
-		UserID   string `json:"user_id"`
-		Nickname string `json:"nickname"`
-		Text     string `json:"text"`
+		PlanID      int64  `json:"plan_id"`
+		UserID      string `json:"user_id"`
+		Nickname    string `json:"nickname"`
+		Text        string `json:"text"`
+		MissionKind string `json:"mission_kind"`
 	}
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -53,6 +54,19 @@ func (s *Server) internalTestInteraction(w http.ResponseWriter, r *http.Request)
 	plan, err := s.store.GetLiveAgentPlan(ctx, tenantID, input.PlanID)
 	if err != nil || plan.Status != "active" {
 		writeError(w, http.StatusNotFound, "plan not found")
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(input.MissionKind), "time_report") {
+		worker := decisionexecutor.New(&planSpeechTestStore{Store: s.store, tenantID: tenantID, roomID: roomID, plan: plan}, nil, s.speechGateway(), nil)
+		result, reportErr := worker.SimulateTimeReport(ctx, tenantID, roomID, input.Text, input.Nickname)
+		if reportErr != nil {
+			writeError(w, http.StatusBadGateway, "time report generation failed: "+reportErr.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"question": input.Text, "reply": result.Reply,
+			"execution_mode": "time_report", "plan_name": plan.Name,
+		})
 		return
 	}
 	// 1. Real intent resolution, explicitly in test mode (no live session).
