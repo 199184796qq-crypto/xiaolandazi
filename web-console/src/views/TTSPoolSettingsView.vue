@@ -2,17 +2,22 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { request } from '../api'
 
-interface Account { id: string; name: string; account_uid: string; credential_source: string; configured: boolean; enabled: boolean; rpm: number; rps: number; revision: number; used_minute: number; used_second: number; in_flight: number; voices: Record<string, string> }
+interface ModelUsage { model: string; used_minute: number; in_flight: number; last_requested_at: string }
+interface Account { id: string; name: string; account_uid: string; credential_source: string; configured: boolean; enabled: boolean; rpm: number; rps: number; revision: number; used_minute: number; used_second: number; in_flight: number; voices: Record<string, string>; models: string[]; model_usage: ModelUsage[] }
 interface Queued { id: string; model: string; room_id: number; session_id: number; queued_at: string; expires_at: string }
 interface Pool { accounts: Account[]; queued: number; requests: Queued[]; observed_at: string }
 interface Mapping { model: string; source: string; target: string }
-interface Draft { id: string; name: string; account_uid: string; enabled: boolean; rpm: number; rps: number; revision: number; new_api_key: string; mappings: Mapping[] }
+interface Draft { id: string; name: string; account_uid: string; enabled: boolean; rpm: number; rps: number; revision: number; new_api_key: string; models: string[]; follow_plan: boolean; mappings: Mapping[] }
+const defaultModel = 'qwen-audio-3.1-tts-flash'
+const modelOptions = ['qwen-audio-3.1-tts-flash', 'qwen-audio-3.0-tts-flash', 'qwen-audio-3.0-tts-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3.5-plus']
 const pool = ref<Pool>({ accounts: [], queued: 0, requests: [], observed_at: '' })
 const loading = ref(false), saving = ref(false), editor = ref(false), error = ref(''), notice = ref('')
-const empty = (): Draft => ({ id: '', name: '', account_uid: '', enabled: true, rpm: 180, rps: 3, revision: 0, new_api_key: '', mappings: [] })
+const empty = (): Draft => ({ id: '', name: '', account_uid: '', enabled: true, rpm: 180, rps: 3, revision: 0, new_api_key: '', models: [defaultModel], follow_plan: false, mappings: [] })
 const draft = ref<Draft>(empty())
 const isCurrent = computed(() => draft.value.id === 'current-aliyun-tts')
-const canSave = computed(() => draft.value.name.trim() && draft.value.account_uid.trim() && Number.isInteger(draft.value.rpm) && draft.value.rpm >= 1 && draft.value.rpm <= 180 && Number.isInteger(draft.value.rps) && draft.value.rps >= 1 && draft.value.rps <= 3 && (draft.value.id || draft.value.new_api_key.trim()) && (isCurrent.value || !draft.value.enabled || draft.value.mappings.length > 0) && draft.value.mappings.every(m => m.model.trim() && m.source.trim() && m.target.trim()))
+const selectedModels = computed(() => isCurrent.value && draft.value.follow_plan ? [] : draft.value.models.map(m => m.trim()))
+const modelsValid = computed(() => isCurrent.value && draft.value.follow_plan || (selectedModels.value.length > 0 && selectedModels.value.length <= 20 && new Set(selectedModels.value).size === selectedModels.value.length && selectedModels.value.every(m => /^[A-Za-z0-9._:-]{1,160}$/.test(m))))
+const canSave = computed(() => draft.value.name.trim() && draft.value.account_uid.trim() && modelsValid.value && Number.isInteger(draft.value.rpm) && draft.value.rpm >= 1 && draft.value.rpm <= 180 && Number.isInteger(draft.value.rps) && draft.value.rps >= 1 && draft.value.rps <= 3 && (draft.value.id || draft.value.new_api_key.trim()) && (isCurrent.value || !draft.value.enabled || draft.value.mappings.length > 0) && draft.value.mappings.every(m => m.model.trim() && m.source.trim() && m.target.trim() && (selectedModels.value.includes(m.model.trim()) || isCurrent.value && draft.value.follow_plan)))
 let timer: ReturnType<typeof setInterval> | undefined, disposed = false
 async function load(manual = false) {
   if (loading.value || saving.value) return
@@ -26,7 +31,7 @@ async function load(manual = false) {
 }
 function edit(a?: Account) {
   if (saving.value) return
-  draft.value = a ? { id: a.id, name: a.name, account_uid: a.account_uid, enabled: a.enabled, rpm: a.rpm, rps: a.rps, revision: a.revision, new_api_key: '', mappings: Object.entries(a.voices || {}).map(([k, target]) => { const at = k.indexOf('/'); return { model: k.slice(0, at), source: k.slice(at + 1), target } }) } : empty()
+  draft.value = a ? { id: a.id, name: a.name, account_uid: a.account_uid, enabled: a.enabled, rpm: a.rpm, rps: a.rps, revision: a.revision, new_api_key: '', models: [...(a.models || [])], follow_plan: a.id === 'current-aliyun-tts' && !a.models?.length, mappings: Object.entries(a.voices || {}).map(([k, target]) => { const at = k.indexOf('/'); return { model: k.slice(0, at), source: k.slice(at + 1), target } }) } : empty()
   editor.value = true; error.value = ''; notice.value = ''
 }
 function close() { if (!saving.value) { editor.value = false; draft.value = empty() } }
@@ -39,9 +44,9 @@ async function save() {
     voices[key] = row.target.trim()
   }
   saving.value = true; error.value = ''; notice.value = ''
-  const { mappings: _, ...fields } = draft.value
+  const { mappings: _, follow_plan: __, ...fields } = draft.value
   try {
-    await request('/api/v1/system/tts-pool', { method: 'PUT', body: JSON.stringify({ ...fields, voices }), suppressErrorDialog: true })
+    await request('/api/v1/system/tts-pool', { method: 'PUT', body: JSON.stringify({ ...fields, models: selectedModels.value, voices }), suppressErrorDialog: true })
     if (!disposed) { editor.value = false; draft.value = empty(); notice.value = '已保存，后续合成按新配置分配。排队期间主线使用可用缓存，互动暂缓。' }
   } catch (e) { if (!disposed) { draft.value.new_api_key = ''; error.value = e instanceof Error ? e.message : '保存失败，请重试' } }
   finally { saving.value = false }
@@ -56,12 +61,23 @@ onUnmounted(() => { disposed = true; if (timer) clearInterval(timer); draft.valu
     <header><div><p class="kicker">TTS ACCOUNT POOL</p><h1>TTS账户池与调度</h1><p>每个账号分别限制每分钟180次、每秒3次。当前账号满额就切换下一个可用账号，全部满额才排队。</p></div><div class="actions"><button :disabled="loading || saving" @click="load(true)">刷新用量</button><button class="primary" :disabled="saving" @click="edit()">添加账号</button></div></header>
     <p class="policy">排队不停止直播：主线使用当前方案的可用缓存；互动声音未就绪时暂缓互动。无有效缓存时等待补料，不播放其他方案的声音。</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p><p v-if="notice" class="notice" role="status">{{ notice }}</p>
-    <section class="panel"><h2>账号与用量</h2><p>同一阿里云主账号下的多个Key共用额度，只能登记一个账号。备用账号需先配置可用的音色对应关系。</p>
-      <div class="table-wrap"><table><thead><tr><th>账号</th><th>状态</th><th>近60秒</th><th>近1秒</th><th>正在合成</th><th>操作</th></tr></thead><tbody><tr v-for="a in pool.accounts" :key="a.id"><td><strong>{{ a.name }}</strong><small>主账号UID：{{ a.account_uid === 'current' ? '待补充' : a.account_uid }}</small></td><td>{{ !a.configured ? '未配置凭据' : a.enabled ? '已启用' : '已停用' }}<small>{{ a.credential_source === 'current' ? '使用当前服务器凭据' : '凭据已加密保存' }}</small></td><td>{{ a.used_minute }} / {{ a.rpm }}</td><td>{{ a.used_second }} / {{ a.rps }}</td><td>{{ a.in_flight }}</td><td><button :disabled="saving" @click="edit(a)">编辑</button></td></tr><tr v-if="!pool.accounts.length"><td colspan="6">{{ loading ? '正在读取…' : '暂无账号' }}</td></tr></tbody></table></div>
+    <section class="panel"><h2>账号与用量</h2><p>同一阿里云主账号下的多个Key共用额度，只能登记一个账号。同一账号下的所有TTS模型共用上方限额；备用账号还需配置相同声音的音色对应。</p>
+      <div class="table-wrap"><table><thead><tr><th>账号</th><th>可用TTS模型</th><th>实际调用模型</th><th>状态</th><th>近60秒</th><th>近1秒</th><th>正在合成</th><th>操作</th></tr></thead><tbody>
+        <tr v-for="a in pool.accounts" :key="a.id">
+          <td><strong>{{ a.name }}</strong><small>主账号UID：{{ a.account_uid === 'current' ? '待补充' : a.account_uid }}</small></td>
+          <td class="model-cell"><span v-for="model in a.models" :key="model" class="model-tag">{{ model }}</span><small v-if="!a.models?.length">跟随方案模型（未限定）</small></td>
+          <td class="model-cell"><div v-for="usage in a.model_usage" :key="usage.model" class="model-usage"><strong>{{ usage.model }}</strong><small>{{ usage.in_flight ? `正在合成 ${usage.in_flight} 条` : '近期已调用' }} · 近60秒 {{ usage.used_minute }} 次</small><small>最近请求：{{ new Date(usage.last_requested_at).toLocaleTimeString() }}</small></div><small v-if="!a.model_usage?.length">暂无近期调用记录</small></td>
+          <td>{{ !a.configured ? '未配置凭据' : a.enabled ? '已启用' : '已停用' }}<small>{{ a.credential_source === 'current' ? '使用当前服务器凭据' : '凭据已加密保存' }}</small></td><td>{{ a.used_minute }} / {{ a.rpm }}</td><td>{{ a.used_second }} / {{ a.rps }}</td><td>{{ a.in_flight }}</td><td><button :disabled="saving" @click="edit(a)">编辑</button></td>
+        </tr><tr v-if="!pool.accounts.length"><td colspan="8">{{ loading ? '正在读取…' : '暂无账号' }}</td></tr>
+      </tbody></table></div><small>调用信息按获准调度的请求统计，保留近期记录；不代表请求一定成功或盒子已出声。</small>
     </section>
     <section v-if="editor" class="panel editor" aria-label="编辑TTS账号"><h2>{{ draft.id ? '编辑账号' : '添加阿里TTS账号' }}</h2>
       <form @submit.prevent="save"><fieldset :disabled="saving"><div class="fields"><label>账号名称<input v-model="draft.name" required maxlength="80" /></label><label>阿里云主账号UID<input v-model="draft.account_uid" aria-label="阿里云主账号UID" required maxlength="80" /><small>填写主账号UID，不能填写RAM用户ID或Key名称。</small></label><label>每分钟请求上限<input v-model.number="draft.rpm" type="number" min="1" max="180" step="1" required /></label><label>每秒请求上限<input v-model.number="draft.rps" type="number" min="1" max="3" step="1" required /></label><label v-if="!isCurrent">API Key<input v-model="draft.new_api_key" aria-label="API Key" type="password" autocomplete="new-password" :required="!draft.id" placeholder="已有凭据留空保留" /><small>仅提交新凭据，保存后不会回显。</small></label><label class="check"><input v-model="draft.enabled" type="checkbox" />启用账号</label></div>
-        <div v-if="!isCurrent" class="mappings"><h3>同一声音在该账号下的音色</h3><p>使用该账号已创建并确认一致的音色。不会自动克隆或调用付费测试。</p><div v-for="(m, i) in draft.mappings" :key="i" class="mapping"><label>模型<input v-model="m.model" required placeholder="qwen-audio-3.1-tts-flash" /></label><label>方案原音色ID<input v-model="m.source" required /></label><label>本账号对应音色ID<input v-model="m.target" required /></label><button type="button" @click="draft.mappings.splice(i, 1)">移除</button></div><button type="button" @click="draft.mappings.push({ model: 'qwen-audio-3.1-tts-flash', source: '', target: '' })">添加音色对应</button></div>
+        <div class="models"><h3>账户可用TTS模型</h3><p>调度器按方案请求的模型匹配账户，不会替换方案的模型或声音。添加模型表示该账号可调用它；请先确认供应商已开通该模型。</p>
+          <label v-if="isCurrent" class="check"><input v-model="draft.follow_plan" type="checkbox" />跟随方案模型（保持原有兼容方式）</label>
+          <template v-if="!isCurrent || !draft.follow_plan"><datalist id="tts-model-options"><option v-for="model in modelOptions" :key="model" :value="model" /></datalist><div v-for="(_, i) in draft.models" :key="i" class="model-row"><label>TTS模型ID<input v-model="draft.models[i]" list="tts-model-options" required maxlength="160" placeholder="qwen-audio-3.1-tts-flash" /></label><button type="button" @click="draft.models.splice(i, 1)">移除模型</button></div><button type="button" :disabled="draft.models.length >= 20" @click="draft.models.push(draft.models.length ? '' : defaultModel)">添加TTS模型</button><small v-if="!modelsValid">请配置1—20个不重复的有效模型ID。</small></template>
+        </div>
+        <div v-if="!isCurrent" class="mappings"><h3>同一声音在该账号下的音色</h3><p>使用该账号已创建并确认一致的音色。不会自动克隆或调用付费测试。</p><div v-for="(m, i) in draft.mappings" :key="i" class="mapping"><label>对应模型<select v-model="m.model" aria-label="对应模型" required><option value="" disabled>请选择账户可用模型</option><option v-for="model in selectedModels.filter(Boolean)" :key="model" :value="model">{{ model }}</option><option v-if="m.model && !selectedModels.includes(m.model)" :value="m.model" disabled>{{ m.model }}（已移除，请重选）</option></select></label><label>方案原音色ID<input v-model="m.source" required /></label><label>本账号对应音色ID<input v-model="m.target" required /></label><button type="button" @click="draft.mappings.splice(i, 1)">移除</button></div><button type="button" :disabled="!modelsValid" @click="draft.mappings.push({ model: selectedModels[0] || '', source: '', target: '' })">添加音色对应</button></div>
         <div class="actions"><button type="button" @click="close">取消</button><button class="primary" :disabled="!canSave || saving">{{ saving ? '保存中…' : '保存账号' }}</button></div>
       </fieldset></form>
     </section>
@@ -71,4 +87,5 @@ onUnmounted(() => { disposed = true; if (timer) clearInterval(timer); draft.valu
 
 <style scoped>
 .tts-pool{max-width:1400px;margin:0 auto;padding:24px;color:#273750;font-size:16px}.tts-pool header,.actions{display:flex;align-items:center;justify-content:space-between;gap:12px}.tts-pool header{align-items:flex-start;gap:24px}.kicker{font-size:12px;letter-spacing:.16em;color:#7974db}h1{font-size:28px;margin:6px 0 12px}h2{font-size:21px;margin:0 0 12px}h3{font-size:18px}p{line-height:1.7;color:#6c7890}.panel{margin:20px 0;padding:24px;background:white;border:1px solid #e2e6f3;border-radius:18px}.policy{padding:16px 20px;background:#eff2ff;border-radius:12px;color:#4d5e95}.error{color:#ba2741}.notice{color:#16805c}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;text-align:left;white-space:nowrap}th,td{padding:14px;border-bottom:1px solid #ecedf5}small{display:block;color:#77849b;font-size:13px;margin-top:6px;line-height:1.5}button,input{font:inherit}button{padding:10px 16px;border:1px solid #dce1f3;border-radius:10px;background:white;color:#596a91;cursor:pointer;white-space:nowrap}button.primary{background:#6657eb;color:white;border-color:#6657eb}button:disabled{opacity:.5;cursor:default}.badge{display:inline-block;padding:2px 10px;background:#eeecff;color:#6756dc;border-radius:12px;font-size:16px}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}label{display:flex;flex-direction:column;gap:8px}input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d9dff0;border-radius:10px;min-width:0}.check{flex-direction:row;align-items:center}.check input{width:auto}fieldset{border:0;padding:0;margin:0;min-width:0}.mapping{display:grid;grid-template-columns:1.3fr 1fr 1fr auto;align-items:end;gap:10px;margin:14px 0}.editor .actions{justify-content:flex-end;margin-top:24px}.mappings{margin-top:24px}.actions{flex-wrap:wrap}@media(max-width:700px){.tts-pool{padding:12px}.tts-pool header{display:block}.fields,.mapping{grid-template-columns:1fr}.panel{padding:16px}h1{font-size:24px}}
+.model-cell{min-width:210px;max-width:270px;white-space:normal;overflow-wrap:anywhere;vertical-align:top}.model-tag{display:block;width:fit-content;padding:5px 8px;margin:3px 0;background:#eeecff;border-radius:7px;color:#5747c0;font-size:14px}.model-usage+.model-usage{margin-top:12px}.model-usage strong{font-size:14px}.models{margin-top:24px}.model-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:end;margin:14px 0;max-width:650px}select{font:inherit;width:100%;box-sizing:border-box;min-width:0;padding:12px;border:1px solid #d9dff0;border-radius:10px;background:white}.mapping{grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr) auto}@media(max-width:700px){.mapping{grid-template-columns:1fr}}
 </style>

@@ -27,6 +27,20 @@ func TestTTSPoolAccountValidation(t *testing.T) {
 		{"new without key", func(a *ttsscheduler.AccountInput) { a.ID = ""; a.Revision = 0 }},
 		{"missing voice", func(a *ttsscheduler.AccountInput) { a.ID = "second" }},
 		{"bad mapping", func(a *ttsscheduler.AccountInput) { a.Voices = map[string]string{"not-model-bound": "voice"} }},
+		{"duplicate model", func(a *ttsscheduler.AccountInput) {
+			a.Models = []string{"qwen-audio-3.1-tts-flash", " qwen-audio-3.1-tts-flash "}
+		}},
+		{"bad model", func(a *ttsscheduler.AccountInput) { a.Models = []string{"wrong/model"} }},
+		{"empty model", func(a *ttsscheduler.AccountInput) { a.Models = []string{" "} }},
+		{"too many models", func(a *ttsscheduler.AccountInput) {
+			for i := 0; i < 21; i++ {
+				a.Models = append(a.Models, fmt.Sprintf("qwen-%d", i))
+			}
+		}},
+		{"unselected mapping", func(a *ttsscheduler.AccountInput) {
+			a.Models = []string{"cosyvoice-v3.5-flash"}
+			a.Voices = map[string]string{"qwen-audio-3.1-tts-flash/voice-a": "voice-b"}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := base
@@ -38,6 +52,144 @@ func TestTTSPoolAccountValidation(t *testing.T) {
 	}
 	if err := validateTTSAccount(&base); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTTSPoolMySQLModelConfigurationAndRouting(t *testing.T) {
+	s, second := ttsPoolFixture(t)
+	ctx := t.Context()
+	const qwen = "qwen-audio-3.1-tts-flash"
+	const cosy = "cosyvoice-v3.5-flash"
+	current := ttsscheduler.AccountInput{ID: ttsscheduler.CurrentAccountID, Name: "限定Cosy", AccountUID: "10001", Enabled: true, RPM: 180, RPS: 3, Revision: 2, Models: []string{cosy}}
+	if err := s.SaveTTSAccount(ctx, current, 1); err != nil {
+		t.Fatal(err)
+	}
+	ttsEnqueue(t, s, "use-backup", "voice-a")
+	claim, err := s.ClaimTTS(ctx, "use-backup")
+	if err != nil || !claim.Granted || claim.Credential.AccountID != second || claim.Credential.VoiceID != "voice-b" {
+		t.Fatal("model restriction was ignored", err)
+	}
+	// No compatible voice exists in the selected backup account. The current
+	// account must not serve the excluded model, even though it has spare quota.
+	ttsEnqueue(t, s, "unsupported-voice", "unmapped")
+	claim, err = s.ClaimTTS(ctx, "unsupported-voice")
+	if err != nil || claim.Granted {
+		t.Fatal("excluded model escaped through current account", err)
+	}
+	current.Revision++
+	current.Models = nil // A stale UI without the new field must preserve it.
+	if err = s.SaveTTSAccount(ctx, current, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MigrateTTSPool(ctx, "current-fixture-key"); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := s.TTSPoolSnapshot(ctx)
+	if err != nil || len(snap.Accounts[0].Models) != 1 || snap.Accounts[0].Models[0] != cosy || snap.Accounts[1].Models[0] != qwen {
+		t.Fatal("saved model or legacy mapping lost", err)
+	}
+	if err = s.EnqueueTTS(ctx, ttsscheduler.Work{ID: "cosy", Model: cosy, Provider: "cosyvoice", VoiceID: "cosy-voice", TTL: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	claim, err = s.ClaimTTS(ctx, "cosy")
+	if err != nil || !claim.Granted || claim.Credential.AccountID != current.ID {
+		t.Fatal("incompatible earlier request blocked selected model", err)
+	}
+	// Explicitly return to the old follow-plan policy. Quota history survives.
+	current.Revision++
+	current.Models = []string{}
+	if err = s.SaveTTSAccount(ctx, current, 1); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = s.TTSPoolSnapshot(ctx)
+	if err != nil || len(snap.Accounts[0].Models) != 0 || snap.Accounts[0].InFlight != 1 {
+		t.Fatal("clearing selection changed quota history", err)
+	}
+	if _, err = s.db.ExecContext(ctx, `UPDATE mgmt_tts_pool_jobs SET admitted_at=UTC_TIMESTAMP(6)-INTERVAL 2 SECOND WHERE id='cosy'`); err != nil {
+		t.Fatal(err)
+	}
+	claim, err = s.ClaimTTS(ctx, "unsupported-voice")
+	if err != nil || !claim.Granted || claim.Credential.AccountID != current.ID {
+		t.Fatal("explicit follow-plan selection did not apply", err)
+	}
+	// A newly configured account persists the selected model and encryption;
+	// an older editor cannot add a voice for a different model through omission.
+	input := ttsscheduler.AccountInput{Name: "新模型账号", AccountUID: "10003", NewAPIKey: "model-config-fixture-key", Enabled: true, RPM: 180, RPS: 3, Models: []string{cosy}, Voices: map[string]string{cosy + "/original": "target"}}
+	if err = s.SaveTTSAccount(ctx, input, 1); err != nil {
+		t.Fatal("new model account", err)
+	}
+	snap, err = s.TTSPoolSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range snap.Accounts {
+		if a.AccountUID != "10003" {
+			continue
+		}
+		if len(a.Models) != 1 || a.Models[0] != cosy {
+			t.Fatal("new account did not retain model")
+		}
+		input = ttsscheduler.AccountInput{ID: a.ID, Name: a.Name, AccountUID: a.AccountUID, Enabled: true, RPM: 180, RPS: 3, Revision: a.Revision, Voices: map[string]string{qwen + "/original": "wrong"}}
+		if err = s.SaveTTSAccount(ctx, input, 1); !errors.Is(err, ttsscheduler.ErrConfig) {
+			t.Fatal("older editor bypassed selected models", err)
+		}
+	}
+}
+
+func TestTTSPoolMySQLModelUsageAndSharedQuota(t *testing.T) {
+	s, second := ttsPoolFixture(t)
+	ctx := t.Context()
+	// Mixed-model requests share the same account quota, including failed ones.
+	for _, row := range []struct {
+		id, account, model, status string
+		age                        int
+	}{
+		{"u1", ttsscheduler.CurrentAccountID, "qwen-audio-3.1-tts-flash", "running", 5},
+		{"u2", ttsscheduler.CurrentAccountID, "cosyvoice-v3.5-flash", "failed", 10},
+		{"u3", second, "qwen-audio-3.1-tts-flash", "completed", 90},
+	} {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO mgmt_tts_pool_jobs(id,account_id,model,provider,voice_id,status,queued_at,admitted_at,expires_at) VALUES(?,?,?,'qwen_audio','voice-a',?,TIMESTAMPADD(SECOND,?,UTC_TIMESTAMP(6)),TIMESTAMPADD(SECOND,?,UTC_TIMESTAMP(6)),UTC_TIMESTAMP(6)+INTERVAL 1 MINUTE)`, row.id, row.account, row.model, row.status, -row.age, -row.age); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ttsEnqueue(t, s, "not-admitted", "voice-a")
+	snap, err := s.TTSPoolSnapshot(ctx)
+	if err != nil || snap.Queued != 1 {
+		t.Fatal("snapshot", err)
+	}
+	a, b := snap.Accounts[0], snap.Accounts[1]
+	if a.UsedMinute != 2 || a.InFlight != 1 || len(a.ModelUsage) != 2 || a.ModelUsage[0].Model != "qwen-audio-3.1-tts-flash" || a.ModelUsage[0].InFlight != 1 || a.ModelUsage[1].UsedMinute != 1 {
+		t.Fatal("account/model counters conflated")
+	}
+	if b.UsedMinute != 0 || len(b.ModelUsage) != 1 || b.ModelUsage[0].InFlight != 0 || b.ModelUsage[0].LastRequestedAt.IsZero() {
+		t.Fatal("recent completed usage missing or assigned to wrong account")
+	}
+	if a.ModelUsage[0].LastRequestedAt.After(snap.ObservedAt) || a.ModelUsage[0].LastRequestedAt.Before(snap.ObservedAt.Add(-time.Minute)) {
+		t.Fatal("invalid actual request timestamp")
+	}
+	// Reading usage is observational: it cannot settle running work or grant a
+	// queued request, and it never serializes the account key or sealed bytes.
+	var status string
+	if err = s.db.QueryRowContext(ctx, `SELECT status FROM mgmt_tts_pool_jobs WHERE id='u1'`).Scan(&status); err != nil || status != "running" {
+		t.Fatal("snapshot mutated running request", err)
+	}
+	raw, _ := json.Marshal(snap)
+	if strings.Contains(string(raw), "fixture-key") || strings.Contains(string(raw), "sealed_key") {
+		t.Fatal("snapshot exposed credentials")
+	}
+	// Prove selecting two models cannot create a second quota bucket.
+	if err = s.FinishTTS(ctx, "not-admitted", "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.db.ExecContext(ctx, `UPDATE mgmt_tts_pool_accounts SET models_json=JSON_ARRAY('qwen-audio-3.1-tts-flash','cosyvoice-v3.5-flash'),rpm=2 WHERE id=?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.EnqueueTTS(ctx, ttsscheduler.Work{ID: "shared-limit", Model: "cosyvoice-v3.5-flash", Provider: "cosyvoice", VoiceID: "voice-a", TTL: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := s.ClaimTTS(ctx, "shared-limit")
+	if err != nil || claim.Granted {
+		t.Fatal("different model bypassed account-wide RPM", err)
 	}
 }
 

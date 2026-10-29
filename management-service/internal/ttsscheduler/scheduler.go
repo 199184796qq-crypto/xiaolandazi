@@ -190,7 +190,17 @@ type Account struct {
 	InFlight         int               `json:"in_flight"`
 	AccountUID       string            `json:"account_uid"`
 	Voices           map[string]string `json:"voices"`
+	Models           []string          `json:"models"`
+	ModelUsage       []ModelUsage      `json:"model_usage"`
 }
+
+type ModelUsage struct {
+	Model           string    `json:"model"`
+	UsedMinute      int       `json:"used_minute"`
+	InFlight        int       `json:"in_flight"`
+	LastRequestedAt time.Time `json:"last_requested_at"`
+}
+
 type AccountInput struct {
 	ID         string            `json:"id"`
 	Name       string            `json:"name"`
@@ -201,6 +211,9 @@ type AccountInput struct {
 	AccountUID string            `json:"account_uid"`
 	NewAPIKey  string            `json:"new_api_key,omitempty"`
 	Voices     map[string]string `json:"voices"`
+	// Omitted by older clients: preserve the saved selection. An explicit empty
+	// selection lets the current environment account follow the plan as before.
+	Models []string `json:"models,omitempty"`
 }
 type Queued struct {
 	Work

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -74,6 +75,7 @@ func (s *Store) upgradeTTSPoolSchema(ctx context.Context) error {
 		{"mgmt_tts_pool_accounts", "sealed_key", "BLOB NULL"},
 		{"mgmt_tts_pool_accounts", "key_fingerprint", "CHAR(64) NOT NULL DEFAULT ''"},
 		{"mgmt_tts_pool_accounts", "voices_json", "JSON NULL"},
+		{"mgmt_tts_pool_accounts", "models_json", "JSON NULL"},
 		{"mgmt_tts_pool_jobs", "provider", "VARCHAR(32) NOT NULL DEFAULT 'aliyun'"},
 		{"mgmt_tts_pool_jobs", "voice_id", "VARCHAR(200) NOT NULL DEFAULT ''"},
 		{"mgmt_tts_pool_jobs", "heartbeat_at", "DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"},
@@ -159,15 +161,37 @@ func validateTTSAccount(a *ttsscheduler.AccountInput) error {
 	if len(a.Voices) > 200 {
 		return errors.New("音色对应配置过多")
 	}
+	if len(a.Models) > 20 {
+		return errors.New("每个账号最多配置20个TTS模型")
+	}
+	models := map[string]bool{}
+	for i, model := range a.Models {
+		model = strings.TrimSpace(model)
+		if !ttsModelToken(model) || models[model] {
+			return errors.New("TTS模型ID格式错误或重复")
+		}
+		a.Models[i] = model
+		models[model] = true
+	}
 	for source, target := range a.Voices {
-		if !ttsVoiceToken(source) || !ttsVoiceToken(target) || !strings.Contains(source, "/") {
+		model, voice, bound := strings.Cut(source, "/")
+		if !ttsVoiceToken(source) || !ttsVoiceToken(target) || !bound || !ttsModelToken(model) || voice == "" {
 			return errors.New("音色编号格式错误")
+		}
+		if len(models) > 0 && !models[model] {
+			return errors.New("音色对应的模型必须在该账号的可用TTS模型中")
 		}
 	}
 	if a.ID != ttsscheduler.CurrentAccountID && a.Enabled && len(a.Voices) == 0 {
 		return errors.New("备用账号启用前需要配置目标模型及音色对应关系")
 	}
 	return nil
+}
+
+func ttsModelToken(s string) bool {
+	return len(s) > 0 && len(s) <= 160 && strings.IndexFunc(s, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._:-", r))
+	}) < 0
 }
 
 // Mapping keys include the exact model: cloned voices cannot move across models.
@@ -236,6 +260,11 @@ func (s *Store) SaveTTSAccount(ctx context.Context, a ttsscheduler.AccountInput,
 		a.Voices = map[string]string{}
 	}
 	voices, _ := json.Marshal(a.Voices)
+	var models any
+	if len(a.Models) > 0 {
+		raw, _ := json.Marshal(a.Models)
+		models = string(raw)
+	}
 	if a.Revision == 0 {
 		_, err = tx.ExecContext(ctx, `INSERT INTO mgmt_tts_pool_accounts(id,name,account_uid,provider,credential_source,sealed_key,key_fingerprint,voices_json,configured,enabled,rpm,rps,updated_by_user_id,updated_at) VALUES(?,?,?,'aliyun','encrypted',?,?,?,TRUE,?,?,?,?,?)`, a.ID, a.Name, a.AccountUID, sealed, fingerprint, voices, a.Enabled, a.RPM, a.RPS, actor, now)
 	} else {
@@ -243,6 +272,30 @@ func (s *Store) SaveTTSAccount(ctx context.Context, a ttsscheduler.AccountInput,
 	}
 	if err != nil {
 		return err
+	}
+	if a.Revision == 0 || a.Models != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE mgmt_tts_pool_accounts SET models_json=? WHERE id=?`, models, a.ID); err != nil {
+			return err
+		}
+	}
+	// Older clients cannot silently bypass a model restriction by editing voices.
+	var savedModels sql.NullString
+	if err = tx.QueryRowContext(ctx, `SELECT models_json FROM mgmt_tts_pool_accounts WHERE id=?`, a.ID).Scan(&savedModels); err != nil {
+		return err
+	}
+	if savedModels.Valid {
+		var allowed []string
+		if err = json.Unmarshal([]byte(savedModels.String), &allowed); err != nil {
+			return err
+		}
+		check := a
+		if check.Revision == 0 {
+			check.Revision = 1 // The new ID has already been allocated above.
+		}
+		check.Models = allowed
+		if err = validateTTSAccount(&check); err != nil {
+			return fmt.Errorf("%w：%v", ttsscheduler.ErrConfig, err)
+		}
 	}
 	return tx.Commit()
 }
@@ -295,7 +348,7 @@ type ttsPoolAccount struct {
 }
 
 func ttsAccountsTx(ctx context.Context, tx *sql.Tx) (out []ttsPoolAccount, err error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id,name,account_uid,provider,credential_source,configured,enabled,rpm,rps,revision,voices_json,sealed_key FROM mgmt_tts_pool_accounts ORDER BY (id='current-aliyun-tts') DESC,id`)
+	rows, err := tx.QueryContext(ctx, `SELECT id,name,account_uid,provider,credential_source,configured,enabled,rpm,rps,revision,voices_json,sealed_key,models_json FROM mgmt_tts_pool_accounts ORDER BY (id='current-aliyun-tts') DESC,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -303,11 +356,31 @@ func ttsAccountsTx(ctx context.Context, tx *sql.Tx) (out []ttsPoolAccount, err e
 	for rows.Next() {
 		var a ttsPoolAccount
 		var voices []byte
-		if err = rows.Scan(&a.ID, &a.Name, &a.AccountUID, &a.Provider, &a.CredentialSource, &a.Configured, &a.Enabled, &a.RPM, &a.RPS, &a.Revision, &voices, &a.sealed); err != nil {
+		var models sql.NullString
+		if err = rows.Scan(&a.ID, &a.Name, &a.AccountUID, &a.Provider, &a.CredentialSource, &a.Configured, &a.Enabled, &a.RPM, &a.RPS, &a.Revision, &voices, &a.sealed, &models); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal(voices, &a.Voices); err != nil {
 			return nil, err
+		}
+		a.Models = []string{}
+		a.ModelUsage = []ttsscheduler.ModelUsage{}
+		if models.Valid {
+			if err = json.Unmarshal([]byte(models.String), &a.Models); err != nil {
+				return nil, err
+			}
+		} else if a.ID != ttsscheduler.CurrentAccountID {
+			// Existing backup accounts were already restricted by exact-model voice
+			// mappings. Expose those models without rewriting any saved account.
+			seen := map[string]bool{}
+			for key := range a.Voices {
+				model, _, _ := strings.Cut(key, "/")
+				if !seen[model] {
+					a.Models = append(a.Models, model)
+					seen[model] = true
+				}
+			}
+			sort.Strings(a.Models)
 		}
 		out = append(out, a)
 	}
@@ -316,6 +389,15 @@ func ttsAccountsTx(ctx context.Context, tx *sql.Tx) (out []ttsPoolAccount, err e
 func ttsMappedVoice(a ttsPoolAccount, model, voice string) (string, bool) {
 	if !a.Enabled || !a.Configured {
 		return "", false
+	}
+	if len(a.Models) > 0 {
+		allowed := false
+		for _, id := range a.Models {
+			allowed = allowed || id == model
+		}
+		if !allowed {
+			return "", false
+		}
 	}
 	if a.ID == ttsscheduler.CurrentAccountID {
 		return voice, true
@@ -473,6 +555,23 @@ func (s *Store) TTSPoolSnapshot(ctx context.Context) (out ttsscheduler.Snapshot,
 	}
 	for _, a := range accounts {
 		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(admitted_at>?),0),COALESCE(SUM(admitted_at>?),0),COALESCE(SUM(status='running' AND expires_at>?),0) FROM mgmt_tts_pool_jobs WHERE account_id=?`, out.ObservedAt.Add(-time.Minute), out.ObservedAt.Add(-time.Second), out.ObservedAt, a.ID).Scan(&a.UsedMinute, &a.UsedSecond, &a.InFlight); err != nil {
+			return out, err
+		}
+		rows, queryErr := tx.QueryContext(ctx, `SELECT model,COALESCE(SUM(admitted_at>?),0),COALESCE(SUM(status='running' AND expires_at>?),0),MAX(admitted_at) FROM mgmt_tts_pool_jobs WHERE account_id=? AND admitted_at IS NOT NULL GROUP BY model ORDER BY MAX(admitted_at) DESC,model`, out.ObservedAt.Add(-time.Minute), out.ObservedAt, a.ID)
+		if queryErr != nil {
+			return out, queryErr
+		}
+		for rows.Next() {
+			var usage ttsscheduler.ModelUsage
+			if err = rows.Scan(&usage.Model, &usage.UsedMinute, &usage.InFlight, &usage.LastRequestedAt); err != nil {
+				rows.Close()
+				return out, err
+			}
+			a.ModelUsage = append(a.ModelUsage, usage)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
 			return out, err
 		}
 		out.Accounts = append(out.Accounts, a.Account)
