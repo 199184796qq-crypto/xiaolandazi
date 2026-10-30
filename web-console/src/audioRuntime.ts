@@ -25,7 +25,7 @@ export function getSharedAudioContext(create = false) {
 export async function unlockSharedAudioContext() {
   const context = getSharedAudioContext(true)
   if (!context) return null
-  if (context.state === 'suspended') {
+  if (context.state !== 'running') {
     await context.resume()
   }
   if (context.state !== 'running') {

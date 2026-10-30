@@ -276,6 +276,7 @@ let localAudioPreparedSwitchTimer: number | undefined
 let localAudioHeartbeatTimer: number | undefined
 let localAudioReconnectTimer: number | undefined
 let localAudioRegisteredRoomID = 0
+let localAudioRegisteredReceiverID = ''
 let localAudioPlaybackGeneration = 0
 let compositeAudioAbort: AbortController | null = null
 let compositeAudioGeneration = 0
@@ -283,6 +284,8 @@ let compositeAudioNextStartTime = 0
 let compositeAudioConnectPromise: Promise<void> | null = null
 let compositeAudioConnectedAt = 0
 let compositeAudioLastFrameAt = 0
+let compositeAudioReader: ReadableStreamDefaultReader<Uint8Array> | null = null
+let localAudioMuteRevision = 0
 const compositeAudioSources = new Set<AudioBufferSourceNode>()
 const localAudioState = ref<'disconnected' | 'connected' | 'playing' | 'error'>('disconnected')
 const firstVoicePlaybackReceived = ref(false)
@@ -296,7 +299,6 @@ let firstVoicePlaybackEpoch = 0
 const localAudioError = ref('')
 const localAudioMuted = ref(false)
 const roomAudioEngine = ref<RoomAudioEngineSnapshot | null>(null)
-const LOCAL_AUDIO_RECEIVER_KEY = 'livecompanion.web-audio-receiver.v1'
 let runtimePollTimer: number | undefined
 let sessionStatsPollTimer: number | undefined
 let speechPollTimer: number | undefined
@@ -1189,6 +1191,7 @@ const aiPaused = computed(() => aiRuntimeStatus.value === 'paused')
 const aiActive = computed(() => aiRuntimeStatus.value === 'working' || aiRuntimeStatus.value === 'paused')
 const initialVoiceWaiting = computed(() =>
   aiRuntimeMode.value === 'anchor' &&
+  !localAudioMuted.value &&
   (firstVoiceStartPending.value || runtimeControlBusy.value || aiRunning.value) &&
   !firstVoicePlaybackReceived.value,
 )
@@ -2679,14 +2682,14 @@ function localAudioBaseURL() {
 }
 
 function localAudioReceiverID() {
-  const stored = window.localStorage.getItem(LOCAL_AUDIO_RECEIVER_KEY)
-  if (stored) return stored
+  return localAudioRegisteredReceiverID
+}
+
+function newLocalAudioReceiverID() {
   const suffix = typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2) + Date.now().toString(36)
-  const id = 'web-console-' + suffix
-  window.localStorage.setItem(LOCAL_AUDIO_RECEIVER_KEY, id)
-  return id
+  return 'web-console-' + suffix
 }
 
 async function ensureLocalAudioUnlocked() {
@@ -2726,26 +2729,31 @@ function ensureLocalAudioGainNode() {
 }
 
 async function toggleLocalAudioMuted() {
+  const revision = ++localAudioMuteRevision
   const muted = !localAudioMuted.value
-  // Flush before opening the gain: queued speech must never become audible
-  // again just because the operator returned from listening to the box.
-  flushCompositeAudioQueue()
-  if (!muted) stopCompositeAudioReceiver()
   localAudioMuted.value = muted
+  // A muted page owns neither a PCM subscription nor a receiver heartbeat.
+  // Every fresh listen uses its own ID, so a late unregister cannot remove it.
+  stopCompositeAudioReceiver()
+  if (localAudioReconnectTimer !== undefined) {
+    window.clearTimeout(localAudioReconnectTimer)
+    localAudioReconnectTimer = undefined
+  }
+  localAudioState.value = 'disconnected'
   const gain = ensureLocalAudioGainNode()
   if (gain) {
     gain.gain.setValueAtTime(localAudioMuted.value ? 0 : 1, gain.context.currentTime)
   }
-  if (muted) {
-    if (compositeAudioStreamLooksAlive()) localAudioState.value = 'connected'
+  if (muted) return
+  const ready = await ensureLocalAudioUnlocked()
+  if (revision !== localAudioMuteRevision || pageUnmounted) return
+  if (!ready) {
+    localAudioMuted.value = true
+    const failedGain = ensureLocalAudioGainNode()
+    failedGain?.gain.setValueAtTime(0, failedGain.context.currentTime)
     return
   }
-  localAudioState.value = 'disconnected'
-  if (!(await ensureLocalAudioUnlocked()) || localAudioMuted.value || pageUnmounted) return
-  // A previous connect may still be finishing its aborted fetch. Wait for it
-  // without letting that old promise stand in for the new live subscription.
-  if (compositeAudioConnectPromise) await compositeAudioConnectPromise
-  if (localAudioMuted.value || pageUnmounted) return
+  if (localAudioMuted.value) return
   await connectLocalAudioReceiver()
 }
 
@@ -2771,9 +2779,15 @@ function stopCompositeAudioReceiver() {
   compositeAudioGeneration += 1
   compositeAudioAbort?.abort()
   compositeAudioAbort = null
+  // Do not let an abandoned registration/header request block the next click.
+  compositeAudioConnectPromise = null
+  const reader = compositeAudioReader
+  compositeAudioReader = null
+  if (reader) void reader.cancel().catch(() => undefined)
   compositeAudioConnectedAt = 0
   compositeAudioLastFrameAt = 0
   flushCompositeAudioQueue()
+  void unregisterLocalAudioReceiver()
 }
 
 const COMPOSITE_AUDIO_STALE_MS = 4_000
@@ -2791,7 +2805,7 @@ function roomAudioPhaseNeedsPCM(phase?: RoomAudioEngineSnapshot['phase']) {
 }
 
 function ensureCompositeAudioSubscriptionHealth(snapshot: RoomAudioEngineSnapshot) {
-  if (pageUnmounted || !coreActionsAvailable.value || !roomAudioPhaseNeedsPCM(snapshot.phase)) return
+  if (pageUnmounted || localAudioMuted.value || !coreActionsAvailable.value || !roomAudioPhaseNeedsPCM(snapshot.phase)) return
   if (compositeAudioStreamLooksAlive()) return
   if (compositeAudioConnectPromise) return
   localAudioState.value = 'disconnected'
@@ -2869,6 +2883,7 @@ async function pumpCompositeAudioStream(
   signal: AbortSignal,
 ) {
   const reader = stream.getReader()
+  compositeAudioReader = reader
   let pending = new Uint8Array(0)
   try {
     while (!signal.aborted && generation === compositeAudioGeneration) {
@@ -2894,12 +2909,13 @@ async function pumpCompositeAudioStream(
       localAudioError.value = err instanceof Error ? err.message : '房间合成音频流读取失败'
     }
   } finally {
+    if (compositeAudioReader === reader) compositeAudioReader = null
     try {
       reader.releaseLock()
     } catch {
       // Reader may already be released by the browser.
     }
-    if (!signal.aborted && generation === compositeAudioGeneration && !pageUnmounted) {
+    if (!signal.aborted && generation === compositeAudioGeneration && !pageUnmounted && !localAudioMuted.value) {
       if (compositeAudioAbort?.signal === signal) {
         compositeAudioAbort = null
       }
@@ -3136,15 +3152,17 @@ async function playLocalAudioTask(task: LocalAudioTask) {
 void prepareLocalAudioSwitch
 void playLocalAudioTask
 
-async function registerLocalAudioReceiver() {
+async function registerLocalAudioReceiver(generation: number, signal: AbortSignal, receiverID: string) {
   const base = localAudioBaseURL()
   if (!base || !Number.isFinite(roomId) || roomId <= 0) return false
+  const current = () => generation === compositeAudioGeneration && !signal.aborted && !pageUnmounted && !localAudioMuted.value
   try {
     const response = await fetch(base + '/v1/receivers/register', {
       method: 'POST',
+      signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        receiver_id: localAudioReceiverID(),
+        receiver_id: receiverID,
         room_id: roomId,
         terminal_type: 'web_console',
         name: '直播详情本机测试端',
@@ -3152,6 +3170,10 @@ async function registerLocalAudioReceiver() {
       }),
     })
     if (!response.ok) throw new Error('Core声音注册失败 HTTP ' + response.status)
+    if (!current()) {
+      void unregisterLocalAudioReceiverID(base, receiverID, roomId)
+      return false
+    }
     localAudioRegisteredRoomID = roomId
     if (localAudioHeartbeatTimer !== undefined) window.clearInterval(localAudioHeartbeatTimer)
     localAudioHeartbeatTimer = window.setInterval(() => {
@@ -3159,6 +3181,7 @@ async function registerLocalAudioReceiver() {
     }, 15_000)
     return true
   } catch (err) {
+    if (!current()) return false
     localAudioState.value = 'error'
     localAudioError.value = err instanceof Error ? err.message : '声音终端注册失败'
     return false
@@ -3166,27 +3189,32 @@ async function registerLocalAudioReceiver() {
 }
 
 function scheduleLocalAudioReconnect(delayMS = 900) {
-  if (pageUnmounted || !coreActionsAvailable.value || localAudioReconnectTimer !== undefined) return
+  if (pageUnmounted || localAudioMuted.value || !coreActionsAvailable.value || localAudioReconnectTimer !== undefined) return
   localAudioReconnectTimer = window.setTimeout(() => {
     localAudioReconnectTimer = undefined
-    if (pageUnmounted || !coreActionsAvailable.value) return
+    if (pageUnmounted || localAudioMuted.value || !coreActionsAvailable.value) return
     void connectLocalAudioReceiver()
   }, delayMS)
 }
 
 async function heartbeatLocalAudioReceiver() {
-  if (!coreActionsAvailable.value) return
+  if (localAudioMuted.value || !coreActionsAvailable.value) return
   const base = localAudioBaseURL()
-  if (!base || localAudioRegisteredRoomID <= 0) return
+  const receiverID = localAudioRegisteredReceiverID
+  const registeredRoomID = localAudioRegisteredRoomID
+  if (!base || !receiverID || registeredRoomID <= 0) return
+  const current = () => !pageUnmounted && !localAudioMuted.value && receiverID === localAudioRegisteredReceiverID
   try {
     const response = await fetch(
-      base + '/v1/receivers/' + encodeURIComponent(localAudioReceiverID()) + '/heartbeat',
+      base + '/v1/receivers/' + encodeURIComponent(receiverID) + '/heartbeat',
       {
         method: 'POST',
+        signal: AbortSignal.timeout(8000),
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ room_id: localAudioRegisteredRoomID }),
+        body: JSON.stringify({ room_id: registeredRoomID }),
       },
     )
+    if (!current()) return
     if (!response.ok) {
       localAudioState.value = 'disconnected'
       if (response.status === 409) {
@@ -3198,6 +3226,7 @@ async function heartbeatLocalAudioReceiver() {
       }
     }
   } catch {
+    if (!current()) return
     localAudioState.value = 'disconnected'
     scheduleLocalAudioReconnect()
   }
@@ -3205,18 +3234,27 @@ async function heartbeatLocalAudioReceiver() {
 
 async function unregisterLocalAudioReceiver() {
   const base = localAudioBaseURL()
-  const registeredRoomID = localAudioRegisteredRoomID
+  // Pending registration may already have reached Core before its response.
+  const registeredRoomID = localAudioRegisteredRoomID || roomId
+  const receiverID = localAudioRegisteredReceiverID
   localAudioRegisteredRoomID = 0
+  localAudioRegisteredReceiverID = ''
   if (localAudioHeartbeatTimer !== undefined) {
     window.clearInterval(localAudioHeartbeatTimer)
     localAudioHeartbeatTimer = undefined
   }
-  if (!base || registeredRoomID <= 0) return
+  if (!base || !receiverID || registeredRoomID <= 0) return
+  await unregisterLocalAudioReceiverID(base, receiverID, registeredRoomID)
+}
+
+async function unregisterLocalAudioReceiverID(base: string, receiverID: string, registeredRoomID: number) {
   try {
     await fetch(
-      base + '/v1/receivers/' + encodeURIComponent(localAudioReceiverID()) + '/unregister',
+      base + '/v1/receivers/' + encodeURIComponent(receiverID) + '/unregister',
       {
         method: 'POST',
+        signal: AbortSignal.timeout(8000),
+        keepalive: true,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ room_id: registeredRoomID }),
       },
@@ -3227,7 +3265,7 @@ async function unregisterLocalAudioReceiver() {
 }
 
 async function connectLocalAudioReceiverOnce() {
-  if (pageUnmounted || !coreActionsAvailable.value) return
+  if (pageUnmounted || localAudioMuted.value || !coreActionsAvailable.value) return
   if (localAudioReconnectTimer !== undefined) {
     window.clearTimeout(localAudioReconnectTimer)
     localAudioReconnectTimer = undefined
@@ -3236,7 +3274,7 @@ async function connectLocalAudioReceiverOnce() {
   localAudioEventSource = null
   const base = localAudioBaseURL()
   if (!base || !Number.isFinite(roomId) || roomId <= 0) return
-  if (!localAudioContext) {
+  if (!localAudioContext || localAudioContext.state === 'closed') {
     localAudioContext = getSharedAudioContext(true)
   }
   ensureLocalAudioGainNode()
@@ -3246,16 +3284,29 @@ async function connectLocalAudioReceiverOnce() {
   ) {
     return
   }
-  if (!(await registerLocalAudioReceiver())) return
-
   stopCompositeAudioReceiver()
   stopLocalAudioPlayback(false)
   const generation = ++compositeAudioGeneration
   const controller = new AbortController()
   compositeAudioAbort = controller
+  const receiverID = newLocalAudioReceiverID()
+  localAudioRegisteredReceiverID = receiverID
   compositeAudioConnectedAt = 0
   compositeAudioLastFrameAt = 0
+  // Bound both registration and response headers; PCM reading stays open.
+  const connectTimeout = window.setTimeout(() => {
+    if (generation !== compositeAudioGeneration || pageUnmounted || localAudioMuted.value) return
+    stopCompositeAudioReceiver()
+    localAudioState.value = 'error'
+    localAudioError.value = '网页声音连接超时，正在重新连接'
+    scheduleLocalAudioReconnect()
+  }, 8000)
   try {
+    if (!(await registerLocalAudioReceiver(generation, controller.signal, receiverID))) {
+      if (!controller.signal.aborted && generation === compositeAudioGeneration) scheduleLocalAudioReconnect()
+      return
+    }
+    if (generation !== compositeAudioGeneration || controller.signal.aborted || localAudioMuted.value) return
     const response = await fetch(base + '/v1/rooms/' + roomId + '/composite.pcm', {
       cache: 'no-store',
       signal: controller.signal,
@@ -3263,7 +3314,10 @@ async function connectLocalAudioReceiverOnce() {
     if (!response.ok || !response.body) {
       throw new Error('房间合成音频流连接失败 HTTP ' + response.status)
     }
-    if (generation !== compositeAudioGeneration || controller.signal.aborted) return
+    if (generation !== compositeAudioGeneration || controller.signal.aborted || localAudioMuted.value) {
+      if (response.body) void response.body.cancel().catch(() => undefined)
+      return
+    }
     compositeAudioConnectedAt = Date.now()
     localAudioState.value = 'connected'
     localAudioError.value = ''
@@ -3273,10 +3327,13 @@ async function connectLocalAudioReceiverOnce() {
     localAudioState.value = 'error'
     localAudioError.value = err instanceof Error ? err.message : '房间合成音频流连接失败'
     scheduleLocalAudioReconnect()
+  } finally {
+    window.clearTimeout(connectTimeout)
   }
 }
 
 async function connectLocalAudioReceiver() {
+  if (pageUnmounted || localAudioMuted.value || !coreActionsAvailable.value) return
   if (compositeAudioConnectPromise) {
     await compositeAudioConnectPromise
     return
@@ -3304,7 +3361,7 @@ async function startCompanionRuntime() {
   runtimeError.value = ''
   firstVoicePlaybackReceived.value = false
   initialVoiceStage.value = 'opening_audio'
-  firstVoiceStartPending.value = aiRuntimeMode.value === 'anchor'
+  firstVoiceStartPending.value = aiRuntimeMode.value === 'anchor' && !localAudioMuted.value
   firstVoicePlaybackEpoch += 1
   flushCompositeAudioQueue()
   let startAccepted = false
@@ -4468,7 +4525,7 @@ function stopPublicScreenTransport() {
 }
 
 function handleLocalAudioUserGesture() {
-  if (pageUnmounted || !coreActionsAvailable.value) return
+  if (pageUnmounted || localAudioMuted.value || !coreActionsAvailable.value) return
   if (
     localAudioContext?.state === 'running' &&
     (localAudioState.value === 'connected' || localAudioState.value === 'playing')

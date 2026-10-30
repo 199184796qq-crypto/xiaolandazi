@@ -15,14 +15,14 @@ export async function startFixture({roomViewSource, speechIdentity = null, roomD
         import View from '/src/views/RoomDetailView.vue'; import GlobalFeedback from '/src/components/GlobalFeedback.vue'; import {applySession} from '/src/session.ts';
         import {coreRuntime} from '/src/coreRuntime.ts'; import '/src/style.css';
         const params=new URLSearchParams(location.search);const role=params.get('role')||'customer';
-        window.fixture={calls:[],queue:[],caption:params.get('caption')==='1'||params.get('waiting')!=='1',waiting:params.get('waiting')==='1',granted:role!=='ungranted',session:1,pcm:params.get('pcm')==='1',sources:[],startTest:params.get('start_test')==='1',delayUnlock:params.get('delay_unlock')==='1',startFailed:false,runtimePollLag:false};
+        window.fixture={calls:[],queue:[],caption:params.get('caption')==='1'||params.get('waiting')!=='1',waiting:params.get('waiting')==='1',granted:role!=='ungranted',session:1,pcm:params.get('pcm')==='1',sources:[],audioContexts:[],registrationWaiters:[],unregisterWaiters:[],activeReceivers:[],cancelledStreams:[],resumeCalls:0,startTest:params.get('start_test')==='1',delayUnlock:params.get('delay_unlock')==='1',startFailed:false,runtimePollLag:false};
         window.fixture.identity=${JSON.stringify(speechIdentity)};
         window.fixture.devices=${JSON.stringify(roomDevices)};
         if(window.fixture.pcm){
           window.AudioContext=class {
-            constructor(){this.state=window.fixture.delayUnlock?'suspended':'running';this.destination={};this.origin=performance.now();}
+            constructor(){this.state=window.fixture.delayUnlock?'suspended':'running';this.destination={};this.origin=performance.now();window.fixture.audioContexts.push(this);}
             get currentTime(){return (performance.now()-this.origin)/1000;}
-            async resume(){if(window.fixture.delayUnlock)await new Promise(resolve=>window.fixture.releaseUnlock=()=>{window.fixture.delayUnlock=false;resolve()});this.state='running';} async suspend(){this.state='suspended';} async close(){this.state='closed';}
+            async resume(){window.fixture.resumeCalls++;if(window.fixture.resumeError)throw Error(window.fixture.resumeError);if(window.fixture.delayUnlock)await new Promise(resolve=>window.fixture.releaseUnlock=()=>{window.fixture.delayUnlock=false;resolve()});this.state='running';} async suspend(){this.state='suspended';} async close(){this.state='closed';}
             createGain(){return {context:this,gain:{value:1,setValueAtTime(){}},connect(){},disconnect(){}};}
             createBuffer(){const data=new Float32Array(480);return {getChannelData:()=>data};}
             createBufferSource(){const context=this;let timer,record;const source={buffer:null,onended:null,connect(){},disconnect(){},stop(){clearTimeout(timer);if(record)record.stopped=true;},start(at){record={sound:source.buffer.getChannelData(0).some(v=>v!==0),sample:Math.round(source.buffer.getChannelData(0)[0]*32768),at,stopped:false,ended:false};window.fixture.sources.push(record);timer=setTimeout(()=>{record.ended=true;source.onended?.()},Math.max(0,(at-context.currentTime+.02)*1000));}};return source;}
@@ -31,9 +31,11 @@ export async function startFixture({roomViewSource, speechIdentity = null, roomD
         const room={id:15,tenant_id:14,name:'菜籽油',platform:'douyin',external_room_id:'529757346891',status:'offline',monitor_enabled:false,online_count:64,cooperation_status:'cooperating'};
         const now=new Date().toISOString();
         window.fetch=async(url,options={})=>{
-          const path=new URL(url,location.origin).pathname;window.fixture.calls.push({path,method:options.method||'GET'});
+          const path=new URL(url,location.origin).pathname;window.fixture.calls.push({path,method:options.method||'GET',body:options.body?JSON.parse(options.body):null});
+          if(path.endsWith('/v1/receivers/register')){window.fixture.activeReceivers.push(JSON.parse(options.body).receiver_id);if(window.fixture.hangNextRegister){window.fixture.hangNextRegister=false;return new Promise(resolve=>window.fixture.registrationWaiters.push(()=>resolve(Response.json({}))));}}
+          if(path.endsWith('/unregister')){const id=decodeURIComponent(path.split('/').at(-2));const finish=()=>{window.fixture.activeReceivers=window.fixture.activeReceivers.filter(value=>value!==id);return Response.json({});};if(window.fixture.hangNextUnregister){window.fixture.hangNextUnregister=false;return new Promise(resolve=>window.fixture.unregisterWaiters.push(()=>resolve(finish())));}return finish();}
           if(path.includes('/v1/receivers/'))return Response.json({});
-          if(path.endsWith('/composite.pcm'))return new Response(new ReadableStream({start(controller){window.fixture.pcmController=controller;(window.fixture.pcmStreams??=[]).push(controller);}}),{headers:{'Content-Type':'application/octet-stream'}});
+          if(path.endsWith('/composite.pcm')){const index=(window.fixture.pcmStreams??=[]).length;return new Response(new ReadableStream({start(controller){window.fixture.pcmController=controller;window.fixture.pcmStreams.push(controller);},cancel(){window.fixture.cancelledStreams.push(index);}}),{headers:{'Content-Type':'application/octet-stream'}});}
           if(window.fixture.startTest&&path.endsWith('/runtime/start')){if(window.fixture.startFailed)return Response.json({error:'模拟启动失败'},{status:500});window.fixture.waiting=true;return Response.json({});}
           if(window.fixture.startTest&&path.endsWith('/runtime/stop')){window.fixture.waiting=false;return Response.json({});}
           if(options.method&&options.method!=='GET')throw Error('Unexpected mutation '+path);

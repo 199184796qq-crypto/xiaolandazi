@@ -30,7 +30,8 @@ try {
   await page.getByRole('button', { name: '静音网页声音', exact: true }).click()
   const muted = await page.evaluate(() => ({ count: window.fixture.sources.length, queued: window.fixture.sources.filter(s => !s.ended && !s.stopped).length, streams: window.fixture.pcmStreams.length }))
   assert.equal(muted.queued, 0, 'mute must cancel old queued audio rather than only set gain to zero')
-  await send(2000, 300) // Six seconds during mute must not become a playback backlog.
+  assert.equal(await page.evaluate(() => window.fixture.activeReceivers.length), 0, 'mute must unregister the webpage receiver')
+  await assert.rejects(send(2000, 300)) // The closed stream cannot accumulate muted speech.
   await page.waitForTimeout(120)
   assert.equal(await page.evaluate(() => window.fixture.sources.length), muted.count, 'muted incoming PCM must not create queued sources')
   await page.evaluate(() => { window.fixture.audioEngine = { room_id: 15, phase: 'mainline', speech_feed: { current: { segment_id: 'live-now', text: '盒子正在说的新一句', tone: 'normal' } } } })
@@ -38,9 +39,8 @@ try {
   await page.getByRole('button', { name: '恢复网页声音', exact: true }).click()
   await page.waitForFunction(count => window.fixture.pcmStreams.length > count, muted.streams)
   assert.equal(await page.evaluate(() => window.fixture.sources.length), muted.count, 'unmute must not replay old audio')
-  // Deliberately resolve a stale pending read after abort: generation guard must
-  // reject it even if a proxy/browser already handed that read back to JS.
-  await send(7777, 2, 0)
+  // The previous PCM body has been cancelled, including its pending read.
+  await assert.rejects(send(7777, 2, 0))
   await page.waitForTimeout(80)
   assert.equal(await page.evaluate(() => window.fixture.sources.length), muted.count, 'old stream read leaked into the fresh live stream')
   const begin = await page.evaluate(() => performance.now())
@@ -56,12 +56,12 @@ try {
   await page.getByRole('button', { name: '恢复网页声音', exact: true }).click()
   await page.getByRole('button', { name: '静音网页声音', exact: true }).click()
   const before = await page.evaluate(() => window.fixture.sources.length)
-  await send(4000, 3)
+  await assert.rejects(send(4000, 3))
   await page.waitForTimeout(100)
   assert.equal(await page.getByRole('button', { name: '恢复网页声音', exact: true }).count(), 1)
   assert.equal(await page.evaluate(() => window.fixture.sources.length), before, 'async unmute reopened sound after another mute')
   assert.deepEqual(errors, [])
-  const result = { passed: true, queuedBeforeMuteMS: 2400, mutedIncomingMS: 6000, firstFreshSample: rejoin.source.sample, receiveToScheduleMS: rejoin.now - begin, checks: ['mute clears queued speech', 'muted stream does not queue audio', 'unmute joins a fresh subscription', 'late reads from old stream are discarded', 'fresh PCM schedules without waiting for old backlog', 'captions still follow Core/box', 'rapid toggles keep final mute state', 'no live-session control calls'], errors }
+  const result = { passed: true, queuedBeforeMuteMS: 2400, rejectedMutedIncomingMS: 6000, firstFreshSample: rejoin.source.sample, receiveToScheduleMS: rejoin.now - begin, checks: ['mute clears queued speech and unregisters', 'muted stream is cancelled', 'unmute joins a fresh subscription', 'old stream can no longer deliver frames', 'fresh PCM schedules without waiting for old backlog', 'captions still follow Core/box', 'rapid toggles keep final mute state', 'no live-session control calls'], errors }
   await writeFile(resolve(output, 'result.json'), JSON.stringify(result, null, 2))
   console.log(JSON.stringify(result))
 } finally { await browser.close(); await server.close() }
