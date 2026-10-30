@@ -292,7 +292,7 @@ func Generate(ctx context.Context, s Snapshot, in Input, complete Complete) (Int
 	req, err = request(s, "interaction-v2-body.md", "interaction_single_direct_answer", struct {
 		Input  Input  `json:"input"`
 		Intent Intent `json:"intent"`
-	}{in, intent}, agentgateway.ResponseText)
+	}{in, intent}, agentgateway.ResponseJSON)
 	if err != nil {
 		return intent, "", err
 	}
@@ -300,7 +300,11 @@ func Generate(ctx context.Context, s Snapshot, in Input, complete Complete) (Int
 	if err != nil {
 		return intent, "", err
 	}
-	body := withoutAddress(result.Text)
+	body, err := spokenBody(result.Text)
+	if err != nil {
+		return intent, "", err
+	}
+	body = withoutAddress(body)
 	if err = Validate(s, body); err != nil {
 		return intent, "", err
 	}
@@ -310,6 +314,42 @@ func Generate(ctx context.Context, s Snapshot, in Input, complete Complete) (Int
 // Remove standalone vocatives before freezing the body. Only entire address
 // clauses are removed; occurrences inside facts or an ordinary sentence stay.
 var vocative = regexp.MustCompile(`(^|[，,。！？!？；;：:])\s*(这位朋友|各位朋友|朋友们|家人们|各位老乡|老乡们|老乡|家人|几位朋友|这位老乡)\s*[，,！!：:]\s*`)
+var answerLabel = regexp.MustCompile(`(?m)^(?:回答|答复|正文)\s*[：:]\s*`)
+var analysisLabel = regexp.MustCompile(`(?m)^(?:意图|置信度|歧义|候选|澄清句|建议)\s*[：:]`)
+
+func spokenBody(raw string) (string, error) {
+	text := strings.TrimSpace(raw)
+	text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(text, "```json"), "```"), "```"))
+	if strings.HasPrefix(text, "{") {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal([]byte(text), &fields) != nil {
+			return "", errors.New("互动正文内容格式未完成")
+		}
+		found := false
+		for _, key := range []string{"body", "answer", "reply", "回答"} {
+			if value, ok := fields[key]; ok {
+				var body string
+				if json.Unmarshal(value, &body) != nil {
+					return "", errors.New("互动正文不是文字")
+				}
+				text = strings.TrimSpace(body)
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", errors.New("互动模型只返回了分析，未返回可播正文")
+		}
+	} else if label := answerLabel.FindStringIndex(text); label != nil {
+		if label[0] == 0 || analysisLabel.MatchString(text[:label[0]]) {
+			text = strings.TrimSpace(text[label[1]:])
+		}
+	}
+	if analysisLabel.MatchString(text) {
+		return "", errors.New("互动正文仍混入分析字段，跳过本任务")
+	}
+	return text, nil
+}
 
 func withoutAddress(text string) string {
 	text = strings.TrimSpace(text)

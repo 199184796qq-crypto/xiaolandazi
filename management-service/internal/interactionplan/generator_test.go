@@ -12,6 +12,20 @@ import (
 	"time"
 )
 
+func TestSpokenBodyExtractsOnlyContentAndRejectsAnalysisOnly(t *testing.T) {
+	for raw, want := range map[string]string{`{"body":"下单后第二天上午发货。"}`: "下单后第二天上午发货。", "意图：延期发货｜置信度：85\n歧义：否\n候选：\n澄清句：\n回答：联系客服备注，以客服确认为准。": "联系客服备注，以客服确认为准。", "回答：正常发货。": "正常发货。", "这个问题正常说明。": "这个问题正常说明。"} {
+		got, err := spokenBody(raw)
+		if err != nil || got != want {
+			t.Fatal(raw, got, err)
+		}
+	}
+	for _, raw := range []string{`{"intent":"延期"}`, "意图：延期发货\n置信度：85", `{"body":{"text":"不是纯文本"}}`} {
+		if _, err := spokenBody(raw); err == nil {
+			t.Fatal("analysis reached speech", raw)
+		}
+	}
+}
+
 func TestVocativeNormalizationPreservesBusinessClauses(t *testing.T) {
 	cases := map[string]string{"老乡，你问的是哪里？": "你问的是哪里？", "正常次日上午发货，朋友们，特殊时间以客服确认为准。": "正常次日上午发货，特殊时间以客服确认为准。", "请身边的朋友帮忙看一下。": "请身边的朋友帮忙看一下。"}
 	for input, want := range cases {
