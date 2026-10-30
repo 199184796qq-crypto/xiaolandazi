@@ -12,6 +12,15 @@ import (
 	"time"
 )
 
+func TestVocativeNormalizationPreservesBusinessClauses(t *testing.T) {
+	cases := map[string]string{"老乡，你问的是哪里？": "你问的是哪里？", "正常次日上午发货，朋友们，特殊时间以客服确认为准。": "正常次日上午发货，特殊时间以客服确认为准。", "请身边的朋友帮忙看一下。": "请身边的朋友帮忙看一下。"}
+	for input, want := range cases {
+		if got := withoutAddress(input); got != want {
+			t.Fatalf("%q => %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestOldSessionCannotEvictNewFrozenSnapshot(t *testing.T) {
 	var c Cache
 	newer := Snapshot{Scope: Scope{14, 29, 102, 7, 3}, Prompt: "new frozen"}

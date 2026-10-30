@@ -10,6 +10,16 @@ import (
 	"time"
 )
 
+func TestV2SingleViewerCannotReceivePluralAddressSuffix(t *testing.T) {
+	w, store, _, _, _, session, _ := v2Fixture(t, 10020)
+	store.addressingPrefs = model.RoomAddressingPreferences{PreferredTerms: []string{"哥姐", "兄弟姐妹", "家人们"}}
+	snapshot, _ := interactionplan.Frozen.ForSession(session.TenantID, session.RoomID, session.ID)
+	address := w.v2Address(context.Background(), session, &decisionItem{ID: "three", Nicknames: []string{"小王"}}, snapshot)
+	if strings.Contains(address, "哥姐") || strings.Contains(address, "兄弟姐妹") || strings.Contains(address, "家人们") {
+		t.Fatal(address)
+	}
+}
+
 type v2Store struct {
 	*fakeStore
 	prompt string

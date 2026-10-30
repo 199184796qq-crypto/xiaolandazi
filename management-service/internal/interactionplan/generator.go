@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -282,6 +283,7 @@ func Generate(ctx context.Context, s Snapshot, in Input, complete Complete) (Int
 		return intent, "", errors.New("澄清内容为空")
 	}
 	if intent.NeedClarify {
+		intent.Clarify = withoutAddress(intent.Clarify)
 		if err = Validate(s, intent.Clarify); err != nil {
 			return intent, "", err
 		}
@@ -298,11 +300,26 @@ func Generate(ctx context.Context, s Snapshot, in Input, complete Complete) (Int
 	if err != nil {
 		return intent, "", err
 	}
-	body := strings.TrimSpace(result.Text)
+	body := withoutAddress(result.Text)
 	if err = Validate(s, body); err != nil {
 		return intent, "", err
 	}
 	return intent, body, nil
+}
+
+// Remove standalone vocatives before freezing the body. Only entire address
+// clauses are removed; occurrences inside facts or an ordinary sentence stay.
+var vocative = regexp.MustCompile(`(^|[，,。！？!？；;：:])\s*(这位朋友|各位朋友|朋友们|家人们|各位老乡|老乡们|老乡|家人|几位朋友|这位老乡)\s*[，,！!：:]\s*`)
+
+func withoutAddress(text string) string {
+	text = strings.TrimSpace(text)
+	for {
+		next := vocative.ReplaceAllString(text, "$1")
+		if next == text {
+			return text
+		}
+		text = strings.TrimSpace(next)
+	}
 }
 
 func Validate(s Snapshot, text string) error {

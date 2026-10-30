@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"livecompanion/management/internal/addressing"
 	"livecompanion/management/internal/agentgateway"
+	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionplan"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/speechmission"
@@ -89,7 +90,7 @@ func (w *Worker) v2Address(ctx context.Context, s model.LiveRuntimeSession, item
 	terms, _ := (addressing.AddressTermSources{Room: prefs.PreferredTerms, Style: anchorStyleAddressTerms(snapshot.Style)}).Resolve()
 	clean := terms[:0]
 	for _, term := range terms {
-		if allowed(term) {
+		if allowed(term) && !addressing.IsPluralTerm(term) && !strings.Contains(term, "哥姐") && !strings.Contains(term, "兄弟姐妹") {
 			clean = append(clean, term)
 		}
 	}
@@ -148,7 +149,7 @@ func (w *Worker) generateInteractionV2(ctx context.Context, session model.LiveRu
 	}
 	e, prepared := interactionplan.Decode(item.PurposeKnowledge)
 	complete := func(callCtx context.Context, req agentgateway.Request) (agentgateway.Response, error) {
-		return w.completePaidModel(callCtx, session, req, item.ID+":"+req.Stage)
+		return w.completeV2RecordedModel(callCtx, session, snapshot, req, item.ID+":"+req.Stage)
 	}
 	if prepared {
 		if e.Tenant != session.TenantID || e.Room != session.RoomID || e.Session != session.ID || e.Plan != snapshot.Scope.Plan || e.Fingerprint != snapshot.Fingerprint {
@@ -195,6 +196,28 @@ func (w *Worker) generateInteractionV2(ctx context.Context, session model.LiveRu
 		m.Resume.BridgeText = ""
 	})
 	return text, nil
+}
+
+// Persist the actual joining request and outcome as well as the early content
+// calls. The plan identity is the frozen task contract, not a later selection.
+func (w *Worker) completeV2RecordedModel(ctx context.Context, session model.LiveRuntimeSession, snapshot interactionplan.Snapshot, req agentgateway.Request, key string) (agentgateway.Response, error) {
+	source, ok := w.store.(interactionExchangeStore)
+	if !ok {
+		return w.completePaidModel(ctx, session, req, key)
+	}
+	id, err := source.BeginModelExchange(ctx, appdb.ModelExchangeScope{TenantID: session.TenantID, RoomID: session.RoomID, PlanID: snapshot.Scope.Plan, RunID: session.ExternalID}, req.Stage, "", req)
+	if err != nil {
+		return agentgateway.Response{}, err
+	}
+	started := time.Now()
+	response, callErr := w.completePaidModel(ctx, session, req, key)
+	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 4*time.Second)
+	defer cancel()
+	input, output, cached := response.InputTokens, response.OutputTokens, response.CachedInputTokens
+	if err := source.CompleteModelExchange(persist, id, response, response.Text, time.Since(started).Milliseconds(), &input, &output, &cached, callErr); err != nil {
+		return agentgateway.Response{}, err
+	}
+	return response, callErr
 }
 func (w *Worker) v2Voice(session model.LiveRuntimeSession, item decisionItem) (model.VoiceProfile, bool) {
 	e, ok := interactionplan.Decode(item.PurposeKnowledge)
