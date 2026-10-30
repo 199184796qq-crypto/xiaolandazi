@@ -65,6 +65,10 @@ func TestRecordingBrowserSavePayload(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/", bytes.NewReader(raw))
+	r.Header.Set("Content-Type", "application/json")
+	// Production audit inspection runs before the save endpoint's strict parser.
+	// Replaying only the decoder missed truncation of long request bodies.
+	readAuditJSONPayload(r)
 	var input model.CreateLiveAgentPlanVersionInput
 	if err := readJSON(w, r, &input); err != nil {
 		t.Fatal(err)

@@ -113,16 +113,38 @@ func auditSourceForActor(actor model.Actor) string {
 	}
 }
 
+// Audit inspection is bounded independently of the business endpoint. Replay
+// the inspected prefix, then stream the untouched remainder to that endpoint.
+// Preserve the original read error and Close even when inspection fails.
+type auditReplayBody struct {
+	prefix   *bytes.Reader
+	original io.ReadCloser
+	readErr  error
+}
+
+func (b *auditReplayBody) Read(p []byte) (int, error) {
+	if b.prefix.Len() > 0 {
+		return b.prefix.Read(p)
+	}
+	if b.readErr != nil {
+		return 0, b.readErr
+	}
+	return b.original.Read(p)
+}
+
+func (b *auditReplayBody) Close() error { return b.original.Close() }
+
 func readAuditJSONPayload(r *http.Request) map[string]any {
 	if r == nil || r.Body == nil || !strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
 		return nil
 	}
 	const maxAuditBody = 64 << 10
-	raw, err := io.ReadAll(io.LimitReader(r.Body, maxAuditBody+1))
+	original := r.Body
+	raw, err := io.ReadAll(io.LimitReader(original, maxAuditBody+1))
+	r.Body = &auditReplayBody{prefix: bytes.NewReader(raw), original: original, readErr: err}
 	if err != nil {
 		return nil
 	}
-	r.Body = io.NopCloser(bytes.NewReader(raw))
 	if len(raw) == 0 || len(raw) > maxAuditBody {
 		return nil
 	}
