@@ -906,6 +906,13 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 		currentSnapshot.Task.DurationMS,
 	)
 	waitMS := 0
+	armedCut := ""
+	publishedInteraction := false
+	defer func() {
+		if !publishedInteraction && armedCut != "" && c.roomAudio != nil {
+			c.roomAudio.CancelPreparedInterrupt(input.RoomID, armedCut)
+		}
+	}()
 	if input.SwitchAtMS != nil {
 		target := *input.SwitchAtMS
 		if target < 0 || target > currentSnapshot.Task.DurationMS {
@@ -917,6 +924,9 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 		waitMS = target - currentPositionMS
 		if waitMS > 35000 {
 			return audioout.RoomProgramSnapshot{}, errors.New("switch_at_ms is too far ahead")
+		}
+		if err := c.reserveInteractionV2(ctx, input.RoomID, input.DecisionID, durationMS, now.Add(time.Duration(waitMS)*time.Millisecond)); err != nil {
+			return audioout.RoomProgramSnapshot{}, err
 		}
 		// Reserve every sentence cut before the mirror can emit the next
 		// sentence. Track-end reservations also prevent advancing to a new file.
@@ -950,6 +960,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 			cutSegmentID, resumeSegmentID := roomAudioCutSegments(track.Timeline, target)
 			if _, prepareErr := c.roomAudio.PrepareInterrupt(input.RoomID); prepareErr == nil && cutSegmentID != "" {
 				_, _ = c.roomAudio.ArmInterrupt(input.RoomID, cutSegmentID, resumeSegmentID)
+				armedCut = cutSegmentID
 			}
 		}
 	}
@@ -1006,6 +1017,9 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	}
 
 	now = c.now().UTC()
+	if err := c.reserveInteractionV2(ctx, input.RoomID, input.DecisionID, durationMS, now); err != nil {
+		return audioout.RoomProgramSnapshot{}, err
+	}
 	c.mu.Lock()
 	program = c.programs[input.RoomID]
 	if program == nil || !program.Running || program.Suspended || program.Transitioning || program.CurrentTaskID != currentTaskID {
@@ -1037,6 +1051,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	slot := oppositeSlot(program.CurrentSlot)
 	interactionID := fmt.Sprintf("core-interaction-%d-%s-%06d", input.RoomID, program.ID, sequence)
 	program.Suspended = true
+	publishedInteraction = true
 	program.ControlRevision++
 	cancelMainlineRecoveryLocked(program)
 	program.ManualPaused = false

@@ -29,6 +29,7 @@ import (
 	"livecompanion/management/internal/contentstrategy"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/domaincard"
+	"livecompanion/management/internal/interactionplan"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/interactionpurpose"
 	"livecompanion/management/internal/model"
@@ -1242,7 +1243,10 @@ func (w *Worker) runCycle(ctx context.Context) {
 			roomCtx, cancel := context.WithTimeout(ctx, roomExecutionTimeout)
 			defer cancel()
 			if err := w.processRoom(roomCtx, session); err != nil {
-				w.backoffRoom(session.RoomID)
+				var taskFailure v2TaskFailure
+				if !errors.As(err, &taskFailure) {
+					w.backoffRoom(session.RoomID)
+				}
 				if errors.Is(err, context.DeadlineExceeded) || errors.Is(roomCtx.Err(), context.DeadlineExceeded) {
 					log.Printf("decision executor tenant=%d room=%d timed out after %s", session.TenantID, session.RoomID, roomExecutionTimeout)
 				} else {
@@ -1376,7 +1380,7 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 	}
 }
 
-func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSession) error {
+func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSession) (resultErr error) {
 	ctx = agentgateway.WithRoomModelScope(ctx, agentgateway.RoomModelScope{TenantID: session.TenantID, RoomID: session.RoomID, RuntimeID: session.ID, RequireLease: true})
 	w.reconcileRoomMission(ctx, session)
 	// Core is the single authority for room speech occupancy. The claim API
@@ -1391,6 +1395,11 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		return nil
 	}
 	item := claim.Item
+	if e, ok := interactionplan.Decode(item.PurposeKnowledge); ok && !e.ExpiresAt.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, e.ExpiresAt)
+		defer cancel()
+	}
 	item.PlannedSwitchAtMS = claim.SwitchAtMS
 	item.PreparationCutPlans = append(json.RawMessage(nil), claim.CutPlans...)
 	item.CurrentMainline = strings.TrimSpace(claim.CurrentMainline)
@@ -1402,6 +1411,13 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	reschedule := false
 	defer func() {
 		if !completed {
+			if hasInteractionV2Body(*item) && !reschedule {
+				w.withdrawUnstartedV2(session, item.ID)
+				if resultErr != nil {
+					resultErr = v2TaskFailure{resultErr}
+				}
+				return
+			}
 			releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			reason := ""
@@ -1419,7 +1435,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if isSimulation {
 		ctx = context.WithValue(ctx, workerPaidOptOutKey{}, true)
 	}
-	memoryBefore, err := w.interactionMemoryFingerprint(ctx, session)
+	memoryBefore, err := w.interactionV2Memory(ctx, session, *item)
 	if err != nil {
 		return err
 	}
@@ -1462,6 +1478,16 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		return err
 	}
 
+	if _, v2 := interactionplan.Decode(item.PurposeKnowledge); v2 {
+		preparationScope, err = w.interactionPreparationScope(ctx, session, *item)
+		if err != nil {
+			return err
+		}
+		memoryBefore, err = w.interactionV2Memory(ctx, session, *item)
+		if err != nil {
+			return err
+		}
+	}
 	if isSimulation {
 		planName := ""
 		if plan, planErr := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID); planErr == nil {
@@ -1483,7 +1509,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 
 	// TTS 前只处理命中 P0 的句子：能换就换，换不掉就丢这一句，其余原样组装。
 	// 不整段重生成，避免一句违规把整段口播和 token 全部重来。
-	if !strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
+	if _, v2 := interactionplan.Decode(item.PurposeKnowledge); !v2 && !strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
 		sanitize := sanitizeSpokenText
 		if isInteractionSpeech(*item) {
 			sanitize = sanitizeInteractionSpokenText
@@ -1503,7 +1529,10 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		return err
 	}
 
-	voice, ok, err := w.readyVoice(ctx, session.TenantID, session.RoomID)
+	voice, ok := w.v2Voice(session, *item)
+	if !ok {
+		voice, ok, err = w.readyVoice(ctx, session.TenantID, session.RoomID)
+	}
 	if err != nil {
 		w.transitionMission(item, speechmission.StateFailed, "voice_resolve_failed", err.Error())
 		return err
@@ -1581,7 +1610,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 
 	// Queue expiry governs admission. A claimed answer remains owned by its
 	// execution lease until playback completes, fails or is explicitly removed.
-	memoryNow, err := w.interactionMemoryFingerprint(ctx, session)
+	memoryNow, err := w.interactionV2Memory(ctx, session, *item)
 	if err != nil {
 		return err
 	}
@@ -1593,7 +1622,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		if err != nil || strings.TrimSpace(audio.AudioURL) == "" {
 			return fmt.Errorf("纠正规则更新后重新生成语音失败: %v", err)
 		}
-		latest, e := w.interactionMemoryFingerprint(ctx, session)
+		latest, e := w.interactionV2Memory(ctx, session, *item)
 		if e != nil {
 			return e
 		}
@@ -1627,7 +1656,10 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 		action = "quick"
 	}
 	w.transitionMission(item, speechmission.StateWaitingCutPoint, "dispatch_start", "TTS已生成，等待Core确认实际打断与回归位置")
-	cancelBridge := w.startReturnBridge(session, *item, scope, memory)
+	cancelBridge := func() {}
+	if _, v2 := interactionplan.Decode(item.PurposeKnowledge); !v2 {
+		cancelBridge = w.startReturnBridge(session, *item, scope, memory)
+	}
 	dispatchResult, err := w.dispatch(ctx, session, *item, action, text, audioURL)
 	if err != nil {
 		cancelBridge()
@@ -1916,6 +1948,9 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	}
 	if item == nil {
 		return "", fmt.Errorf("待执行策略为空")
+	}
+	if w.isInteractionV2(item, session) {
+		return w.generateInteractionV2(ctx, session, item)
 	}
 	if item.BusinessCoreOnly {
 		item.EmotionDisabled = true
@@ -2310,7 +2345,7 @@ func (w *Worker) dispatchOnce(
 		fmt.Sprintf("/internal/v1/rooms/%d/audio/interaction", session.RoomID),
 		query,
 		map[string]any{
-			"deferred_return":          true,
+			"deferred_return":          !hasInteractionV2Body(item),
 			"allow_consecutive_repeat": strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim"),
 			"decision_id":              item.ID,
 			"mission_id":               missionID(&item),
@@ -2339,7 +2374,7 @@ func (w *Worker) dispatchOnce(
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		if resp.StatusCode == http.StatusConflict && (strings.Contains(string(raw), "主线已换段") || strings.Contains(string(raw), "安全句末切点已失效") || strings.Contains(string(raw), "当前35秒内没有安全句末切点")) {
+		if resp.StatusCode == http.StatusConflict && (strings.Contains(string(raw), "主线已换段") || strings.Contains(string(raw), "安全句末切点已失效") || strings.Contains(string(raw), "当前35秒内没有安全句末切点") || strings.Contains(string(raw), "互动播出额度或原始期限暂不允许")) {
 			return dispatchResult{}, &safeSwitchRetry{message: string(raw)}
 		}
 		return dispatchResult{}, fmt.Errorf("audio dispatch http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))

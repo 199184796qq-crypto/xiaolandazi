@@ -995,6 +995,11 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusConflict, "待打断任务已被移除或不再执行")
 		return
 	}
+	if !s.validInteractionV2Item(*decision, roomID, tenantID, time.Now()) {
+		s.agentDecisions.Remove(roomID, decision.ID)
+		writeError(w, http.StatusConflict, "互动原始事件已过期或场次已变化")
+		return
+	}
 	if !s.validateInteractionDecision(w, roomID, input) {
 		return
 	}
@@ -1253,6 +1258,18 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		if sessionID == "" {
 			sessionID = fmt.Sprintf("control-%d", roomID)
 		}
+		if hasInteractionV2Body(*decision) && s.messages != nil {
+			duration, _, probeErr := s.audioHub.ProbeExternalWAV(r.Context(), input.AudioURL)
+			if probeErr != nil {
+				writeError(w, 502, "无法读取互动音频时长")
+				return
+			}
+			raw, _ := json.Marshal(map[string]any{"decision_id": input.DecisionID, "duration_ms": duration, "start_at": time.Now()})
+			if failures := s.messages.Publish(r.Context(), messagecaptain.Message{Kind: "interaction.v2.reserve-audio", RoomID: roomID, Payload: raw}); len(failures) > 0 {
+				writeError(w, 409, "互动播出额度或原始期限暂不允许，保留已合成声音继续排队")
+				return
+			}
+		}
 		hubTask, hubErr := s.audioHub.CreateExternalTask(
 			r.Context(), roomID, sessionID, fmt.Sprintf("%s · %s", label, input.Topic), input.AudioURL,
 		)
@@ -1313,6 +1330,10 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 				DecisionID:     input.DecisionID,
 				MissionID:      input.MissionID,
 			})
+		}
+		if strings.Contains(err.Error(), "互动播出额度或原始期限暂不允许") {
+			writeError(w, http.StatusConflict, "互动播出额度或原始期限暂不允许，保留已合成声音继续排队")
+			return
 		}
 		if errors.Is(err, audioout.ErrInteractionSwitchStale) {
 			writeError(w, http.StatusConflict, "主线已换段，请重新选择切点")

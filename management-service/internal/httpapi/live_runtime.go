@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/interactionplan"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/policy"
 )
@@ -761,6 +762,10 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "启动AI直播伴播失败")
 		}
 		return
+	}
+
+	if _, freezeErr := interactionplan.Freeze(r.Context(), s.store, session); freezeErr != nil {
+		log.Printf("interaction v2 snapshot unavailable tenant=%d room=%d session=%d error=%v", tenantID, roomID, session.ID, freezeErr)
 	}
 
 	if effectivePolicy, policyErr := policy.LoadGeneration(); policyErr != nil {

@@ -545,6 +545,10 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 		}
 	}
 	state.mu.Unlock()
+	if meta != nil && meta.DecisionID != "" && s.messages != nil {
+		raw, _ := json.Marshal(map[string]any{"decision_id": meta.DecisionID, "status": event.Status, "at": event.OccurredAt})
+		s.messages.Publish(ctx, messagecaptain.Message{Kind: "interaction.v2.playback", RoomID: meta.RoomID, Payload: raw})
+	}
 	if (event.Status == "COMPLETED" || event.Status == "FAILED") && meta != nil {
 		if event.Status == "COMPLETED" {
 			// A receiver reports completion exactly at the media boundary. Give its

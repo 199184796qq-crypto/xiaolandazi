@@ -117,6 +117,10 @@ func (p *Processor) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			if p.tickInteractionV2(ctx, now.UTC()) {
+				p.flushTimeReports(now.UTC())
+				continue
+			}
 			p.flushWarmups(now.UTC())
 			p.flushTimeReports(now.UTC())
 			p.FlushInteractionWindows(now.UTC())

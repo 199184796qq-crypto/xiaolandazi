@@ -67,6 +67,10 @@ func (h HTTPPurposeResolver) Resolve(ctx context.Context, event model.RoomEvent,
 }
 
 func (p *Processor) SetPurposeResolver(resolver PurposeResolver) {
+	if h, ok := resolver.(HTTPPurposeResolver); ok {
+		p.setInteractionV2(h)
+		return
+	}
 	p.purpose.mu.Lock()
 	p.purpose.resolver = resolver
 	if p.purpose.jobs != nil {

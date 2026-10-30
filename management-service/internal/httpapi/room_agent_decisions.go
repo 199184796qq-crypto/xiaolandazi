@@ -1,12 +1,9 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -14,7 +11,7 @@ import (
 	"unicode/utf8"
 
 	"livecompanion/management/internal/decisionexecutor"
-	"livecompanion/management/internal/interactionpurpose"
+	"livecompanion/management/internal/interactionplan"
 )
 
 func (s *Server) getRoomAgentDecisions(w http.ResponseWriter, r *http.Request) {
@@ -95,60 +92,37 @@ func (s *Server) simulateRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 55*time.Second)
 	defer cancel()
-	worker := decisionexecutor.New(s.store, nil, s.speechGateway(), nil)
+
 	if input.PlanID > 0 {
 		_, authorizedTenant, authorizedRoom, allowed := s.requireCustomerPolicyRoom(w, r)
 		if !allowed {
 			return
 		}
 		if authorizedTenant != tenantID || authorizedRoom != roomID {
-			writeError(w, http.StatusForbidden, "测试范围不一致")
+			writeError(w, 403, "测试范围不一致")
 			return
 		}
-		plan, err := s.store.GetLiveAgentPlan(ctx, tenantID, input.PlanID)
-		if err != nil || plan.Status != "active" {
-			writeError(w, http.StatusNotFound, "当前方案不存在或不可测试")
-			return
-		}
-		worker = decisionexecutor.New(&planSpeechTestStore{Store: s.store, tenantID: tenantID, roomID: roomID, plan: plan}, nil, s.speechGateway(), nil)
-	}
-	var intentResult *interactionpurpose.Result
-	if input.PlanID > 0 {
-		body, _ := json.Marshal(map[string]any{
-			"tenant_id": tenantID, "room_id": roomID, "plan_id": input.PlanID,
-			"user_id": "simulation", "nickname": "测试模式", "test_simulation": true, "text": input.Question,
-		})
-		req := httptest.NewRequest(http.MethodPost, "/internal/v1/interaction-purpose/resolve", bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Core-Token", s.purposeInternalToken)
-		rec := httptest.NewRecorder()
-		s.resolveInteractionPurpose(rec, req)
-		if rec.Code == http.StatusOK {
-			var response struct {
-				Knowledge json.RawMessage `json:"knowledge"`
-			}
-			if json.Unmarshal(rec.Body.Bytes(), &response) == nil && len(response.Knowledge) > 0 {
-				var intent interactionpurpose.Result
-				if json.Unmarshal(response.Knowledge, &intent) == nil {
-					intentResult = &intent
-				}
-			}
-		}
-	}
-	var result decisionexecutor.SimulationOutput
-	var err error
-	if intentResult != nil {
-		result, err = worker.SimulateInteractionWithIntent(ctx, tenantID, roomID, input.Question, input.PreviewInstruction, input.RecentAnswers, *intentResult, "")
 	} else {
-		result, err = worker.SimulateInteraction(ctx, tenantID, roomID, input.Question, input.PreviewInstruction, input.RecentAnswers)
+		published, err := s.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, tenantID, roomID)
+		if err != nil {
+			writeError(w, 422, "请先选择已保存的测试方案")
+			return
+		}
+		input.PlanID = published.PlanID
 	}
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "测试智能体处理失败："+err.Error())
+	plan, err := s.store.GetLiveAgentPlan(ctx, tenantID, input.PlanID)
+	if err != nil || plan.Status != "active" {
+		writeError(w, 404, "当前方案不存在或不可测试")
 		return
 	}
-	s.recordInteractionReplay(r, tenantID, roomID, input.PlanID, "simulation", result)
-	response := map[string]any{"question": result.Question, "reply": result.Reply, "execution_mode": result.ExecutionMode, "plan_name": result.PlanName, "user_layer_version": result.UserLayerVersion, "plan_id": input.PlanID}
-	writeJSON(w, http.StatusOK, response)
+	recent := make([]interactionplan.Turn, 0, len(input.RecentAnswers))
+	for _, turn := range input.RecentAnswers {
+		recent = append(recent, interactionplan.Turn{Question: turn.Question, Answer: turn.Reply})
+	}
+	if len(recent) > 5 {
+		recent = recent[len(recent)-5:]
+	}
+	s.testInteractionV2(w, r.WithContext(ctx), interactionV2Input{Tenant: tenantID, Room: roomID, Plan: input.PlanID, Text: input.Question, Kind: "semantic", Test: true, Protocol: interactionplan.Protocol, Task: fmt.Sprintf("test-%d", time.Now().UnixNano()), Epoch: "test", Revision: 1, AllowClarify: true, Recent: recent, PreviewInstruction: input.PreviewInstruction, ExpiresAt: time.Now().Add(50 * time.Second)}, plan.Name)
 }
 
 func (s *Server) enqueueRoomManualAgentDecision(w http.ResponseWriter, r *http.Request) {

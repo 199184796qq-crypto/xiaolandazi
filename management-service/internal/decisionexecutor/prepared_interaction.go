@@ -8,6 +8,7 @@ import (
 	"time"
 
 	appdb "livecompanion/management/internal/db"
+	"livecompanion/management/internal/interactionplan"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/policy"
 )
@@ -38,6 +39,12 @@ func preparationKey(session model.LiveRuntimeSession, item decisionItem) prepare
 // Exclude playback cursors and heat, which move while TTS is being prepared.
 // Include the event, selected plan, published facts/voice and live corrections.
 func (w *Worker) interactionPreparationScope(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, error) {
+	if e, ok := interactionplan.Decode(item.PurposeKnowledge); ok {
+		if e.Session != session.ID || e.Tenant != session.TenantID || e.Room != session.RoomID {
+			return "", fmt.Errorf("互动缓存场次不匹配")
+		}
+		return interactionDigest([]any{e, item.Nicknames, w.readingRulesFor(ctx, session)}), nil
+	}
 	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
 	if err != nil {
 		return "", err

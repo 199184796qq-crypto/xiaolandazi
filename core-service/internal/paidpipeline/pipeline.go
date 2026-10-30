@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"livecompanion/core/internal/agentdecision"
@@ -22,6 +23,7 @@ import (
 // is allowed to schedule large-model work, response generation, TTS and audio.
 // It must never control the collector or the free base pipeline.
 type Processor struct {
+	interactionV2  atomic.Pointer[interactionV2State]
 	purpose        purposeState
 	cutMessages    cutMessageState
 	scheduleMu     sync.Mutex
@@ -155,10 +157,16 @@ func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 	eventType := strings.ToLower(strings.TrimSpace(event.EventType))
 	switch eventType {
 	case "session_start":
+		if v := p.interactionV2.Load(); v != nil {
+			v.engine.Reset(event.RoomID)
+		}
 		p.setSessionStartedAt(event.RoomID, event.OccurredAt)
 		p.clearInteractionRoom(event.RoomID)
 		return
 	case "session_end":
+		if v := p.interactionV2.Load(); v != nil {
+			v.engine.Reset(event.RoomID)
+		}
 		p.clearInteractionRoom(event.RoomID)
 		_, _ = p.runtime.StopAgent(event.RoomID, agentwork.StopReasonLiveFinished)
 		return
@@ -166,6 +174,9 @@ func (p *Processor) Handle(event model.RoomEvent, signal basepipeline.Signal) {
 
 	runtime := p.runtime.Get(event.RoomID)
 	if runtime.State != agentwork.StateWorking {
+		return
+	}
+	if p.handleInteractionV2(event, signal) {
 		return
 	}
 	// 中控和主播模式都允许监控 Agent 扫描新事件并生成口播任务。

@@ -155,6 +155,11 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "empty"})
 		return
 	}
+	if !s.validInteractionV2Item(queue[0], roomID, tenantID, time.Now()) {
+		s.agentDecisions.Remove(roomID, queue[0].ID)
+		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "interaction_v2_expired"})
+		return
+	}
 	manualOrigin := strings.ToLower(strings.TrimSpace(queue[0].ManualOrigin))
 	if !observationExempt(manualOrigin) && s.inOpeningObservation(r.Context(), roomID, tenantID) {
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "opening_observation"})
@@ -211,7 +216,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 	resumeMainline := ""
 	resumeSegmentID := ""
 	var preparationPlans []interactionCutPlan
-	if queue[0].ManualAction != "quick" && !lowFlow {
+	if queue[0].ManualAction != "quick" && !lowFlow && !hasInteractionV2Body(queue[0]) {
 		currentMS := program.CurrentMS
 		if currentMS <= 0 {
 			currentMS = program.Task.StartMS
