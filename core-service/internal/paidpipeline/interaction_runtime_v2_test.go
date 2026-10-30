@@ -76,6 +76,14 @@ func TestProductionHTTPResolverEnablesV2AndBypassesOldWindows(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].Work.Text != event.Content {
 		t.Fatal(tasks)
 	}
+	event.ID = 2
+	event.EventType = "comment"
+	event.Content = "发什么快递"
+	p.Handle(event, basepipeline.Signal{Content: event.Content, IsQuestion: true, IsOrderHint: true})
+	tasks = p.interactionV2.Load().engine.Snapshot(29)
+	if len(tasks) != 2 || tasks[1].Work.Kind != "semantic" {
+		t.Fatal("comment question dropped or misclassified as complaint", tasks)
+	}
 	raw, _ := json.Marshal(map[string]any{"decision_id": "unused", "status": "PLAYING", "at": time.Now()})
 	if !p.interactionV2Receipt(messagecaptain.Message{Kind: "interaction.v2.playback", RoomID: 29, Payload: raw}) {
 		t.Fatal("playback entry disconnected")

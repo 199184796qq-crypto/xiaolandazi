@@ -81,9 +81,12 @@ func (p *Processor) handleInteractionV2(event model.RoomEvent, signal basepipeli
 	v.rooms[event.RoomID] = s
 	v.mu.Unlock()
 	kind := strings.ToLower(strings.TrimSpace(event.EventType))
+	if kind == "comment" {
+		kind = "chat"
+	}
 	urgent := signal.IsNegative
-	if signal.IsOrderHint && kind != "order" && kind != "order_signal" {
-		urgent = true
+	if signal.IsOrderHint && !signal.IsQuestion && !urgent {
+		kind = "order"
 	}
 	v.engine.Add(s, interactionruntime.Event{ID: eventSeed(event), UID: event.UserID, Name: event.Nickname, Kind: kind, Text: event.Content, At: event.OccurredAt, Urgent: urgent}, p.clock())
 	for _, id := range v.engine.Cancelled(s.Room) {
