@@ -112,8 +112,14 @@ func (s recordingScript) validate() error {
 			return fmt.Errorf("第 %d 个文本框的标题须在 %d 字以内", index+1, recordingScriptMaxTitleRunes)
 		}
 		textRunes := len([]rune(strings.TrimSpace(tab.Text)))
-		if textRunes > recordingScriptMaxTextRunes {
-			return fmt.Errorf("第 %d 个文本框的正文须在 %d 字以内", index+1, recordingScriptMaxTextRunes)
+		// A long uploaded recording still maps to one tab/one audio asset. Keep
+		// the existing total cap; do not truncate ASR or split its audio binding.
+		maxTextRunes := recordingScriptMaxTextRunes
+		if len(tab.AudioAssetIDs) > 0 {
+			maxTextRunes = recordingScriptMaxTotalRunes
+		}
+		if textRunes > maxTextRunes {
+			return fmt.Errorf("第 %d 个文本框的正文须在 %d 字以内", index+1, maxTextRunes)
 		}
 		total += textRunes
 		if len(tab.AudioAssetIDs) > recordingScriptMaxAudioPerTab {

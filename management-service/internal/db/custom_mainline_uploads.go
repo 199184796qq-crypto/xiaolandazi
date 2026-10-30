@@ -55,6 +55,32 @@ func (s *Store) GetCustomMainlineUpload(ctx context.Context, tenantID, planID, u
 	return scanCustomUpload(s.db.QueryRowContext(ctx, `SELECT `+customUploadColumns+` FROM live_custom_mainline_uploads WHERE tenant_id=? AND plan_id=? AND user_id=? AND id=?`, tenantID, planID, userID, id))
 }
 
+// Ready receipts belong to their uploading user and plan. Workspace recovery is
+// read-only; it never requeues ASR/cloning or changes a saved version.
+func (s *Store) ListReadyCustomMainlineUploads(ctx context.Context, tenantID, planID, userID int64) ([]model.CustomMainlineUpload, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+customUploadColumns+` FROM live_custom_mainline_uploads WHERE tenant_id=? AND plan_id=? AND user_id=? AND status='ready' AND result_json IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 20`, tenantID, planID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]model.CustomMainlineUpload, 0)
+	for rows.Next() {
+		item, err := scanCustomUpload(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Present the latest bounded set in upload order.
+	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+		items[i], items[j] = items[j], items[i]
+	}
+	return items, nil
+}
+
 func (s *Store) TransitionCustomMainlineUpload(ctx context.Context, item model.CustomMainlineUpload, from, to, message string, result json.RawMessage) (bool, error) {
 	var resultValue any
 	if len(result) > 0 {

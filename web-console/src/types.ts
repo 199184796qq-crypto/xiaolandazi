@@ -2248,6 +2248,7 @@ export interface LiveAgentPlanVersion {
 }
 
 export interface LiveAgentPlanWorkspaceResponse {
+  recording_uploads?: { id: string; status: string; result?: LiveAgentCustomMainlineResponse }[]
   checks?: { code: string; message: string }[]
   version?: LiveAgentPlanVersion | null
   source: 'draft' | 'published' | ''

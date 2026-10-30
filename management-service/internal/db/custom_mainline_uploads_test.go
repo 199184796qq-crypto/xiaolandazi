@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"livecompanion/management/internal/model"
 	"sync"
 	"sync/atomic"
@@ -108,5 +109,55 @@ func TestCustomMainlineUploadsMySQL(t *testing.T) {
 	loaded, err = s.GetCustomMainlineUpload(ctx, 14, 21, 8, job.ID)
 	if err != nil || !loaded.Cleaned || loaded.Status != "failed" {
 		t.Fatal("receipt lost", loaded, err)
+	}
+}
+
+func TestReadyCustomMainlineWorkspaceRecoveryMySQL(t *testing.T) {
+	s := salesIsolatedMySQL(t)
+	ctx := t.Context()
+	if err := s.MigrateCustomMainlineUploads(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Enough receipts to exercise the bounded latest set and chronological replay.
+	for i := 0; i < 23; i++ {
+		job := model.CustomMainlineUpload{ID: fmt.Sprintf("ready-%02d", i), TenantID: 14, PlanID: 7, UserID: 8, Files: []model.CustomMainlineUploadFile{{Name: "原音.wav", Size: 100}}}
+		if err := s.CreateCustomMainlineUpload(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		for _, step := range [][2]string{{"uploading", "queued"}, {"queued", "processing"}, {"processing", "ready"}} {
+			var result json.RawMessage
+			if step[1] == "ready" {
+				result = json.RawMessage(fmt.Sprintf(`{"audio_asset_id":%d}`, i+1))
+			}
+			if ok, err := s.TransitionCustomMainlineUpload(ctx, job, step[0], step[1], "", result); !ok || err != nil {
+				t.Fatal(ok, err)
+			}
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE live_custom_mainline_uploads SET created_at=? WHERE id=?`, time.Date(2026, 10, 30, 0, 0, i, 0, time.UTC), job.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Preserve the result after temporary source cleanup; the formal asset is separate.
+	if err := s.MarkCustomMainlineUploadCleaned(ctx, "ready-22"); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range [][3]int64{{15, 7, 8}, {14, 8, 8}, {14, 7, 9}} {
+		items, err := s.ListReadyCustomMainlineUploads(ctx, scope[0], scope[1], scope[2])
+		if err != nil || len(items) != 0 {
+			t.Fatal("scope leak", scope, err)
+		}
+	}
+	job := model.CustomMainlineUpload{ID: "unfinished", TenantID: 14, PlanID: 7, UserID: 8, Files: []model.CustomMainlineUploadFile{{Name: "原音.wav", Size: 100}}}
+	if err := s.CreateCustomMainlineUpload(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.ListReadyCustomMainlineUploads(ctx, 14, 7, 8)
+	if err != nil || len(items) != 20 || items[0].ID != "ready-03" || items[19].ID != "ready-22" {
+		t.Fatal("latest bounded order", len(items), err)
+	}
+	before := items[19].UpdatedAt
+	again, err := s.ListReadyCustomMainlineUploads(ctx, 14, 7, 8)
+	if err != nil || !again[19].UpdatedAt.Equal(before) || !again[19].Cleaned || string(again[19].Result) != `{"audio_asset_id":23}` {
+		t.Fatal("read changed receipt", err)
 	}
 }

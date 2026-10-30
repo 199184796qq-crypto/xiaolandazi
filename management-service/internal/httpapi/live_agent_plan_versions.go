@@ -603,7 +603,19 @@ func (s *Server) liveAgentPlanWorkspaceGet(w http.ResponseWriter, r *http.Reques
 	}
 	version, source := selectLatestLiveAgentPlanWorkspaceTemplate(items, contentMode)
 	if version == nil {
-		writeJSON(w, 200, map[string]any{"version": nil, "source": "", "inherited": false})
+		// A completed upload can precede the very first Save. Recover only that
+		// unsaved workspace; a saved version remains authoritative (including
+		// deliberately removed recordings). Never replay paid upload processing.
+		uploads := []model.CustomMainlineUpload{}
+		if contentMode == model.LiveContentUserAudio {
+			uploads, err = s.store.ListReadyCustomMainlineUploads(r.Context(), tenantID, planID, actor.UserID)
+			if err != nil {
+				writeError(w, 500, "读取已完成录音失败，请重试；无需重新上传")
+				return
+			}
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, 200, map[string]any{"version": nil, "source": "", "inherited": false, "recording_uploads": uploads})
 		return
 	}
 

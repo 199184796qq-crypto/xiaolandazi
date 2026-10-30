@@ -2169,6 +2169,16 @@ function recordingOriginalForTab(tab: RecordingScriptTab | null): LiveAgentCusto
   return draft?.audio_url && tab.audioAssetIds.includes(Number(draft.audio_asset_id)) ? draft : null
 }
 const activeRecordingOriginal = computed(() => recordingOriginalForTab(activeRecordingTab.value))
+function recordingOriginalReady(draft: LiveAgentCustomMainlineResponse | null): boolean {
+  return Boolean(draft?.audio_asset_id && draft.audio_url && draft.duration_ms > 0 &&
+    draft.timeline?.length && draft.srt?.trim() && draft.safe_points?.length &&
+    Object.keys(draft.asset_manifest || {}).length && draft.transcript?.trim())
+}
+const readyRecordingOriginal = computed(() => {
+  if (recordingOriginalReady(activeRecordingOriginal.value)) return activeRecordingOriginal.value
+  return recordingTabs.value.map(recordingOriginalForTab).find(recordingOriginalReady) || null
+})
+const recordingTabTextLimit = computed(() => activeRecordingTab.value?.audioAssetIds.length ? 80000 : 4000)
 const activeRecordingTabText = computed<string>({
   get: () => activeRecordingTab.value?.text || '',
   set: (value: string) => {
@@ -2369,7 +2379,12 @@ const fullShowSaveBlockedReason = computed(() => {
     return error ? `实时声音参数还需要调整哦：${error}。去“生成智能体”改好就能保存啦～` : ''
   }
   if (isUserAudioContentMode.value && (['uploading', 'analyzing', 'saving'].includes(customMainlineStage.value) || customMainlineCloneBusy.value)) return '原始声音正在处理中，完成后再保存方案。'
-  if (isUserAudioContentMode.value && recordingVoiceMode.value === 'original' && !hasCustomMainlineResult.value) return '还差一段主线录音哦～去“生成智能体”上传并完成处理，就能保存啦。'
+  if (isUserAudioContentMode.value && recordingVoiceMode.value === 'original') {
+    // Uploads populate recording tabs, not generated-preview variants. A valid
+    // recording can be prepared as the formal track during this explicit Save.
+    if (readyRecordingOriginal.value) return ''
+    if (!hasCustomMainlineResult.value) return '还差一段主线录音哦～去“生成智能体”上传并完成处理，就能保存啦。'
+  }
   if (isUserAudioContentMode.value && recordingVoiceMode.value === 'stream_clone' && !recordingScriptHasText.value) return '先在文本框里写入话术，就能用 AI 声音保存啦～'
   if (recordingScriptOnlySave.value) return ''
   if (!fullShowResult.value) return '先去“生成智能体”生成并核对文稿，再来保存吧～'
@@ -3312,13 +3327,16 @@ async function retryCustomMainlineClone() {
   }
 }
 
-async function applyCustomMainlineAsFormal() {
+async function applyCustomMainlineAsFormal(originalForSave?: LiveAgentCustomMainlineResponse) {
   if (contentModeAccess.value?.content_mode !== 'user_audio') await chooseContentMode('user_audio')
   selectFullShowOutputMode('custom')
   if (!contentModeReady.value || !isUserAudioContentMode.value) return
-  const draft = customMainlineDraft.value
-  const identity = draft?.voice_identity
-  if (!draft || !identity || !currentPlan.value || !planTenantId.value || !customMainlineCanApply.value) {
+  const draft = originalForSave || customMainlineDraft.value
+  // Original playback does not require a cloned voice. Interactive voice stays
+  // with the plan; saving a recording must not silently replace it.
+  const identity = originalForSave ? currentVoiceIdentity.value : draft?.voice_identity
+  if (!draft || !identity || !currentPlan.value || !planTenantId.value ||
+      (originalForSave ? !recordingOriginalReady(draft) : !customMainlineCanApply.value)) {
     customMainlineError.value = '自定义音稿、SRT 和自定义音色都准备完成后才能替换主线。'
     return
   }
@@ -3360,7 +3378,7 @@ async function applyCustomMainlineAsFormal() {
     variant_key: 'CUSTOM',
     title: '原始音话术',
     opening_angle: '上传原始声音',
-    text: customMainlineTranscript.value.trim() || draft.transcript,
+    text: originalForSave ? draft.transcript : (customMainlineTranscript.value.trim() || draft.transcript),
     estimated_minutes: Math.max(1, Math.ceil(draft.duration_ms / 60000)),
     covered_fact_keys: [],
     covered_link_keys: [],
@@ -3399,7 +3417,7 @@ async function applyCustomMainlineAsFormal() {
   }
   fullShowFormalVariantKeys.value = ['CUSTOM']
   selectedFullShowVariantKey.value = 'CUSTOM'
-  fullShowWorkspaceVoiceIdentity.value = { ...identity }
+  if (!originalForSave) fullShowWorkspaceVoiceIdentity.value = { ...identity }
   fullShowSavedVersion.value = null
   fullShowVersionError.value = ''
   fullShowPreviewReady.value = true
@@ -3423,8 +3441,10 @@ function originalSourceManifest(draft: LiveAgentCustomMainlineResponse | null = 
   }
 }
 
-const liveAgentVersionRequestLimitBytes = 64 * 1024
-const liveAgentVersionSafePayloadBytes = 60 * 1024
+// The version endpoint uses readJSON (1 MiB). Keep headroom without imposing
+// the obsolete 64 KiB limit on long-recording timelines and subtitles.
+const liveAgentVersionRequestLimitBytes = 1024 * 1024
+const liveAgentVersionSafePayloadBytes = 960 * 1024
 
 function bytesToBase64(bytes: Uint8Array) {
   let binary = ''
@@ -4222,7 +4242,26 @@ async function loadFullShowWorkspace() {
     }
     if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || planTenantId.value !== room.tenant_id) return
     if (!workspace.version || !workspace.source) {
-      fullShowNotice.value = '当前方案还没有保存过智能体版本，可以从现有方案依据开始生成第一版。'
+      const uploads = isUserAudioContentMode.value ? (workspace.recording_uploads || []) : []
+      const recovered = new Set<number>()
+      for (const upload of uploads) {
+        const draft = upload.result
+        if (upload.status !== 'ready' || !draft || !recordingOriginalReady(draft) || recovered.has(draft.audio_asset_id)) continue
+        if (recordingTabs.value.length >= 20 && recordingTabs.value.some(tab => tab.text.trim() || tab.audioAssetIds.length)) break
+        // The pristine placeholder can be reused; completed receipts never
+        // overwrite typed text or a recording from another tab.
+        const empty = recordingTabs.value.length === 1 && !recordingTabs.value[0].text.trim() && !recordingTabs.value[0].audioAssetIds.length
+        if (!empty) beginRecordingTabFromUpload()
+        const tab = activeRecordingTab.value!
+        tab.text = draft.transcript
+        tab.audioAssetIds = [Number(draft.audio_asset_id)]
+        recordingTabDrafts.value[tab.id] = draft
+        recovered.add(draft.audio_asset_id)
+      }
+      customMainlineStage.value = recovered.size ? 'ready' : 'idle'
+      fullShowNotice.value = recovered.size
+        ? `已恢复 ${recovered.size} 段处理完成的录音，核对后可直接保存，无需重新上传。`
+        : '当前方案还没有保存过智能体版本，可以从现有方案依据开始生成第一版。'
       return
     }
     await restoreFullShowWorkspaceVersion(workspace.version, workspace.source)
@@ -4291,7 +4330,6 @@ function cleanVersionSafePoints(points: LiveAgentPlanSafePoint[]) {
 async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   const planId = currentRoomPlanId.value
   const room = planAssetContext.value
-  const result = fullShowResult.value
   if (fullShowVersionSaving.value) return null
   fullShowVersionError.value = ''
   if (fullShowSaveBlockedReason.value || !planId || !room) {
@@ -4311,6 +4349,11 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   fullShowVersionSaving.value = true
   fullShowNotice.value = '正在核对方案声音与保存内容。'
   try {
+    if (roomModeAtSave === 'user_audio' && recordingVoiceMode.value === 'original' && readyRecordingOriginal.value) {
+      await applyCustomMainlineAsFormal(readyRecordingOriginal.value)
+      assertCurrent()
+    }
+    const result = fullShowResult.value
     const voiceAtSave = cleanVersionVoiceIdentity(currentVoiceIdentity.value)
     const [bindings, official] = await Promise.all([getLiveVoiceModelBindings(), getLiveOfficialVoices()])
     assertCurrent()
@@ -4400,7 +4443,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     const payloadBytes = new TextEncoder().encode(JSON.stringify(payload)).byteLength
     if (payloadBytes > liveAgentVersionSafePayloadBytes) {
       throw new Error(
-        `当前版本保存数据为 ${Math.ceil(payloadBytes / 1024)}KB，超过接口可安全接收的 60KB（上限 64KB）。请减少正式话术数量或缩短话术后再保存；原始声音不会被删除。`,
+        `当前版本保存数据为 ${Math.ceil(payloadBytes / 1024)}KB，超过接口可安全接收的 960KB（上限 1024KB）。请减少正式话术数量或缩短话术后再保存；原始声音不会被删除。`,
       )
     }
     const saved = await createLiveAgentPlanVersion(planId, payload, (event) => {
@@ -8576,13 +8619,13 @@ onBeforeUnmount(() => {
                     class="strategy-original-transcript-editor"
                     :value="activeRecordingTab?.text || ''"
                     rows="16"
-                    maxlength="4000"
+                    :maxlength="recordingTabTextLimit"
                     spellcheck="false"
                     placeholder="粘贴或输入这一段话术…"
                     @input="onRecordingTabInput"
                   ></textarea>
                   <p class="strategy-script-counts">
-                    <span>当前字数 {{ recordingTabCharCount }} / 4000</span>
+                    <span>当前字数 {{ recordingTabCharCount }} / {{ recordingTabTextLimit }}</span>
                     <span>话术标签 {{ recordingTabs.length }} / 20</span>
                   </p>
                   <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
