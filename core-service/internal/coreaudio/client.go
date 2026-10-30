@@ -1603,6 +1603,10 @@ func (c *Client) programSnapshotLocked(program *programState, now time.Time) aud
 		if program.TrackIndex+1 < len(program.Tracks) {
 			snapshot.NextTrackText = program.Tracks[program.TrackIndex+1].Text
 		}
+	} else if program.Running && !program.WaitingForContent && program.TrackIndex >= 0 && program.TrackIndex < len(program.Tracks) {
+		// Original recordings also provide ready mainline audio. Only count the
+		// current track: a non-sequential library is not a committed future queue.
+		snapshot.BufferedMainlineMS = max(0, int64(program.Tracks[program.TrackIndex].DurationMS)-int64(snapshot.CurrentMS))
 	}
 	for index := range timeline {
 		segment := timeline[index]
