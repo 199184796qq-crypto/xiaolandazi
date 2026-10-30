@@ -76,6 +76,15 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 	exec(`CREATE TABLE mgmt_users(id BIGINT UNSIGNED PRIMARY KEY,tenant_id BIGINT,username VARCHAR(64),password_hash VARCHAR(255) DEFAULT '',display_name VARCHAR(64) DEFAULT '',avatar_url TEXT,role VARCHAR(32),must_change_password BOOLEAN DEFAULT false,phone VARCHAR(32) DEFAULT '',province VARCHAR(32) DEFAULT '',city VARCHAR(32) DEFAULT '',district VARCHAR(32) DEFAULT '',status VARCHAR(32) DEFAULT 'active',created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3))`)
 	exec(`CREATE TABLE mgmt_sessions(user_id BIGINT,token_hash VARCHAR(64),expires_at DATETIME(3),last_seen_at DATETIME(3))`)
 	exec(`CREATE TABLE mgmt_system_settings(setting_key VARCHAR(96) PRIMARY KEY,value_text TEXT)`)
+	commercialDDL, err := os.ReadFile("../db/commercial_schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range strings.Split(strings.ReplaceAll(string(commercialDDL), "\r\n", "\n"), "\n-- +statement\n") {
+		if strings.HasPrefix(strings.TrimSpace(statement), "CREATE TABLE IF NOT EXISTS quota_buckets (") {
+			exec(statement)
+		}
+	}
 	for _, migrate := range []func(context.Context) error{store.MigrateLiveRuntime, store.MigrateContentPools, store.MigrateContentCorrections} {
 		if err := migrate(context.Background()); err != nil {
 			t.Fatal(err)
@@ -153,6 +162,9 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 	var workspace struct {
 		Version *model.LiveAgentPlanVersion `json:"version"`
 	}
+	if _, err := store.ListLiveAgentPlanVersionsForPlan(context.Background(), 14, 7); err != nil {
+		t.Fatalf("list saved plan versions: %v", err)
+	}
 	if err := json.Unmarshal(call("GET", "/api/v1/live-agent-plans/7/workspace?tenant_id=14&content_mode=user_audio", nil, 200), &workspace); err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +181,25 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 	}
 	if saved.VersionNo != 2 || saved.VoiceIdentity.BindingID != 21 || saved.Variants[0].AudioAssetID != v.AudioAssetID {
 		t.Fatal("explicit plan voice did not persist independently of original audio")
+	}
+	// Large timeline JSON must survive read-back with normal MySQL sort memory.
+	// Higher IDs from other scopes or unpublished lifecycle states stay hidden.
+	for _, fixture := range []struct {
+		tenant, plan int64
+		version      int
+		status       string
+	}{{14, 7, 100, "prepared"}, {14, 7, 101, "abandoned"}, {15, 7, 102, "draft"}, {14, 8, 103, "draft"}} {
+		exec(`INSERT INTO live_agent_plan_versions(tenant_id,plan_id,room_id,version_no,lifecycle_status,duration_minutes,round_minutes,voice_identity_json,variants_json,generation_context_json) SELECT ?,?,0,?,?,duration_minutes,round_minutes,voice_identity_json,variants_json,generation_context_json FROM live_agent_plan_versions WHERE id=?`, fixture.tenant, fixture.plan, fixture.version, fixture.status, saved.ID)
+	}
+	listed, err := store.ListLiveAgentPlanVersionsForPlan(context.Background(), 14, 7)
+	if err != nil || len(listed) != 2 || listed[0].ID != saved.ID || listed[0].VersionNo != 2 || listed[1].VersionNo != 1 {
+		t.Fatalf("descending plan-scoped version read-back: count=%d error=%v", len(listed), err)
+	}
+	if err := json.Unmarshal(call("GET", "/api/v1/live-agent-plans/7/workspace?tenant_id=14&content_mode=user_audio", nil, 200), &workspace); err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Version == nil || workspace.Version.ID != saved.ID || workspace.Version.VoiceIdentity.BindingID != 21 || workspace.Version.Variants[0].AudioAssetID != v.AudioAssetID {
+		t.Fatal("explicit plan voice/original recording not restored")
 	}
 	// Aliyun's legacy catalogue omits provider, while callers use its canonical
 	// provider name; exact model and configured library are still mandatory.

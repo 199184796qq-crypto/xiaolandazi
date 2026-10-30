@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"livecompanion/management/internal/model"
 )
@@ -270,7 +271,6 @@ func (s *Store) ListLiveAgentPlanVersionsForPlan(
 		ctx,
 		liveAgentPlanVersionSelect+`
 		WHERE tenant_id=? AND plan_id=? AND lifecycle_status NOT IN ('prepared','abandoned')
-		ORDER BY id DESC
 	`,
 		tenantID,
 		planID,
@@ -287,7 +287,14 @@ func (s *Store) ListLiveAgentPlanVersionsForPlan(
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// MySQL filesort carries the long JSON/audio timeline columns and can run
+	// out of sort memory even for one original-recording version. We already
+	// load every version here; sort the decoded headers without copying JSON.
+	sort.Slice(items, func(i, j int) bool { return items[i].ID > items[j].ID })
+	return items, nil
 }
 
 func (s *Store) PublishLiveAgentPlanVersion(
