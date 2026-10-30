@@ -76,7 +76,7 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 	exec(`CREATE TABLE mgmt_users(id BIGINT UNSIGNED PRIMARY KEY,tenant_id BIGINT,username VARCHAR(64),password_hash VARCHAR(255) DEFAULT '',display_name VARCHAR(64) DEFAULT '',avatar_url TEXT,role VARCHAR(32),must_change_password BOOLEAN DEFAULT false,phone VARCHAR(32) DEFAULT '',province VARCHAR(32) DEFAULT '',city VARCHAR(32) DEFAULT '',district VARCHAR(32) DEFAULT '',status VARCHAR(32) DEFAULT 'active',created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3))`)
 	exec(`CREATE TABLE mgmt_sessions(user_id BIGINT,token_hash VARCHAR(64),expires_at DATETIME(3),last_seen_at DATETIME(3))`)
 	exec(`CREATE TABLE mgmt_system_settings(setting_key VARCHAR(96) PRIMARY KEY,value_text TEXT)`)
-	for _, migrate := range []func(context.Context) error{store.Migrate, store.MigrateLiveRuntime, store.MigrateContentPools, store.MigrateContentCorrections} {
+	for _, migrate := range []func(context.Context) error{store.MigrateLiveRuntime, store.MigrateContentPools, store.MigrateContentCorrections} {
 		if err := migrate(context.Background()); err != nil {
 			t.Fatal(err)
 		}

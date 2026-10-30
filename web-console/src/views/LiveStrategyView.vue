@@ -8928,7 +8928,7 @@ onBeforeUnmount(() => {
                       </div>
                       <button v-if="isUserAudioContentMode" type="button" @click="openCustomMainline">上传原始录音</button>
                       <button
-                        v-else-if="String(selectedPlanVoice.source || '')"
+                        v-else-if="String(selectedPlanVoice?.source || '')"
                         type="button"
                         @click="generateFullShowVariantVoice(selectedFullShowVariant)"
                       >
