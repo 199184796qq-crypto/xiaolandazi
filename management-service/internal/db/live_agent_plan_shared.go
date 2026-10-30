@@ -11,9 +11,10 @@ import (
 // 回填给这个房间，实现「绑定即生效、无需再发布」。方案级存档（room_id=0）与其它房间
 // 保存的版本都一样是方案级资产，绑定后即可被直播间直接取用。
 func publishLatestPlanPointersTx(ctx context.Context, tx *sql.Tx, tenant, plan, room, actor int64) error {
+	// These rows may contain a complete long recording. Choose per-mode heads
+	// by ID in memory instead of asking MySQL to sort full JSON rows.
 	rows, err := tx.QueryContext(ctx, liveAgentPlanVersionSelect+`
 		WHERE tenant_id=? AND plan_id=? AND lifecycle_status IN ('draft','published','superseded')
-		ORDER BY id DESC
 	`, tenant, plan)
 	if err != nil {
 		return err
@@ -26,7 +27,7 @@ func publishLatestPlanPointersTx(ctx context.Context, tx *sql.Tx, tenant, plan, 
 			return scanErr
 		}
 		mode := model.LiveContentModeFromGenerationContext(v.GenerationContext)
-		if _, exists := heads[mode]; !exists {
+		if previous, exists := heads[mode]; !exists || v.ID > previous.ID {
 			heads[mode] = v
 		}
 	}
@@ -77,7 +78,7 @@ func (s *Store) UnifyLiveAgentPlanSavedVersions(ctx context.Context, tenant, pla
 	if err = tx.QueryRowContext(ctx, `SELECT id FROM live_agent_plans WHERE tenant_id=? AND id=? AND status='active' FOR UPDATE`, tenant, plan).Scan(&locked); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, liveAgentPlanVersionSelect+` WHERE tenant_id=? AND plan_id=? AND lifecycle_status IN ('draft','published','superseded') ORDER BY id DESC`, tenant, plan)
+	rows, err := tx.QueryContext(ctx, liveAgentPlanVersionSelect+` WHERE tenant_id=? AND plan_id=? AND lifecycle_status IN ('draft','published','superseded')`, tenant, plan)
 	if err != nil {
 		return err
 	}
@@ -89,7 +90,7 @@ func (s *Store) UnifyLiveAgentPlanSavedVersions(ctx context.Context, tenant, pla
 			return scanErr
 		}
 		mode := model.LiveContentModeFromGenerationContext(v.GenerationContext)
-		if _, exists := heads[mode]; !exists {
+		if previous, exists := heads[mode]; !exists || v.ID > previous.ID {
 			heads[mode] = v
 		}
 	}

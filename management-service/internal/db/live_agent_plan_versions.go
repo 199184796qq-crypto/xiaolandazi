@@ -360,6 +360,10 @@ func (s *Store) GetPublishedLiveAgentPlanVersionForRoom(
 	ctx context.Context,
 	tenantID, roomID int64,
 ) (model.LiveAgentPlanVersion, error) {
+	// Pick the greatest eligible ID before loading the recording JSON. Sorting
+	// the full row can exceed MySQL's filesort buffer even with LIMIT 1.
+	// Keep selection and content in one statement so a concurrent plan switch
+	// cannot combine a version ID from one plan with another room selection.
 	item, err := scanLiveAgentPlanVersion(s.db.QueryRowContext(
 		ctx,
 		liveAgentPlanVersionSelect+`
@@ -368,8 +372,12 @@ func (s *Store) GetPublishedLiveAgentPlanVersionForRoom(
 		       AND selection.plan_id=live_agent_plan_versions.plan_id
 		WHERE selection.tenant_id=? AND selection.room_id=?
 		  AND live_agent_plan_versions.lifecycle_status IN ('draft','published','superseded')
-		ORDER BY live_agent_plan_versions.id DESC
-		LIMIT 1
+		  AND live_agent_plan_versions.id=(
+		      SELECT MAX(candidate.id)
+		      FROM live_agent_plan_versions candidate
+		      WHERE candidate.tenant_id=selection.tenant_id AND candidate.plan_id=selection.plan_id
+		        AND candidate.lifecycle_status IN ('draft','published','superseded')
+		  )
 	`,
 		tenantID,
 		roomID,

@@ -85,7 +85,7 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 			exec(statement)
 		}
 	}
-	for _, migrate := range []func(context.Context) error{store.MigrateLiveRuntime, store.MigrateContentPools, store.MigrateContentCorrections} {
+	for _, migrate := range []func(context.Context) error{store.MigrateLiveRuntime, store.MigrateContentPools, store.MigrateContentCorrections, store.MigrateRoomDeletions} {
 		if err := migrate(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -170,6 +170,20 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 	}
 	if workspace.Version == nil || workspace.Version.ID != saved.ID || workspace.Version.VoiceIdentity.VoiceID != "101030" {
 		t.Fatal("saved default voice not restored")
+	}
+	// The workspace reader and the room-start reader are different queries.
+	// Exercise the exact authenticated GET used before the big-screen Start.
+	exec(`INSERT INTO live_agent_room_plan_selections(tenant_id,room_id,plan_id) VALUES(14,29,7),(14,26,7)`)
+	for _, room := range []int64{29, 26} {
+		var effective struct {
+			Version *model.LiveAgentPlanVersion `json:"version"`
+		}
+		if err := json.Unmarshal(call("GET", fmt.Sprintf("/api/v1/rooms/%d/live-agent-plan/published-version", room), nil, 200), &effective); err != nil {
+			t.Fatal(err)
+		}
+		if effective.Version == nil || effective.Version.ID != saved.ID || effective.Version.RoomID != room || effective.Version.Variants[0].AudioAssetID != v.AudioAssetID || len(effective.Version.Variants[0].Timeline) != 251 || len(effective.Version.Variants[0].SafePoints) != 251 {
+			t.Fatal("room-start GET lost the saved original recording")
+		}
 	}
 	// The original upload may reference a disabled old clone in its archive;
 	// explicitly selecting that clone for interaction must still be refused.
