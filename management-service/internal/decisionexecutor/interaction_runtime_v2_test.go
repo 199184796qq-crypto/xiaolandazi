@@ -30,6 +30,9 @@ func (s *v2Store) GetLiveAgentPlanPrompt(context.Context, int64, int64) (string,
 }
 func v2Fixture(t *testing.T, id int64) (*Worker, *v2Store, *fakeCore, *fakeAgent, *fakeTTS, model.LiveRuntimeSession, interactionplan.Envelope) {
 	t.Helper()
+	// Each fixture represents a separate process. Session IDs below intentionally
+	// exercise different cases, not consecutive shows in the same global cache.
+	interactionplan.Frozen = interactionplan.Cache{}
 	store := &v2Store{readyVoiceStore(), "发货安排：第二天上午发货，特殊要求以客服确认为准。"}
 	core := &fakeCore{}
 	agent := &fakeAgent{}
