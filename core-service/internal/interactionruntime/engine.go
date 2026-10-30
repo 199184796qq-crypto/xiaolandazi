@@ -221,7 +221,6 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 		if _, ok := r.Seen[v.ID]; ok {
 			return
 		}
-		r.Seen[v.ID] = now
 	}
 	if len(r.Seen) > 8192 {
 		for k, at := range r.Seen {
@@ -230,8 +229,11 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 			}
 		}
 	}
-	if len(r.Seen) > 16384 {
+	if len(r.Seen) >= 16384 {
 		return
+	}
+	if v.ID != "" {
+		r.Seen[v.ID] = now
 	}
 	if v.Kind == "block" {
 		delete(r.Dialogues, v.UID)

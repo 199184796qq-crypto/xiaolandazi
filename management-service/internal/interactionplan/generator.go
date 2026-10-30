@@ -106,6 +106,10 @@ func (c *Cache) Put(s Snapshot) Snapshot {
 		return old
 	}
 	for key := range c.items {
+		// An old in-flight session must never evict the newer live snapshot.
+		if key.Tenant == s.Scope.Tenant && key.Room == s.Scope.Room && key.Session > s.Scope.Session {
+			return s
+		}
 		if key.Tenant == s.Scope.Tenant && key.Room == s.Scope.Room && key.Session != s.Scope.Session {
 			delete(c.items, key)
 		}

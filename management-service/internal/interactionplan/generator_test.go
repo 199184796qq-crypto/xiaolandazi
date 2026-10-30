@@ -12,6 +12,17 @@ import (
 	"time"
 )
 
+func TestOldSessionCannotEvictNewFrozenSnapshot(t *testing.T) {
+	var c Cache
+	newer := Snapshot{Scope: Scope{14, 29, 102, 7, 3}, Prompt: "new frozen"}
+	c.Put(newer)
+	c.Put(Snapshot{Scope: Scope{14, 29, 101, 7, 2}, Prompt: "late old"})
+	got, ok := c.ForSession(14, 29, 102)
+	if !ok || got.Prompt != newer.Prompt {
+		t.Fatal("late old session evicted new live snapshot", got)
+	}
+}
+
 func fixture(t *testing.T) Snapshot {
 	t.Helper()
 	p, err := policy.LoadGeneration()
