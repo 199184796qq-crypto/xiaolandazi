@@ -11,13 +11,13 @@ import (
 )
 
 func TestPublishedVoiceRateHundredths(t *testing.T) {
-	for cents := 80; cents <= 120; cents++ {
+	for cents := 80; cents <= 140; cents++ {
 		rate := float64(cents) / 100
 		if got, ok := normalizePublishedVoiceRate(rate); !ok || got != rate {
 			t.Fatalf("published rate lost precision: rate=%v got=%v ok=%v", rate, got, ok)
 		}
 	}
-	for _, rate := range []float64{0.79, 1.21, 1.015, math.NaN(), math.Inf(1)} {
+	for _, rate := range []float64{0.79, 1.41, 1.401, 1.405, 1.015, math.NaN(), math.Inf(1)} {
 		if _, ok := normalizePublishedVoiceRate(rate); ok {
 			t.Fatalf("invalid published rate accepted: %v", rate)
 		}
@@ -27,7 +27,7 @@ func TestPublishedVoiceRateHundredths(t *testing.T) {
 func TestHundredthVoiceRatesKeepSeparateAudioCaches(t *testing.T) {
 	voiceKeys, libraryKeys := map[string]bool{}, map[string]bool{}
 	var contentKey string
-	for _, rate := range []float64{0.99, 1, 1.01, 1.02} {
+	for _, rate := range []float64{0.99, 1, 1.01, 1.02, 1.2, 1.21, 1.39, 1.4} {
 		version := model.LiveAgentPlanVersion{VoiceIdentity: model.LiveAgentVoiceIdentity{VoiceID: "fixture-voice", Model: "fixture-model", Rate: rate}}
 		voice, content := recordingCurrentCacheIdentity(version, []string{"fixture"}, nil)
 		library := libraryVoiceSHA(&anchorcycle.State{Config: anchorcycle.Config{TTS: &anchorcycle.VoiceConfig{VoiceID: "fixture-voice", Model: "fixture-model", Rate: rate}}})

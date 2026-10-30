@@ -9,7 +9,7 @@ import (
 	"livecompanion/management/internal/model"
 )
 
-var ErrInvalidPlanVoiceRate = errors.New("语速须为 0.80～1.20，步长为 0.01")
+var ErrInvalidPlanVoiceRate = errors.New("语速须为 0.80～1.40，步长为 0.01")
 
 func (s *Store) migratePlanVoiceRate(ctx context.Context) error {
 	exists, err := s.columnExists(ctx, "live_agent_plans", "voice_rate")

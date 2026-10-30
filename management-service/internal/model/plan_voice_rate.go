@@ -13,7 +13,7 @@ func NormalizePlanVoiceRate(rate float64) (float64, bool) {
 		return 0, false
 	}
 	normalized := math.Round(rate*100) / 100
-	if normalized < 0.8 || normalized > 1.2 || math.Abs(rate-normalized) > 1e-9 {
+	if normalized < 0.8 || normalized > 1.4 || math.Abs(rate-normalized) > 1e-9 {
 		return 0, false
 	}
 	return normalized, true

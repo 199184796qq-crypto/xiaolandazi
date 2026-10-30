@@ -13,6 +13,7 @@ import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import PlanVoiceRateControl from '../components/PlanVoiceRateControl.vue'
 import { usePlanVoiceRate } from '../usePlanVoiceRate'
 import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
+import CreateProductCardButton from '../components/CreateProductCardButton.vue'
 import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
 import { benefitAppliesToProduct } from '../benefitScopeDisplay'
 import InteractionRulesWorkspace from '../components/InteractionRulesWorkspace.vue'
@@ -5209,17 +5210,20 @@ async function refreshFormalBenefits() {
   }
 }
 
+let productLinksReadSequence = 0
 async function refreshFormalProductLinks() {
+  const token = ++productLinksReadSequence, ownerEpoch = planAssetScopeEpoch
   const planId = currentRoomPlanId.value
+  const tenant = planTenantId.value
   if (!planId) {
     formalProductLinks.value = []
     return
   }
   try {
-    const result = await getLiveAgentPlanProductLinks(planId, planTenantId.value)
-    formalProductLinks.value = result.items || []
+    const result = await getLiveAgentPlanProductLinks(planId, tenant)
+    if (!contentModeDisposed && token === productLinksReadSequence && ownerEpoch === planAssetScopeEpoch && currentRoomPlanId.value === planId && planTenantId.value === tenant) formalProductLinks.value = result.items || []
   } catch (err) {
-    if (!settingsError.value) {
+    if (token === productLinksReadSequence && ownerEpoch === planAssetScopeEpoch && currentRoomPlanId.value === planId && planTenantId.value === tenant && !settingsError.value) {
       settingsError.value = err instanceof Error ? err.message : '读取正式商品链接失败'
     }
   }
@@ -5250,6 +5254,13 @@ async function saveProductLinkField(
     void contentPools.refresh(true)
     if (field === 'link_key') void refreshFormalBenefits()
   }
+}
+
+function onProductCardCreated(item: LiveAgentPlanProductLink) {
+  if (contentModeDisposed || item.plan_id !== currentRoomPlanId.value || item.tenant_id !== planTenantId.value) return
+  ++productLinksReadSequence
+  if (!formalProductLinks.value.some(link => link.id === item.id)) formalProductLinks.value = [...formalProductLinks.value, item]
+  void contentPools.refresh(true)
 }
 
 async function duplicateProductLink(item: LiveAgentPlanProductLink) {
@@ -6992,7 +7003,10 @@ onBeforeUnmount(() => {
                 <strong>已采纳商品链接</strong>
                 <span>当前正式 {{ formalProductLinks.length }} 个</span>
               </div>
-              <button v-if="formalProductLinks.length >= 2" type="button" class="strategy-frequency-toggle" :aria-expanded="frequencyPanelOpen" @click="frequencyPanelOpen = !frequencyPanelOpen">{{ frequencyPanelOpen ? '收起频率' : '调节频率' }}</button>
+              <div class="strategy-product-formal-actions">
+                <button v-if="formalProductLinks.length >= 2" type="button" class="strategy-frequency-toggle" :aria-expanded="frequencyPanelOpen" @click="frequencyPanelOpen = !frequencyPanelOpen">{{ frequencyPanelOpen ? '收起频率' : '调节频率' }}</button>
+                <CreateProductCardButton :plan-id="currentRoomPlanId || 0" :tenant-id="planTenantId" :scope-key="planSelectionPreferenceKey(planSelectionScope())" :items="formalProductLinks" @created="onProductCardCreated" />
+              </div>
             </header>
             <section v-if="frequencyPanelOpen" class="strategy-frequency-panel">
               <p>系数越大，这个商品讲得越多；所有商品占比之和恒为 100%，调高一个会自动压低其它。1.0 表示按定位基准、不额外偏重。</p>
@@ -7006,7 +7020,7 @@ onBeforeUnmount(() => {
             </section>
             <div v-if="!formalProductLinks.length" class="strategy-v2-empty strategy-product-formal-empty">
               <strong>还没有正式商品链接</strong>
-              <span>可以向右侧智能体提供商品信息，添加需要使用的商品链接。</span>
+              <span>点击“添加商品卡”填写商品资料，也可以向右侧智能体提供商品信息。</span>
             </div>
             <LiveProductLinkCards v-else ref="productCards" :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :benefit-scopes="poolStatus?.benefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :copy-item="duplicateProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute" :save-selling-points="saveProductSellingPoints">
               <template #risk="{ item }"><SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'products', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'products')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" /></template>
@@ -9814,6 +9828,7 @@ onBeforeUnmount(() => {
 .strategy-product-formal { display:grid; gap:16px; min-width:0; padding:18px; border:1px solid #e0e5fb; border-radius:18px; background:rgba(255,255,255,.95); box-shadow:0 14px 36px rgba(78,91,171,.06); }
 .strategy-product-formal>header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding-bottom:12px; border-bottom:1px solid #e9ecf7; }
 .strategy-product-formal>header>div { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+.strategy-product-formal>header>.strategy-product-formal-actions { align-items:center; justify-content:flex-end; gap:10px; }
 .strategy-product-formal>header strong { color:#172440; font-size:18px; font-weight:900; }
 .strategy-product-formal>header span,.strategy-product-formal>header small { color:#8a94a7; font-size:15px; line-height:1.5; }
 .strategy-product-formal-empty { min-height:110px; }
@@ -9828,7 +9843,7 @@ onBeforeUnmount(() => {
 .strategy-frequency-value { text-align:right; color:#4d62ff; font-size:15px; font-weight:800; }
 .strategy-frequency-share { text-align:right; color:#7a5af5; font-size:14px; font-weight:800; }
 .strategy-product-intro { font-size:14px!important; line-height:1.55!important; }
-@media(max-width:600px) { .strategy-product-formal { padding:12px; } }
+@media(max-width:600px) { .strategy-product-formal { padding:12px; } .strategy-product-formal>header { flex-wrap:wrap; } .strategy-product-formal>header>.strategy-product-formal-actions { width:100%; } }
 .strategy-product-link-card { display:grid; gap:14px; padding:18px; border:1px solid #dfe5f0; border-radius:18px; background:#fff; box-shadow:0 8px 22px rgba(48,63,104,.045); }
 .strategy-product-link-card>header { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding-bottom:12px; border-bottom:1px solid #e9edf4; }
 .strategy-product-link-card>header>div { display:grid; gap:4px; }

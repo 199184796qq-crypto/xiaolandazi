@@ -9,7 +9,7 @@ import (
 )
 
 func TestGatewayQwenPreservesHundredthVoiceRate(t *testing.T) {
-	for _, rate := range []float64{0.99, 1, 1.01, 1.02} {
+	for _, rate := range []float64{0.99, 1, 1.01, 1.02, 1.2, 1.21, 1.39, 1.4} {
 		t.Run(fmt.Sprintf("%.2f", rate), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var payload struct {

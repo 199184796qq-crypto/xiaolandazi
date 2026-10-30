@@ -1,6 +1,6 @@
 import { request } from './api'
 
-export const planVoiceRateOptions = Array.from({ length: 41 }, (_, index) => (80 + index) / 100)
+export const planVoiceRateOptions = Array.from({ length: 61 }, (_, index) => (80 + index) / 100)
 export type PlanVoiceRate = { tenant_id: number; plan_id: number; rate: number }
 export function normalizePlanVoiceRate(value: unknown) {
   const rate = Number(value)
