@@ -2,6 +2,7 @@
 import { validateOriginalAudioFiles } from '../directAudioUpload'
 import QuestionLibraryPanel from '../components/QuestionLibraryPanel.vue'
 import RoomReadingRules from '../components/RoomReadingRules.vue'
+import PlanPromptEditor from '../components/PlanPromptEditor.vue'
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { normalizeLiveAgentPlanVersion } from '../liveAgentPlanVersion'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
@@ -86,6 +87,8 @@ import {
   updateLiveAgentPlanFactCategory,
   suggestLiveAgentPlanFactTypes,
   getLiveAgentPlanProductLinks,
+  getLiveAgentPlanPrompt,
+  saveLiveAgentPlanPrompt,
   getLiveAgentPlanScripts,
   getLiveVoiceModelBindings,
   getLiveOfficialVoices,
@@ -244,6 +247,7 @@ type StrategyMode =
   | 'supplement'
   | 'benefits'
   | 'knowledge'
+  | 'plan_prompt'
   | 'memory'
   | 'reading'
   | 'miner'
@@ -257,10 +261,17 @@ type StrategyMode =
 // “直播素材”是旧版资料入口，保留内部兼容状态但不再作为前台页面；进入策略页默认落在商品链接。
 const activeMode = ref<StrategyMode>('products')
 const lastFactMode = ref<PlanFactMode>('products')
+const planPromptMD = ref('')
+const planPromptLoading = ref(false)
+const planPromptSaving = ref(false)
+const planPromptError = ref('')
+const planPromptNotice = ref('')
+const planPromptLoadedPlan = ref(0)
 const planActionsMenu = ref<HTMLDetailsElement | null>(null)
 watch(activeMode, mode => {
   if (mode === 'miner') activeMode.value = 'knowledge'
   else if (isPlanFactMode(mode)) lastFactMode.value = mode
+  else if (mode === 'plan_prompt') void loadPlanPrompt()
 }, { flush: 'sync' })
 function closePlanActionsMenu() { if (planActionsMenu.value) planActionsMenu.value.open = false }
 function dismissPlanActionsMenu(event: MouseEvent) {
@@ -315,6 +326,53 @@ const planSelectionScope = () => ({
 })
 let roomPlanLoadSequence = 0
 let planAssetScopeEpoch = 0
+async function loadPlanPrompt() {
+  const planId = Number(currentRoomPlanId.value || 0)
+  if (!planId) {
+    planPromptMD.value = ''
+    planPromptLoadedPlan.value = 0
+    return
+  }
+  if (planPromptLoadedPlan.value === planId && !planPromptError.value) return
+  planPromptLoading.value = true
+  planPromptError.value = ''
+  try {
+    const result = await getLiveAgentPlanPrompt(planId)
+    planPromptMD.value = result.prompt_md || ''
+    planPromptLoadedPlan.value = planId
+  } catch (err) {
+    planPromptError.value = err instanceof Error ? err.message : '方案提示词读取失败'
+  } finally {
+    planPromptLoading.value = false
+  }
+}
+async function savePlanPrompt() {
+  const planId = Number(currentRoomPlanId.value || 0)
+  if (!planId) {
+    planPromptError.value = '请先选择直播方案'
+    return
+  }
+  if (!planPromptMD.value.trim()) {
+    planPromptError.value = '请先填写方案提示词'
+    return
+  }
+  planPromptSaving.value = true
+  planPromptError.value = ''
+  planPromptNotice.value = ''
+  try {
+    const result = await saveLiveAgentPlanPrompt(planId, planPromptMD.value)
+    planPromptMD.value = result.prompt_md || planPromptMD.value
+    planPromptLoadedPlan.value = planId
+    planPromptNotice.value = '方案提示词已保存'
+  } catch (err) {
+    planPromptError.value = err instanceof Error ? err.message : '方案提示词保存失败'
+  } finally {
+    planPromptSaving.value = false
+  }
+}
+watch(currentRoomPlanId, () => {
+  if (activeMode.value === 'plan_prompt') void loadPlanPrompt()
+})
 watch(() => planSelectionPreferenceKey(planSelectionScope()), () => {
   roomPlanLoadSequence++
   planAssetScopeEpoch++
@@ -7406,6 +7464,22 @@ onBeforeUnmount(() => {
               <button ref="formalFactAddButton" class="primary-button" type="button" :disabled="creatingFormalFact || editingFormalFactId !== null || !currentPlan || !!mutatingFormalFactId || factScopeSavingId !== null || !factCategoryState.items.length || factCategoryState.loading || !!factCategoryState.error" @click="beginCreateFormalFact">＋ 添加事实依据</button>
             </div>
           </section>
+        </section>
+
+        <section v-else-if="activeMode === 'plan_prompt'" class="strategy-v2-workspace">
+          <PlanPromptEditor
+            :key="planSelectionPreferenceKey(planSelectionScope()) + ':' + currentRoomPlanId"
+            v-model="planPromptMD"
+            :plan-id="currentRoomPlanId"
+            :loaded="planPromptLoadedPlan === currentRoomPlanId"
+            :loading="planPromptLoading"
+            :saving="planPromptSaving"
+            :error="planPromptError"
+            :notice="planPromptNotice"
+            @save="savePlanPrompt"
+            @retry="loadPlanPrompt"
+            @clear-feedback="planPromptError = ''; planPromptNotice = ''"
+          />
         </section>
 
         <section v-else-if="activeMode === 'reading'" class="strategy-v2-workspace">

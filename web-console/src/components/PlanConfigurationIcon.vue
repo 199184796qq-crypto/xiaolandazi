@@ -10,6 +10,7 @@ const paths: Record<string, string> = {
   supplement: 'M4 4h16v13h-9l-5 4v-4H4zM8 10h8M12 6v8',
   benefits: 'M3 8h18v4H3zM5 12v9h14v-9M12 8v13M12 8H8a3 3 0 1 1 3-3l1 3zm0 0h4a3 3 0 1 0-3-3l-1 3z',
   knowledge: 'M5 3h14v18H5zM8 7h8M8 11h8M8 15h6M8 18h4',
+  plan_prompt: 'm15 4 5 5M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z',
   miner: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0zM15.5 8.5l-2 5-5 2 2-5z',
   preview: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z',
   save: 'M4 3h13l4 4v14H3V3zM7 3v6h10V3M7 21v-8h10v8',

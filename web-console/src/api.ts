@@ -4404,6 +4404,32 @@ export function setPlanProductCategory(planId: number, category: string) {
   )
 }
 
+export interface PlanPrompt {
+  prompt_md: string
+  updated_at?: string
+}
+
+export function getLiveAgentPlanPrompt(planId: number) {
+  return request<PlanPrompt>(
+    '/api/v1/live-agent-plans/' + planId + '/prompt',
+    { method: 'GET', suppressErrorDialog: true },
+  )
+}
+
+export function saveLiveAgentPlanPrompt(planId: number, promptMD: string) {
+  return request<PlanPrompt>(
+    '/api/v1/live-agent-plans/' + planId + '/prompt',
+    { method: 'PUT', body: JSON.stringify({ prompt_md: promptMD }) },
+  )
+}
+
+export function renderLiveAgentPlanPrompt(planId: number) {
+  return request<PlanPrompt>(
+    '/api/v1/live-agent-plans/' + planId + '/prompt/render',
+    { method: 'POST', body: JSON.stringify({}), suppressErrorDialog: true },
+  )
+}
+
 export function guideSpeechMiner(
   planId: number,
   input: {
