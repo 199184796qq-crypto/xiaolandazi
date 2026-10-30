@@ -8,7 +8,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { useRoute } from 'vue-router'
 import { mainlineIndustryLabel, mainlineLiveTypeLabel, mainlineRoleSequenceLabel, productPlanDirectionLabel, productRoomRolesLabel } from '../agent/mainlineDisplay'
 
-import { planVoiceChoices, planVoiceUnavailable } from '../planAssets'
+import { planDefaultVoice, planVoiceChoices, planVoiceUnavailable } from '../planAssets'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import PlanVoiceRateControl from '../components/PlanVoiceRateControl.vue'
 import { usePlanVoiceRate } from '../usePlanVoiceRate'
@@ -150,7 +150,6 @@ import {
   updateLiveAgentPlanScript,
   updateLiveAgentSettings,
   updateLiveAddressingStrategy,
-  publishLiveAgentVoiceBinding,
   updateUserUIPreferences,
   uploadLiveAgentCustomMainline,
   uploadLiveMediaAsset,
@@ -2445,34 +2444,27 @@ const fullShowAllFormalVoicesReady = computed(
     fullShowFormalSelectedCount.value > 0 &&
     fullShowVoiceReadyCount.value === fullShowFormalSelectedCount.value,
 )
-const systemDefaultVoice = {
-  source: 'official',
-  provider: 'aliyun_qwen',
-  name: '龙安灵心',
-  voice_id: 'longanlingxin',
-  profile_id: 0,
-  model: 'qwen-audio-3.0-tts-plus',
-  system_default: true,
-}
-const selectedPlanVoice = computed(() => fullShowWorkspaceVoiceIdentity.value || systemDefaultVoice)
+const systemDefaultVoice = ref<LiveAgentVoiceIdentity | null>(null)
+const selectedPlanVoice = computed(() => fullShowWorkspaceVoiceIdentity.value || systemDefaultVoice.value)
 const selectedPlanVoiceName = computed(
   () => {
-    const name = String(selectedPlanVoice.value.name || '').trim() || systemDefaultVoice.name
-    return ('system_default' in selectedPlanVoice.value && selectedPlanVoice.value.system_default) ? '系统默认 · ' + name : name
+    const voice = selectedPlanVoice.value
+    if (!voice) return '未选择可用声音'
+    return fullShowWorkspaceVoiceIdentity.value ? voice.name : '系统默认 · ' + voice.name
   },
 )
 const planVoiceRate = usePlanVoiceRate(() => ({ planId: currentRoomPlanId.value || 0, tenantId: planSelectionScope().tenantId, key: planSelectionPreferenceKey(planSelectionScope()) }))
 const planVoiceIdentity = computed<LiveAgentVoiceIdentity>(() => {
   const voice = asRecord(selectedPlanVoice.value)
   return {
-    name: String(voice.identity_name || voice.name || systemDefaultVoice.name).trim(),
+    name: String(voice.identity_name || voice.name || '未选择方案声音').trim(),
     version: String(voice.version || 'V1').trim(),
-    source: String(voice.source || systemDefaultVoice.source).trim(),
-    provider: String(voice.provider || systemDefaultVoice.provider).trim(),
-    voice_id: String(voice.voice_id || systemDefaultVoice.voice_id).trim(),
+    source: String(voice.source || 'official').trim(),
+    provider: String(voice.provider || '').trim(),
+    voice_id: String(voice.voice_id || '').trim(),
     profile_id: Number(voice.profile_id || 0) || undefined,
     binding_id: Number(voice.binding_id || 0) || undefined,
-    model: String(voice.model || systemDefaultVoice.model).trim(),
+    model: String(voice.model || '').trim(),
     rate: planVoiceRate.saved.value,
     emotion: String(voice.emotion || '').trim() || undefined,
     style: asRecord(voice.style),
@@ -4056,6 +4048,7 @@ function resetFullShowWorkspaceState() {
   fullShowWorkspaceSource.value = ''
   fullShowWorkspaceChecks.value = []
   fullShowWorkspaceVoiceIdentity.value = null
+  systemDefaultVoice.value = null
   voiceSaveError.value = ''
   availablePlanVoices.value = []
   fullShowWorkspaceLegacyPartial.value = false
@@ -4224,8 +4217,14 @@ async function loadFullShowWorkspace() {
   try {
     const contentMode = contentModeAccess.value?.content_mode
     if (!contentMode) return
-    const workspace = await getLiveAgentPlanWorkspace(planId, room.id, room.tenant_id, contentMode)
+    const [workspace, bindings, official] = await Promise.all([
+      getLiveAgentPlanWorkspace(planId, room.id, room.tenant_id, contentMode),
+      getLiveVoiceModelBindings(),
+      getLiveOfficialVoices(),
+    ])
     if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || planTenantId.value !== room.tenant_id) return
+    availablePlanVoices.value = planVoiceChoices(bindings || [], official.items || [], official.configured === true)
+    systemDefaultVoice.value = planDefaultVoice(official.items || [], official.configured === true)
     if (workspace.version && (workspace.version.plan_id !== planId || workspace.version.tenant_id !== room.tenant_id)) throw new Error('返回的方案版本不属于当前账号和方案，请重新读取')
     fullShowWorkspaceChecks.value = workspace.checks || []
     const restoredOptions = realtimeOptionsFromVersion(workspace.version?.generation_context)
@@ -4349,17 +4348,18 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   fullShowVersionSaving.value = true
   fullShowNotice.value = '正在核对方案声音与保存内容。'
   try {
+    const [bindings, official] = await Promise.all([getLiveVoiceModelBindings(), getLiveOfficialVoices()])
+    assertCurrent()
+    availablePlanVoices.value = planVoiceChoices(bindings || [], official.items || [], official.configured === true)
+    systemDefaultVoice.value = planDefaultVoice(official.items || [], official.configured === true)
+    const voiceAtSave = cleanVersionVoiceIdentity(currentVoiceIdentity.value)
+    voiceSaveError.value = planVoiceUnavailable(voiceAtSave, bindings || [], official.items || [], official.configured === true)
+    if (voiceSaveError.value) throw new Error(voiceSaveError.value)
     if (roomModeAtSave === 'user_audio' && recordingVoiceMode.value === 'original' && readyRecordingOriginal.value) {
       await applyCustomMainlineAsFormal(readyRecordingOriginal.value)
       assertCurrent()
     }
     const result = fullShowResult.value
-    const voiceAtSave = cleanVersionVoiceIdentity(currentVoiceIdentity.value)
-    const [bindings, official] = await Promise.all([getLiveVoiceModelBindings(), getLiveOfficialVoices()])
-    assertCurrent()
-    availablePlanVoices.value = planVoiceChoices(bindings || [], official.items || [], official.configured === true)
-    voiceSaveError.value = planVoiceUnavailable(voiceAtSave, bindings || [], official.items || [], official.configured === true)
-    if (voiceSaveError.value) throw new Error(voiceSaveError.value)
     const contentModeAtSave = roomModeAtSave
     const realtimeActive = roomModeAtSave === 'ai_dynamic'
     const realtimeOptionsAtSave = realtimeActive ? validatedRealtimeOptions(realtimeGenerationOptions.value) : null
@@ -6422,26 +6422,8 @@ function handleLiveVoiceChanged(voice: LiveAgentVoiceIdentity) {
   fullShowSaveReceipt.value = null
   fullShowVersionError.value = ''
   fullShowNotice.value = isUserAudioContentMode.value
-    ? '已选择方案互动声音，正在直接写入当前方案…'
-    : '已选择方案声音，正在直接写入当前方案…'
-  void persistPlanVoice(voice)
-}
-
-async function persistPlanVoice(voice: LiveAgentVoiceIdentity) {
-  const roomID = activeRoomId.value
-  const bindingID = Number(voice.binding_id || 0)
-  if (!roomID || !bindingID) {
-    fullShowNotice.value = '声音已选中；当前声音没有可发布的绑定，请重新选择后再试。'
-    return
-  }
-  try {
-    const published = await publishLiveAgentVoiceBinding(roomID, bindingID)
-    fullShowSavedVersion.value = published
-    fullShowNotice.value = '声音已直接写入当前方案，无需再点保存。'
-  } catch (err) {
-    fullShowVersionError.value = err instanceof Error ? err.message : '声音写入方案失败'
-    fullShowNotice.value = '声音未写入，原方案保持不变。'
-  }
+    ? '已选择方案互动声音，请点击“保存方案”。主线保留上传原声。'
+    : '已选择方案声音，请点击“保存方案”。'
 }
 function chooseAvailablePlanVoice(event: Event) {
   const voice = availablePlanVoices.value[Number((event.target as HTMLSelectElement).value)]

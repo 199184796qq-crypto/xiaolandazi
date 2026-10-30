@@ -945,7 +945,11 @@ func (s *Server) validatePlanVoiceIdentity(ctx context.Context, tenantID int64, 
 			configured = ttsgateway.TencentConfigured()
 		}
 		for _, v := range voicecatalog.CustomerOfficial(settings.OfficialLibrary) {
-			if configured && v.ID == identity.VoiceID && v.Model == identity.Model && v.Provider == identity.Provider {
+			provider := v.Provider
+			if provider == "" {
+				provider = "aliyun_qwen"
+			}
+			if configured && v.ID == identity.VoiceID && v.Model == identity.Model && provider == identity.Provider {
 				return nil
 			}
 		}
