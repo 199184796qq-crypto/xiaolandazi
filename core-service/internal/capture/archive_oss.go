@@ -82,5 +82,7 @@ func (s *OSSArchive) DownloadURL(_ context.Context, key, name string, ttl time.D
 		return "", ErrRecordingExpired
 	}
 	disposition := fmt.Sprintf("attachment; filename=\"recording.wav\"; filename*=UTF-8''%s", url.PathEscape(name))
-	return s.public.SignURL(key, oss.HTTPGet, seconds, oss.ResponseContentDisposition(disposition), oss.ResponseContentType("audio/wav"))
+	// OSS rejects response-content-type overrides (0017-00000902). The object
+	// already carries audio/wav from Upload; only the attachment name is signed.
+	return s.public.SignURL(key, oss.HTTPGet, seconds, oss.ResponseContentDisposition(disposition))
 }

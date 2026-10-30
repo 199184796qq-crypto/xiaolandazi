@@ -78,6 +78,9 @@ func TestOSSArchiveSignsPublicEndpointAndFilename(t *testing.T) {
 	if u.Query().Get("Signature") == "" || u.Query().Get("response-content-disposition") != "attachment; filename=\"recording.wav\"; filename*=UTF-8''"+url.PathEscape("测试录音.wav") {
 		t.Fatal("signed filename missing")
 	}
+	if u.Query().Has("response-content-type") {
+		t.Fatal("OSS rejects content-type overrides; use the stored object metadata")
+	}
 	if expiry := u.Query().Get("Expires"); expiry != fmt.Sprint(before+3) && expiry != fmt.Sprint(before+4) {
 		t.Fatalf("unexpected signed expiry %s", expiry)
 	}
