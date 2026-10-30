@@ -219,7 +219,7 @@ func (w *Worker) completeV2RecordedModel(ctx context.Context, session model.Live
 	}
 	return response, callErr
 }
-func (w *Worker) v2Voice(session model.LiveRuntimeSession, item decisionItem) (model.VoiceProfile, bool) {
+func (w *Worker) v2Voice(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (model.VoiceProfile, bool) {
 	e, ok := interactionplan.Decode(item.PurposeKnowledge)
 	if !ok {
 		return model.VoiceProfile{}, false
@@ -228,7 +228,19 @@ func (w *Worker) v2Voice(session model.LiveRuntimeSession, item decisionItem) (m
 	if !ok || s.Fingerprint != e.Fingerprint {
 		return model.VoiceProfile{}, false
 	}
-	return s.Voice, true
+	voice := s.Voice
+	// Explicit plan speed controls apply to new synthesis. The voice identity
+	// remains frozen; already prepared audio is reused without another TTS call.
+	if rates, ok := w.store.(planVoiceRateSource); ok {
+		if settings, err := rates.GetPlanVoiceRate(ctx, session.TenantID, s.Scope.Plan); err == nil && settings.Rate >= 0.5 && settings.Rate <= 2 {
+			voice.Config = make(map[string]any, len(s.Voice.Config))
+			for k, v := range s.Voice.Config {
+				voice.Config[k] = v
+			}
+			voice.Config["rate"] = settings.Rate
+		}
+	}
+	return voice, true
 }
 
 func hasInteractionV2Body(item decisionItem) bool {

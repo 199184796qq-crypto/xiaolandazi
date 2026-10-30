@@ -121,8 +121,31 @@ func TestInteractionV2FrozenVoiceAndPlanIgnoreLaterAuthorEdits(t *testing.T) {
 	if err != nil || text != e.Body || agent.calls != 0 {
 		t.Fatal(text, err, agent.calls)
 	}
-	voice, ok := w.v2Voice(session, item)
+	voice, ok := w.v2Voice(context.Background(), session, item)
 	if !ok || voice.VoiceID != "voice-1" {
 		t.Fatal(voice, ok)
+	}
+}
+
+type v2RateStore struct {
+	*v2Store
+	rate float64
+}
+
+func (s *v2RateStore) GetPlanVoiceRate(context.Context, int64, int64) (model.PlanVoiceRate, error) {
+	return model.PlanVoiceRate{Rate: s.rate}, nil
+}
+func TestV2ExplicitSpeedAffectsNewSynthesisWithoutMutatingFrozenIdentity(t *testing.T) {
+	w, store, _, _, _, session, e := v2Fixture(t, 10030)
+	raw, _ := json.Marshal(e)
+	item := decisionItem{PurposeKnowledge: raw}
+	w.store = &v2RateStore{store, 1.4}
+	voice, ok := w.v2Voice(context.Background(), session, item)
+	if !ok || voice.Config["rate"] != 1.4 || voice.VoiceID != "voice-1" {
+		t.Fatal(voice, ok)
+	}
+	frozen, _ := interactionplan.Frozen.ForSession(session.TenantID, session.RoomID, session.ID)
+	if frozen.Voice.Config["rate"] == 1.4 {
+		t.Fatal("live control mutated frozen snapshot")
 	}
 }

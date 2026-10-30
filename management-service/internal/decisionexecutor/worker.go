@@ -1529,7 +1529,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		return err
 	}
 
-	voice, ok := w.v2Voice(session, *item)
+	voice, ok := w.v2Voice(ctx, session, *item)
 	if !ok {
 		voice, ok, err = w.readyVoice(ctx, session.TenantID, session.RoomID)
 	}
