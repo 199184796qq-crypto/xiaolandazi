@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -71,17 +73,47 @@ func (s *Server) roomCaptureAudioFile(w http.ResponseWriter, r *http.Request) {
 	}
 	query := url.Values{}
 	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
-	resp, err := s.core.StreamRoom(
+	if recordingID := r.URL.Query().Get("recording_id"); recordingID != "" {
+		query.Set("recording_id", recordingID)
+	}
+	resp, err := s.core.DoRoom(
 		r.Context(),
 		tenantID,
 		roomID,
-		fmt.Sprintf("/internal/v1/rooms/%d/capture/audio/file", roomID),
+		http.MethodGet,
+		fmt.Sprintf("/internal/v1/rooms/%d/capture/audio/download", roomID),
 		query,
+		nil,
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "录音文件暂不可下载")
 		return
 	}
 	defer resp.Body.Close()
-	copyResponse(w, resp)
+	redirectRecordingDownload(w, r, resp)
+}
+
+func redirectRecordingDownload(w http.ResponseWriter, r *http.Request, resp *http.Response) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if resp.StatusCode != http.StatusOK {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, io.LimitReader(resp.Body, 16*1024))
+		return
+	}
+	var result struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16*1024)).Decode(&result); err != nil {
+		writeError(w, http.StatusBadGateway, "获取录音下载地址失败")
+		return
+	}
+	address, err := url.Parse(result.URL)
+	if err != nil || address.Scheme != "https" || address.Hostname() == "" || address.User != nil {
+		writeError(w, http.StatusBadGateway, "录音下载地址无效")
+		return
+	}
+	// The browser follows this redirect. Management never fetches the WAV.
+	http.Redirect(w, r, address.String(), http.StatusFound)
 }

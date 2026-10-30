@@ -417,6 +417,22 @@ func main() {
 		log.Fatalf("create capture manager: %v", err)
 	}
 	defer captureManager.Close()
+	archiveStore, archiveErr := capture.NewOSSArchive(cfg.OSSEndpoint, cfg.OSSPublicEndpoint, cfg.OSSBucket, cfg.OSSAccessKeyID, cfg.OSSAccessKeySecret)
+	var recordingArchive capture.ArchiveStore
+	if archiveErr != nil {
+		// Do not log SDK errors which may contain credential-bearing URLs.
+		log.Print("recording OSS archive unavailable; check OSS configuration")
+	} else {
+		recordingArchive = archiveStore
+	}
+	archiveRooms, err := rooms.List(startupCtx, nil)
+	if err != nil {
+		log.Fatalf("list capture archive rooms: %v", err)
+	}
+	if err := captureManager.ConfigureArchives(recordingArchive, archiveRooms); err != nil {
+		log.Fatalf("restore capture archives: %v", err)
+	}
+	go captureManager.RunArchives(appCtx)
 
 	if err := collectorManager.Resume(startupCtx); err != nil {
 		log.Fatalf("resume collectors: %v", err)

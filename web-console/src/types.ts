@@ -1262,6 +1262,10 @@ export interface RoomAudioRecordingStatus {
   segment_count: number
   final_file_name?: string
   final_bytes?: number
+  archive_status?: 'pending' | 'uploading' | 'ready' | 'failed' | 'expired' | string
+  archive_error?: string
+  uploaded_at?: string
+  expires_at?: string
   source_protocol?: string
   error?: string
 }

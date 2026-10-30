@@ -64,7 +64,7 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, "自定义音稿文件过大或上传格式错误")
 		return
 	}
-	roomID := int64(0)
+	defer r.MultipartForm.RemoveAll()
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), true)
 	if !ok {
 		return
@@ -120,20 +120,53 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		return
 	}
 
-	normalizedPaths := make([]string, 0, len(headers))
+	sources := make([]customMainlineSource, 0, len(headers))
+	for _, header := range headers {
+		sources = append(sources, customMainlineSource{Name: header.Filename, Size: header.Size, Open: func(context.Context) (io.ReadCloser, error) { return header.Open() }})
+	}
+	var sample []byte
+	if file, header, err := r.FormFile("voice_sample"); err == nil {
+		defer file.Close()
+		if header.Size > 0 && header.Size <= 5<<20 {
+			sample, _ = io.ReadAll(io.LimitReader(file, (5<<20)+1))
+			if len(sample) > 5<<20 {
+				sample = nil
+			}
+		}
+	}
+	s.processCustomMainlineSources(w, r, tenantID, planID, actor.UserID, sources, sourceNames, contentTypes, totalSourceBytes, durationHint, sample, ossStore)
+}
+
+type customMainlineSource struct {
+	Name string
+	Size int64
+	Open func(context.Context) (io.ReadCloser, error)
+}
+
+// Shared by legacy multipart uploads and the durable direct-OSS processing queue.
+func (s *Server) processCustomMainlineSources(w http.ResponseWriter, r *http.Request, tenantID, planID, userID int64, sources []customMainlineSource, sourceNames, contentTypes []string, totalSourceBytes, durationHint int64, voiceSample []byte, ossStore assetstorage.Store) {
+	roomID := int64(0)
+	normalizedPaths := make([]string, 0, len(sources))
 	defer func() {
 		for _, path := range normalizedPaths {
 			_ = os.Remove(path)
 		}
 	}()
-	for _, header := range headers {
-		file, err := header.Open()
+	for _, source := range sources {
+		file, err := source.Open(r.Context())
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "读取自定义音稿失败")
 			return
 		}
-		extension := strings.ToLower(filepath.Ext(strings.TrimSpace(header.Filename)))
-		sourcePath, copyErr := copyAudioReaderToTemp(file, extension)
+		extension := strings.ToLower(filepath.Ext(strings.TrimSpace(source.Name)))
+		sourcePath, copyErr := copyAudioReaderToTemp(io.LimitReader(file, source.Size+1), extension)
+		if copyErr == nil {
+			info, statErr := os.Stat(sourcePath)
+			if statErr != nil || info.Size() != source.Size {
+				_ = os.Remove(sourcePath)
+				copyErr = errors.New("原始音频大小与上传信息不一致")
+			}
+		}
 		_ = file.Close()
 		if copyErr != nil {
 			writeError(w, http.StatusBadRequest, "读取自定义音稿失败")
@@ -149,6 +182,27 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 			return
 		}
 		normalizedPaths = append(normalizedPaths, normalizedPath)
+	}
+	// Existing playback requires a standard RIFF/WAVE asset. Reject overflow
+	// before FFmpeg can write a truncated 32-bit data length.
+	var combinedPCMBytes int64
+	for _, path := range normalizedPaths {
+		file, err := os.Open(path)
+		if err != nil {
+			writeError(w, 500, "读取规范化录音失败")
+			return
+		}
+		_, size, err := customPCMData(file)
+		_ = file.Close()
+		if err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		combinedPCMBytes += size
+	}
+	if combinedPCMBytes > (1<<32)-1024 {
+		writeError(w, 400, "本批录音转换后超过单条WAV音轨4GB上限，请分批上传处理")
+		return
 	}
 	normalizedPath, err := concatenateCoreWAVs(r.Context(), normalizedPaths)
 	if err != nil {
@@ -188,15 +242,14 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		}
 	}()
 
-	signedURL, err := ossStore.SignedURL(r.Context(), audioObjectKey, 6*time.Hour)
-	if err != nil || strings.TrimSpace(signedURL) == "" {
-		writeError(w, http.StatusBadGateway, "无法为自定义音稿生成语音识别地址")
-		return
-	}
-	transcription, err := speechasr.NewFromEnv().Transcribe(r.Context(), signedURL)
+	partPrefix, _ := r.Context().Value(customASRPrefixKey{}).(string)
+	transcription, actualDuration, err := transcribeCustomPCM(r.Context(), ossStore, normalizedPath, audioObjectKey, partPrefix, customASRChunkBytes, speechasr.NewFromEnv().Transcribe)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "自定义音稿识别失败："+err.Error())
 		return
+	}
+	if actualDuration > 0 {
+		durationHint = actualDuration
 	}
 	timeline, transcriptText, durationMS, err := customMainlineTimelineFromASR(transcription, durationHint)
 	if err != nil {
@@ -231,7 +284,7 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		SizeBytes:       uint64(normalizedInfo.Size()),
 		DurationMS:      &durationValue,
 		ChecksumSHA256:  hex.EncodeToString(hasher.Sum(nil)),
-		CreatedByUserID: actor.UserID,
+		CreatedByUserID: userID,
 		Metadata: map[string]any{
 			"purpose":                "live_agent_custom_mainline_audio",
 			"plan_id":                planID,
@@ -267,21 +320,8 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 		Manifest:     bundle,
 	}
 
-	cloneRaw := []byte(nil)
-	cloneContentType := ""
-	if sampleFile, sampleHeader, sampleErr := r.FormFile("voice_sample"); sampleErr == nil {
-		defer sampleFile.Close()
-		if sampleHeader.Size > 0 && sampleHeader.Size <= 5<<20 {
-			raw, readErr := io.ReadAll(io.LimitReader(sampleFile, (5<<20)+1))
-			if readErr == nil && len(raw) > 0 && len(raw) <= 5<<20 {
-				cloneRaw = raw
-				cloneContentType = strings.TrimSpace(sampleHeader.Header.Get("Content-Type"))
-				if cloneContentType == "" {
-					cloneContentType = "audio/wav"
-				}
-			}
-		}
-	}
+	cloneRaw := voiceSample
+	cloneContentType := "audio/wav"
 	if len(cloneRaw) == 0 {
 		if raw, sampleErr := extractCloneSampleFromAudioPath(r.Context(), normalizedPath); sampleErr == nil {
 			cloneRaw = raw
@@ -294,9 +334,9 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 	}
 	if len(cloneRaw) > 0 && configErr == nil {
 		cloneModel := voiceConfig.CustomModel
-		preferredName := fmt.Sprintf("v%d%d", actor.UserID%10000, time.Now().Unix()%100000000)
+		preferredName := fmt.Sprintf("v%d%d", userID%10000, time.Now().Unix()%100000000)
 		dataURI := "data:" + cloneContentType + ";base64," + base64.StdEncoding.EncodeToString(cloneRaw)
-		tempObjectKey := fmt.Sprintf("tenants/%d/voice-samples/tmp/%d-%d.wav", tenantID, actor.UserID, time.Now().UnixNano())
+		tempObjectKey := fmt.Sprintf("tenants/%d/voice-samples/tmp/%d-%d.wav", tenantID, userID, time.Now().UnixNano())
 		cloneErr := ossStore.Put(r.Context(), tempObjectKey, bytes.NewReader(cloneRaw), cloneContentType)
 		var sampleURL string
 		if cloneErr == nil {
@@ -314,7 +354,7 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 			response.CloneError = cloneErr.Error()
 		} else {
 			profileName := strings.TrimSuffix(sourceNames[0], filepath.Ext(sourceNames[0])) + " · 自定义音色"
-			profile, saveErr := s.store.SaveVoiceProfile(r.Context(), tenantID, actor.UserID, 0, model.VoiceProfileInput{
+			profile, saveErr := s.store.SaveVoiceProfile(r.Context(), tenantID, userID, 0, model.VoiceProfileInput{
 				Name:          profileName,
 				Provider:      ttsgateway.ProviderForModel(cloneModel),
 				VoiceID:       voiceID,
@@ -328,7 +368,7 @@ func (s *Server) liveAgentPlanCustomMainlineUpload(w http.ResponseWriter, r *htt
 			if saveErr != nil {
 				response.CloneError = saveErr.Error()
 			} else {
-				binding, bindingErr := s.store.CreateVoiceModelBinding(r.Context(), tenantID, actor.UserID, model.VoiceModelBindingInput{
+				binding, bindingErr := s.store.CreateVoiceModelBinding(r.Context(), tenantID, userID, model.VoiceModelBindingInput{
 					ProfileID: profile.ID, SampleAssetID: asset.ID, Provider: ttsgateway.ProviderForModel(cloneModel),
 					Model: cloneModel, VoiceID: profile.VoiceID, Rate: 1, Status: "ready",
 					Config: map[string]any{"source": "custom_mainline_auto_clone"},

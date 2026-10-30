@@ -46,6 +46,7 @@ type Config struct {
 	StorageDriver            string
 	MediaRoot                string
 	OSSEndpoint              string
+	OSSPublicEndpoint        string
 	OSSBucket                string
 	OSSAccessKeyID           string
 	OSSAccessKeySecret       string
@@ -93,6 +94,7 @@ func Load() Config {
 		StorageDriver:            strings.ToLower(envOrDefault("STORAGE_DRIVER", "local")),
 		MediaRoot:                envOrDefault("MEDIA_ROOT", "data/media"),
 		OSSEndpoint:              strings.TrimSpace(os.Getenv("OSS_ENDPOINT")),
+		OSSPublicEndpoint:        strings.TrimSpace(os.Getenv("OSS_PUBLIC_ENDPOINT")),
 		OSSBucket:                strings.TrimSpace(os.Getenv("OSS_BUCKET")),
 		OSSAccessKeyID:           strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_ID")),
 		OSSAccessKeySecret:       os.Getenv("OSS_ACCESS_KEY_SECRET"),

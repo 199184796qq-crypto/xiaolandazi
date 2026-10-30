@@ -175,6 +175,9 @@ func main() {
 	if err := store.MigrateLiveContentRefresh(ctx); err != nil {
 		log.Fatalf("migrate live content refresh: %v", err)
 	}
+	if err := store.MigrateCustomMainlineUploads(ctx); err != nil {
+		log.Fatalf("migrate custom mainline uploads: %v", err)
+	}
 	if err := store.MigrateSpeechAnalysis(ctx); err != nil {
 		log.Fatalf("migrate speech analysis database: %v", err)
 	}
@@ -301,6 +304,7 @@ func main() {
 	go api.RunSpeechLibraryCleanup(appCtx)
 	go api.RunAnchorVoiceCacheCleanup(appCtx)
 	go api.RunSpeechAnalysisAudioCleanup(appCtx)
+	go api.RunCustomMainlineUploads(appCtx)
 	go api.RunCoreStatusWatch(appCtx)
 	go api.RunRoomDeletionCleanup(appCtx)
 	go api.RunLiveContentRefresh(appCtx)

@@ -2151,6 +2151,20 @@ const audioRecordingDuration = computed(() => {
   return recording.duration_seconds || 0
 })
 
+const recordingDownloadReady = computed(() => {
+  const recording = captureSnapshot.value?.recording
+  const expiry = Date.parse(recording?.expires_at || '')
+  return recording?.archive_status === 'ready' && Number.isFinite(expiry) && dashboardNow.value < expiry
+})
+const recordingDeliveryLabel = computed(() => {
+  const recording = captureSnapshot.value?.recording
+  const expiry = Date.parse(recording?.expires_at || '')
+  if (recording?.archive_status === 'expired' || Number.isFinite(expiry) && dashboardNow.value >= expiry) return '录音已过期'
+  if (recording?.archive_status === 'failed') return recording.archive_error || '上传失败，将自动重试'
+  if (recording?.archive_status === 'ready') return '已上传，保留24小时'
+  return '完整录音已生成，正在上传…'
+})
+
 const currentSpeechAnalysisTask = computed(() => {
   const task = speechAnalysisStatus.value?.task
   const recordingID = captureSnapshot.value?.recording?.id
@@ -5994,12 +6008,12 @@ onBeforeUnmount(() => {
               :disabled="!coreActionsAvailable || captureBusy"
               @click="stopCoreAudioRecording"
             >{{ captureBusy ? '正在停止并合并…' : '停止并合并' }}</button>
-            <div v-if="captureSnapshot?.recording?.status === 'ready'" class="recording-delivery">
+            <div v-if="captureSnapshot?.recording?.status === 'ready'" class="recording-delivery recording-archive">
               <div>
-                <strong>完整录音已生成</strong>
+                <strong>{{ recordingDeliveryLabel }}</strong>
                 <small>{{ captureSnapshot.recording.final_file_name }} · {{ formatCaptureBytes(captureSnapshot.recording.final_bytes) }}</small>
               </div>
-              <a :href="roomAudioRecordingFileUrl(roomId)" download>下载 WAV</a>
+              <a v-if="recordingDownloadReady" :href="roomAudioRecordingFileUrl(roomId) + '?recording_id=' + encodeURIComponent(captureSnapshot.recording.id)" referrerpolicy="no-referrer">下载 WAV</a>
             </div>
             <div v-else-if="captureSnapshot?.recording?.status === 'failed'" class="recording-error">
               {{ captureSnapshot.recording.error || '录音处理失败' }}
@@ -9046,6 +9060,7 @@ onBeforeUnmount(() => {
 .recording-delivery strong { display:block; color:#357b67; font-size:11px; }
 .recording-delivery small { display:block; margin-top:3px; color:#79a091; font-size:9px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .recording-delivery a { padding:7px 9px; border-radius:9px; color:#fff; background:#4aa78d; font-size:10px; font-weight:900; text-decoration:none; white-space:nowrap; }
+.recording-archive strong, .recording-archive small, .recording-archive a { font-size:16px; }
 .speech-analysis-progress { display:grid; gap:7px; padding:10px; border-radius:12px; background:#f7f7fc; }
 .speech-analysis-progress-copy { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .speech-analysis-progress-copy span { color:#7f89a0; font-size:10px; line-height:1.4; }

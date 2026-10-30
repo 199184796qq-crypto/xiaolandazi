@@ -142,8 +142,35 @@ func (s *Server) downloadRoomAudioRecording(w http.ResponseWriter, r *http.Reque
 	http.ServeFile(w, r, path)
 }
 
+func (s *Server) roomAudioRecordingDownloadURL(w http.ResponseWriter, r *http.Request) {
+	room, ok := s.captureRoom(w, r)
+	if !ok {
+		return
+	}
+	snapshot := s.capture.Snapshot(room.ID)
+	expectedID := strings.TrimSpace(r.URL.Query().Get("recording_id"))
+	if expectedID == "" && snapshot.Recording != nil {
+		expectedID = snapshot.Recording.ID
+	}
+	result, err := s.capture.RecordingDownload(r.Context(), room.TenantID, room.ID, roomRecordingDownloadName(room, snapshot), expectedID)
+	if err != nil {
+		writeCaptureError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, result)
+}
+
 func writeCaptureError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, capture.ErrRecordingChanged):
+		writeError(w, http.StatusConflict, "当前录音已变化，请刷新后重新下载")
+	case errors.Is(err, capture.ErrRecordingExpired):
+		writeError(w, http.StatusGone, "录音已超过24小时保留期限")
+	case errors.Is(err, capture.ErrArchiveNotReady):
+		writeError(w, http.StatusConflict, "录音正在上传，请稍后下载")
+	case errors.Is(err, capture.ErrArchiveUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "录音云端下载暂不可用，请稍后重试")
 	case errors.Is(err, capture.ErrCaptureBusy):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, capture.ErrRecordingMissing):

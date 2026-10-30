@@ -206,6 +206,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /internal/v1/rooms/{roomID}/capture/audio/start", s.internal(http.HandlerFunc(s.startRoomAudioRecording)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/capture/audio/stop", s.internal(http.HandlerFunc(s.stopRoomAudioRecording)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/capture/audio/file", s.internal(http.HandlerFunc(s.downloadRoomAudioRecording)))
+	mux.Handle("GET /internal/v1/rooms/{roomID}/capture/audio/download", s.internal(http.HandlerFunc(s.roomAudioRecordingDownloadURL)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/speech-analysis/jobs", s.internal(http.HandlerFunc(s.startRoomSpeechAnalysisJob)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/speech-analysis/jobs/{taskID}", s.internal(http.HandlerFunc(s.getRoomSpeechAnalysisJob)))
 	if strings.EqualFold(strings.TrimSpace(s.env), "development") {

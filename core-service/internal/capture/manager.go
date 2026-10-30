@@ -52,6 +52,10 @@ type RecordingStatus struct {
 	FinalBytes      int64     `json:"final_bytes,omitempty"`
 	SourceProtocol  string    `json:"source_protocol,omitempty"`
 	Error           string    `json:"error,omitempty"`
+	ArchiveStatus   string    `json:"archive_status,omitempty"`
+	ArchiveError    string    `json:"archive_error,omitempty"`
+	UploadedAt      time.Time `json:"uploaded_at,omitempty"`
+	ExpiresAt       time.Time `json:"expires_at,omitempty"`
 }
 
 type Snapshot struct {
@@ -61,6 +65,7 @@ type Snapshot struct {
 }
 
 type recording struct {
+	tenantID    int64
 	status      RecordingStatus
 	dir         string
 	cmd         *exec.Cmd
@@ -80,8 +85,11 @@ type Manager struct {
 	resolver   StreamResolver
 	now        func() time.Time
 
-	mu    sync.Mutex
-	rooms map[int64]*roomState
+	mu           sync.Mutex
+	rooms        map[int64]*roomState
+	archiveStore ArchiveStore
+	archiveJobs  map[string]*archiveJob
+	archiveWake  chan struct{}
 }
 
 func NewManager(ffmpegPath, root string, resolver StreamResolver) (*Manager, error) {
@@ -132,7 +140,12 @@ func (m *Manager) snapshotLocked(roomID int64, state *roomState, now time.Time) 
 		} else if status.Status == RecordingFinalizing {
 			result.Mode = ModeFinalizing
 		}
-		status.SegmentCount = segmentCount(state.recording.dir)
+		if info, err := os.Stat(state.recording.dir); err == nil && info.IsDir() && status.ArchiveStatus != ArchiveExpired {
+			status.SegmentCount = segmentCount(state.recording.dir)
+		}
+		if !status.ExpiresAt.IsZero() && !now.Before(status.ExpiresAt) {
+			status.ArchiveStatus = ArchiveExpired
+		}
 		if status.FinalFileName != "" {
 			if info, err := os.Stat(filepath.Join(state.recording.dir, status.FinalFileName)); err == nil {
 				status.FinalBytes = info.Size()
@@ -165,7 +178,11 @@ func (m *Manager) StartAudio(ctx context.Context, room model.Room) (Snapshot, er
 	startedAt := m.now().UTC()
 	id := fmt.Sprintf("%s-room-%d", startedAt.Format("20060102-150405"), room.ID)
 	dir := filepath.Join(m.root, fmt.Sprintf("room-%d", room.ID), id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return m.Snapshot(room.ID), fmt.Errorf("create recording parent: %w", err)
+	}
+	// Never reuse an earlier recording directory if two starts share a second.
+	if err := os.Mkdir(dir, 0o755); err != nil {
 		return m.Snapshot(room.ID), fmt.Errorf("create recording dir: %w", err)
 	}
 	logFile, err := os.OpenFile(filepath.Join(dir, "ffmpeg.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -211,6 +228,7 @@ func (m *Manager) StartAudio(ctx context.Context, room model.Room) (Snapshot, er
 	}
 
 	rec := &recording{
+		tenantID: room.TenantID,
 		status: RecordingStatus{
 			ID:             id,
 			Status:         RecordingRecording,
@@ -235,6 +253,15 @@ func (m *Manager) StartAudio(ctx context.Context, room model.Room) (Snapshot, er
 		return m.Snapshot(room.ID), fmt.Errorf("%w: capture mode changed while starting", ErrCaptureBusy)
 	}
 	state.recording = rec
+	// Persist identity before recording proceeds so restarts cannot renew retention.
+	if err := m.persistRecordingLocked(room.ID, rec); err != nil {
+		state.recording = nil
+		m.mu.Unlock()
+		_, _ = io.WriteString(stdin, "q\n")
+		_ = cmd.Wait()
+		_ = logFile.Close()
+		return Snapshot{}, fmt.Errorf("save recording metadata: %w", err)
+	}
 	snapshot := m.snapshotLocked(room.ID, state, m.now().UTC())
 	m.mu.Unlock()
 
@@ -283,6 +310,9 @@ func (m *Manager) RecordingFile(roomID int64) (string, string, error) {
 	state := m.stateLocked(roomID)
 	if state.recording == nil || state.recording.status.Status != RecordingReady || state.recording.status.FinalFileName == "" {
 		return "", "", ErrRecordingNotReady
+	}
+	if expires := state.recording.status.ExpiresAt; !expires.IsZero() && !m.now().Before(expires) {
+		return "", "", ErrRecordingExpired
 	}
 	path := filepath.Join(state.recording.dir, state.recording.status.FinalFileName)
 	if _, err := os.Stat(path); err != nil {
@@ -386,9 +416,15 @@ func (m *Manager) waitRecording(roomID int64, rec *recording) {
 			if info, err := os.Stat(filepath.Join(rec.dir, rec.status.FinalFileName)); err == nil {
 				rec.status.FinalBytes = info.Size()
 			}
+			rec.status.ExpiresAt = finishedAt.Add(RecordingRetention)
+			rec.status.ArchiveStatus = ArchivePending
+		}
+		if err := m.persistRecordingLocked(roomID, rec); err != nil {
+			rec.status.ArchiveError = "录音信息保存失败，等待重试"
 		}
 	}
 	m.mu.Unlock()
+	m.wakeArchives()
 	close(rec.done)
 }
 

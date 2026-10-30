@@ -1,3 +1,4 @@
+import { uploadOriginalAudio } from './directAudioUpload'
 import { showRequestError, clearRequestError } from './uiFeedback'
 import { httpFailureDiagnostic, networkFailureDiagnostic, requestFailureDiagnostic, safeDiagnosticText, userFacingErrorText } from './errorDiagnostic'
 import { readPreviewStream, type PreviewStreamEvent } from './agent/previewStream'
@@ -1510,61 +1511,16 @@ export function rebuildLiveAgentFullShowVariantSubtitles(
 
 export function uploadLiveAgentCustomMainline(
   planId: number,
-  roomId: number,
+  _roomId: number,
   file: File | File[],
   durationMs: number,
-  voiceSample?: File | null,
+  _voiceSample?: File | null,
   onProgress?: (loaded: number, total: number) => void,
   signal?: AbortSignal,
 ) {
-  const form = new FormData()
-  const files = Array.isArray(file) ? file : [file]
-  files.forEach((item) => form.append('file', item, item.name))
-  if (voiceSample) form.append('voice_sample', voiceSample)
-  form.append('room_id', String(roomId))
-  if (durationMs > 0) form.append('duration_ms', String(Math.round(durationMs)))
-  return new Promise<LiveAgentCustomMainlineResponse>((resolve, reject) => {
-    const xhr = new XMLHttpRequest()
-    xhr.open('POST', '/api/v1/live-agent-plans/' + planId + '/custom-mainline/upload')
-    xhr.withCredentials = true
-    const supportRoomId = liveSupportRoomForRequest('/api/v1/live-agent-plans/' + planId + '/custom-mainline/upload')
-    if (supportRoomId) xhr.setRequestHeader('X-Live-Support-Room-ID', String(supportRoomId))
-    xhr.upload.addEventListener('progress', (event) => {
-      if (!event.lengthComputable) return
-      onProgress?.(event.loaded, event.total)
-    })
-    xhr.addEventListener('load', () => {
-      let payload: LiveAgentCustomMainlineResponse | { error?: string } | null = null
-      try {
-        payload = xhr.responseText ? JSON.parse(xhr.responseText) : null
-      } catch {
-        payload = null
-      }
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(payload as LiveAgentCustomMainlineResponse)
-        return
-      }
-      const message = payload && 'error' in payload && payload.error
-        ? payload.error
-        : (xhr.status >= 500 ? '后台服务暂不可用，请稍后重试' : '上传自定义音稿失败')
-      showRequestError('/api/v1/live-agent-plans/' + planId + '/custom-mainline/upload', 'POST', message)
-      reject(new Error(userFacingErrorText(message)))
-    })
-    xhr.addEventListener('error', () => {
-      const message = '上传自定义音稿失败，请检查网络后重试'
-      showRequestError('/api/v1/live-agent-plans/' + planId + '/custom-mainline/upload', 'POST', message)
-      reject(new Error(userFacingErrorText(message)))
-    })
-    xhr.addEventListener('abort', () => reject(new DOMException('上传已取消', 'AbortError')))
-    if (signal) {
-      if (signal.aborted) {
-        xhr.abort()
-        return
-      }
-      signal.addEventListener('abort', () => xhr.abort(), { once: true })
-    }
-    xhr.send(form)
-  })
+  const base = '/api/v1/live-agent-plans/' + planId + '/custom-mainline/uploads'
+  return uploadOriginalAudio(<T>(path: string, init?: APIRequestInit) => request<T>(base + path, init),
+    Array.isArray(file) ? file : [file], durationMs, onProgress, signal)
 }
 
 export function rebuildLiveAgentCustomMainline(

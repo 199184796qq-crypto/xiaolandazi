@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { validateOriginalAudioFiles } from '../directAudioUpload'
 import QuestionLibraryPanel from '../components/QuestionLibraryPanel.vue'
 import RoomReadingRules from '../components/RoomReadingRules.vue'
 import { useFeedbackErrorRef } from '../uiFeedback'
@@ -3022,12 +3023,19 @@ function readCustomMainlineDuration(file: File) {
   return new Promise<number>((resolve) => {
     const objectURL = URL.createObjectURL(file)
     const audio = document.createElement('audio')
+    let finished = false
     const finish = (value: number) => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      audio.onloadedmetadata = null
+      audio.onerror = null
       URL.revokeObjectURL(objectURL)
       audio.removeAttribute('src')
       audio.load()
       resolve(value)
     }
+    const timer = setTimeout(() => finish(0), 8000)
     audio.preload = 'metadata'
     audio.onloadedmetadata = () => {
       const duration = Number(audio.duration || 0)
@@ -3038,60 +3046,6 @@ function readCustomMainlineDuration(file: File) {
   })
 }
 
-function encodePCM16WAV(buffer: AudioBuffer) {
-  const channel = buffer.getChannelData(0)
-  const bytes = new ArrayBuffer(44 + channel.length * 2)
-  const view = new DataView(bytes)
-  const writeASCII = (offset: number, value: string) => {
-    for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index))
-  }
-  writeASCII(0, 'RIFF')
-  view.setUint32(4, 36 + channel.length * 2, true)
-  writeASCII(8, 'WAVE')
-  writeASCII(12, 'fmt ')
-  view.setUint32(16, 16, true)
-  view.setUint16(20, 1, true)
-  view.setUint16(22, 1, true)
-  view.setUint32(24, buffer.sampleRate, true)
-  view.setUint32(28, buffer.sampleRate * 2, true)
-  view.setUint16(32, 2, true)
-  view.setUint16(34, 16, true)
-  writeASCII(36, 'data')
-  view.setUint32(40, channel.length * 2, true)
-  let offset = 44
-  for (let index = 0; index < channel.length; index += 1) {
-    const value = Math.max(-1, Math.min(1, channel[index] || 0))
-    view.setInt16(offset, value < 0 ? value * 0x8000 : value * 0x7fff, true)
-    offset += 2
-  }
-  return new Blob([bytes], { type: 'audio/wav' })
-}
-
-async function createCustomMainlineVoiceSample(file: File) {
-  try {
-    const context = new AudioContext()
-    try {
-      const decoded = await context.decodeAudioData(await file.arrayBuffer())
-      const duration = Math.min(Math.max(decoded.duration, 0), 12)
-      if (duration <= 0.5) return null
-      const sampleRate = 16000
-      const offline = new OfflineAudioContext(1, Math.ceil(duration * sampleRate), sampleRate)
-      const source = offline.createBufferSource()
-      source.buffer = decoded
-      source.connect(offline.destination)
-      source.start(0, 0, duration)
-      const rendered = await offline.startRendering()
-      const blob = encodePCM16WAV(rendered)
-      const stem = file.name.replace(/\.[^.]+$/, '') || 'custom-mainline'
-      return new File([blob], stem + '-voice-sample.wav', { type: 'audio/wav' })
-    } finally {
-      await context.close().catch(() => undefined)
-    }
-  } catch {
-    return null
-  }
-}
-
 async function handleCustomMainlineFile(event: Event) {
   if (recordingOriginalBusy.value || customMainlineCloneBusy.value) return
   const input = event.currentTarget as HTMLInputElement
@@ -3099,6 +3053,7 @@ async function handleCustomMainlineFile(event: Event) {
   const file = files[0] || null
   const ownerEpoch = planVersionSaveEpoch
   customMainlineError.value = ''
+  customMainlineDurationMS.value = 0
   customMainlineVoiceSample.value = null
   customMainlineUploadProgress.value = 0
   customMainlineStage.value = 'idle'
@@ -3116,24 +3071,24 @@ async function handleCustomMainlineFile(event: Event) {
     input.value = ''
     return
   }
-  if (files.some((item) => item.size > 200 * 1024 * 1024) || files.reduce((sum, item) => sum + item.size, 0) > 500 * 1024 * 1024) {
+  try {
+    validateOriginalAudioFiles(files)
+  } catch (error) {
     customMainlineFile.value = null
     customMainlineFiles.value = []
     customMainlineVoiceSample.value = null
     customMainlineDurationMS.value = 0
-    customMainlineError.value = '每段录音最大200MB，多段录音总大小最大500MB。'
+    customMainlineError.value = error instanceof Error ? error.message : '录音文件无效。'
     input.value = ''
     return
   }
   customMainlineFile.value = file
   customMainlineFiles.value = files
-  const [durations, voiceSample] = await Promise.all([
-    Promise.all(files.map((item) => readCustomMainlineDuration(item))),
-    createCustomMainlineVoiceSample(file),
-  ])
+  // Read only browser media metadata; the server extracts a small voice sample.
+  const durations = await Promise.all(files.map((item) => readCustomMainlineDuration(item)))
   if (ownerEpoch !== planVersionSaveEpoch || customMainlineFile.value !== file) return
   customMainlineDurationMS.value = durations.reduce((sum, value) => sum + value, 0)
-  customMainlineVoiceSample.value = voiceSample
+
 }
 
 async function uploadCustomMainline() {
@@ -8510,7 +8465,7 @@ onBeforeUnmount(() => {
                       <svg viewBox="0 0 36 36"><path d="M11 26H9a6 6 0 0 1-.2-12A9 9 0 0 1 26 11a7 7 0 0 1 1 13h-2" /><path d="m13 20 5-5 5 5M18 15v14" /></svg>
                     </i>
                     <strong>{{ customMainlineFiles.length ? `已选择 ${customMainlineFiles.length} 段录音` : (customMainlineDraft ? '重新上传一段或多段原始声音' : '选择一段或多段原始声音上传') }}</strong>
-                    <span>每段最大200MB、合计最大500MB · 最多20段</span>
+                    <span>每段最大2GB · 最多20段 · 浏览器直传OSS</span>
                     <span>支持格式：WAV / MP3 / M4A / AAC / FLAC / OGG / WEBM</span>
                     <span>系统将自动降噪、分段并统一转为直播播放格式，长录音会按语义划分为句段并生成SRT。</span>
                   </label>
@@ -8540,8 +8495,8 @@ onBeforeUnmount(() => {
                     <span>
                       {{
                         customMainlineStage === 'uploading'
-                          ? ('网页直传 ' + customMainlineUploadProgress + '%')
-                          : '上传完成，正在识别文字、生成 SRT 并自动生成自定义音色…'
+                          ? ('正在直传OSS ' + customMainlineUploadProgress + '%')
+                          : '已上传OSS，正在排队处理、识别文字、生成 SRT 和自定义音色…'
                       }}
                     </span>
                   </div>
@@ -11790,6 +11745,13 @@ label.plan-save-error{display:grid;gap:8px;min-width:0}.plan-save-error select{m
 @media(max-width:700px){.plan-configuration-header.strategy-plan-container-head{margin:12px 10px;padding:17px 14px;gap:17px;border-radius:16px}.plan-configuration-header .strategy-plan-heading{gap:12px}.plan-hero-symbol{width:47px;height:52px;border-radius:13px}.plan-hero-symbol svg{width:28px;height:28px}.plan-configuration-kicker{font-size:12px;margin-bottom:2px}.plan-configuration-header .strategy-plan-title-switch{flex:1 1 auto;width:auto;min-height:34px;height:34px;font-size:17px}.plan-title-edit{flex-basis:27px;width:27px;height:30px;padding:3px}.plan-title-edit :deep(svg){width:20px;height:20px}.plan-configuration-meta{grid-column:1/-1;gap:7px 10px;margin-top:8px;font-size:12px}.plan-configuration-actions{justify-content:start;gap:8px}.plan-configuration-actions .strategy-version-button{min-height:44px;padding:10px 11px;font-size:13px;gap:6px;border-radius:10px}.plan-configuration-actions :deep(svg){width:18px;height:18px}.plan-configuration-layout{padding:0 10px 16px!important}.plan-configuration-layout .strategy-v2-workspace{padding:16px 12px}.plan-version-record-list{left:auto;right:0}}
 
 .strategy-formal-facts :is(small,span,p,label,button,input,select,textarea,th,td),.strategy-formal-facts .strategy-fact-category-item strong { font-size:16px; }
+/* Upload instructions and progress remain readable on narrow screens. */
+.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload > label span,
+.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-progress > span {
+  font-size: 16px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
 </style>
 
 <style scoped src="../styles/formalFactsPanel.css">.interaction-strategy-head h3{font-size:20px}
