@@ -580,16 +580,7 @@ func (s *Server) liveStrategyIntentInterpret(w http.ResponseWriter, r *http.Requ
 			r.Context(), invocationID, "failed", modelResponse.Provider, modelResponse.Model, modelResponse.LatencyMS,
 			modelResponse.InputTokens, modelResponse.OutputTokens, modelResponse.TotalTokens, map[string]any{"error": err.Error(), "raw_response": modelResponse.Text},
 		)
-		fallback := liveStrategyProgramOutput(programIntent)
-		if fallback.Reply == "" {
-			fallback.Reply = "大模型理解暂时不可用，我没有执行任何修改。请把目标和字段说得更明确一些。"
-		}
-		writeJSON(w, http.StatusOK, liveStrategyIntentOutput{
-			ProtocolVersion: agentProtocolVersion, State: agentStateResponded,
-			Kind: fallback.Kind, Intent: fallback.Intent, Reply: fallback.Reply,
-			Target: fallback.Target, Changes: fallback.Changes, Missing: fallback.Missing,
-			Confidence: fallback.Confidence, Engine: "program_fallback", PolicySource: understandingPolicy.ResolvedFrom,
-		})
+		writeJSON(w, http.StatusOK, liveStrategyIntentModelFallback(programIntent, understandingPolicy.ResolvedFrom, err))
 		return
 	}
 	if output.Confidence < understandingPolicy.MinConfidence {
@@ -657,9 +648,9 @@ func callLiveStrategyIntentModel(
 	if err != nil {
 		return liveStrategyIntentModelOutput{}, result, err
 	}
-	var output liveStrategyIntentModelOutput
-	if err := decodeProductJSON(result.Text, &output); err != nil {
-		return liveStrategyIntentModelOutput{}, result, fmt.Errorf("decode live strategy intent: %w", err)
+	output, err := decodeLiveStrategyIntentModelOutput(result.Text)
+	if err != nil {
+		return liveStrategyIntentModelOutput{}, result, err
 	}
 	output.Kind = normalizeLiveStrategyIntentKind(output.Kind)
 	output.Intent = normalizeLiveStrategyIntent(output.Intent)
