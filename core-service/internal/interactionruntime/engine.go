@@ -34,26 +34,39 @@ type Turn struct {
 	Question string `json:"question"`
 	Answer   string `json:"answer"`
 }
+type ContextMessage struct {
+	Role string    `json:"role"`
+	Text string    `json:"text"`
+	At   time.Time `json:"at,omitempty"`
+}
 type Work struct {
 	Scope                                             Scope
 	ID, Kind, Text, Original, Clarification, Mainline string
+	EngagementToken                                   string
 	Revision                                          uint64
+	Sequence                                          uint64
 	People                                            []Person
 	EventIDs                                          []int64
 	Recent                                            []Turn
+	Context                                           []ContextMessage
 	At, Due, Expires                                  time.Time
+	CandidateExpires                                  time.Time
+	BatchPrepared                                     bool
 	Count, Priority                                   int
 	AllowClarify                                      bool
 }
 type Intent struct {
-	Relation    string `json:"dialogue_relation,omitempty"`
-	Relevant    bool   `json:"relevant"`
-	Question    bool   `json:"question"`
-	Meaning     string `json:"meaning"`
-	NeedClarify bool   `json:"need_clarify"`
-	Clarify     string `json:"clarify"`
-	Continue    bool   `json:"continue_dialogue"`
-	Command     string `json:"engagement_command"`
+	Relation       string `json:"dialogue_relation,omitempty"`
+	Relevant       bool   `json:"relevant"`
+	Question       bool   `json:"question"`
+	Meaning        string `json:"meaning"`
+	Type           string `json:"type,omitempty"`
+	Priority       string `json:"priority,omitempty"`
+	PriorityReason string `json:"priority_reason,omitempty"`
+	NeedClarify    bool   `json:"need_clarify"`
+	Clarify        string `json:"clarify"`
+	Continue       bool   `json:"continue_dialogue"`
+	Command        string `json:"engagement_command"`
 }
 type Content struct {
 	Body      string
@@ -65,6 +78,7 @@ type Task struct {
 	Content            Content
 	State, Decision    string
 	Started, Completed time.Time
+	SelectedAt         time.Time
 	Failure            string
 	Attempts           int
 	Estimate           time.Duration
@@ -83,9 +97,12 @@ type sample struct {
 	Seconds float64
 }
 type command struct {
-	Token string
-	Last  time.Time
-	Users map[string]bool
+	Token       string
+	Tokens      []string
+	Opened      time.Time
+	PromptUntil time.Time
+	Last        time.Time
+	Users       map[string]bool
 }
 type room struct {
 	Scope                                          Scope
@@ -96,12 +113,18 @@ type room struct {
 	Chat                                           []time.Time
 	Played                                         []sample
 	Command                                        *command
+	Participation                                  map[string]*command
+	Spoken                                         map[string]time.Time
 	Carry                                          string
 	Density                                        string
 	Cool                                           map[string]time.Time
 	Policy                                         *Policy
 	Named                                          map[string]time.Time
 	DispatchSeq                                    uint64
+	History                                        map[string][]ContextMessage
+	SemanticUsers                                  map[string]time.Time
+	SemanticStarts                                 []time.Time
+	Responded                                      map[string]time.Time
 }
 type Engine struct {
 	mu          sync.Mutex
@@ -196,6 +219,7 @@ func (e *Engine) add(r *room, w Work) *Task {
 	e.seq++
 	w.ID = fmt.Sprintf("iv2-%d-%d", w.Scope.Room, e.seq)
 	w.Revision = 1
+	w.Sequence = e.seq
 	w.Priority = band(w.Kind)
 	w.AllowClarify = w.Kind == "semantic" || w.Kind == "urgent"
 	t := &Task{Work: w, State: "collecting"}
@@ -249,6 +273,7 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 	if v.Kind == "chat" || v.Kind == "semantic" || v.Kind == "urgent" {
 		r.LastEvent = now
 		r.Chat = append(r.Chat, now)
+		rememberUser(r, v)
 		// Stable UID owns dialogue before short numeric/command filtering.
 		if d := r.Dialogues[v.UID]; d != nil && v.UID != "" && now.Before(d.Deadline) && now.Sub(d.Opened) < 180*time.Second && d.Round < 3 && !v.Urgent {
 			if old := r.Tasks[d.Pending]; old != nil && old.State != "playing" && old.State != "completed" {
@@ -267,9 +292,7 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 			d.Pending = ""
 			return
 		}
-		if r.Command != nil && strings.TrimSpace(v.Text) == r.Command.Token && v.UID != "" {
-			r.Command.Users[v.UID] = true
-			r.Command.Last = now
+		if e.consumeParticipation(r, v, now) {
 			return
 		}
 	}
@@ -297,11 +320,28 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 			}
 		}
 		if len(r.Tasks) >= 256 {
-			return
+			// A burst must retain the newest candidates, not freeze the pool
+			// around the oldest 256 messages. Active playback is never evicted.
+			var oldest *Task
+			if semanticKind(kind) {
+				for _, task := range r.Tasks {
+					if !semanticKind(task.Work.Kind) || task.State == "selected" || task.State == "playing" {
+						continue
+					}
+					if oldest == nil || task.Work.At.Before(oldest.Work.At) || (task.Work.At.Equal(oldest.Work.At) && task.Work.Sequence < oldest.Work.Sequence) {
+						oldest = task
+					}
+				}
+			}
+			if oldest == nil || v.At.Before(oldest.Work.At) {
+				return
+			}
+			e.cancel(r, oldest, "newer_candidate_at_capacity")
+			delete(r.Tasks, oldest.Work.ID)
 		}
 	}
-	// Only behavior batches aggregate. Independent questions never share a model
-	// response or a fabricated result-to-index mapping.
+	// Behavior batches aggregate people. Semantic batches retain separate tasks,
+	// histories and outputs and are grouped only when dispatching one model call.
 	if band(kind) == 1 {
 		for _, t := range r.Tasks {
 			if t.Work.Kind == kind && t.State == "collecting" && now.Before(t.Work.Due) && t.Work.Count < 10 {
@@ -324,6 +364,9 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 		wait = 0
 	}
 	w := Work{Scope: s, Kind: kind, Text: v.Text, At: v.At, Due: now.Add(wait), Expires: v.At.Add(ttl(kind)), Count: 1}
+	if semanticKind(kind) {
+		w.Context = priorContext(r, v.UID)
+	}
 	if v.UID != "" {
 		w.People = []Person{{v.UID, v.Name}}
 	}
@@ -344,6 +387,14 @@ func terminal(s string) bool {
 	return s == "completed" || s == "cancelled" || s == "expired" || s == "failed"
 }
 func (e *Engine) Jobs(now time.Time, limit int) []Work {
+	groups := e.jobs(now, limit, false)
+	var jobs []Work
+	for _, group := range groups {
+		jobs = append(jobs, group...)
+	}
+	return jobs
+}
+func (e *Engine) jobs(now time.Time, limit int, batch bool) [][]Work {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var tasks []*Task
@@ -398,16 +449,17 @@ func (e *Engine) Jobs(now time.Time, limit int) []Work {
 				d.Inputs = nil
 			}
 		}
-		if c := r.Command; c != nil && now.Sub(c.Last) >= 10*time.Second {
-			count := len(c.Users)
-			r.Command = nil
-			if count >= 3 {
-				e.add(r, Work{Scope: r.Scope, Kind: "engagement", Text: fmt.Sprintf("刚才口令%s，共有%d位不同观众参与，请自然回应统计结果。", c.Token, count), At: now, Due: now, Expires: now.Add(30 * time.Second), Count: count})
-			} else if count > 0 {
-				r.Carry = fmt.Sprintf("刚才有%d位观众回应口令%s，可在本次正文中简短接住。", count, c.Token)
+		e.finishParticipation(r, now)
+		active := false
+		preparing := false
+		if batch {
+			latestCandidates(e, r, now)
+			for _, t := range r.Tasks {
+				if t.State == "generating" && semanticKind(t.Work.Kind) {
+					preparing = true
+				}
 			}
 		}
-		active := false
 		for _, t := range r.Tasks {
 			if !terminal(t.State) {
 				active = true
@@ -416,7 +468,7 @@ func (e *Engine) Jobs(now time.Time, limit int) []Work {
 				e.cancel(r, t, "original_event_expired")
 				t.State = "expired"
 			}
-			if t.State == "collecting" && enabled(r, t.Work.Kind) && !now.Before(t.Work.Due) && !now.Before(r.Cool[t.Work.Kind]) {
+			if t.State == "collecting" && enabled(r, t.Work.Kind) && !now.Before(t.Work.Due) && ((batch && semanticKind(t.Work.Kind)) || !now.Before(r.Cool[t.Work.Kind])) && !(batch && semanticKind(t.Work.Kind) && preparing) {
 				tasks = append(tasks, t)
 			}
 		}
@@ -426,8 +478,8 @@ func (e *Engine) Jobs(now time.Time, limit int) []Work {
 	}
 	// Priority first, then the least recently serviced room. A busy room
 	// cannot consume all model slots while another room has the same band.
-	chosen := make([]*Task, 0, min(max(limit, 0), len(tasks)))
-	for len(chosen) < limit && len(tasks) > 0 {
+	groups := make([][]*Task, 0, min(max(limit, 0), len(tasks)))
+	for len(groups) < limit && len(tasks) > 0 {
 		sort.Slice(tasks, func(i, j int) bool {
 			a, b := tasks[i].Work, tasks[j].Work
 			if a.Priority != b.Priority {
@@ -444,21 +496,70 @@ func (e *Engine) Jobs(now time.Time, limit int) []Work {
 		})
 		selected := tasks[0]
 		tasks = tasks[1:]
-		chosen = append(chosen, selected)
+		group := []*Task{selected}
+		if batch && semanticKind(selected.Work.Kind) {
+			candidates := []*Task{selected}
+			remaining := tasks[:0]
+			for _, t := range tasks {
+				if t.Work.Scope == selected.Work.Scope && semanticKind(t.Work.Kind) {
+					candidates = append(candidates, t)
+				} else {
+					remaining = append(remaining, t)
+				}
+			}
+			tasks = remaining
+			sort.Slice(candidates, func(i, j int) bool {
+				if !candidates[i].Work.At.Equal(candidates[j].Work.At) {
+					return candidates[i].Work.At.After(candidates[j].Work.At)
+				}
+				return candidates[i].Work.Sequence > candidates[j].Work.Sequence
+			})
+			group = nil
+			seen := map[string]bool{}
+			for _, t := range candidates {
+				key := "anonymous"
+				if len(t.Work.People) == 1 && t.Work.People[0].UID != "" {
+					key = "uid:" + t.Work.People[0].UID
+				}
+				if seen[key] || len(group) >= 10 {
+					continue
+				}
+				seen[key] = true
+				group = append(group, t)
+			}
+		}
+		groups = append(groups, group)
 		e.dispatchSeq++
 		e.rooms[selected.Work.Scope.Room].DispatchSeq = e.dispatchSeq
 	}
-	tasks = chosen
-	jobs := make([]Work, 0, len(tasks))
-	for _, t := range tasks {
-		t.State = "generating"
-		t.Attempts++
-		w := t.Work
-		r := e.rooms[w.Scope.Room]
-		if r.Carry != "" {
-			w.Text += "\n" + r.Carry
+	jobs := make([][]Work, 0, len(groups))
+	for _, group := range groups {
+		var work []Work
+		for _, t := range group {
+			t.State = "generating"
+			t.Attempts++
+			t.Work.BatchPrepared = batch
+			if batch && semanticKind(t.Work.Kind) && t.Work.At.Add(60*time.Second).Before(t.Work.Expires) {
+				t.Work.Expires = t.Work.At.Add(60 * time.Second)
+			}
+			w := t.Work
+			if w.Kind == "dialogue" && len(w.People) == 1 {
+				w.Context = priorContext(e.rooms[w.Scope.Room], w.People[0].UID)
+			}
+			r := e.rooms[w.Scope.Room]
+			if r.Command != nil {
+				w.EngagementToken = commandLabel(r.Command)
+			}
+			if r.Carry != "" {
+				if batch {
+					w.Mainline = r.Carry
+				} else {
+					w.Text += "\n" + r.Carry
+				}
+			}
+			work = append(work, w)
 		}
-		jobs = append(jobs, w)
+		jobs = append(jobs, work)
 	}
 	return jobs
 }
@@ -467,6 +568,9 @@ func sortTasks(ts []*Task) {
 		a, b := ts[i].Work, ts[j].Work
 		if a.Priority != b.Priority {
 			return a.Priority > b.Priority
+		}
+		if contentPriority(ts[i]) != contentPriority(ts[j]) {
+			return contentPriority(ts[i]) > contentPriority(ts[j])
 		}
 		return a.Expires.Before(b.Expires)
 	})
@@ -492,6 +596,15 @@ func (e *Engine) Accept(w Work, c Content, err error, now time.Time) bool {
 		}
 		return false
 	}
+	// Classification is independent of playback quota. Raw pending messages,
+	// participation and spam must not inflate the confirmed semantic density.
+	if semanticKind(w.Kind) && c.Intent.Type == "主动互动" && w.Kind != "dialogue" {
+		e.recordParticipation(r, w.Text, firstUID(w), w.At, true)
+		t.State = "cancelled"
+		t.Failure = "engagement_participation"
+		return false
+	}
+	rememberSemantic(r, w, c.Intent)
 	if w.Kind == "semantic" {
 		kind := "chat"
 		if c.Intent.Question {
@@ -518,6 +631,12 @@ func (e *Engine) Accept(w Work, c Content, err error, now time.Time) bool {
 		t.Work.Original = ""
 		t.Work.Clarification = ""
 		t.Work.Recent = nil
+	}
+	// Escalation is a program rule, not a model-provided rank: only a
+	// classified complaint with an explicit urgent reason can enter this lane.
+	if t.Work.Kind == "semantic" && c.Intent.Type == "投诉" && c.Intent.Priority == "紧急" && strings.TrimSpace(c.Intent.PriorityReason) != "" && enabled(r, "urgent") {
+		t.Work.Kind = "urgent"
+		t.Work.Priority = band("urgent")
 	}
 	t.Content = c
 	t.State = "body_ready"
@@ -554,7 +673,7 @@ func (e *Engine) Select(s Scope, now time.Time) *Task {
 			ready = append(ready, t)
 		}
 	}
-	sortTasks(ready)
+	sortReady(r, ready)
 	if selected != nil {
 		if len(ready) == 0 || ready[0].Work.Kind != "urgent" || selected.Work.Kind == "urgent" {
 			return nil
@@ -568,11 +687,23 @@ func (e *Engine) Select(s Scope, now time.Time) *Task {
 	if r.Density == "fast" {
 		budget = 20
 	}
+	semanticAvailable := semanticQuotaAvailable(r, now, "")
 	for _, t := range ready {
+		if t.Work.BatchPrepared && semanticKind(t.Work.Kind) && !semanticAvailable {
+			continue
+		}
 		if t.Work.Kind != "urgent" && used+t.Estimate.Seconds() > budget {
 			continue
 		}
 		t.State = "selected"
+		if t.Work.BatchPrepared && semanticKind(t.Work.Kind) {
+			if t.SelectedAt.IsZero() {
+				t.SelectedAt = now
+				t.Work.CandidateExpires = t.Work.Expires
+				t.Work.Expires = now.Add(50 * time.Second)
+				rebindDeadline(t)
+			}
+		}
 		copy := *t
 		copy.Work.People = append([]Person(nil), t.Work.People...)
 		for i, p := range copy.Work.People {
@@ -593,6 +724,14 @@ func (e *Engine) Bind(w Work, decision string, now time.Time) {
 			t.Decision = decision
 			if decision == "" {
 				t.State = "body_ready"
+				if !t.Work.CandidateExpires.IsZero() {
+					// No queue admission occurred; keep the candidate's original
+					// deadline. TTS retries after a successful admission never pass here.
+					t.Work.Expires = t.Work.CandidateExpires
+					t.Work.CandidateExpires = time.Time{}
+					t.SelectedAt = time.Time{}
+					rebindDeadline(t)
+				}
 			}
 			return
 		}
@@ -610,6 +749,9 @@ func (e *Engine) ReserveAudio(roomID int64, decision string, durationMS int, sta
 			continue
 		}
 		if t.State != "selected" || !start.Before(t.Work.Expires) {
+			return false
+		}
+		if t.Work.BatchPrepared && semanticKind(t.Work.Kind) && !semanticQuotaAvailable(r, start, t.Work.ID) {
 			return false
 		}
 		used := 0.0
@@ -655,7 +797,16 @@ func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time) {
 			}
 			t.State = "playing"
 			t.Started = at
+			if t.Work.BatchPrepared && semanticKind(t.Work.Kind) {
+				r.SemanticStarts = append(r.SemanticStarts, at)
+			}
+			if r.Responded == nil {
+				r.Responded = map[string]time.Time{}
+			}
 			for _, p := range t.Work.People {
+				if p.UID != "" {
+					r.Responded[p.UID] = at
+				}
 				if p.Name != "" {
 					r.Named[p.UID] = at
 				}
@@ -675,8 +826,10 @@ func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time) {
 				p := t.Work.People[0]
 				r.Dialogues[p.UID] = &dialogue{UID: p.UID, Name: p.Name, Original: t.Work.Text, Clarify: t.Content.Body, Opened: at, Deadline: at.Add(90 * time.Second)}
 			}
-			if token := strings.TrimSpace(t.Content.Intent.Command); t.Work.Kind == "guide" && token != "" && utf8.RuneCountInString(token) <= 8 && strings.Contains(t.Content.Body, token) {
-				r.Command = &command{Token: token, Last: at, Users: map[string]bool{}}
+			if t.Work.Kind == "guide" {
+				// Compatibility for consumers with playback receipts but no PCM
+				// observer. The actual spoken text, not a model token, is authority.
+				e.observeSpoken(r, "decision:"+decision, t.Content.Body, at)
 			}
 		case "COMPLETED":
 			if t.State != "playing" {
@@ -684,6 +837,9 @@ func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time) {
 			}
 			t.State = "completed"
 			t.Completed = at
+			if len(t.Work.People) == 1 {
+				rememberAnswer(r, t.Work.People[0].UID, t.Content.Body, at)
+			}
 			seconds := at.Sub(t.Started).Seconds()
 			if seconds < 0 {
 				seconds = 0

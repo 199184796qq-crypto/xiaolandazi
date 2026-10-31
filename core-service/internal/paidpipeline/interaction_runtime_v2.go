@@ -84,8 +84,10 @@ func (p *Processor) handleInteractionV2(event model.RoomEvent, signal basepipeli
 	if kind == "comment" {
 		kind = "chat"
 	}
-	urgent := signal.IsNegative
-	if signal.IsOrderHint && !signal.IsQuestion && !urgent {
+	// Text questions, purchase intent and complaints are classified together by
+	// the plan model. Coarse event hints must not split people into another lane.
+	urgent := signal.IsNegative && kind != "chat"
+	if kind != "chat" && signal.IsOrderHint && !signal.IsQuestion && !urgent {
 		kind = "order"
 	}
 	v.engine.Add(s, interactionruntime.Event{ID: eventSeed(event), UID: event.UserID, Name: event.Nickname, Kind: kind, Text: event.Content, At: event.OccurredAt, Urgent: urgent}, p.clock())
@@ -94,8 +96,11 @@ func (p *Processor) handleInteractionV2(event model.RoomEvent, signal basepipeli
 	}
 	return true
 }
+
+// Legacy single-task wire compatibility. Production dispatch uses prepareBatchV2
+// for both one and multiple people.
 func (h HTTPPurposeResolver) prepareV2(ctx context.Context, w interactionruntime.Work) (interactionruntime.Content, error) {
-	payload := map[string]any{"protocol": interactionruntime.Protocol, "task": w.ID, "epoch": w.Scope.Epoch, "revision": w.Revision, "tenant_id": w.Scope.Tenant, "room_id": w.Scope.Room, "plan_id": w.Scope.Plan, "kind": w.Kind, "text": w.Text, "original": w.Original, "clarification": w.Clarification, "recent": w.Recent, "current_mainline": w.Mainline, "event_count": w.Count, "allow_clarify": w.AllowClarify, "expires_at": w.Expires}
+	payload := map[string]any{"protocol": interactionruntime.Protocol, "task": w.ID, "epoch": w.Scope.Epoch, "revision": w.Revision, "tenant_id": w.Scope.Tenant, "room_id": w.Scope.Room, "plan_id": w.Scope.Plan, "kind": w.Kind, "text": w.Text, "original": w.Original, "clarification": w.Clarification, "recent": w.Recent, "current_mainline": w.Mainline, "engagement_token": w.EngagementToken, "event_count": w.Count, "allow_clarify": w.AllowClarify, "expires_at": w.Expires}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return interactionruntime.Content{}, err
@@ -224,6 +229,9 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) bool {
 			p.decisions.Remove(s.Room, id)
 		}
 		mission := map[string]string{"semantic": "reply_question", "dialogue": "reply_question", "urgent": "complaint", "welcome": "welcome_named", "like": "reply_like", "follow": "reply_follow", "order": "conversion_signal", "engagement": "reply_chat", "guide": "warmup"}[t.Work.Kind]
+		if t.Content.Intent.Type == "投诉" {
+			mission = "complaint"
+		}
 		if t.Work.Kind == "semantic" && !t.Content.Intent.Question {
 			mission = "reply_chat"
 		}
@@ -258,27 +266,52 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) bool {
 	if free <= 0 {
 		return true
 	}
-	jobs := v.engine.Jobs(now, free)
+	jobs := v.engine.Batches(now, free)
 	for _, job := range jobs {
-		if !p.runtime.IsWorking(job.Scope.Room) || p.cutEpoch(job.Scope.Room) != job.Scope.Epoch {
+		first := job.Works[0]
+		if !p.runtime.IsWorking(first.Scope.Room) || p.cutEpoch(first.Scope.Room) != first.Scope.Epoch {
 			continue
 		}
 		p.scheduleMu.Lock()
 		reader := p.contextReader
 		p.scheduleMu.Unlock()
 		if reader != nil {
-			job.Mainline, _ = reader(job.Scope.Room)
+			mainline, _ := reader(first.Scope.Room)
+			for i := range job.Works {
+				job.Works[i].Mainline = strings.TrimSpace(mainline + "\n" + job.Works[i].Mainline)
+			}
 		}
 		v.slots <- struct{}{}
-		go func(w interactionruntime.Work) {
+		go func(batch interactionruntime.Batch) {
 			defer func() { <-v.slots }()
-			workCtx, cancel := context.WithDeadline(ctx, w.Expires)
-			defer cancel()
-			result, err := v.resolver.prepareV2(workCtx, w)
-			if err != nil {
-				log.Printf("interaction v2 preparation room=%d task=%s failed=%v", w.Scope.Room, w.ID, err)
+			deadline := batch.Works[0].Expires
+			for _, w := range batch.Works {
+				if w.Expires.After(deadline) {
+					deadline = w.Expires
+				}
 			}
-			v.engine.Accept(w, result, err, p.clock())
+			workCtx, cancel := context.WithDeadline(ctx, deadline)
+			defer cancel()
+			results, err := v.resolver.prepareBatchV2(workCtx, batch)
+			if err != nil {
+				log.Printf("interaction v2 batch room=%d batch=%s count=%d failed=%v", batch.Works[0].Scope.Room, batch.ID, len(batch.Works), err)
+			}
+			for i, w := range batch.Works {
+				if !p.runtime.IsWorking(w.Scope.Room) || p.cutEpoch(w.Scope.Room) != w.Scope.Epoch {
+					v.engine.Accept(w, interactionruntime.Content{}, fmt.Errorf("interaction scope changed"), p.clock())
+					continue
+				}
+				itemErr := err
+				var content interactionruntime.Content
+				if err == nil {
+					itemErr = results[i].Err
+					content = results[i].Content
+				}
+				if itemErr != nil {
+					log.Printf("interaction v2 result room=%d task=%s failed=%v", w.Scope.Room, w.ID, itemErr)
+				}
+				v.engine.Accept(w, content, itemErr, p.clock())
+			}
 		}(job)
 	}
 	return true

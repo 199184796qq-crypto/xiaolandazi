@@ -135,6 +135,7 @@ type Engine struct {
 	deletedRooms      map[int64]struct{}
 	lastCompositeCues map[int64][]CompositeCue
 	now               func() time.Time
+	spokenObserver    func(SpokenSegment)
 }
 
 func New() *Engine {
@@ -339,7 +340,8 @@ func (e *Engine) IdleWaitingContent(roomID int64) Snapshot {
 	return snapshotLocked(state)
 }
 
-func (e *Engine) Reset(roomID int64) {	if e == nil || roomID <= 0 {
+func (e *Engine) Reset(roomID int64) {
+	if e == nil || roomID <= 0 {
 		return
 	}
 	e.mu.Lock()
@@ -414,7 +416,25 @@ func (e *Engine) PublishPCMAt(roomID int64, source Source, pcm []byte, segmentID
 	if source == SourceMainline && state.resumeHighlightSegmentID != "" && state.currentSegmentID != state.resumeHighlightSegmentID {
 		state.resumeHighlightSegmentID = ""
 	}
+	previousCues := len(state.compositeCues)
 	recordCompositeCue(state, frame, sourceCursorMS)
+	var spoken *SpokenSegment
+	if len(state.compositeCues) > previousCues {
+		cue := state.compositeCues[len(state.compositeCues)-1]
+		spoken = &SpokenSegment{RoomID: roomID, Sequence: frame.Sequence, Source: source, SegmentID: cue.SegmentID, Text: cue.Text, At: frame.CreatedAt}
+		timeline := state.mainlineTimeline
+		if source == SourceInterrupt {
+			timeline = state.interruptTimeline
+		}
+		if i := speechSegmentIndex(timeline, cue.SegmentID); i >= 0 {
+			cursor := sourceCursorMS
+			if cursor < 0 {
+				cursor = timeline[i].StartMS
+			}
+			spoken.RemainingMS = max(0, timeline[i].EndMS-cursor)
+		}
+	}
+	observer := e.spokenObserver
 	state.updatedAt = frame.CreatedAt
 	subscribers := make([]chan Frame, 0, len(state.subscribers))
 	for ch := range state.subscribers {
@@ -422,6 +442,9 @@ func (e *Engine) PublishPCMAt(roomID int64, source Source, pcm []byte, segmentID
 	}
 	e.mu.Unlock()
 
+	if spoken != nil && observer != nil {
+		notifySpoken(observer, *spoken)
+	}
 	for _, ch := range subscribers {
 		select {
 		case ch <- frame:

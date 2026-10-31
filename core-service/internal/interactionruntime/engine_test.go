@@ -163,8 +163,8 @@ func TestDialogueOnlyOpensOnActualPlaying(t *testing.T) {
 	ready(t, e, base.Add(time.Second), Intent{Relevant: true, Question: true, NeedClarify: true})
 	v := selectTask(t, e, s, base.Add(time.Second))
 	add(e, s, "b", "u", "chat", "2", base.Add(2*time.Second))
-	if n := len(e.Jobs(base.Add(4*time.Second), 10)); n != 1 {
-		t.Fatal("before playback reply must remain ordinary semantic", n)
+	if n := len(e.Jobs(base.Add(4*time.Second), 10)); n != 0 || len(e.rooms[29].Dialogues) != 0 {
+		t.Fatal("before clarification playback numeric input must not invent a dialogue or semantic question", n)
 	}
 	e.Receipts(29, v.Work.ID, "PLAYING", base.Add(5*time.Second))
 	add(e, s, "c", "u", "chat", "新建区", base.Add(6*time.Second))

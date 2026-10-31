@@ -36,26 +36,36 @@ type Turn struct {
 	Question string `json:"question"`
 	Answer   string `json:"answer"`
 }
+type ContextMessage struct {
+	Role string    `json:"role"`
+	Text string    `json:"text"`
+	At   time.Time `json:"at,omitempty"`
+}
 type Input struct {
-	Kind            string `json:"kind"`
-	Correction      string `json:"correction,omitempty"`
-	Text            string `json:"text"`
-	Original        string `json:"original,omitempty"`
-	Clarification   string `json:"clarification,omitempty"`
-	Recent          []Turn `json:"recent,omitempty"`
-	CurrentMainline string `json:"current_mainline,omitempty"`
-	EventCount      int    `json:"event_count,omitempty"`
-	AllowClarify    bool   `json:"allow_clarify"`
+	Kind            string           `json:"kind"`
+	Correction      string           `json:"correction,omitempty"`
+	Text            string           `json:"text"`
+	Original        string           `json:"original,omitempty"`
+	Clarification   string           `json:"clarification,omitempty"`
+	Recent          []Turn           `json:"recent,omitempty"`
+	Context         []ContextMessage `json:"context,omitempty"`
+	CurrentMainline string           `json:"current_mainline,omitempty"`
+	EngagementToken string           `json:"engagement_token,omitempty"`
+	EventCount      int              `json:"event_count,omitempty"`
+	AllowClarify    bool             `json:"allow_clarify"`
 }
 type Intent struct {
-	Relation    string `json:"dialogue_relation,omitempty"`
-	Relevant    bool   `json:"relevant"`
-	Question    bool   `json:"question"`
-	Meaning     string `json:"meaning"`
-	NeedClarify bool   `json:"need_clarify"`
-	Clarify     string `json:"clarify,omitempty"`
-	Continue    bool   `json:"continue_dialogue,omitempty"`
-	Command     string `json:"engagement_command,omitempty"`
+	Relation       string `json:"dialogue_relation,omitempty"`
+	Relevant       bool   `json:"relevant"`
+	Question       bool   `json:"question"`
+	Meaning        string `json:"meaning"`
+	Type           string `json:"type,omitempty"`
+	Priority       string `json:"priority,omitempty"`
+	PriorityReason string `json:"priority_reason,omitempty"`
+	NeedClarify    bool   `json:"need_clarify"`
+	Clarify        string `json:"clarify,omitempty"`
+	Continue       bool   `json:"continue_dialogue,omitempty"`
+	Command        string `json:"engagement_command,omitempty"`
 }
 
 // Envelope is created by the program, never by the model. It travels in the
@@ -213,8 +223,38 @@ func Freeze(ctx context.Context, source Source, session model.LiveRuntimeSession
 	return s, nil
 }
 
+// OutputContract 由程序在提交提示词时追加，保证格式与字段稳定；
+// 方案提示词本身只写业务，不需要维护输出格式。
+const OutputContract = `【输出格式】
+一行一个字段，用中文冒号，不要 JSON、不要代码块、不要解释：
+意图：观众这句话最可能在问什么
+类型：只能是 提问、下单意向、催单、投诉、闲聊、刷屏 里的一个
+歧义：是或否
+澄清句：歧义为是时写一句反问，否则留空
+回答：可直接口播的正文，不写昵称和"这位朋友"这类称呼`
+
+// stripFormatSection 去掉方案提示词里自带的【输出格式要求】段，
+// 避免和程序追加的契约冲突。
+func stripFormatSection(prompt string) string {
+	var lines []string
+	skip := false
+	for _, line := range strings.Split(prompt, "\n") {
+		title := strings.TrimSpace(line)
+		if title == "【输出格式要求】" || title == "【输出格式】" {
+			skip = true
+			continue
+		}
+		if skip && strings.HasPrefix(title, "【") {
+			skip = false
+		}
+		if !skip {
+			lines = append(lines, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
 func request(s Snapshot, template, stage string, payload any, format agentgateway.ResponseFormat) (agentgateway.Request, error) {
-	md, err := interactionpolicy.Read(template)
+	md, err := interactionpolicy.ReadOptional(template)
 	if err != nil {
 		return agentgateway.Request{}, err
 	}
@@ -222,87 +262,164 @@ func request(s Snapshot, template, stage string, payload any, format agentgatewa
 	if err != nil {
 		return agentgateway.Request{}, err
 	}
+	// 方案提示词里的输出格式段是给人看的规范，每次调用都带既费 token 又和本次
+	// 任务的输出契约冲突，拼装时直接剥掉。完整冻结P0仍作为公共内容约束携带。
+	// 任务模板为空时不再附加任何指令，模型只按方案提示词回答。
+	prompt := stripFormatSection(s.Prompt) + "\n\n" + OutputContract
+	messages := []agentgateway.Message{{Role: "system", Content: s.P0 + "\n\n本场冻结的方案提示词：\n" + prompt}}
+	if task := strings.TrimSpace(string(md)); task != "" {
+		messages = append(messages, agentgateway.Message{Role: "system", Content: task})
+	}
+	messages = append(messages, agentgateway.Message{Role: "user", Content: string(raw)})
 	return agentgateway.Request{Stage: stage, ResponseFormat: format, EnableThinking: false, MaxTokens: 900, Timeout: 12 * time.Second, CacheSystemPrompt: true,
-		Messages: []agentgateway.Message{{Role: "system", Content: "完整有效P0（保留范围、条件与排除，优先于方案）：\n" + s.P0}, {Role: "system", Content: "本场冻结的方案提示词：\n" + s.Prompt}, {Role: "system", Content: string(md)}, {Role: "user", Content: string(raw)}}}, nil
+		Messages: messages}, nil
 }
 
+// kvParse 解析「键：值」行，支持中英文冒号。互动模型按 KV 输出，
+// 程序不再依赖 JSON：模型一旦不守 JSON 整条就会作废。
+// normalizeType 把模型给的类型收敛到受控词表；不认识的一律按提问处理，
+// 既不报错也不丢互动。
+func normalizeType(v string) string {
+	v = strings.TrimSpace(v)
+	switch v {
+	case "提问", "下单意向", "催单", "投诉", "闲聊", "主动互动", "刷屏":
+		return v
+	}
+	switch {
+	case strings.Contains(v, "主动互动") || strings.Contains(v, "口令参与") || strings.Contains(v, "互动参与"):
+		return "主动互动"
+	case strings.Contains(v, "下单") || strings.Contains(v, "购买") || strings.Contains(v, "意向"):
+		return "下单意向"
+	case strings.Contains(v, "催"):
+		return "催单"
+	case strings.Contains(v, "投诉") || strings.Contains(v, "抱怨"):
+		return "投诉"
+	case strings.Contains(v, "刷") || strings.Contains(v, "无效") || strings.Contains(v, "无意义"):
+		return "刷屏"
+	case strings.Contains(v, "聊") || strings.Contains(v, "寒暄"):
+		return "闲聊"
+	}
+	return "提问"
+}
+func kvParse(text string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(strings.Trim(line, "`"))
+		if line == "" {
+			continue
+		}
+		idx := strings.IndexAny(line, "：:")
+		if idx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		sep := 1
+		if strings.HasPrefix(line[idx:], "：") {
+			sep = len("：")
+		}
+		val := strings.TrimSpace(line[idx+sep:])
+		if key == "" {
+			continue
+		}
+		out[key] = val
+	}
+	return out
+}
+
+func kvBool(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "是", "true", "yes", "y", "1", "有":
+		return true
+	}
+	return false
+}
+
+func kvPick(kv map[string]string, keys ...string) (string, bool) {
+	for _, k := range keys {
+		if v, ok := kv[k]; ok {
+			return v, true
+		}
+	}
+	return "", false
+}
 func Generate(ctx context.Context, s Snapshot, in Input, complete Complete) (Intent, string, error) {
+	batch, err := GenerateBatch(ctx, s, []BatchItem{{ID: "U01", Input: in}}, complete)
+	if err != nil {
+		return Intent{}, "", err
+	}
+	item := batch.Items[0]
+	return item.Intent, item.Body, item.Err
+}
+
+// parseSingleContent is shared by the one-person and multi-person contracts.
+func parseSingleContent(s Snapshot, in Input, kv map[string]string) (Intent, string, error) {
 	var intent Intent
-	if complete == nil {
-		return intent, "", errors.New("互动模型未配置")
+	var err error
+	meaning, ok := kvPick(kv, "意图")
+	if !ok || strings.TrimSpace(meaning) == "" {
+		return intent, "", errors.New("互动结果不是 KV 格式")
 	}
-	// No nickname or internal identity is included in any content request.
-	if utf8.RuneCountInString(in.Text) > 2400 || len(in.Recent) > 5 {
-		return intent, "", errors.New("互动输入超出范围")
+	// 母版要求「意图｜置信度｜建议」写在一行，分级只取第一段，其余留在原始回复里入库。
+	if i := strings.IndexAny(meaning, "｜|"); i > 0 {
+		meaning = meaning[:i]
 	}
-	req, err := request(s, "interaction-v2-intent.md", "interaction_purpose_resolution", in, agentgateway.ResponseJSON)
-	if err != nil {
-		return intent, "", err
+	intent.Meaning = strings.TrimSpace(meaning)
+	intent.Relevant = true
+	intent.Question = true
+	if v, ok := kvPick(kv, "类型", "type"); ok {
+		intent.Type = normalizeType(v)
 	}
-	result, err := complete(ctx, req)
-	if err != nil {
-		return intent, "", err
+	if intent.Type == "" {
+		intent.Type = "提问"
 	}
-	raw := strings.TrimSpace(result.Text)
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	if err = json.Unmarshal([]byte(strings.TrimSpace(raw)), &intent); err != nil {
-		return intent, "", fmt.Errorf("互动意图格式错误: %w", err)
+	intent.Question = intent.Type != "闲聊" && intent.Type != "刷屏" && intent.Type != "主动互动"
+	intent.PriorityReason = strings.TrimSpace(kv["优先原因"])
+	intent.Priority = "普通"
+	if (kv["优先程度"] == "较高" || kv["优先程度"] == "紧急") && intent.PriorityReason != "" {
+		intent.Priority = kv["优先程度"]
 	}
-	var fields map[string]json.RawMessage
-	_ = json.Unmarshal([]byte(strings.TrimSpace(raw)), &fields)
-	if _, ok := fields["relevant"]; !ok {
-		return intent, "", errors.New("互动意图缺少相关性判断")
+	if intent.Type == "刷屏" {
+		intent.Relevant = false
+		return intent, "", nil
 	}
-	if intent.Relevant {
-		if _, ok := fields["question"]; !ok {
-			return intent, "", errors.New("互动意图缺少问题判断")
+	if intent.Type == "主动互动" {
+		if in.Kind == "dialogue" {
+			return intent, "", errors.New("对话回复不能按主动互动丢弃")
 		}
-		if strings.TrimSpace(intent.Meaning) == "" {
-			return intent, "", errors.New("互动意图缺少语义内容")
+		if in.Kind != "semantic" && in.Kind != "urgent" && in.Kind != "" {
+			return intent, "", errors.New("事件播报任务不能标记为观众参与弹幕")
 		}
+		intent.Priority = "普通"
+		return intent, "", nil
+	}
+	intent.Relation = strings.TrimSpace(kv["对话关系"])
+	intent.Continue = kvBool(kv["继续对话"])
+	if v, ok := kvPick(kv, "歧义"); ok {
+		intent.NeedClarify = kvBool(v)
 	}
 	if in.Kind != "guide" {
 		intent.Command = ""
 	}
-	if !intent.Relevant {
-		return intent, "", nil
-	}
-	if in.Kind == "dialogue" && intent.Relation == "new" {
-		in.AllowClarify = true
-		in.Original = ""
-		in.Clarification = ""
-		in.Recent = nil
-	}
-	if !in.AllowClarify {
-		intent.NeedClarify = false
-		intent.Clarify = ""
-	}
-	if intent.NeedClarify && strings.TrimSpace(intent.Clarify) == "" {
-		return intent, "", errors.New("澄清内容为空")
-	}
 	if intent.NeedClarify {
-		intent.Clarify = withoutAddress(intent.Clarify)
+		if !in.AllowClarify {
+			return intent, "", errors.New("本任务不允许重复澄清")
+		}
+		clarify, _ := kvPick(kv, "澄清句")
+		clarify = strings.TrimSpace(clarify)
+		if clarify == "" {
+			return intent, "", errors.New("澄清内容为空")
+		}
+		// 歧义时只播澄清句，不播回答。
+		intent.Clarify = withoutAddress(clarify)
 		if err = Validate(s, intent.Clarify); err != nil {
 			return intent, "", err
 		}
-		return intent, strings.TrimSpace(intent.Clarify), nil
+		return intent, intent.Clarify, nil
 	}
-	req, err = request(s, "interaction-v2-body.md", "interaction_single_direct_answer", struct {
-		Input  Input  `json:"input"`
-		Intent Intent `json:"intent"`
-	}{in, intent}, agentgateway.ResponseJSON)
-	if err != nil {
-		return intent, "", err
-	}
-	result, err = complete(ctx, req)
-	if err != nil {
-		return intent, "", err
-	}
-	body, err := spokenBody(result.Text)
-	if err != nil {
-		return intent, "", err
+	answer, _ := kvPick(kv, "回答")
+	body := strings.TrimSpace(answer)
+	if body == "" {
+		return intent, "", errors.New("互动结果缺少回答")
 	}
 	body = withoutAddress(body)
 	if err = Validate(s, body); err != nil {
@@ -320,27 +437,15 @@ var analysisLabel = regexp.MustCompile(`(?m)^(?:意图|置信度|歧义|候选|�
 func spokenBody(raw string) (string, error) {
 	text := strings.TrimSpace(raw)
 	text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(text, "```json"), "```"), "```"))
-	if strings.HasPrefix(text, "{") {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal([]byte(text), &fields) != nil {
-			return "", errors.New("互动正文内容格式未完成")
-		}
-		found := false
-		for _, key := range []string{"body", "answer", "reply", "回答"} {
-			if value, ok := fields[key]; ok {
-				var body string
-				if json.Unmarshal(value, &body) != nil {
-					return "", errors.New("互动正文不是文字")
-				}
-				text = strings.TrimSpace(body)
-				found = true
-				break
-			}
-		}
-		if !found {
-			return "", errors.New("互动模型只返回了分析，未返回可播正文")
-		}
-	} else if label := answerLabel.FindStringIndex(text); label != nil {
+	// 模型按 KV 输出时先取正文行，避免把意图、歧义等分析行当成口播内容。
+	if v, ok := kvPick(kvParse(text), "回答", "正文", "body", "答复", "reply"); ok && strings.TrimSpace(v) != "" {
+		text = strings.TrimSpace(v)
+	}
+	// 不再兼容 JSON：模型回 JSON 视为格式错误，由上层重试或跳过。
+	if strings.HasPrefix(text, "{") && strings.HasSuffix(text, "}") {
+		return "", errors.New("互动正文不是 KV 格式")
+	}
+	if label := answerLabel.FindStringIndex(text); label != nil {
 		if label[0] == 0 || analysisLabel.MatchString(text[:label[0]]) {
 			text = strings.TrimSpace(text[label[1]:])
 		}
@@ -383,35 +488,20 @@ func Join(ctx context.Context, s Snapshot, address, body string, complete Comple
 		return "", err
 	}
 	address = strings.TrimSpace(address)
+	// 正文开头自带的泛称先去掉，避免出现「小王，老乡们，……」这种叠称呼。
+	body = strings.TrimSpace(withoutAddress(body))
+	body = strings.TrimLeft(body, "，,。！!：:、；; \n\t")
 	if address == "" {
 		return body, nil
 	}
-	fallback := address + "，" + body
-	if err := Validate(s, fallback); err != nil {
+	// 称呼固定在正文之前，由程序拼接，不再让模型改写：
+	// 时序稳定（先称呼后内容），也不再为一次拼接多花一次模型调用。
+	joined := address + "，" + body
+	if err := Validate(s, joined); err != nil {
 		return "", err
 	}
-	req, err := request(s, "interaction-v2-address-join.md", "interaction_single_greet", map[string]string{"address": address, "body": body}, agentgateway.ResponseText)
-	if err != nil {
-		return "", err
-	}
-	req.Timeout = 3 * time.Second
-	req.MaxTokens = 600
-	if complete != nil {
-		joinCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		response, callErr := complete(joinCtx, req)
-		text := strings.TrimSpace(response.Text)
-		if callErr == nil && strings.HasSuffix(text, body) {
-			prefix := strings.TrimSuffix(text, body)
-			strip := func(x string) string { return strings.Trim(x, " ，,。！!：:、；;\n\t") }
-			if strip(prefix) == address && Validate(s, text) == nil {
-				return text, nil
-			}
-		}
-	}
-	return fallback, nil
+	return joined, nil
 }
-
 func Decode(raw []byte) (Envelope, bool) {
 	var e Envelope
 	err := json.Unmarshal(raw, &e)

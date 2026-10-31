@@ -13,7 +13,7 @@ import (
 )
 
 func TestSpokenBodyExtractsOnlyContentAndRejectsAnalysisOnly(t *testing.T) {
-	for raw, want := range map[string]string{`{"body":"下单后第二天上午发货。"}`: "下单后第二天上午发货。", "意图：延期发货｜置信度：85\n歧义：否\n候选：\n澄清句：\n回答：联系客服备注，以客服确认为准。": "联系客服备注，以客服确认为准。", "回答：正常发货。": "正常发货。", "这个问题正常说明。": "这个问题正常说明。"} {
+	for raw, want := range map[string]string{"意图：延期发货｜置信度：85\n歧义：否\n候选：\n澄清句：\n回答：联系客服备注，以客服确认为准。": "联系客服备注，以客服确认为准。", "回答：正常发货。": "正常发货。", "这个问题正常说明。": "这个问题正常说明。"} {
 		got, err := spokenBody(raw)
 		if err != nil || got != want {
 			t.Fatal(raw, got, err)
@@ -68,17 +68,23 @@ func TestIntentAndBodyUseOnlyPlanAndCompleteP0(t *testing.T) {
 	complete := func(ctx context.Context, r agentgateway.Request) (agentgateway.Response, error) {
 		requests = append(requests, r)
 		if r.Stage == "interaction_purpose_resolution" {
-			return agentgateway.Response{Text: `{"relevant":true,"question":true,"meaning":"希望延迟发货","need_clarify":false}`}, nil
+			return agentgateway.Response{Text: "意图：希望晚几天发货\n歧义：否\n回答：咱们一般下单后第二天上午发货；想晚几天发可以联系客服备注，具体以客服确认为准。"}, nil
 		}
-		return agentgateway.Response{Text: "咱们一般下单后第二天上午发货；想晚几天发可以联系客服备注，具体以客服确认为准。"}, nil
+		return agentgateway.Response{Text: "意图：补充\n歧义：否\n回答：具体以客服确认为准。"}, nil
 	}
 	i, b, err := Generate(context.Background(), s, Input{Kind: "semantic", Text: "可以过几天发货吗", AllowClarify: true}, complete)
-	if err != nil || !i.Question || b == "" || len(requests) != 2 {
+	if err != nil || !i.Question || b == "" || len(requests) != 1 {
 		t.Fatal(i, b, err, len(requests))
 	}
 	for _, r := range requests {
-		if len(r.Messages) != 4 || !strings.Contains(r.Messages[0].Content, s.P0) || !strings.Contains(r.Messages[1].Content, s.Prompt) {
-			t.Fatal("missing exact full scope/conditions/exceptions or plan")
+		if len(r.Messages) < 2 || len(r.Messages) > 3 {
+			t.Fatal("interaction request must be plan prompt (+ optional task) + payload")
+		}
+		if !strings.Contains(r.Messages[0].Content, s.P0) {
+			t.Fatal("missing complete frozen P0 in interaction prompt")
+		}
+		if !strings.Contains(r.Messages[0].Content, "本场冻结的方案提示词") {
+			t.Fatal("missing frozen plan prompt")
 		}
 		payload := r.Messages[len(r.Messages)-1].Content
 		for _, forbidden := range []string{"tenant_id", "candidate_id", "fact_ids", "nickname", "小王"} {
@@ -95,16 +101,16 @@ func TestClarificationIsOneShotAndNotMissingFactsFallback(t *testing.T) {
 			calls := 0
 			fn := func(_ context.Context, r agentgateway.Request) (agentgateway.Response, error) {
 				calls++
-				if calls == 1 {
-					return agentgateway.Response{Text: `{"relevant":true,"question":true,"meaning":"歧义","need_clarify":true,"clarify":"您说的是新建区，还是新建订单？"}`}, nil
+				if allow {
+					return agentgateway.Response{Text: "意图：地址还是订单不清楚\n歧义：是\n澄清句：您说的是新建区，还是新建订单？"}, nil
 				}
-				return agentgateway.Response{Text: "具体发货安排可以联系客服确认。"}, nil
+				return agentgateway.Response{Text: "意图：问发货安排\n歧义：否\n回答：具体发货安排可以联系客服确认。"}, nil
 			}
 			i, b, err := Generate(context.Background(), s, Input{Text: "新建", AllowClarify: allow}, fn)
 			if err != nil || b == "" || i.NeedClarify != allow {
 				t.Fatal(i, b, err)
 			}
-			if allow && calls != 1 || !allow && calls != 2 {
+			if calls != 1 {
 				t.Fatal(calls)
 			}
 		})
@@ -116,8 +122,13 @@ func TestJoinNeverRewritesFrozenBodyOrInventsAddress(t *testing.T) {
 	for _, output := range []string{"小王，" + body, "小王！" + body, "小李，" + body, "小王，保证今天发货。", "小王，谢谢你，" + body} {
 		t.Run(output, func(t *testing.T) {
 			got, err := Join(context.Background(), s, "小王", body, func(_ context.Context, r agentgateway.Request) (agentgateway.Response, error) {
-				if !strings.Contains(r.Messages[0].Content, s.P0) {
-					t.Fatal("join missing complete P0")
+				for _, m := range r.Messages {
+					if m.Role == "system" && strings.Contains(m.Content, "本场冻结的方案提示词") && !strings.Contains(m.Content, s.P0) {
+						t.Fatal("missing complete frozen P0 in joining prompt")
+					}
+				}
+				if !strings.Contains(r.Messages[0].Content, "本场冻结的方案提示词") {
+					t.Fatal("join missing frozen plan prompt")
 				}
 				return agentgateway.Response{Text: output}, nil
 			})
@@ -140,7 +151,7 @@ func TestJoinTimeoutFailureAndNoAddress(t *testing.T) {
 		t.Fatal(got, err)
 	}
 	got, err = Join(context.Background(), s, "", body, fn)
-	if err != nil || got != body || calls != 1 {
+	if err != nil || got != body || calls != 0 {
 		t.Fatal(got, err, calls)
 	}
 }
@@ -163,9 +174,9 @@ func TestNoResponseDoesNotPaySecondBodyModel(t *testing.T) {
 	n := 0
 	i, b, err := Generate(context.Background(), s, Input{Text: "……"}, func(_ context.Context, _ agentgateway.Request) (agentgateway.Response, error) {
 		n++
-		return agentgateway.Response{Text: `{"relevant":false}`}, nil
+		return agentgateway.Response{Text: "意图：无意义刷屏\n歧义：否\n回答："}, nil
 	})
-	if err != nil || i.Relevant || b != "" || n != 1 {
+	if err == nil || b != "" || n != 1 {
 		t.Fatal(i, b, err, n)
 	}
 }

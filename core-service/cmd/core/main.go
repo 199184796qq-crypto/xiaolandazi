@@ -450,6 +450,7 @@ func main() {
 	)
 	audioHub := audiohub.New()
 	roomAudioEngine := roomaudio.New()
+	roomAudioEngine.SetSpokenObserver(paidAgents.ObserveSpoken)
 	coreAudioClient, err := coreaudio.New(audioHub, cfg.CorePublicURL, cfg.CoreAudioTestWAVPath)
 	if err != nil {
 		log.Fatalf("create core audio runtime: %v", err)
