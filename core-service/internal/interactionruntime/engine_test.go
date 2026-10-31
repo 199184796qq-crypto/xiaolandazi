@@ -322,20 +322,21 @@ func TestEngagementExactTokenDistinctUIDAndOtherQuestions(t *testing.T) {
 	e := New()
 	s := scope(29)
 	e.Select(s, base)
-	e.Jobs(base.Add(60*time.Second), 10)
-	jobs := e.Jobs(base.Add(61*time.Second), 10)
+	e.Jobs(base.Add(180*time.Second), 10)
+	jobs := e.Jobs(base.Add(181*time.Second), 10)
 	if len(jobs) != 1 || jobs[0].Kind != "guide" {
 		t.Fatal(jobs)
 	}
-	e.Accept(jobs[0], Content{Body: "想了解就打1。", Intent: Intent{Relevant: true, Command: "1"}}, nil, base.Add(61*time.Second))
-	v := selectTask(t, e, s, base.Add(61*time.Second))
-	e.Receipts(29, v.Work.ID, "PLAYING", base.Add(62*time.Second))
-	e.Receipts(29, v.Work.ID, "COMPLETED", base.Add(64*time.Second))
+	e.Accept(jobs[0], Content{Body: "想了解就打1。", Intent: Intent{Relevant: true, Command: "1"}}, nil, base.Add(181*time.Second))
+	v := selectTask(t, e, s, base.Add(181*time.Second))
+	e.Receipts(29, v.Work.ID, "PLAYING", base.Add(182*time.Second))
+	e.ObserveSpoken(s, "actual-pcm", "想了解就打1。", base.Add(182*time.Second), base.Add(182*time.Second))
+	e.Receipts(29, v.Work.ID, "COMPLETED", base.Add(184*time.Second))
 	for i := 0; i < 5; i++ {
-		add(e, s, fmt.Sprint(i), fmt.Sprint(i%3), "chat", "1", base.Add(65*time.Second))
+		add(e, s, fmt.Sprint(i), fmt.Sprint(i%3), "chat", "1", base.Add(185*time.Second))
 	}
-	add(e, s, "other", "other", "chat", "1号多少钱", base.Add(66*time.Second))
-	jobs = e.Jobs(base.Add(76*time.Second), 10)
+	add(e, s, "other", "other", "chat", "1号多少钱", base.Add(186*time.Second))
+	jobs = e.Jobs(base.Add(196*time.Second), 10)
 	found := map[string]bool{}
 	for _, w := range jobs {
 		found[w.Kind] = true

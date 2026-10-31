@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -263,8 +262,6 @@ func main() {
 	semanticEmbedder := semantic.NewFromEnv()
 	paidAgents := paidpipeline.New(agentWork, agentDecisions, strategyPolicies)
 	paidAgents.SetBrain(brain)
-	paidAgents.SetSemanticEmbedder(semanticEmbedder)
-	paidAgents.SetSessions(events)
 	if existingRooms, listErr := rooms.List(startupCtx, nil); listErr == nil {
 		for _, existingRoom := range existingRooms {
 			paidAgents.RefreshInteractionStats(existingRoom.ID)
@@ -517,10 +514,6 @@ func main() {
 	}
 	api.SetStrategyPolicyStore(strategyPolicies)
 	api.SetAudioClient(coreAudioClient, cfg.CorePublicURL)
-	brain.RegisterPurposeMessages(api.MessageCaptain(), func(roomID int64) string {
-		r := agentWork.Get(roomID)
-		return fmt.Sprintf("%s:%d:%d", r.BootID, r.PlanID, r.RunGeneration)
-	})
 	paidAgents.SetMessageCaptain(api.MessageCaptain())
 	managementURL := strings.TrimSpace(os.Getenv("MANAGEMENT_INTERNAL_URL"))
 	if managementURL == "" {

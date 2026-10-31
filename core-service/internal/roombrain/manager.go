@@ -1,7 +1,6 @@
 package roombrain
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -11,7 +10,6 @@ import (
 
 	"livecompanion/core/internal/director"
 	"livecompanion/core/internal/humanization"
-	"livecompanion/core/internal/messagecaptain"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/resume"
 	"livecompanion/core/internal/roomintel"
@@ -107,31 +105,6 @@ func (m *Manager) Classify(text string) Classification {
 		return Classification{}
 	}
 	return m.classifier.Classify(text)
-}
-
-func (m *Manager) RegisterPurposeMessages(c *messagecaptain.Captain, epoch func(int64) string) {
-	c.Register("question-event-aggregation", func(_ context.Context, msg messagecaptain.Message) error {
-		if msg.Kind != messagecaptain.PurposeResolved {
-			return nil
-		}
-		var result messagecaptain.PurposeResult
-		if err := json.Unmarshal(msg.Payload, &result); err != nil {
-			return err
-		}
-		if result.Epoch != epoch(msg.RoomID) {
-			return nil
-		}
-		m.mu.Lock()
-		state := m.rooms[msg.RoomID]
-		m.mu.Unlock()
-		if state == nil {
-			return nil
-		}
-		state.mu.Lock()
-		state.intel.ReviseQuestion(result.Event.ID, result.Topic, result.Question)
-		state.mu.Unlock()
-		return nil
-	})
 }
 
 func (m *Manager) room(roomID int64, startedAt time.Time) *roomState {

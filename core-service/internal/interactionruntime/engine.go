@@ -21,9 +21,12 @@ type Scope struct {
 	Epoch              string
 }
 type Policy struct {
-	Active   bool
-	Enabled  map[string]bool
-	Cooldown map[string]time.Duration
+	Active           bool
+	Enabled          map[string]bool
+	Cooldown         map[string]time.Duration
+	SessionStartedAt time.Time
+	LastEndedAt      time.Time
+	Busy             bool
 }
 type Person struct{ UID, Name string }
 type Event struct {
@@ -111,28 +114,29 @@ type command struct {
 	Users       map[string]bool
 }
 type room struct {
-	Scope                                          Scope
-	Started, LastEvent, LastInteraction, LastGuide time.Time
-	Tasks                                          map[string]*Task
-	Seen                                           map[string]time.Time
-	Dialogues                                      map[string]*dialogue
-	Chat                                           []time.Time
-	Played                                         []sample
-	Command                                        *command
-	Participation                                  map[string]*command
-	Spoken                                         map[string]time.Time
-	Carry                                          string
-	Density                                        string
-	Cool                                           map[string]time.Time
-	Policy                                         *Policy
-	Named                                          map[string]time.Time
-	DispatchSeq                                    uint64
-	History                                        map[string][]ContextMessage
-	SemanticUsers                                  map[string]time.Time
-	SemanticStarts                                 []time.Time
-	Responded                                      map[string]time.Time
-	Welcome                                        *welcomeState
-	Behaviors                                      map[string]*behaviorLane
+	Scope                               Scope
+	Started, LastEvent, LastInteraction time.Time
+	Tasks                               map[string]*Task
+	Seen                                map[string]time.Time
+	Dialogues                           map[string]*dialogue
+	Chat                                []time.Time
+	Played                              []sample
+	Command                             *command
+	Participation                       map[string]*command
+	Spoken                              map[string]time.Time
+	Carry                               string
+	Density                             string
+	Cool                                map[string]time.Time
+	Policy                              *Policy
+	Named                               map[string]time.Time
+	DispatchSeq                         uint64
+	History                             map[string][]ContextMessage
+	SemanticUsers                       map[string]time.Time
+	SemanticStarts                      []time.Time
+	Responded                           map[string]time.Time
+	Welcome                             *welcomeState
+	Behaviors                           map[string]*behaviorLane
+	Playback                            map[string]playbackActivity
 }
 type Engine struct {
 	mu          sync.Mutex
@@ -146,7 +150,7 @@ func New() *Engine { return &Engine{rooms: map[int64]*room{}, cancelled: map[int
 func (e *Engine) room(s Scope, now time.Time) *room {
 	r := e.rooms[s.Room]
 	if r == nil || r.Scope != s {
-		r = &room{Scope: s, Started: now, LastEvent: now, LastInteraction: now, Tasks: map[string]*Task{}, Seen: map[string]time.Time{}, Dialogues: map[string]*dialogue{}, Cool: map[string]time.Time{}, Density: "cold", Named: map[string]time.Time{}}
+		r = &room{Scope: s, Started: now, LastEvent: now, Tasks: map[string]*Task{}, Seen: map[string]time.Time{}, Dialogues: map[string]*dialogue{}, Cool: map[string]time.Time{}, Density: "cold", Named: map[string]time.Time{}}
 		e.rooms[s.Room] = r
 	}
 	return r
@@ -154,7 +158,20 @@ func (e *Engine) room(s Scope, now time.Time) *room {
 func (e *Engine) SetPolicy(s Scope, p Policy, now time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.room(s, now).Policy = &p
+	r := e.room(s, now)
+	r.Policy = &p
+	if !p.SessionStartedAt.IsZero() && !p.SessionStartedAt.After(now) {
+		if r.LastEvent.Equal(r.Started) {
+			r.LastEvent = p.SessionStartedAt
+		}
+		r.Started = p.SessionStartedAt
+	}
+	if p.LastEndedAt.After(r.LastInteraction) {
+		r.LastInteraction = p.LastEndedAt
+	}
+	if !warmupAllowed(r, now) {
+		e.cancelWarmups(r, "warmup_activity_changed", "")
+	}
 }
 func enabled(r *room, kind string) bool {
 	if r.Policy == nil {
@@ -513,7 +530,7 @@ func (e *Engine) jobs(now time.Time, limit int, batch bool) [][]Work {
 				tasks = append(tasks, t)
 			}
 		}
-		if enabled(r, "guide") && !active && now.Sub(r.LastEvent) >= 60*time.Second && now.Sub(r.LastInteraction) >= 60*time.Second && now.Sub(r.LastGuide) >= 45*time.Second {
+		if enabled(r, "guide") && !active && warmupAllowed(r, now) {
 			e.add(r, Work{Scope: r.Scope, Kind: "guide", Text: "当前没有新的互动，请结合当前讲解做一句自然的相关引导，必要时给一个简短口令。", At: now, Due: now, Expires: now.Add(30 * time.Second)})
 		}
 	}
@@ -712,6 +729,10 @@ func (e *Engine) Select(s Scope, now time.Time) *Task {
 	}
 	r.Played = kept
 	for _, t := range r.Tasks {
+		if t.Work.Kind == "guide" && t.State != "playing" && !terminal(t.State) && !warmupAllowed(r, now) {
+			e.cancel(r, t, "warmup_activity_changed")
+			continue
+		}
 		if t.State == "playing" {
 			return nil
 		}
@@ -835,6 +856,10 @@ func (e *Engine) ReserveAudio(roomID int64, decision string, durationMS int, sta
 		if t.State != "selected" || !start.Before(t.Work.Expires) {
 			return false
 		}
+		if t.Work.Kind == "guide" && !warmupAllowed(r, start) {
+			e.cancel(r, t, "warmup_activity_changed")
+			return false
+		}
 		if t.Work.WelcomeQuota && t.ReadyAt.IsZero() {
 			return false
 		}
@@ -869,6 +894,13 @@ func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time) {
 	if r == nil {
 		return
 	}
+	if decision == "" || at.IsZero() || !e.recordPlayback(r, decision, status, at) {
+		return
+	}
+	e.receiptsLocked(r, decision, status, at)
+}
+
+func (e *Engine) receiptsLocked(r *room, decision, status string, at time.Time) {
 	for _, t := range r.Tasks {
 		if t.Decision != decision || decision == "" {
 			continue
@@ -901,7 +933,9 @@ func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time) {
 					r.Named[p.UID] = at
 				}
 			}
-			r.LastInteraction = at
+			if at.After(r.LastInteraction) {
+				r.LastInteraction = at
+			}
 			if t.Work.WelcomeQuota {
 				welcomeStarted(r, t, at)
 			}
@@ -915,19 +949,23 @@ func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time) {
 					r.Cool[t.Work.Kind] = at.Add(duration)
 				}
 			}
-			if t.Work.Kind == "guide" {
-				r.LastGuide = at
-			}
 			if t.Content.Intent.NeedClarify && len(t.Work.People) == 1 {
 				p := t.Work.People[0]
 				r.Dialogues[p.UID] = &dialogue{UID: p.UID, Name: p.Name, Original: t.Work.Text, Clarify: t.Content.Body, Opened: at, Deadline: at.Add(90 * time.Second)}
 			}
-			if t.Work.Kind == "guide" {
-				// Compatibility for consumers with playback receipts but no PCM
-				// observer. The actual spoken text, not a model token, is authority.
-				e.observeSpoken(r, "decision:"+decision, t.Content.Body, at)
-			}
 		case "COMPLETED":
+			// A trusted completed PCM stream proves it actually played even if
+			// its start notification was lost. Reconcile the original task once.
+			if t.State == "selected" {
+				started := at.Add(-t.Estimate)
+				if started.Before(t.SelectedAt) {
+					started = t.SelectedAt
+				}
+				if started.IsZero() || !started.Before(t.Work.Expires) {
+					started = t.Work.Expires.Add(-time.Nanosecond)
+				}
+				e.receiptsLocked(r, decision, "PLAYING", started)
+			}
 			if t.State != "playing" {
 				return
 			}
@@ -941,7 +979,9 @@ func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time) {
 				seconds = 0
 			}
 			r.Played = append(r.Played, sample{at, seconds})
-			r.LastInteraction = at
+			if at.After(r.LastInteraction) {
+				r.LastInteraction = at
+			}
 			if len(t.Work.People) == 1 {
 				uid := t.Work.People[0].UID
 				if d := r.Dialogues[uid]; d != nil {
@@ -963,7 +1003,9 @@ func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time) {
 		case "FAILED":
 			if t.State == "playing" {
 				r.Played = append(r.Played, sample{at, max(0, at.Sub(t.Started).Seconds())})
-				r.LastInteraction = at
+				if at.After(r.LastInteraction) {
+					r.LastInteraction = at
+				}
 			}
 			t.State = "failed"
 			t.Failure = "playback_failed"
@@ -975,11 +1017,16 @@ func (e *Engine) Lost(roomID int64, decision string, now time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if r := e.rooms[roomID]; r != nil {
+		if p := r.Playback[decision]; !p.Started.IsZero() && p.Ended.IsZero() {
+			e.recordPlayback(r, decision, "FAILED", now)
+		}
 		for _, t := range r.Tasks {
 			if t.Decision == decision && (t.State == "selected" || t.State == "playing") {
 				if t.State == "playing" {
 					r.Played = append(r.Played, sample{now, max(0, now.Sub(t.Started).Seconds())})
-					r.LastInteraction = now
+					if now.After(r.LastInteraction) {
+						r.LastInteraction = now
+					}
 				}
 				t.State = "failed"
 				t.Failure = "queue_task_lost"

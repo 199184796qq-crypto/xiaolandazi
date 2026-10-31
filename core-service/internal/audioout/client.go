@@ -224,6 +224,7 @@ type PlaybackEvent struct {
 	ReceiverID   string    `json:"receiver_id"`
 	Status       string    `json:"status"`
 	ProgressMS   int       `json:"progress_ms,omitempty"`
+	DurationMS   int       `json:"duration_ms,omitempty"`
 	Error        string    `json:"error,omitempty"`
 	OccurredAt   time.Time `json:"occurred_at"`
 }

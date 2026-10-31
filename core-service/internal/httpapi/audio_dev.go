@@ -69,6 +69,7 @@ type audioDevState struct {
 
 type audioInteractionMeta struct {
 	RoomID               int64
+	RuntimeEpoch         string
 	MissionID            string
 	MissionKind          string
 	HumanizationStrategy string
@@ -109,12 +110,11 @@ func (s *Server) SetAudioClient(client audioTaskClient, callbackBase string) {
 	if s.messageUnregister != nil {
 		s.messageUnregister()
 	}
-	removeCutPlanner := s.messages.Register("mainline-cut-planner", s.handleCutRequest)
 	removeLifecycle := s.messages.Register("interaction-lifecycle", func(ctx context.Context, message messagecaptain.Message) error {
 		if message.Kind == messagecaptain.ReturnBridgeStaged || message.Kind == messagecaptain.ReturnBridgeStarted {
 			return s.handleReturnPlaybackMessage(ctx, message)
 		}
-		if message.Kind != messagecaptain.AudioTerminal {
+		if message.Kind != messagecaptain.AudioPlayback {
 			return nil
 		}
 		var event audioout.PlaybackEvent
@@ -124,10 +124,13 @@ func (s *Server) SetAudioClient(client audioTaskClient, callbackBase string) {
 		if message.RoomID != event.RoomID || message.TaskID != event.SpeechTaskID {
 			return fmt.Errorf("audio message scope mismatch")
 		}
+		if event.Status == "STARTING" {
+			return s.validatePCMInteractionStart(ctx, event)
+		}
 		s.applyAudioInteractionPlaybackEvent(ctx, s.audioDevState(), event)
 		return nil
 	})
-	s.messageUnregister = func() { removeLifecycle(); removeCutPlanner() }
+	s.messageUnregister = func() { removeLifecycle() }
 	if source, ok := client.(interface{ SetMessageCaptain(*messagecaptain.Captain) }); ok {
 		source.SetMessageCaptain(s.messages)
 	}
@@ -496,7 +499,7 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 	if state == nil {
 		return
 	}
-	if (event.Status == "COMPLETED" || event.Status == "FAILED") && event.ReceiverID != "core-pcm-output" {
+	if event.ReceiverID != "core-pcm-output" {
 		if reader, ok := state.client.(interactionReturnReader); ok {
 			if _, err := reader.InteractionReturnSnapshot(ctx, event.RoomID, event.SpeechTaskID); err == nil {
 				return
@@ -509,11 +512,18 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 		state.mu.Unlock()
 		return
 	}
+	if (previous.Status == "PLAYING" || previous.Status == "PROGRESS") && event.Status == "READY" {
+		state.mu.Unlock()
+		return
+	}
 	state.events[event.SpeechTaskID] = event
 	meta := state.interactions[event.SpeechTaskID]
 	if meta != nil && meta.DecisionID != "" && s.agentDecisions != nil {
 		item, ok := s.agentDecisions.Get(meta.RoomID, meta.DecisionID)
 		if !ok || item.Status != "CLAIMED" || (item.PlaybackTaskID != "" && item.PlaybackTaskID != event.SpeechTaskID) {
+			meta = nil
+		}
+		if meta != nil && meta.RuntimeEpoch != "" && s.currentInteractionEpoch(meta.RoomID) != meta.RuntimeEpoch {
 			meta = nil
 		}
 	}
@@ -547,7 +557,7 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 	state.mu.Unlock()
 	if meta != nil && meta.DecisionID != "" && s.messages != nil {
 		raw, _ := json.Marshal(map[string]any{"decision_id": meta.DecisionID, "status": event.Status, "at": event.OccurredAt})
-		s.messages.Publish(ctx, messagecaptain.Message{Kind: "interaction.v2.playback", RoomID: meta.RoomID, Payload: raw})
+		s.messages.Publish(ctx, messagecaptain.Message{Kind: "interaction.v2.playback", RoomID: meta.RoomID, RunID: meta.RuntimeEpoch, TaskID: event.SpeechTaskID, Payload: raw})
 	}
 	if (event.Status == "COMPLETED" || event.Status == "FAILED") && meta != nil {
 		if event.Status == "COMPLETED" {

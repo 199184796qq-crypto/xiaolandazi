@@ -104,28 +104,29 @@ type Candidate struct {
 }
 
 type Item struct {
-	CompletionUntil     time.Time       `json:"completion_until,omitempty"`
-	PreparationCutPlans json.RawMessage `json:"preparation_cut_plans,omitempty"`
-	CutLevel            string          `json:"cut_level,omitempty"`
-	SelectedContentPlan json.RawMessage `json:"selected_content_plan,omitempty"`
-	PurposeID           string          `json:"purpose_id,omitempty"`
-	PurposeKnowledge    json.RawMessage `json:"purpose_knowledge,omitempty"`
-	AudioPrepared       bool            `json:"audio_prepared,omitempty"`
-	PreparedUntil       time.Time       `json:"prepared_until,omitempty"`
-	PreparedTaskID      string          `json:"prepared_task_id,omitempty"`
-	PreparedCutMS       int             `json:"prepared_cut_ms,omitempty"`
-	PlaybackTaskID      string          `json:"playback_task_id,omitempty"`
-	PriorityClass       string          `json:"priority_class,omitempty"`
-	Weight              int             `json:"weight,omitempty"`
-	Scene               string          `json:"scene,omitempty"`
-	OrderSource         string          `json:"order_source,omitempty"`
-	CooldownSeconds     int             `json:"cooldown_seconds,omitempty"`
-	RateLimitPerMinute  int             `json:"rate_limit_per_minute,omitempty"`
-	MaxRetries          int             `json:"max_retries,omitempty"`
-	OriginPlanID        int64           `json:"origin_plan_id,omitempty"`
-	OriginMainline      string          `json:"origin_mainline,omitempty"`
-	OriginTrackID       string          `json:"origin_track_id,omitempty"`
-	Schedule            json.RawMessage `json:"schedule,omitempty"`
+	TimeReportValidUntil time.Time       `json:"time_report_valid_until,omitempty"`
+	CompletionUntil      time.Time       `json:"completion_until,omitempty"`
+	PreparationCutPlans  json.RawMessage `json:"preparation_cut_plans,omitempty"`
+	CutLevel             string          `json:"cut_level,omitempty"`
+	SelectedContentPlan  json.RawMessage `json:"selected_content_plan,omitempty"`
+	PurposeID            string          `json:"purpose_id,omitempty"`
+	PurposeKnowledge     json.RawMessage `json:"purpose_knowledge,omitempty"`
+	AudioPrepared        bool            `json:"audio_prepared,omitempty"`
+	PreparedUntil        time.Time       `json:"prepared_until,omitempty"`
+	PreparedTaskID       string          `json:"prepared_task_id,omitempty"`
+	PreparedCutMS        int             `json:"prepared_cut_ms,omitempty"`
+	PlaybackTaskID       string          `json:"playback_task_id,omitempty"`
+	PriorityClass        string          `json:"priority_class,omitempty"`
+	Weight               int             `json:"weight,omitempty"`
+	Scene                string          `json:"scene,omitempty"`
+	OrderSource          string          `json:"order_source,omitempty"`
+	CooldownSeconds      int             `json:"cooldown_seconds,omitempty"`
+	RateLimitPerMinute   int             `json:"rate_limit_per_minute,omitempty"`
+	MaxRetries           int             `json:"max_retries,omitempty"`
+	OriginPlanID         int64           `json:"origin_plan_id,omitempty"`
+	OriginMainline       string          `json:"origin_mainline,omitempty"`
+	OriginTrackID        string          `json:"origin_track_id,omitempty"`
+	Schedule             json.RawMessage `json:"schedule,omitempty"`
 
 	Attempts     int       `json:"attempts,omitempty"`
 	RetryAfter   time.Time `json:"retry_after,omitempty"`

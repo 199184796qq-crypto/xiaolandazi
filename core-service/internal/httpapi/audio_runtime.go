@@ -23,6 +23,7 @@ import (
 )
 
 type roomAudioInteractionInput struct {
+	TimeReportValidUntil   time.Time       `json:"time_report_valid_until,omitempty"`
 	AllowConsecutiveRepeat bool            `json:"allow_consecutive_repeat,omitempty"`
 	DeferredReturn         bool            `json:"deferred_return,omitempty"`
 	PreparationCutPlans    json.RawMessage `json:"preparation_cut_plans,omitempty"`
@@ -1003,6 +1004,10 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	if !s.validateInteractionDecision(w, roomID, input) {
 		return
 	}
+	if !bindTimeReportDeadline(s.agentDecisions, roomID, *decision, input.TimeReportValidUntil, time.Now()) {
+		writeError(w, http.StatusConflict, "报时话术时间已过期或缺少有效期，保留配额重新生成")
+		return
+	}
 	if s.speechRuntime != nil {
 		if speech, speechErr := s.speechRuntime.Snapshot(roomID); speechErr == nil && speechSnapshotBusy(speech) {
 			writeError(w, http.StatusConflict, "上一条TTS尚未播放完成，请继续排队")
@@ -1014,6 +1019,15 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	// execution lease, so a welcome cannot expire midway through TTS/cut wait.
 	dispatchCtx, dispatchCancel := context.WithTimeout(r.Context(), 40*time.Second)
 	defer dispatchCancel()
+	if decision.MissionKind == "time_report" {
+		var cancel context.CancelFunc
+		dispatchCtx, cancel = context.WithDeadline(dispatchCtx, input.TimeReportValidUntil)
+		defer cancel()
+		if s.messages == nil {
+			writeError(w, http.StatusServiceUnavailable, "报时时间有效期校验尚未配置")
+			return
+		}
+	}
 	controlMode := s.agentWork.Mode(roomID) == agentwork.ModeControl
 	state := s.audioDevState()
 	if !controlMode && (state == nil || state.client == nil || !state.client.Enabled()) {
@@ -1246,19 +1260,13 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		})
 	}
 
-	if s.messages != nil && s.agentDecisions != nil {
-		if item, ok := s.agentDecisions.Get(roomID, input.DecisionID); ok && item.ClaimedAt != nil {
-			raw, _ := json.Marshal(messagecaptain.Preparation{DecisionID: item.ID, ElapsedMS: int(time.Since(*item.ClaimedAt).Milliseconds())})
-			s.messages.Publish(r.Context(), messagecaptain.Message{Kind: messagecaptain.InteractionPrepared, RoomID: roomID, Payload: raw})
-		}
-	}
 	var task audioout.SpeechTask
 	if controlMode {
 		sessionID := input.SessionID
 		if sessionID == "" {
 			sessionID = fmt.Sprintf("control-%d", roomID)
 		}
-		if hasInteractionV2Body(*decision) && s.messages != nil {
+		if (hasInteractionV2Body(*decision) || decision.MissionKind == "time_report") && s.messages != nil {
 			duration, _, probeErr := s.audioHub.ProbeExternalWAV(r.Context(), input.AudioURL)
 			if probeErr != nil {
 				writeError(w, 502, "无法读取互动音频时长")
@@ -1364,6 +1372,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		state.mu.Lock()
 		state.interactions[task.ID] = &audioInteractionMeta{
 			RoomID:               roomID,
+			RuntimeEpoch:         s.currentInteractionEpoch(roomID),
 			MissionID:            input.MissionID,
 			MissionKind:          input.MissionKind,
 			HumanizationStrategy: input.HumanizationStrategy,

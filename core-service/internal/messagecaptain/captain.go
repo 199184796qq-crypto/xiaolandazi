@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const AudioTerminal = "audio.output.terminal"
+const AudioPlayback = "audio.output.playback"
 
 type Message struct {
 	ID         string          `json:"id"`

@@ -182,7 +182,11 @@ func (c *Client) SetMessageCaptain(captain *messagecaptain.Captain) {
 			if message.Kind == messagecaptain.ReturnBridgeReady {
 				return c.handleReturnMessage(ctx, message)
 			}
-			if message.Kind != messagecaptain.AudioTerminal {
+			if message.Kind != messagecaptain.AudioPlayback {
+				return nil
+			}
+			var event audioout.PlaybackEvent
+			if json.Unmarshal(message.Payload, &event) != nil || (event.Status != "COMPLETED" && event.Status != "FAILED") {
 				return nil
 			}
 			c.mu.RLock()
@@ -198,23 +202,29 @@ func (c *Client) SetMessageCaptain(captain *messagecaptain.Captain) {
 }
 
 func (c *Client) observeInterruptTerminal(roomID int64, taskID, status string, streamErr error) {
+	if err := c.publishInterruptPlayback(roomID, taskID, status, streamErr); err != nil {
+		log.Printf("runtime playback delivery room=%d task=%s failed: %v", roomID, taskID, err)
+	}
+}
+
+func (c *Client) publishInterruptPlayback(roomID int64, taskID, status string, streamErr error) error {
 	c.mu.RLock()
 	program, captain := c.programs[roomID], c.messages
 	valid := program != nil && program.Running && program.CurrentTaskID == taskID && program.Suspended
 	c.mu.RUnlock()
 	if !valid || captain == nil {
-		return
+		return nil
 	}
 	if snapshot, ok := c.hub.Snapshot(taskID); ok {
-		event := audioout.PlaybackEvent{RoomID: roomID, SpeechTaskID: taskID, SessionID: snapshot.Task.SessionID, ReceiverID: "core-pcm-output", Status: status, OccurredAt: c.now().UTC()}
+		event := audioout.PlaybackEvent{RoomID: roomID, SpeechTaskID: taskID, SessionID: snapshot.Task.SessionID, ReceiverID: "core-pcm-output", Status: status, DurationMS: snapshot.Task.DurationMS, OccurredAt: c.now().UTC()}
 		if streamErr != nil {
 			event.Error = streamErr.Error()
 		}
 		raw, _ := json.Marshal(event)
-		for _, err := range captain.Publish(context.Background(), messagecaptain.Message{Kind: messagecaptain.AudioTerminal, RoomID: roomID, RunID: program.ID, TaskID: taskID, Payload: raw}) {
-			log.Printf("runtime message delivery room=%d task=%s failed: %v", roomID, taskID, err)
-		}
+		failures := captain.Publish(context.Background(), messagecaptain.Message{Kind: messagecaptain.AudioPlayback, RoomID: roomID, RunID: program.ID, TaskID: taskID, Payload: raw})
+		return errors.Join(failures...)
 	}
+	return nil
 }
 
 func (c *Client) Enabled() bool {
@@ -1821,7 +1831,7 @@ func (c *Client) startRoomAudioInterruptMirror(roomID int64, audioURL, taskID st
 	go func() {
 		terminalSent := false
 		defer func() {
-			if !terminalSent && ctx.Err() == nil {
+			if !terminalSent {
 				c.finishReturn(roomID, taskID)
 				c.observeInterruptTerminal(roomID, taskID, "FAILED", errors.New("interaction PCM output unavailable"))
 			}
@@ -1871,10 +1881,24 @@ func (c *Client) startRoomAudioInterruptMirror(roomID int64, audioURL, taskID st
 			}
 		}
 		headOffsetMS := nextCursorMS
+		preflightDone := false
+		startNotified := false
 		publishAudioFrame := func(pcm []byte, cursorMS int) error {
+			if !preflightDone {
+				if err := c.publishInterruptPlayback(roomID, taskID, "STARTING", nil); err != nil {
+					return err
+				}
+				preflightDone = true
+			}
 			err := publishFrame(pcm, headOffsetMS+cursorMS)
 			if err == nil {
 				c.markInteractionAudioStarted(roomID, taskID)
+				if !startNotified {
+					startNotified = true
+					if notifyErr := c.publishInterruptPlayback(roomID, taskID, "PLAYING", nil); notifyErr != nil {
+						log.Printf("runtime playback start delivery room=%d task=%s failed: %v", roomID, taskID, notifyErr)
+					}
+				}
 			}
 			return err
 		}

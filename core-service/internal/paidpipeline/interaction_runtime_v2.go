@@ -1,7 +1,6 @@
 package paidpipeline
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"livecompanion/core/internal/messagecaptain"
 	"livecompanion/core/internal/model"
 	"log"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +27,34 @@ type interactionV2State struct {
 
 func (p *Processor) v2Policy(s interactionruntime.Scope) interactionruntime.Policy {
 	policy := interactionruntime.Policy{Active: p.InteractionsAllowed(s.Room, s.Tenant), Enabled: map[string]bool{}, Cooldown: map[string]time.Duration{}}
+	run := p.runtime.Get(s.Room)
+	if run.WorkingSince != nil {
+		policy.SessionStartedAt = *run.WorkingSince
+	}
+	p.scheduleMu.Lock()
+	startedReader := p.audioStarted
+	p.scheduleMu.Unlock()
+	if startedReader != nil {
+		if at := startedReader(s.Room); !at.IsZero() {
+			policy.SessionStartedAt = at
+		}
+	}
+	view := p.decisions.Snapshot(s.Room)
+	for _, receipt := range view.TerminalHistory {
+		if receipt.Status == "COMPLETED" && receipt.Reason == "actual_mainline_return" && !receipt.At.Before(policy.SessionStartedAt) && receipt.At.After(policy.LastEndedAt) {
+			policy.LastEndedAt = receipt.At
+		}
+	}
+	for _, answer := range view.PlayedHistory {
+		if !answer.AnsweredAt.Before(policy.SessionStartedAt) && answer.AnsweredAt.After(policy.LastEndedAt) {
+			policy.LastEndedAt = answer.AnsweredAt
+		}
+	}
+	for _, item := range view.Queue {
+		if item.Scene != "warmup" {
+			policy.Busy = true
+		}
+	}
 	cfg, err := p.schedule(s.Room, s.Tenant)
 	if err != nil {
 		policy.Active = false
@@ -69,14 +95,14 @@ func (p *Processor) v2Scope(tenant, room int64) interactionruntime.Scope {
 	r := p.runtime.Get(room)
 	return interactionruntime.Scope{Tenant: tenant, Room: room, Plan: r.PlanID, Epoch: p.cutEpoch(room)}
 }
-func (p *Processor) handleInteractionV2(event model.RoomEvent, signal basepipeline.Signal) bool {
+func (p *Processor) handleInteractionV2(event model.RoomEvent, signal basepipeline.Signal) {
 	v := p.interactionV2.Load()
 	if v == nil {
-		return false
+		return
 	}
 	s := p.v2Scope(event.TenantID, event.RoomID)
 	if s.Plan <= 0 {
-		return true
+		return
 	}
 	v.mu.Lock()
 	v.rooms[event.RoomID] = s
@@ -95,60 +121,13 @@ func (p *Processor) handleInteractionV2(event model.RoomEvent, signal basepipeli
 	for _, id := range v.engine.Cancelled(s.Room) {
 		p.decisions.Remove(s.Room, id)
 	}
-	return true
+	return
 }
 
-// Legacy single-task wire compatibility. Production dispatch uses prepareBatchV2
-// for both one and multiple people.
-func (h HTTPPurposeResolver) prepareV2(ctx context.Context, w interactionruntime.Work) (interactionruntime.Content, error) {
-	payload := map[string]any{"protocol": interactionruntime.Protocol, "task": w.ID, "epoch": w.Scope.Epoch, "revision": w.Revision, "tenant_id": w.Scope.Tenant, "room_id": w.Scope.Room, "plan_id": w.Scope.Plan, "kind": w.Kind, "text": w.Text, "original": w.Original, "clarification": w.Clarification, "recent": w.Recent, "current_mainline": w.Mainline, "engagement_token": w.EngagementToken, "event_count": w.Count, "allow_clarify": w.AllowClarify, "expires_at": w.Expires}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return interactionruntime.Content{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(h.URL, "/")+"/internal/v1/interaction-purpose/resolve", bytes.NewReader(raw))
-	if err != nil {
-		return interactionruntime.Content{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Core-Token", h.Token)
-	client := h.Client
-	if client == nil {
-		client = &http.Client{Timeout: 29 * time.Second}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return interactionruntime.Content{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return interactionruntime.Content{}, fmt.Errorf("interaction v2 preparation http %d", resp.StatusCode)
-	}
-	var result messagecaptain.PurposeResult
-	if err = json.NewDecoder(http.MaxBytesReader(nil, resp.Body, 64<<10)).Decode(&result); err != nil {
-		return interactionruntime.Content{}, err
-	}
-	var envelope struct {
-		Protocol, Task, Epoch, Body string
-		Revision                    uint64
-		Tenant                      int64                     `json:"tenant_id"`
-		Room                        int64                     `json:"room_id"`
-		Plan                        int64                     `json:"plan_id"`
-		Intent                      interactionruntime.Intent `json:"intent"`
-		Expires                     time.Time                 `json:"expires_at"`
-	}
-	if err = json.Unmarshal(result.Knowledge, &envelope); err != nil {
-		return interactionruntime.Content{}, err
-	}
-	if envelope.Protocol != interactionruntime.Protocol || envelope.Task != w.ID || envelope.Epoch != w.Scope.Epoch || envelope.Revision != w.Revision || envelope.Tenant != w.Scope.Tenant || envelope.Room != w.Scope.Room || envelope.Plan != w.Scope.Plan || !envelope.Expires.Equal(w.Expires) {
-		return interactionruntime.Content{}, fmt.Errorf("interaction preparation identity changed")
-	}
-	return interactionruntime.Content{Body: envelope.Body, Intent: envelope.Intent, Knowledge: result.Knowledge}, nil
-}
-func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) bool {
+func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) {
 	v := p.interactionV2.Load()
 	if v == nil {
-		return false
+		return
 	}
 	v.mu.Lock()
 	scopes := make([]interactionruntime.Scope, 0, len(v.rooms))
@@ -195,6 +174,11 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) bool {
 		v.mu.Lock()
 		v.rooms[s.Room] = s
 		v.mu.Unlock()
+		liveDecisions := map[string]bool{}
+		for _, item := range p.decisions.Snapshot(s.Room).Queue {
+			liveDecisions[item.ID] = true
+		}
+		v.engine.ReconcilePlayback(s, liveDecisions, now)
 		// Select observes/creates room state before Jobs, including zero-event time.
 		for _, id := range v.engine.Cancelled(s.Room) {
 			p.decisions.Remove(s.Room, id)
@@ -207,6 +191,7 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) bool {
 			}
 		}
 		v.engine.SetPolicy(s, p.v2Policy(s), now)
+		p.publishInteractionStats(s.Room, now)
 		if !p.InteractionsAllowed(s.Room, s.Tenant) {
 			continue
 		}
@@ -327,7 +312,7 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) bool {
 			}
 		}(job, slots)
 	}
-	return true
+	return
 }
 func (p *Processor) interactionV2Receipt(m messagecaptain.Message) bool {
 	if m.Kind != "interaction.v2.playback" {
@@ -348,14 +333,43 @@ func (p *Processor) interactionV2Receipt(m messagecaptain.Message) bool {
 	if r.At.IsZero() {
 		r.At = m.OccurredAt
 	}
+	item, exists := p.decisions.Get(m.RoomID, r.Decision)
+	if !exists || item.Status != agentdecision.StatusClaimed || !p.runtime.IsWorking(m.RoomID) || m.RunID != p.cutEpoch(m.RoomID) || m.TaskID == "" || item.PlaybackTaskID != m.TaskID {
+		return true
+	}
+	var envelope struct {
+		Epoch string `json:"epoch"`
+	}
+	json.Unmarshal(item.PurposeKnowledge, &envelope)
+	if envelope.Epoch != "" && envelope.Epoch != m.RunID {
+		return true
+	}
+	tenant := int64(0)
+	if p.policies != nil {
+		tenant = p.policies.RoomInteractionPreferences(m.RoomID).TenantID
+	}
+	if tenant <= 0 {
+		p.scheduleMu.Lock()
+		resolve := p.tenantResolver
+		p.scheduleMu.Unlock()
+		if resolve != nil {
+			tenant, _ = resolve(m.RoomID)
+		}
+	}
+	v.mu.Lock()
+	scope, known := v.rooms[m.RoomID]
+	v.mu.Unlock()
+	if !known {
+		scope = p.v2Scope(tenant, m.RoomID)
+	}
+	if scope.Epoch != m.RunID {
+		return true
+	}
+	v.engine.SetPolicy(scope, p.v2Policy(scope), r.At)
 	v.engine.Receipts(m.RoomID, r.Decision, r.Status, r.At)
 	return true
 }
 func (p *Processor) reserveAudioV2(m messagecaptain.Message) error {
-	v := p.interactionV2.Load()
-	if v == nil {
-		return nil
-	}
 	var req struct {
 		Decision string    `json:"decision_id"`
 		Duration int       `json:"duration_ms"`
@@ -368,6 +382,22 @@ func (p *Processor) reserveAudioV2(m messagecaptain.Message) error {
 	if !ok {
 		return fmt.Errorf("interaction decision removed")
 	}
+	if item.MissionKind == "time_report" {
+		if item.TimeReportValidUntil.IsZero() {
+			return fmt.Errorf("time report is missing original time validity")
+		}
+		start := req.Start
+		if start.IsZero() || start.Before(p.now()) {
+			start = p.now()
+		}
+		if req.Duration <= 0 || !start.Add(time.Duration(req.Duration)*time.Millisecond).Before(item.TimeReportValidUntil) {
+			return fmt.Errorf("time report would finish after its original time validity")
+		}
+	}
+	v := p.interactionV2.Load()
+	if v == nil {
+		return nil
+	}
 	var protocol struct {
 		Protocol string `json:"protocol"`
 	}
@@ -375,7 +405,19 @@ func (p *Processor) reserveAudioV2(m messagecaptain.Message) error {
 	if protocol.Protocol != interactionruntime.Protocol {
 		return nil
 	}
+	var scopeEnvelope struct {
+		Tenant int64  `json:"tenant_id"`
+		Epoch  string `json:"epoch"`
+	}
+	json.Unmarshal(item.PurposeKnowledge, &scopeEnvelope)
+	if scopeEnvelope.Epoch != p.cutEpoch(m.RoomID) {
+		return fmt.Errorf("interaction run changed")
+	}
+	v.engine.SetPolicy(p.v2Scope(scopeEnvelope.Tenant, m.RoomID), p.v2Policy(p.v2Scope(scopeEnvelope.Tenant, m.RoomID)), p.clock())
 	if !v.engine.ReserveAudio(m.RoomID, req.Decision, req.Duration, req.Start) {
+		for _, id := range v.engine.Cancelled(m.RoomID) {
+			p.decisions.Remove(m.RoomID, id)
+		}
 		return fmt.Errorf("interaction actual audio budget/deadline unavailable")
 	}
 	return nil

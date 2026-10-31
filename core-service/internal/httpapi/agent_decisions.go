@@ -486,6 +486,10 @@ func (s *Server) completeRoomAgentDecision(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "decision id is required")
 		return
 	}
+	if item, exists := s.agentDecisions.Get(roomID, id); exists && item.MissionKind == "time_report" {
+		writeError(w, http.StatusConflict, "报时配额只能由实际播报完成链路核销")
+		return
+	}
 	recent, completed := s.agentDecisions.Complete(roomID, id)
 	if !completed {
 		writeError(w, http.StatusNotFound, "decision is no longer pending")
