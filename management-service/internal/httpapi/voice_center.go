@@ -98,6 +98,16 @@ func (s *Server) liveOfficialVoices(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "语音池无效")
 			return
 		}
+		if pool == ttsscheduler.PoolHighFidelity {
+			items, err := s.availableHighFidelityVoices(r.Context())
+			if err != nil {
+				writeError(w, 500, err.Error())
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			writeJSON(w, 200, map[string]any{"items": items, "configured": len(items) > 0})
+			return
+		}
 		configured, err := s.ttsPoolConfigured(r.Context(), pool)
 		if err != nil {
 			writeError(w, 500, "读取语音池状态失败")
@@ -142,8 +152,13 @@ func (s *Server) liveOfficialVoicePreview(w http.ResponseWriter, r *http.Request
 	}
 	voiceID := strings.TrimSpace(r.PathValue("voiceID"))
 	voice, ok := findOfficialVoice(voiceID)
+	if !ok && ttsgateway.ValidVolcengineVoiceID(voiceID) {
+		var err error
+		voice, err = s.findHighFidelityPoolVoice(r.Context(), voiceID)
+		ok = err == nil
+	}
 	if !ok {
-		writeError(w, http.StatusNotFound, "官方声音不存在")
+		writeError(w, http.StatusNotFound, "声音不存在或当前不可用")
 		return
 	}
 	text := strings.TrimSpace(input.Text)

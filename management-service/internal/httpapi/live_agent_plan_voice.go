@@ -366,6 +366,13 @@ func rebuildFormalVoiceSubtitleTimeline(
 func (s *Server) resolveFormalVoice(ctx context.Context, tenantID int64, input fullShowVariantVoiceInput) (string, string, error) {
 	switch input.Source {
 	case "", "official":
+		if input.Model == ttsgateway.VolcengineICL2 {
+			if input.ProfileID != 0 || input.BindingID != 0 {
+				return "", "", errors.New("高仿真池声音不使用私有声音档案或模型绑定")
+			}
+			voice, err := s.findHighFidelityPoolVoice(ctx, input.VoiceID)
+			return voice.ID, voice.Model, err
+		}
 		voice, ok := voicecatalog.Find(input.VoiceID)
 		if !ok {
 			return "", "", errors.New("官方声音不存在")

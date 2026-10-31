@@ -122,6 +122,7 @@ func TestTTSRoomPoolsAuthenticatedMySQL(t *testing.T) {
 	mux := http.NewServeMux()
 	s.registerTTSRoomPoolRoutes(mux)
 	mux.HandleFunc("GET /api/v1/live/official-voices", s.liveOfficialVoices)
+	mux.HandleFunc("POST /api/v1/live/official-voices/{voiceID}/preview", s.liveOfficialVoicePreview)
 	mux.HandleFunc("POST /api/v1/live/voice-profiles", func(w http.ResponseWriter, r *http.Request) { s.liveSaveVoiceProfile(w, r, 0) })
 	mux.HandleFunc("GET /api/v1/live/voice-profiles", s.liveListVoiceProfiles)
 	server := httptest.NewServer(mux)
@@ -213,8 +214,74 @@ func TestTTSRoomPoolsAuthenticatedMySQL(t *testing.T) {
 		t.Fatal("legacy snapshot bypassed room policy", err)
 	}
 	fireCatalog := call(2, 0, "GET", "/api/v1/live/official-voices?pool=high_fidelity", nil, 200)
-	if strings.Contains(string(fireCatalog), "S_existing") {
-		t.Fatal("private voice leaked to official catalog")
+	var catalog struct {
+		Items      []struct{ ID, Name, Provider, Model string }
+		Configured bool
+	}
+	if err := json.Unmarshal(fireCatalog, &catalog); err != nil || !catalog.Configured || len(catalog.Items) != 1 || catalog.Items[0].ID != "S_existing" {
+		t.Fatal("configured pool mapping is not directly selectable", err, string(fireCatalog))
+	}
+	for _, private := range []string{"local-fixture-key", "fire1", "sealed_key", "account_uid"} {
+		if strings.Contains(string(fireCatalog), private) {
+			t.Fatal("catalog leaked account details", private)
+		}
+	}
+	call(0, 0, "GET", "/api/v1/live/official-voices?pool=high_fidelity", nil, 401)
+	// The shared pool does not allocate a voice profile or consume private slots.
+	var profilesBefore, profilesAfter int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM voice_profiles`).Scan(&profilesBefore); err != nil {
+		t.Fatal(err)
+	}
+	pooled := model.LiveAgentVoiceIdentity{Name: catalog.Items[0].Name, Version: "V1", TTSPool: "high_fidelity", Source: "official", Provider: "volcengine", Model: ttsgateway.VolcengineICL2, VoiceID: "S_existing", Rate: 1.13}
+	if err := s.validatePlanVoiceIdentity(t.Context(), 14, &pooled); err != nil {
+		t.Fatal("pool identity needs no private slot", err)
+	}
+	if voice, modelName, err := s.resolveFormalVoice(t.Context(), 14, fullShowVariantVoiceInput{Source: "official", VoiceID: "S_existing", Model: ttsgateway.VolcengineICL2}); err != nil || voice != "S_existing" || modelName != ttsgateway.VolcengineICL2 {
+		t.Fatal("live mainline cannot resolve pool voice", err)
+	}
+	request := httptest.NewRequest("POST", "/", nil)
+	request.Header.Set("X-Live-Support-Room-ID", "29")
+	if !s.requireLiveSupportSelectedVoice(httptest.NewRecorder(), request, model.Actor{UserID: 1, Role: "platform_admin"}, 14, map[string]any{"voice_id": "S_existing"}) {
+		t.Fatal("authorized staff cannot select pool catalogue voice")
+	}
+	poolSaved, err := store.CreateLiveAgentPlanVersion(t.Context(), 14, plan, 2, model.CreateLiveAgentPlanVersionInput{VoiceIdentity: pooled, DurationMinutes: 30, RoundMinutes: 10, GenerationContext: map[string]any{"content_mode": "user_audio"}})
+	if err != nil {
+		t.Fatal("save pool identity", err)
+	}
+	poolRestored, err := store.GetLiveAgentPlanVersion(t.Context(), 14, plan, poolSaved.ID)
+	if err != nil || poolRestored.VoiceIdentity.Source != "official" || poolRestored.VoiceIdentity.VoiceID != "S_existing" || poolRestored.VoiceIdentity.TTSPool != "high_fidelity" || poolRestored.VoiceIdentity.ProfileID != 0 || poolRestored.VoiceIdentity.BindingID != 0 {
+		t.Fatal("pool identity lost during restore", err, poolRestored.VoiceIdentity)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM voice_profiles`).Scan(&profilesAfter); err != nil || profilesAfter != profilesBefore {
+		t.Fatal("pool operation allocated private slots", err)
+	}
+	for _, alter := range []func(*model.LiveAgentVoiceIdentity){func(v *model.LiveAgentVoiceIdentity) { v.VoiceID = "S_unknown" }, func(v *model.LiveAgentVoiceIdentity) { v.TTSPool = "standard" }, func(v *model.LiveAgentVoiceIdentity) { v.Provider = "aliyun_qwen" }, func(v *model.LiveAgentVoiceIdentity) { v.ProfileID = profile.ID }, func(v *model.LiveAgentVoiceIdentity) { v.BindingID = 1 }} {
+		invalid := pooled
+		alter(&invalid)
+		if s.validatePlanVoiceIdentity(t.Context(), 14, &invalid) == nil {
+			t.Fatal("forged pool identity accepted", invalid)
+		}
+	}
+	call(2, 0, "POST", "/api/v1/live/official-voices/S_unknown/preview", map[string]any{"text": "no paid call"}, 404)
+	exec(`UPDATE mgmt_tts_pool_accounts SET enabled=FALSE WHERE provider='volcengine'`)
+	disabledCatalog := call(2, 0, "GET", "/api/v1/live/official-voices?pool=high_fidelity", nil, 200)
+	if err := json.Unmarshal(disabledCatalog, &catalog); err != nil || catalog.Configured || len(catalog.Items) != 0 {
+		t.Fatal("disabled account catalogue remained visible", err, string(disabledCatalog))
+	}
+	if s.validatePlanVoiceIdentity(t.Context(), 14, &pooled) == nil {
+		t.Fatal("disabled account voice can still save")
+	}
+	if _, _, err := s.resolveFormalVoice(t.Context(), 14, fullShowVariantVoiceInput{Source: "official", VoiceID: "S_existing", Model: ttsgateway.VolcengineICL2}); err == nil {
+		t.Fatal("disabled account still resolves for synthesis")
+	}
+	if s.requireLiveSupportSelectedVoice(httptest.NewRecorder(), request, model.Actor{UserID: 1, Role: "platform_admin"}, 14, map[string]any{"voice_id": "S_existing"}) {
+		t.Fatal("disabled pool bypassed staff selection gate")
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM voice_profiles`).Scan(&profilesAfter); err != nil || profilesAfter != profilesBefore {
+		t.Fatal("private voices changed", err)
+	}
+	if err := s.validatePlanVoiceIdentity(t.Context(), 14, &identity); err != nil {
+		t.Fatal("legacy imported profile compatibility changed", err)
 	}
 	call(2, 0, "GET", "/api/v1/live/official-voices?pool=bad", nil, 400)
 }

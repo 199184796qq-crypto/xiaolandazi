@@ -943,6 +943,14 @@ func (s *Server) validatePlanVoiceIdentity(ctx context.Context, tenantID int64, 
 		return err
 	}
 	if identity.Source == "official" {
+		// Shared pool voices do not create private profiles or consume their quota.
+		if identity.Provider == ttsgateway.ProviderVolcengine || identity.Model == ttsgateway.VolcengineICL2 || identity.TTSPool == ttsscheduler.PoolHighFidelity {
+			if identity.Provider != ttsgateway.ProviderVolcengine || identity.Model != ttsgateway.VolcengineICL2 || identity.TTSPool != ttsscheduler.PoolHighFidelity || identity.ProfileID != 0 || identity.BindingID != 0 {
+				return errors.New("高仿真声音身份不匹配，请重新选择声音")
+			}
+			_, err := s.findHighFidelityPoolVoice(ctx, identity.VoiceID)
+			return err
+		}
 		settings, err := s.store.VoiceModelSettings(ctx)
 		if err != nil {
 			return errors.New("读取官方声音配置失败")

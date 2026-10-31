@@ -97,6 +97,12 @@ func (s *Server) requireLiveSupportSelectedVoice(w http.ResponseWriter, r *http.
 		if _, exists := findOfficialVoice(voiceID); exists {
 			return true
 		}
+		// Administrator-configured pool catalogue voices are platform assets,
+		// just like the standard catalogue. The caller still requires the
+		// customer's existing plan/room support authorization before this gate.
+		if _, err := s.findHighFidelityPoolVoice(r.Context(), voiceID); err == nil {
+			return true
+		}
 		writeError(w, http.StatusForbidden, "请选择当前授权直播间可用的声音")
 		return false
 	}
