@@ -29,7 +29,6 @@ import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
 import PlanConfigurationNavigation from '../components/PlanConfigurationNavigation.vue'
 import PlanBusinessModePanel from '../components/PlanBusinessModePanel.vue'
 import { usePlanBusinessMode } from '../usePlanBusinessMode'
-import { planBusinessModes } from '../planBusinessMode'
 import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
 import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import RecordingScriptTabs from '../components/RecordingScriptTabs.vue'
@@ -39,12 +38,7 @@ import PlanCreateDialog from '../components/PlanCreateDialog.vue'
 import { isPlanFactMode, type PlanConfigurationMode, type PlanConfigurationSection, type PlanFactMode } from '../livePlanNavigation'
 import SourceRiskDetails from '../components/SourceRiskDetails.vue'
 import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea, type RiskReview } from '../riskSources'
-import InlineFormalFactEditor from '../components/InlineFormalFactEditor.vue'
-import FormalFactScopeSelect from '../components/FormalFactScopeSelect.vue'
-import FormalFactTypeSelect from '../components/FormalFactTypeSelect.vue'
 import { sortFormalFactsByScope, type FactScopeSortOrder } from '../formalFactScopeSort'
-import InlineFormalFactCreateRow from '../components/InlineFormalFactCreateRow.vue'
-import FactSpeechPreviewDialog from '../components/FactSpeechPreviewDialog.vue'
 import { factCategoryDefinition, factCategoryGroups, factCategoryState, loadFactCategories } from '../factCategories'
 import { useFactNameSuggestion } from '../factNameSuggestion'
 import RealtimeAnchorPreviewPanel from '../components/RealtimeAnchorPreviewPanel.vue'
@@ -55,7 +49,6 @@ import { latestSavedPlanVersion } from '../livePlanVersionStatus'
 import AnchorPresenterManager from '../components/AnchorPresenterManager.vue'
 import AnchorRecommendationPicker from '../components/AnchorRecommendationPicker.vue'
 import { getCurrentAnchor, uploadAnchorAvatar } from '../anchorRecommendations'
-import ProductSupplementChat from '../components/ProductSupplementChat.vue'
 import type { AnchorAvatarType } from '../anchorAvatar'
 import { limitAnchorSample } from '../anchorAnalysis'
 import type { PreviewStreamEvent } from '../agent/previewStream'
@@ -83,10 +76,6 @@ import {
   getLiveAgentPlans,
   getLiveAgentPlanBenefits,
   getLiveAgentPlanFacts,
-  analyzeLiveAgentPlanFactDiff,
-  updateLiveAgentPlanFactScope,
-  updateLiveAgentPlanFactCategory,
-  suggestLiveAgentPlanFactTypes,
   getLiveAgentPlanProductLinks,
   getLiveAgentPlanPrompt,
   saveLiveAgentPlanPrompt,
@@ -103,7 +92,6 @@ import {
   getRoom,
   deactivateAgentMemory,
   deleteLiveAgentPlanBenefit,
-  deleteLiveAgentPlanFact,
   deleteLiveAgentPlanProductLink,
 	deleteLiveAgentPlanProductAttribute,
   publishLiveRoomPolicyVersion,
@@ -146,7 +134,6 @@ import {
   previewRecognizeLiveAgentPlanImage,
   updateLiveAgentPlan,
   updateLiveAgentPlanBenefit,
-  updateLiveAgentPlanFact,
   updateLiveAgentPlanProductLink,
 	updateLiveAgentPlanProductAttribute,
 	saveLiveAgentPlanProductLinkFrequencyWeight,
@@ -158,7 +145,6 @@ import {
   uploadLiveAgentCustomMainline,
   uploadLiveMediaAsset,
 } from '../api'
-import type { FactTypeSuggestion } from '../api'
 import { session } from '../session'
 import '../styles/workflow-guidance.css'
 import { beginLiveSupportScope, liveSupportMediaPlaybackURL } from '../liveSupportAccess'
@@ -272,7 +258,9 @@ const planPromptLegacy = ref('')
 const planPromptLoadedPlan = ref(0)
 const planActionsMenu = ref<HTMLDetailsElement | null>(null)
 watch(activeMode, mode => {
-  if (mode === 'miner') activeMode.value = 'knowledge'
+  // Compatibility events may still carry retired page names. Never reopen them.
+  if (mode === 'supplement') activeMode.value = 'products'
+  else if (mode === 'knowledge' || mode === 'miner') activeMode.value = 'plan_prompt'
   else if (isPlanFactMode(mode)) lastFactMode.value = mode
   else if (mode === 'plan_prompt') void loadPlanPrompt()
 }, { flush: 'sync' })
@@ -290,12 +278,12 @@ function selectPlanConfigurationSection(section: PlanConfigurationSection) {
 }
 function selectPlanConfigurationMode(mode: PlanConfigurationMode) {
   if (mode === 'products' || mode === 'benefits') openSourceRiskLocation(mode)
-  else if (mode === 'knowledge') openFactRiskLocation()
   else if (mode === 'memory') openInteractionPendingLocation()
   else activeMode.value = mode
 }
 const interactionReviewRoute=useRoute()
-watch(()=>interactionReviewRoute.query.interaction_review,mode=>{if(mode==='facts') activeMode.value='knowledge'}, {immediate:true})
+watch(()=>interactionReviewRoute.query.interaction_review,mode=>{if(mode==='facts') activeMode.value='plan_prompt'})
+onMounted(()=>{if(interactionReviewRoute.query.interaction_review==='facts') activeMode.value='plan_prompt'})
 const defaultSettings: LiveAgentSettings = {
   tenant_id: 0,
   display_name: '小伴直播教练',
@@ -448,51 +436,9 @@ const analysisDraft = ref<LiveAgentPlanScriptAnalysis | null>(null)
 const knowledgeDraftText = ref('')
 const rhythmDraftText = ref('')
 const previewingFormalFact = ref<LiveAgentPlanFact | null>(null)
-function previewFormalFact(item: LiveAgentPlanFact) { previewingFormalFact.value = item }
 watch([planTenantId, currentRoomPlanId], () => { previewingFormalFact.value = null })
 
 const formalFacts = ref<LiveAgentPlanFact[]>([])
-// 四层结构解析：把 safe_rewrite(【必说】【可说】)与 forbidden_wording(【改写】【不提】)按标题分块；旧数据无标题时整体放入对应卡片。
-function factFourLayers(item: LiveAgentPlanFact) {
-  const parse = (text: string, fallbackTitles: Record<string, string>) => {
-    const sections: Array<{ title: string; content: string }> = []
-    const matches = [...text.matchAll(/【([^【】]{1,6})】/g)]
-    if (matches.length) {
-      matches.forEach((match, index) => {
-        const start = match.index! + match[0].length
-        const end = index + 1 < matches.length ? matches[index + 1].index! : text.length
-        const content = text.slice(start, end).trim()
-        if (content) sections.push({ title: match[1], content })
-      })
-      return sections
-    }
-    const content = text.trim()
-    if (content) sections.push({ title: fallbackTitles.key, content })
-    return sections
-  }
-  const layers: Array<{ title: string; content: string }> = []
-  if (item.forbidden_wording?.trim()) layers.push(...parse(item.forbidden_wording, { key: '改写' }))
-  if (item.safe_rewrite?.trim()) layers.push(...parse(item.safe_rewrite, { key: '可说' }))
-  return layers
-}
-function factLayerTone(title: string) {
-  switch (title) {
-    case '必说': return 'must'
-    case '可说': return 'can'
-    case '改写': return 'rewrite'
-    case '不提': return 'mention'
-    default: return 'other'
-  }
-}
-function factLayerLabel(title: string) {
-  switch (title) {
-    case '必说': return '必须讲准的客观事实'
-    case '可说': return '可以口语化表达的内容'
-    case '改写': return '不要这样说，给正向说法'
-    case '不提': return '未确认，正反都不说'
-    default: return '表达参考'
-  }
-}
 const factRiskUnresolvedCount = ref(0)
 const productRiskUnresolvedCount = ref(0)
 const benefitRiskUnresolvedCount = ref(0)
@@ -525,7 +471,6 @@ const pendingRiskLocation = ref<{ area: 'knowledge' | 'products' | 'benefits'; c
 let riskLocationAttempt = 0
 const locatedFactRiskHash = ref('')
 const removedRisks = ref<Array<{ area: 'knowledge' | 'products' | 'benefits'; claim_sha256: string; text: string; reason: string }>>([])
-const factRiskAppealDrafts = ref<Record<string, string>>({})
 const formalBenefits = ref<LiveAgentPlanBenefit[]>([])
 const formalProductLinks = ref<LiveAgentPlanProductLink[]>([])
 const factScopeSortOrder = ref<FactScopeSortOrder>('none')
@@ -558,10 +503,6 @@ const visibleFormalFacts = computed(() => sortedFormalFacts.value.filter(item =>
   (!factSearchTerm.value || item.value.normalize('NFKC').toLocaleLowerCase().includes(factSearchTerm.value)),
 ))
 watch(factScopeFilterOptions, options => { if (!options.some(item => item.value === factScopeFilter.value)) factScopeFilter.value = 'all' })
-const factScopeSortHint = computed(() => factScopeSortOrder.value === 'none' ? '按归属范围归类排序' : factScopeSortOrder.value === 'ascending' ? '当前正序，点击倒序' : '当前倒序，点击恢复原顺序')
-function cycleFactScopeSort() {
-  factScopeSortOrder.value = factScopeSortOrder.value === 'none' ? 'ascending' : factScopeSortOrder.value === 'ascending' ? 'descending' : 'none'
-}
 const expandedFormalBenefitIds = ref<Set<number>>(new Set())
 type FormalBenefitField = 'link_key' | 'product_name' | 'activity_price' | 'gift' | 'activity' | 'starts_at' | 'ends_at'
 const editingFormalBenefit = ref<{ itemId: number; field: FormalBenefitField; draft: string } | null>(null)
@@ -580,7 +521,6 @@ const selectedFactKeys = ref<string[]>([])
 const editingFormalFactId = ref<number | null>(null)
 const inlineFactSavingId = ref<number | null>(null)
 const creatingFormalFact = ref(false)
-const formalFactAddButton = ref<HTMLButtonElement | null>(null)
 const formalFactCreateDraft = ref({ category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' })
 const formalFactCreateGuidance = ref('')
 const formalFactCreateError = ref('')
@@ -599,106 +539,7 @@ watch(() => JSON.stringify([currentRoomPlanId.value, planTenantId.value, session
   factScopeSequence++
   factScopeSavingId.value = null
   factCategorySavingId.value = null
-  factTypeSuggestingId.value = null
-  factTypeMenu.value.fact = null
-  factTypeSuggestionMap.value = {}
 }, { flush: 'sync' })
-async function saveFormalFactScope(item: LiveAgentPlanFact, scope: NonNullable<LiveAgentPlanFact['scope']>) {
-  const plan = currentRoomPlanId.value
-  const sequence = factScopeSequence
-  const current = () => sequence === factScopeSequence && plan === currentRoomPlanId.value
-  if (!plan || item.plan_id !== plan || item.tenant_id !== planTenantId.value || factScopeSavingId.value !== null || mutatingFormalFactId.value || editingFormalFactId.value !== null) throw new Error('当前方案或事实编辑状态已变化，请重新选择')
-  factScopeSavingId.value = item.id
-  formalFactReadSequence++
-  try {
-    const updated = await updateLiveAgentPlanFactScope(plan, item, scope)
-    if (!current()) return
-    formalFacts.value = formalFacts.value.map(f => f.id === item.id ? updated : f)
-    scriptNotice.value = '事实归属已保存。重新初始化并保存方案后，下次开播使用新的归属。'
-    void contentPools.refresh(true)
-  } finally { if (current()) factScopeSavingId.value = null }
-}
-
-async function saveFormalFactCategory(item: LiveAgentPlanFact, category: string) {
-  const plan = currentRoomPlanId.value
-  const sequence = factScopeSequence
-  const current = () => sequence === factScopeSequence && plan === currentRoomPlanId.value
-  if (!plan || item.plan_id !== plan || item.tenant_id !== planTenantId.value || factCategorySavingId.value !== null || mutatingFormalFactId.value || editingFormalFactId.value !== null) throw new Error('当前方案或事实编辑状态已变化，请重新选择')
-  factCategorySavingId.value = item.id
-  formalFactReadSequence++
-  try {
-    const updated = await updateLiveAgentPlanFactCategory(plan, item, category)
-    if (!current()) return
-    formalFacts.value = formalFacts.value.map(f => f.id === item.id ? updated : f)
-    // 保存成功后清除该条的低把握提示（用户已确认）。
-    if (factTypeSuggestionMap.value[item.id]) delete factTypeSuggestionMap.value[item.id]
-    scriptNotice.value = '事实类型已保存。重新初始化并保存方案后，下次开播使用新的类型。'
-    void contentPools.refresh(true)
-  } finally { if (current()) factCategorySavingId.value = null }
-}
-
-const factTypeSuggestionMap = ref<Record<number, FactTypeSuggestion>>({})
-const factTypeSuggestingId = ref<number | null>(null)
-const factTypeMenu = ref<{ x: number; y: number; fact: LiveAgentPlanFact | null }>({ x: 0, y: 0, fact: null })
-
-function openFactTypeMenu(event: MouseEvent, item: LiveAgentPlanFact) {
-  if (creatingFormalFact.value || editingFormalFactId.value !== null || !!mutatingFormalFactId.value || factCategorySavingId.value !== null || factTypeSuggestingId.value !== null || item.plan_id !== currentRoomPlanId.value) return
-  event.preventDefault()
-  factTypeMenu.value = {
-    fact: item,
-    x: Math.min(event.clientX, Math.max(12, window.innerWidth - 190)),
-    y: Math.min(event.clientY, Math.max(12, window.innerHeight - 96)),
-  }
-}
-
-function closeFactTypeMenu() {
-  factTypeMenu.value.fact = null
-}
-
-async function suggestFactTypeForFact(item: LiveAgentPlanFact) {
-  const plan = currentRoomPlanId.value
-  if (!plan || factTypeSuggestingId.value !== null) return
-  const tenantId = planTenantId.value
-  const sequence = factScopeSequence
-  const current = () => sequence === factScopeSequence && plan === currentRoomPlanId.value
-  factTypeMenu.value.fact = null
-  factTypeSuggestingId.value = item.id
-  try {
-    const { results } = await suggestLiveAgentPlanFactTypes(plan, [{ id: item.id, key: item.key, value: item.value }], tenantId)
-    if (!current()) return
-    const r = results[0]
-    if (!r) { scriptNotice.value = '建议分类返回为空，请手动选择'; return }
-    const displayName = factCategoryState.items.find(category => category.value === r.category)?.label || (r.label && /[\u3400-\u9fff]/.test(r.label) ? r.label : '')
-    if (r.error || r.low_conf) {
-      // 低把握或判断失败：显示简短状态，详细原因由行内说明按钮查看。
-      factTypeSuggestionMap.value = { ...factTypeSuggestionMap.value, [item.id]: r }
-      scriptNotice.value = r.error
-        ? '暂时无法建议分类，请手动选择事实类型。'
-        : '该条事实的分类需要确认，可点击“待确认”查看说明。'
-      return
-    }
-    // 高把握：直接落库。
-    if (item.category === r.category) {
-      delete factTypeSuggestionMap.value[item.id]
-      scriptNotice.value = '该条类型已是建议值，无需修改。'
-      return
-    }
-    const updated = await updateLiveAgentPlanFactCategory(plan, item, r.category)
-    if (!current()) return
-    formalFacts.value = formalFacts.value.map(f => f.id === item.id ? updated : f)
-    delete factTypeSuggestionMap.value[item.id]
-    scriptNotice.value = displayName ? `事实类型已更新为「${displayName}」。` : '已按建议更新事实类型。'
-    void contentPools.refresh(true)
-    // 可能新增了自定义分类：刷新分类下拉，让新类型立即可选。
-    void loadFactCategories({ planId: plan, tenantId, suppressErrorDialog: true })
-  } catch (e) {
-    if (!current()) return
-    factTypeSuggestionMap.value = { ...factTypeSuggestionMap.value, [item.id]: { id: item.id, category: item.category, label: '', confidence: 0, low_conf: true, error: true, reason: e instanceof Error ? e.message : '建议分类失败，请重试' } }
-    scriptNotice.value = '建议分类未完成，请重试或手动选择事实类型。'
-  } finally {
-    if (current()) factTypeSuggestingId.value = null
-  }
-}
 
 const adoptingBenefitKey = ref('')
 const adoptingProductLinkKey = ref('')
@@ -723,24 +564,10 @@ watch(() => JSON.stringify(answerStrategyScope()), () => {
 const contentPools = useContentPools(currentRoomPlanId, planTenantId)
 const poolStatus = contentPools.status
 const poolPreview = contentPools.preview
-const formalFactName = useFactNameSuggestion(formalFactCreateDraft, creatingFormalFact, () => ({ planId: currentRoomPlanId.value, tenantId: planTenantId.value }), { suppressErrorDialog: true })
 const currentPlan = computed(
   () => livePlans.value.find((item) => item.id === currentRoomPlanId.value) || null,
 )
 const planBusinessMode = usePlanBusinessMode(currentRoomPlanId, computed(() => planTenantId.value))
-// 资料补全页「所属行业」与业务模式联动：只读展示当前业务模式 + 已选行业名称（红字）。
-const supplementBusinessLabel = computed(() => {
-  const domain = planBusinessMode.value.value
-  if (!domain) return ''
-  return planBusinessModes.find((item) => item.value === domain)?.label || ''
-})
-const supplementIndustryName = computed(() => {
-  const domain = planBusinessMode.value.value
-  if (!domain) return ''
-  const code = planBusinessMode.industries.value[domain]
-  if (!code) return ''
-  return planBusinessMode.industryOptions.value[domain].find((item) => item.code === code)?.label || code
-})
 const orderedRoomPlans = computed(() => [...livePlans.value].sort((left,right) =>
   Number(right.id === currentRoomPlanId.value) - Number(left.id === currentRoomPlanId.value) || left.name.localeCompare(right.name,'zh-CN')))
 function planRoomRelationLabel(plan: LiveAgentPlan) {
@@ -2804,9 +2631,8 @@ const roomPolicyActive = computed(
 const activeModeLabel = computed(() => {
   if (activeMode.value === 'business') return '业务模式'
   if (activeMode.value === 'products') return '商品链接'
-  if (activeMode.value === 'supplement') return '商品资料补充'
   if (activeMode.value === 'benefits') return '活动福利'
-  if (activeMode.value === 'knowledge') return '事实依据'
+  if (activeMode.value === 'plan_prompt') return '方案提示词'
   if (activeMode.value === 'memory') return '互动策略'
   if (activeMode.value === 'addressing') return '称呼策略'
   if (activeMode.value === 'plan') return '兼容方案列表'
@@ -5048,35 +4874,6 @@ function onPlanTestAssetsUpdated(event: Event) {
   void Promise.all([refreshFormalFacts(), refreshMemories(), contentPools.refresh(true)])
 }
 
-function startFormalFactEdit(item: LiveAgentPlanFact) {
-  if (!visibleFormalFacts.value.some(fact => fact.id === item.id)) resetFormalFactFilters()
-	creatingFormalFact.value = false
-  editingFormalFactId.value = item.id
-}
-
-function cancelFormalFactEdit() {
-  editingFormalFactId.value = null
-}
-
-// 内联编辑改成显式保存：右侧按钮在编辑态就是「保存」，
-// 编辑器只负责收集草稿，不再停止输入就自动提交（那样会拿半句话去触发事实审核）。
-const inlineFactEditors = new Map<number, { submit: () => Promise<void> }>()
-function setInlineFactEditor(id: number, el: unknown) {
-  if (el) inlineFactEditors.set(id, el as { submit: () => Promise<void> })
-  else inlineFactEditors.delete(id)
-}
-// 让模型从方案已有事实里找这条事实要对比的两个链接之间的差异。
-function analyzeInlineFactDiff(item: LiveAgentPlanFact) {
-  const planId = currentRoomPlanId.value
-  if (!planId) throw new Error('当前没有方案，请刷新后重试')
-  return analyzeLiveAgentPlanFactDiff(planId, item)
-}
-
-function submitInlineFact(item: LiveAgentPlanFact) {
-  const editor = inlineFactEditors.get(item.id)
-  if (editor) void editor.submit()
-}
-
 async function editRiskSource(payload: { sourceKey: string; text: string }) {
 	if (payload.sourceKey.startsWith('wheel/')) {
 		activeMode.value = 'fullshow'
@@ -5102,11 +4899,9 @@ async function editRiskSource(payload: { sourceKey: string; text: string }) {
 		document.querySelector('.strategy-workflow-content')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 		return
 	}
-	activeMode.value = 'knowledge'
-	const matched = formalFacts.value.find(item => text === item.value.trim() || text.includes(item.value.trim()) || item.value.includes(text))
-	if (matched) startFormalFactEdit(matched)
+	activeMode.value = 'plan_prompt'
 	await nextTick()
-	document.querySelector('.strategy-formal-facts')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+	document.querySelector('.plan-prompt-editor')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 function setFactRiskReviews(items: FactRiskReviewDisplay[]) {
@@ -5137,13 +4932,6 @@ watch([planTenantId, currentRoomPlanId], () => {
 	locatedFactRiskHash.value = ''
 	expandedFactRiskId.value = null
 })
-
-async function openFactRiskLocation() {
-	activeMode.value = 'knowledge'
-	const review = reviewsForArea(factRiskReviews.value, 'knowledge').find(item => item.status !== 'confirmed')
-	pendingRiskLocation.value = review ? { area: 'knowledge', claimHash: review.claim_sha256 } : null
-	await locatePendingRiskLocation()
-}
 
 function factRisksForFact(item: LiveAgentPlanFact) {
 	const value = item.value.trim()
@@ -5217,30 +5005,8 @@ async function editSourceRisk(review: RiskReview, area: RiskArea) {
 	}
 }
 
-function factRiskTone(item: LiveAgentPlanFact) {
-	const reviews = factRisksForFact(item)
-	if (!reviews.length) return ''
-	if (reviews.some(review => review.status !== 'confirmed' && review.severity === 'P0' && review.semantic_decision === 'hard')) return 'blocked'
-	if (reviews.some(review => review.status !== 'confirmed' && (review.severity === 'P1' || review.severity === 'P0'))) return 'decision'
-	if (reviews.some(review => review.status !== 'confirmed')) return 'decision'
-	return 'confirmed'
-}
-
-function factRiskToneLabel(item: LiveAgentPlanFact) {
-	switch (factRiskTone(item)) {
-	case 'blocked': return '禁止使用'
-	case 'decision': return '待确认'
-	case 'confirmed': return '用户已确认'
-	default: return ''
-	}
-}
-
 function factRiskNeedsEvidence(review: FactRiskReviewDisplay) {
 	return review.severity === 'P1' || review.severity === 'P0'
-}
-
-function factRiskCanConfirm(review: FactRiskReviewDisplay) {
-	return review.severity === 'P1' || review.severity === 'P2' || (review.severity === 'P0' && review.semantic_decision !== 'hard')
 }
 
 async function confirmInlineFactRisk(review: FactRiskReviewDisplay) {
@@ -5248,132 +5014,11 @@ async function confirmInlineFactRisk(review: FactRiskReviewDisplay) {
 	await factRiskController.value?.confirmReview(review, confirmation)
 }
 
-async function appealInlineFactRisk(review: FactRiskReviewDisplay) {
-	await factRiskController.value?.submitReviewAppeal(review, factRiskAppealDrafts.value[review.claim_sha256] || '')
-}
-
-function beginCreateFormalFact() {
-	if (creatingFormalFact.value || editingFormalFactId.value !== null || mutatingFormalFactId.value || factScopeSavingId.value !== null || !currentRoomPlanId.value || factCategoryState.loading || factCategoryState.error || !factCategoryState.items.some(item => item.value === 'other')) return
-	cancelFormalFactEdit()
-	resetFormalFactFilters()
-	creatingFormalFact.value = true
-	formalFactCreateGuidance.value = ''
-	formalFactCreateError.value = ''
-	formalFactCreateDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
-}
-
 function cancelCreateFormalFact() {
 	creatingFormalFact.value = false
 	formalFactCreateGuidance.value = ''
 	formalFactCreateError.value = ''
 	formalFactCreateDraft.value = { category: 'other', key: '', value: '', forbidden_wording: '', safe_rewrite: '' }
-}
-
-async function createFormalFact() {
-	const planId = currentRoomPlanId.value
-	if (!planId || !creatingFormalFact.value || mutatingFormalFactId.value || factScopeSavingId.value !== null) return
-	const sequence = factScopeSequence
-	const draft = formalFactCreateDraft.value
-	const tenantId = planTenantId.value
-	const current = () => sequence === factScopeSequence && creatingFormalFact.value && planId === currentRoomPlanId.value && tenantId === planTenantId.value && draft === formalFactCreateDraft.value
-	const createdFromWheelGap = Boolean(formalFactCreateGuidance.value)
-	const value = draft.value.trim()
-	if (!value) {
-		formalFactCreateError.value = '事实内容不能为空'
-		return
-	}
-	if (factCategoryState.loading || factCategoryState.error || !factCategoryState.items.some(item => item.value === draft.category)) { formalFactCreateError.value = '事实分类配置尚未就绪，请重新加载'; return }
-	mutatingFormalFactId.value = -1
-	formalFactReadSequence++
-	formalFactCreateError.value = ''
-	try {
-		const key = await formalFactName.ensure()
-		if (!current() || value !== draft.value.trim()) return
-		if (!key) throw new Error(formalFactName.error.value || '请填写事实名称')
-		const result = await adoptLiveAgentPlanFacts(
-			planId,
-			[{
-				category: draft.category,
-				key,
-				value,
-				forbidden_wording: '',
-				safe_rewrite: '',
-				status: 'pending',
-				review_bucket: 'adoptable',
-				source_quote: '',
-			}],
-			tenantId,
-			'manual:fact-editor',
-			{ suppressErrorDialog: true },
-		)
-		if (!current()) return
-		const outcome = result.results?.[0]
-		if (!outcome || !['adopted', 'unchanged'].includes(outcome.status)) {
-			throw new Error(outcome?.message || '事实未能保存，请核对内容后重试')
-		}
-		const saved = outcome.saved || outcome.existing
-		if (!saved || saved.id <= 0 || saved.plan_id !== planId || saved.tenant_id !== tenantId) throw new Error('未收到有效保存结果，请刷新核对后重试')
-		formalFactReadSequence++
-		formalFacts.value = formalFacts.value.some(item => item.id === saved.id)
-			? formalFacts.value.map(item => item.id === saved.id ? saved : item)
-			: [...formalFacts.value, saved]
-		cancelCreateFormalFact()
-		void nextTick(() => { if (sequence === factScopeSequence && activeMode.value === 'knowledge') formalFactAddButton.value?.focus({ preventScroll: true }) })
-		scriptNotice.value = createdFromWheelGap
-			? '补充事实已保存。返回“生成智能体”并重新初始化后，新事实才会进入卖点轮盘。'
-			: '事实已保存，审核模型已整理成四层表达，主线口播与互动回答会共同使用。'
-	} catch (err) {
-		if (current()) formalFactCreateError.value = err instanceof Error ? err.message : '新增事实依据失败'
-	} finally {
-		if (sequence === factScopeSequence && mutatingFormalFactId.value === -1) mutatingFormalFactId.value = null
-	}
-}
-
-async function saveInlineFormalFactValue(item: LiveAgentPlanFact, value: string): Promise<LiveAgentPlanFact> {
-  const planId = currentRoomPlanId.value
-  const sequence = factScopeSequence
-  const current = () => sequence === factScopeSequence && planId === currentRoomPlanId.value
-  if (!planId || item.plan_id !== planId || item.tenant_id !== planTenantId.value || editingFormalFactId.value !== item.id || mutatingFormalFactId.value || inlineFactSavingId.value !== null) throw new Error('当前方案或编辑状态已变化，请重新编辑')
-  if (!value.trim()) throw new Error('事实内容不能为空')
-  inlineFactSavingId.value = item.id
-  formalFactReadSequence++
-  try {
-    const updated = await updateLiveAgentPlanFact(planId, item.id, {
-      expected_version_no: item.version_no,
-      category: item.category,
-      key: item.key,
-      value: value.trim(),
-      forbidden_wording: '',
-      safe_rewrite: '',
-    }, item.tenant_id)
-    if (updated.id !== item.id || updated.plan_id !== item.plan_id || updated.tenant_id !== item.tenant_id || updated.version_no <= item.version_no) throw new Error('未收到有效保存结果，请刷新核对后重试')
-    if (current()) {
-      formalFactReadSequence++
-      formalFacts.value = formalFacts.value.map(fact => fact.id === item.id ? updated : fact)
-    }
-    return updated
-  } finally { if (current()) inlineFactSavingId.value = null }
-}
-
-async function deleteFormalFact(item: LiveAgentPlanFact) {
-  const planId = currentRoomPlanId.value
-  if (!planId || mutatingFormalFactId.value) return
-  if (!window.confirm('确定删除事实“' + item.key + '”吗？删除后直播智能体不会再使用它，历史版本仍保留。')) {
-    return
-  }
-  mutatingFormalFactId.value = item.id
-  settingsError.value = ''
-  try {
-    await deleteLiveAgentPlanFact(planId, item.id, planTenantId.value)
-    if (editingFormalFactId.value === item.id) cancelFormalFactEdit()
-    if (expandedFactRiskId.value === item.id) expandedFactRiskId.value = null
-    await refreshFormalFacts()
-    scriptNotice.value = '正式事实已删除；历史版本仍保留用于审计。'
-  } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '删除正式事实失败'
-  } finally {
-    mutatingFormalFactId.value = null
-  }
 }
 
 async function refreshFormalBenefits() {
@@ -6978,8 +6623,7 @@ onBeforeUnmount(() => {
         <div class="strategy-workflow-layout plan-configuration-layout" :class="'workflow-mode-' + activeMode">
           <PlanConfigurationNavigation
             :mode="activeMode" :product-risk-count="productRiskUnresolvedCount" :benefit-risk-count="benefitRiskUnresolvedCount"
-            :fact-risk-count="factRiskUnresolvedCount" :interaction-pending="interactionPendingCount"
-            :fact-risk-loading="factRiskNoticeState.loading" :fact-risk-error="factRiskNoticeState.error"
+            :interaction-pending="interactionPendingCount"
             @select-section="selectPlanConfigurationSection" @select-mode="selectPlanConfigurationMode"
           >
             <template #actions>
@@ -7021,7 +6665,7 @@ onBeforeUnmount(() => {
           :saving="planBusinessMode.saving.value" :error="planBusinessMode.error.value" :disabled="!currentPlan"
           @select="planBusinessMode.select" @select-industry="planBusinessMode.selectIndustry" @retry="planBusinessMode.load"
         />
-        <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="planTenantId" :visible="['knowledge','products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
+        <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="planTenantId" :visible="['products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
 
         <div
           v-if="activeMode === 'plan' || activeMode === 'basic' || activeMode === 'strategy' || activeMode === 'anchor'"
@@ -7064,10 +6708,6 @@ onBeforeUnmount(() => {
             {{ activeMode === 'strategy' && roomPolicyDraft?.conflicts?.length ? '存在冲突' : '发布兼容草稿' }}
           </button>
         </div>
-
-        <section v-show="activeMode === 'supplement'" class="strategy-v2-workspace strategy-product-supplement-workspace">
-          <ProductSupplementChat :plan-id="currentRoomPlanId || 0" :tenant-id="planTenantId" :room-id="0" :product-links="formalProductLinks" :business-label="supplementBusinessLabel" :industry-name="supplementIndustryName" @updated="onInteractionFactsUpdated" />
-        </section>
 
     <section v-if="activeMode === 'script'" class="strategy-v2-workspace strategy-script-workspace">
           <div class="strategy-v2-section-head">
@@ -7148,10 +6788,6 @@ onBeforeUnmount(() => {
                 <button type="button" @click="activeMode = 'benefits'">
                   <strong>{{ activityBenefits.length }}</strong>
                   <span>活动福利</span>
-                </button>
-                <button type="button" @click="activeMode = 'knowledge'">
-                  <strong>{{ currentAnalysis.facts.length }}</strong>
-                  <span>事实依据</span>
                 </button>
                 <button type="button" @click="activeMode = 'anchor'">
                   <strong>{{ currentAnalysis.anchor_style?.dimensions?.length || 0 }}</strong>
@@ -7393,160 +7029,6 @@ onBeforeUnmount(() => {
               </footer>
             </article>
           </div>
-        </section>
-
-        <section v-else-if="activeMode === 'knowledge'" class="strategy-v2-workspace">
-          <section class="strategy-formal-facts facts-panel-redesign">
-            <div v-if="factCategoryState.error" class="strategy-fact-category-error" role="alert">分类配置读取失败：{{ factCategoryState.error }}<button type="button" :disabled="factCategoryState.loading" @click="loadFactCategories({ planId: currentRoomPlanId, tenantId: planTenantId })">重新加载</button></div>
-            <div v-else-if="factCategoryState.loading && !factCategoryState.items.length" class="strategy-fact-category-loading" role="status">正在加载事实分类…</div>
-            <div class="formal-facts-hero">
-            <header class="strategy-formal-facts-head">
-              <div class="strategy-formal-facts-brand">
-                <i class="strategy-formal-facts-icon" aria-hidden="true"><svg viewBox="0 0 28 28"><path d="M7 3h10l5 5v17H7z"/><path d="M17 3v6h5M11 13h7M11 17h7M11 21h4"/></svg></i>
-                <div class="strategy-formal-facts-heading">
-                  <strong>当前方案已采纳事实</strong>
-                  <small>{{ currentPlan?.name || '未选择方案' }} · 共 {{ formalFacts.length }} 条<template v-if="factScopeFilter !== 'all' || factSearchTerm"> · 当前显示 {{ visibleFormalFacts.length }} 条</template></small>
-                </div>
-              </div>
-            </header>
-            <div class="formal-facts-hero-art" aria-hidden="true">
-              <i class="formal-facts-paper is-back"></i><i class="formal-facts-paper is-front"></i>
-              <i class="formal-facts-hero-check"><svg viewBox="0 0 40 40"><path d="m10 20 7 7 14-15" /></svg></i>
-              <span class="formal-facts-signature">让直播更简单</span>
-            </div>
-            <div class="formal-facts-toolbar">
-              <label class="formal-facts-filter-control"><span>归属范围</span>
-                <select v-model="factScopeFilter" class="strategy-fact-scope-filter" aria-label="按归属范围筛选事实" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId">
-                  <option v-for="option in factScopeFilterOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                </select>
-              </label>
-              <div class="formal-facts-search">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5"/></svg>
-                <input v-model="factSearchQuery" type="search" aria-label="搜索事实内容" placeholder="搜索事实内容…" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId" />
-                <button v-if="factSearchQuery" type="button" aria-label="清空事实搜索" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId" @click="factSearchQuery = ''">×</button>
-              </div>
-            </div>
-            </div>
-
-            <FactSpeechPreviewDialog v-if="previewingFormalFact && currentRoomPlanId" :fact="previewingFormalFact" :plan-id="currentRoomPlanId" :room-id="0" :tenant-id="planTenantId" @close="previewingFormalFact = null" />
-
-            <div v-if="!formalFacts.length && !creatingFormalFact" class="strategy-v2-empty strategy-formal-facts-empty">
-              <strong>当前方案还没有正式事实</strong>
-              <span>点击下方“添加事实依据”录入真实内容。</span>
-            </div>
-
-            <div v-else class="strategy-formal-facts-layout">
-              <div class="strategy-formal-facts-main">
-                <div class="strategy-formal-facts-table-wrap">
-              <table class="strategy-formal-facts-table">
-                <colgroup><col class="strategy-formal-fact-number-column" /><col class="strategy-formal-fact-type-column" /><col class="strategy-formal-fact-scope-column" /><col /><col class="strategy-formal-fact-status-column" /><col class="strategy-formal-fact-actions-column" /></colgroup>
-                <thead>
-                  <tr>
-                    <th class="strategy-formal-fact-number-cell" scope="col">序号</th>
-                    <th scope="col">事实类型</th>
-                    <th scope="col" :aria-sort="factScopeSortOrder">
-                      <button type="button" class="strategy-fact-scope-sort" :class="{ 'is-sorted': factScopeSortOrder !== 'none' }" :disabled="creatingFormalFact || editingFormalFactId !== null || factScopeSavingId !== null || !!mutatingFormalFactId" :aria-label="'归属范围：' + factScopeSortHint" :title="factScopeSortHint" @click="cycleFactScopeSort">
-                        归属范围
-                        <svg viewBox="0 0 16 20" aria-hidden="true"><path d="m3 7 5-5 5 5" :class="{ active: factScopeSortOrder === 'ascending' }"/><path d="m3 13 5 5 5-5" :class="{ active: factScopeSortOrder === 'descending' }"/></svg>
-                      </button>
-                    </th>
-                    <th scope="col">事实内容</th>
-                    <th scope="col">状态</th>
-                    <th scope="col">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <template v-for="(item, index) in visibleFormalFacts" :key="item.id">
-                  <tr :data-formal-fact-id="item.id" tabindex="-1" :class="['fact-row-tone-' + index % 4, factRiskTone(item) ? 'has-fact-risk risk-' + factRiskTone(item) : '', { 'is-striped-formal-fact': index % 2 === 1, 'is-wording-open': expandedFactRiskId === item.id && editingFormalFactId !== item.id }]">
-                    <td class="strategy-formal-fact-number-cell"><span class="formal-fact-number-pill">{{ index + 1 }}</span></td>
-                    <td class="strategy-formal-fact-type-cell"><FormalFactTypeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factCategorySavingId !== null || item.plan_id !== currentRoomPlanId" :suggestion="factTypeSuggestionMap[item.id] || null" :save="saveFormalFactCategory" /></td>
-                    <td class="strategy-formal-fact-scope-cell"><FormalFactScopeSelect :key="currentRoomPlanId + ':' + item.id" :fact="item" :products="formalProductLinks" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || item.plan_id !== currentRoomPlanId" :save="saveFormalFactScope" /></td>
-                      <td class="strategy-formal-fact-value" @contextmenu="openFactTypeMenu($event, item)">
-                        <InlineFormalFactEditor v-if="editingFormalFactId === item.id" :key="currentRoomPlanId + ':' + item.id" :ref="el => setInlineFactEditor(item.id, el)" :fact="item" :save="saveInlineFormalFactValue" :analyze="analyzeInlineFactDiff" @done="cancelFormalFactEdit" />
-                        <div v-else class="strategy-formal-fact-value-body">
-                          <span class="strategy-formal-fact-value-text">{{ item.value }}</span>
-                          <div v-if="item.conflict_warning?.detected" class="strategy-fact-conflict-warning" role="alert">
-                            <strong>⚠ 可能存在矛盾：</strong>{{ item.conflict_warning.conflict || '该事实与现有事实或商品卡存在语义冲突' }}
-                            <template v-if="item.conflict_warning.suggestion"><br /><strong>建议修改：</strong>{{ item.conflict_warning.suggestion }}</template>
-                            <template v-if="item.conflict_warning.related_facts?.length"><br /><strong>相关事实：</strong>{{ item.conflict_warning.related_facts.join('、') }}</template>
-                          </div>
-                        </div>
-                      </td>
-                      <td class="strategy-formal-fact-status-cell">
-                        <span v-if="editingFormalFactId === item.id" class="formal-fact-neutral-status">编辑中</span>
-                        <div v-else class="formal-fact-status-stack">
-                          <button v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim()" type="button" class="strategy-formal-fact-wording-toggle" :class="{ 'is-reference': !item.forbidden_wording?.trim() }" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><span aria-hidden="true">{{ item.forbidden_wording?.trim() ? '!' : '✓' }}</span>{{ item.forbidden_wording?.trim() ? '有表达提醒' : '有参考表达' }}</button>
-                        <button v-if="editingFormalFactId !== item.id && factRiskTone(item)" type="button" class="strategy-fact-risk-badge" :class="'is-' + factRiskTone(item)" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id">{{ factRiskToneLabel(item) }}</button>
-                          <span v-if="!item.forbidden_wording?.trim() && !item.safe_rewrite?.trim() && !factRiskTone(item)" class="formal-fact-neutral-status">已采纳</span>
-                        </div>
-                      </td>
-                      <td>
-                        <div class="strategy-formal-fact-operation">
-                        <div class="strategy-formal-fact-actions">
-                          <button type="button" class="is-preview" :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null || !currentRoomPlanId" @click="previewFormalFact(item)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v13H8l-5 4V4Z"/><path d="m10 7 5 3-5 3Z"/></svg>话术预览</button>
-                          <button
-                            type="button"
-                            :class="{ 'is-inline-save': editingFormalFactId === item.id }"
-                            :disabled="creatingFormalFact || (editingFormalFactId !== null && editingFormalFactId !== item.id) || !!mutatingFormalFactId || factScopeSavingId !== null"
-                            @click="editingFormalFactId === item.id ? submitInlineFact(item) : startFormalFactEdit(item)"
-                          >
-                            <svg v-if="editingFormalFactId === item.id" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7" /></svg>
-                            <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg>{{ editingFormalFactId === item.id ? '保存' : '修改' }}
-                          </button>
-                          <button
-                            class="is-danger"
-                            type="button"
-                            :disabled="creatingFormalFact || editingFormalFactId !== null || !!mutatingFormalFactId || factScopeSavingId !== null"
-                            @click="deleteFormalFact(item)"
-                          >
-                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/></svg>删除
-                          </button>
-                        </div>
-                        <button v-if="item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length" type="button" class="strategy-formal-fact-expand" :aria-label="(expandedFactRiskId === item.id ? '收起' : '展开') + '“' + item.key + '”的表达说明'" :aria-expanded="expandedFactRiskId === item.id" :aria-controls="'formal-fact-detail-' + item.id" @click="expandedFactRiskId = expandedFactRiskId === item.id ? null : item.id"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button>
-                        </div>
-                      </td>
-                  </tr>
-                                    <tr v-if="expandedFactRiskId === item.id && (item.forbidden_wording?.trim() || item.safe_rewrite?.trim() || factRisksForFact(item).length)" :id="'formal-fact-detail-' + item.id" class="strategy-fact-risk-detail-row">
-                    <td colspan="6">
-                      <div class="strategy-formal-fact-expanded">
-                        <div v-if="factFourLayers(item).length" class="strategy-fact-four-layer-grid">
-                          <article v-for="layer in factFourLayers(item)" :key="item.id + ':' + layer.title" class="strategy-fact-four-layer-card" :class="'is-' + factLayerTone(layer.title)">
-                            <header><strong>【{{ layer.title }}】</strong><span>{{ factLayerLabel(layer.title) }}</span></header>
-                            <p>{{ layer.content }}</p>
-                          </article>
-                        </div>
-                      <div v-if="factRisksForFact(item).length" class="strategy-fact-risk-inline">
-                        <p v-if="factRiskNoticeState.error" class="is-error" role="alert">{{ factRiskNoticeState.error }}</p>
-                        <article v-for="review in factRisksForFact(item)" :key="review.claim_sha256" :data-fact-risk-hash="review.claim_sha256" tabindex="-1" :class="['is-' + factRiskTone(item), { 'is-risk-located': locatedFactRiskHash === review.claim_sha256 }]">
-                          <header><strong>{{ review.status === 'confirmed' ? '已确认' : factRiskToneLabel(item) }}</strong><small>{{ review.rule_id }}</small></header>
-                          <p>{{ review.reason }}</p>
-                          <p v-if="review.status === 'confirmed'" class="is-confirmed">确认记录：{{ review.evidence }}<template v-if="review.confirmed_at"> · {{ new Date(review.confirmed_at).toLocaleString('zh-CN', { hour12: false }) }}</template></p>
-                          <template v-else-if="factRiskCanConfirm(review) && session.bootstrap?.actor.role === 'customer'">
-                            <p class="is-notice">系统提示这条内容可能存在风险。确认表示你已知晓提示、认可内容真实，并同意它在当前直播间的当前方案中使用。</p>
-                            <div class="strategy-fact-risk-inline-actions"><button type="button" @click="startFormalFactEdit(item); expandedFactRiskId = null">修改事实</button><button class="primary-button" type="button" :disabled="factRiskNoticeState.loading" @click="confirmInlineFactRisk(review)">我已知晓并确认</button></div>
-                          </template>
-                          <template v-else-if="review.severity === 'P0' && session.bootstrap?.actor.role === 'customer'">
-                            <p class="is-blocked">该项不能直接放行，请修改事实或申请后台复核。</p>
-                            <textarea v-if="review.appeal_status !== 'pending'" v-model="factRiskAppealDrafts[review.claim_sha256]" maxlength="2000"></textarea>
-                            <div class="strategy-fact-risk-inline-actions"><button type="button" @click="startFormalFactEdit(item); expandedFactRiskId = null">修改事实</button><button v-if="review.appeal_status !== 'pending'" type="button" :disabled="factRiskNoticeState.loading || !(factRiskAppealDrafts[review.claim_sha256] || '').trim()" @click="appealInlineFactRisk(review)">申请后台复核</button><span v-else>后台复核申请已提交</span></div>
-                          </template>
-                        </article>
-                      </div>
-                      </div>
-                    </td>
-                  </tr>
-                  </template>
-                  <tr v-if="!visibleFormalFacts.length && !creatingFormalFact" class="strategy-formal-fact-filter-empty"><td colspan="6">暂无符合筛选条件的事实</td></tr>
-                  <InlineFormalFactCreateRow v-if="creatingFormalFact" :key="'create:' + factScopeSequence" v-model="formalFactCreateDraft" :number="visibleFormalFacts.length + 1" :saving="mutatingFormalFactId === -1" :name-loading="formalFactName.loading.value" :name-error="formalFactName.error.value" :error="formalFactCreateError" :guidance="formalFactCreateGuidance" @changed="formalFactCreateError = ''" @name-edited="formalFactName.edited" @save="createFormalFact" @close="cancelCreateFormalFact" />
-                </tbody>
-              </table>
-                </div>
-              </div>
-            </div>
-            <div class="strategy-formal-facts-add">
-              <button ref="formalFactAddButton" class="primary-button" type="button" :disabled="creatingFormalFact || editingFormalFactId !== null || !currentPlan || !!mutatingFormalFactId || factScopeSavingId !== null || !factCategoryState.items.length || factCategoryState.loading || !!factCategoryState.error" @click="beginCreateFormalFact">＋ 添加事实依据</button>
-            </div>
-          </section>
         </section>
 
         <section v-else-if="activeMode === 'plan_prompt'" class="strategy-v2-workspace">
@@ -8567,9 +8049,6 @@ onBeforeUnmount(() => {
               </header>
 
               <div class="strategy-fullshow-source-cards">
-                <button type="button" @click="activeMode = 'knowledge'">
-                  <span>正式事实</span><strong>{{ fullShowSourceSummary.facts }}</strong><small>只使用已明确采纳的事实</small>
-                </button>
                 <button type="button" @click="activeMode = 'products'">
                   <span>商品链接</span><strong>{{ fullShowSourceSummary.products }}</strong><small>链接与商品信息不允许串号</small>
                 </button>
@@ -9292,22 +8771,6 @@ onBeforeUnmount(() => {
     </section>
   </div>
 
-  <Teleport to="body">
-    <div
-      v-if="factTypeMenu.fact"
-      class="strategy-fact-type-menu-layer"
-      @mousedown.self="closeFactTypeMenu"
-      @contextmenu.prevent
-    >
-      <div class="strategy-fact-type-menu" :style="{ left: factTypeMenu.x + 'px', top: factTypeMenu.y + 'px' }" @mousedown.stop>
-        <button type="button" :disabled="factTypeSuggestingId !== null" @click="suggestFactTypeForFact(factTypeMenu.fact!)">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4 4 4 0 0 0-1 7.87V17a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-2.13A4 4 0 0 0 16 7a4 4 0 0 0-4-4Z"/><path d="M9 21h6"/></svg>
-          <strong>{{ factTypeSuggestingId !== null ? '分析中…' : '建议分类' }}</strong>
-        </button>
-        <small>系统按事实内容自动判断最贴切的类型</small>
-      </div>
-    </div>
-  </Teleport>
 </template>
 
 <style scoped>
