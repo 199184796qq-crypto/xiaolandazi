@@ -184,6 +184,8 @@ func (w *Worker) generateInteractionV2(ctx context.Context, session model.LiveRu
 	item.SelectedInterrupt = "hard_cut"
 	item.BridgeText = ""
 	item.AppliedStrategyStages = []string{"plan_prompt_body_ready", "late_address", "address_join"}
+	// The existing order decision controls a real bell joined after TTS.
+	w.markOrderBell(item, e.Intent.Type)
 	address := w.v2Address(ctx, session, item, snapshot)
 	text, err := interactionplan.Join(ctx, snapshot, address, e.Body, complete)
 	if err != nil {

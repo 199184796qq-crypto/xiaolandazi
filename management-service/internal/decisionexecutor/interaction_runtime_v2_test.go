@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"livecompanion/management/internal/interactionplan"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/ttsgateway"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,9 @@ func v2Fixture(t *testing.T, id int64) (*Worker, *v2Store, *fakeCore, *fakeAgent
 	agent := &fakeAgent{}
 	tts := &fakeTTS{}
 	worker := New(store, core, agent, tts)
+	worker.orderAudioComposer = func(context.Context, string) (ttsgateway.OrderBellAudio, error) {
+		return ttsgateway.OrderBellAudio{}, ttsgateway.ErrOrderBellMissing
+	}
 	session := model.LiveRuntimeSession{ID: id, TenantID: 7, RoomID: 11, Status: "running"}
 	snapshot, err := interactionplan.Freeze(context.Background(), store, session)
 	if err != nil {

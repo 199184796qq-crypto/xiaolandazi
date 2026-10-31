@@ -33,6 +33,7 @@ import (
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/interactionpurpose"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/orderbell"
 	"livecompanion/management/internal/semantic"
 	"livecompanion/management/internal/speechmission"
 	"livecompanion/management/internal/ttsgateway"
@@ -125,6 +126,8 @@ type Worker struct {
 	nicknameRulesOnce    sync.Once
 	nicknameRulesValue   *addressing.Rules
 	nicknameRandSeed     int64
+	orderGuard           *orderbell.Guard
+	orderAudioComposer   func(context.Context, string) (ttsgateway.OrderBellAudio, error)
 	recentPhrases        map[int64][]string
 	readingRules         map[string]readingRulesCacheEntry
 	benefitRedis         *redis.Client
@@ -132,6 +135,7 @@ type Worker struct {
 }
 
 type decisionItem struct {
+	OrderBell           bool                       `json:"-"`
 	BusinessCoreOnly    bool                       `json:"-"`
 	RecentAnswers       []InteractionRecentAnswer  `json:"-"`
 	PreparationCutPlans json.RawMessage            `json:"-"`
@@ -1380,6 +1384,14 @@ func (w *Worker) reconcileRoomMission(ctx context.Context, session model.LiveRun
 	}
 }
 
+// orderBell 返回进程内共享的下单去重器。
+func (w *Worker) orderBell() *orderbell.Guard {
+	if w.orderGuard == nil {
+		w.orderGuard = orderbell.NewGuard()
+	}
+	return w.orderGuard
+}
+
 func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSession) (resultErr error) {
 	ctx = agentgateway.WithRoomModelScope(ctx, agentgateway.RoomModelScope{TenantID: session.TenantID, RoomID: session.RoomID, RuntimeID: session.ID, RequireLease: true})
 	w.reconcileRoomMission(ctx, session)
@@ -1645,6 +1657,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if latestScope != preparationScope {
 		return fmt.Errorf("商品事实、方案或播出规则已变化，撤销旧声音并重新排队")
 	}
+	audio.AudioURL = w.prependOrderBell(ctx, item, audio.AudioURL)
 	err = w.dispatchPreparedInteraction(ctx, session, item, text, audio.AudioURL, preparationScope, memoryNow, w.now().Add(preparedInteractionTTL))
 	if errors.Is(err, errPreparedInteractionWaiting) {
 		reschedule = true

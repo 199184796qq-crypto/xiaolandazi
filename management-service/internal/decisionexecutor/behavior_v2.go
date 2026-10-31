@@ -82,6 +82,9 @@ func (w *Worker) generateBehaviorTemplate(ctx context.Context, session model.Liv
 	if err = interactionplan.Validate(s, text); err != nil {
 		return "", err
 	}
+	if kind == "order" {
+		w.markConfirmedOrderBell(item)
+	}
 	item.EmotionDisabled = true
 	item.SelectedResume = "DIRECT"
 	item.SelectedInterrupt = "hard_cut"
