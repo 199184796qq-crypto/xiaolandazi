@@ -155,6 +155,59 @@ func TestBatchPrioritySelectionAndAdmissionTTL50(t *testing.T) {
 	}
 }
 
+func TestBatchReadyQuestionsPreferLatestWithinSamePriority(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		oldAt, newAt     time.Duration
+		newArrivedFirst  bool
+		oldType, newType string
+		oldHint, newHint string
+		want             string
+	}{
+		{"latest event beats reply history expiry and arrival order", 0, 45 * time.Second, true, "提问", "提问", "普通", "普通", "new"},
+		{"equal event time prefers latest arrival", 45 * time.Second, 45 * time.Second, false, "提问", "提问", "普通", "普通", "new"},
+		{"business class still outranks freshness", 0, 45 * time.Second, false, "投诉", "提问", "普通", "紧急", "old"},
+		{"reasoned urgency still outranks freshness", 0, 45 * time.Second, false, "提问", "提问", "较高", "普通", "old"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := New()
+			s := scope(29)
+			e.SetPolicy(s, Policy{Active: true}, base)
+			arrival := base.Add(45 * time.Second)
+			older := Event{ID: "old", UID: "old", Name: "old", Kind: "chat", Text: "之前的问题", At: base.Add(tc.oldAt)}
+			newer := Event{ID: "new", UID: "new", Name: "new", Kind: "chat", Text: "刚刚的问题", At: base.Add(tc.newAt)}
+			if tc.newArrivedFirst {
+				e.Add(s, newer, arrival)
+				e.Add(s, older, arrival)
+			} else {
+				e.Add(s, older, arrival)
+				e.Add(s, newer, arrival)
+			}
+			at := base.Add(50 * time.Second)
+			batches := e.Batches(at, 1)
+			if len(batches) != 1 || len(batches[0].Works) != 2 {
+				t.Fatal("expected two independently prepared people", batches)
+			}
+			for _, w := range batches[0].Works {
+				typeName, hint := tc.newType, tc.newHint
+				if w.People[0].UID == "old" {
+					typeName, hint = tc.oldType, tc.oldHint
+				}
+				if !e.Accept(w, Content{Body: "回答。", Intent: Intent{Relevant: true, Question: true, Type: typeName, Priority: hint, PriorityReason: "内容原因"}}, nil, at) {
+					t.Fatal("could not prepare answer", w)
+				}
+			}
+			// The older user has never been answered. This must not displace a
+			// fresher equal-priority question from a recently answered user.
+			e.rooms[s.Room].Responded = map[string]time.Time{"new": at.Add(-time.Second)}
+			selected := e.Select(s, at)
+			if selected == nil || len(selected.Work.People) != 1 || selected.Work.People[0].UID != tc.want {
+				t.Fatalf("want %s, got %+v", tc.want, selected)
+			}
+		})
+	}
+}
+
 func TestBatchQuotaBoundariesUseDistinctUsersAndPlaybackStarts(t *testing.T) {
 	for _, tc := range []struct {
 		n      int

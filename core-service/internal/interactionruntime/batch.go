@@ -141,6 +141,14 @@ func sortReady(r *room, ts []*Task) {
 		if contentPriority(a) != contentPriority(b) {
 			return contentPriority(a) > contentPriority(b)
 		}
+		// Equal-priority questions follow the freshest original message, not
+		// the oldest unanswered viewer or the nearest candidate expiry.
+		if semanticKind(a.Work.Kind) && semanticKind(b.Work.Kind) {
+			if !a.Work.At.Equal(b.Work.At) {
+				return a.Work.At.After(b.Work.At)
+			}
+			return a.Work.Sequence > b.Work.Sequence
+		}
 		last := func(t *Task) time.Time {
 			if len(t.Work.People) == 1 {
 				return r.Responded[t.Work.People[0].UID]
