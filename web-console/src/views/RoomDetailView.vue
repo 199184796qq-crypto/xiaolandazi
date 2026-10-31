@@ -1639,29 +1639,45 @@ function agentDecisionExpiryText(expiresAt: string) {
   return String(minutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0')
 }
 
+const interactionMissionLabels: Record<string, string> = {
+  welcome_named: '点名欢迎',
+  welcome_batch: '批量欢迎',
+  reply_question: '问题回答',
+  reply_chat: '弹幕互动',
+  reply_follow: '回应关注',
+  reply_like: '回应点赞',
+  reply_gift: '回应礼物',
+  conversion_signal: '下单感谢',
+  complaint: '投诉处理',
+  warmup: '暖场引导',
+  time_report: '自然报时',
+}
+
+function interactionTitleLabel(title?: string, missionKind?: string) {
+  const text = String(title || '').trim()
+  const generatedKind = /^互动\s*[·・:：]\s*([a-z][a-z0-9_-]*)$/i.exec(text)?.[1]?.toLowerCase()
+  if (generatedKind) {
+    const label = interactionMissionLabels[generatedKind] || interactionMissionLabels[String(missionKind || '').trim().toLowerCase()] || '互动任务'
+    return '互动 · ' + label
+  }
+  return interactionMissionLabels[text.toLowerCase()] || text || interactionMissionLabels[String(missionKind || '').trim().toLowerCase()] || '互动任务'
+}
+
 function interactionExecutionTypeLabel(item: AgentDecisionItem) {
   if (item.manual_action === 'quick') return '人工抢答'
   if (item.manual_action === 'answer' || item.sources?.includes('manual')) return '人工回答'
-  const kind = String(item.mission_kind || '').toLowerCase()
-  const labels: Record<string, string> = {
-    welcome_named: '点名欢迎',
-    welcome_batch: '批量欢迎',
-    reply_chat: '弹幕互动',
-    reply_follow: '回应关注',
-    reply_like: '回应点赞',
-    reply_gift: '回应礼物',
-  }
-  if (labels[kind]) return labels[kind]
+  const kind = String(item.mission_kind || '').trim().toLowerCase()
+  if (interactionMissionLabels[kind]) return interactionMissionLabels[kind]
   const topic = String(item.topic || '').toLowerCase()
   if (topic.includes('question') || topic.includes('问题')) return '问题回答'
-  return item.title || '互动任务'
+  return interactionTitleLabel(item.title, kind)
 }
 
 function interactionExecutionDetail(item: AgentDecisionItem) {
   const questions = Array.isArray(item.sample_questions)
     ? [...new Set(item.sample_questions.filter((text) => typeof text === 'string').map((text) => text.trim()).filter(Boolean))]
     : []
-  return questions.join('\n') || item.summary || item.reply_hint || item.title || '等待执行'
+  return questions.join('\n') || item.summary || item.reply_hint || interactionTitleLabel(item.title, item.mission_kind)
 }
 
 function compactInteractionTitle(value: unknown, limit = 22) {
@@ -5473,7 +5489,7 @@ onBeforeUnmount(() => {
                     <span class="interaction-execution-type">{{ interactionExecutionTypeLabel(item) }}</span>
                     <time>{{ formatTime(item.created_at) }}</time>
                   </header>
-                  <strong>{{ item.title || interactionExecutionTypeLabel(item) }}</strong>
+                  <strong>{{ interactionTitleLabel(item.title, item.mission_kind) }}</strong>
                   <p>{{ interactionExecutionDetail(item) }}</p>
                   <div class="interaction-execution-meta">
                     <span v-if="item.nicknames?.length">对象 {{ item.nicknames.slice(0, 3).join('、') }}</span>
@@ -5749,7 +5765,7 @@ onBeforeUnmount(() => {
                     <span class="agent-source-badge">{{ agentDecisionSourceLabel(item) }}</span>
                     <b>#{{ index + 1 }} · {{ agentDecisionPriorityLabel(item) }}</b>
                   </header>
-                  <strong>{{ item.title }}</strong>
+                  <strong>{{ interactionTitleLabel(item.title, item.mission_kind) }}</strong>
                   <p class="interaction-original-content">{{ interactionExecutionDetail(item) }}</p>
                   <footer>
                     <span v-if="item.merged_count > 1">已融合 {{ item.merged_count }} 条</span>
@@ -5761,7 +5777,7 @@ onBeforeUnmount(() => {
               <div v-if="agentDecisionState?.recently_answered?.length" class="agent-cooldown-strip">
                 <span>刚回答</span>
                 <b v-for="item in agentDecisionState.recently_answered.slice(0, 3)" :key="item.topic">
-                  {{ item.title }}<em v-if="item.accumulated"> +{{ item.accumulated }}</em>
+                  {{ interactionTitleLabel(item.title) }}<em v-if="item.accumulated"> +{{ item.accumulated }}</em>
                 </b>
               </div>
             </div>
@@ -6295,7 +6311,7 @@ onBeforeUnmount(() => {
         :style="{ left: agentDecisionContextMenu.x + 'px', top: agentDecisionContextMenu.y + 'px' }"
         @click.stop
       >
-        <span>{{ agentDecisionContextMenu.item.title || '待打断任务' }}</span>
+        <span>{{ interactionTitleLabel(agentDecisionContextMenu.item.title, agentDecisionContextMenu.item.mission_kind) }}</span>
         <button
           type="button"
           :disabled="agentDecisionRemoveBusy === agentDecisionContextMenu.item.id"
