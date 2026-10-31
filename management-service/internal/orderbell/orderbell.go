@@ -1,8 +1,8 @@
 // Package orderbell 判定一次互动算不算真下单，并给出打铃所需的决定。
 //
-// 设计见 docs/2026-10-31-下单行为器设计.md：
-//   - 语义回执里类型为「下单意向」即真下单；
-//   - 「催单」是售后，不打铃；
+// 只有观众原话通过与Core一致的完成短语核对才确认下单，模型标签不能
+// 直接证明或否决下单。已验证的程序行为模板另走DecideConfirmed。
+//   - 下单、催单、闲聊等标签均核对原话；
 //   - 同一用户同一口味 5 分钟内只打一次铃。
 package orderbell
 
@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // Kind 是可识别的下单类型。
@@ -37,23 +38,32 @@ var orderWords = []string{
 	"已买", "已经买", "买了", "买好了", "买好啦", "买好咯", "买下了",
 	"已购买", "已经购买", "购买了", "购买成功",
 	"已付款", "已经付款", "付款了", "付好了", "已支付", "已经支付", "支付成功",
+	"刚付完钱", "刚付完款", "刚结完账", "付完钱了", "付完款了", "结完账了", "已结账", "已经结账", "结账了",
 }
 
 // negateWords 表示原话并不是“已经下单”，不能据此打铃。
 var negateWords = []string{
 	"不买", "不拍", "不下单", "不付款", "不想买", "不想拍", "不想下单",
+	"不能买", "不能拍", "不会买", "不会拍", "不敢买", "不敢拍",
+	"拍卖", "投诉", "售后", "破损", "坏了", "坏的", "发臭", "变质", "过期", "少发", "发错", "漏发", "难吃", "不好", "差评", "被骗", "假货", "翻车",
 	"买不", "拍不", "会不会", "好不好", "是不是", "要不要", "有没有",
 	"如果", "假如", "要是", "准备", "打算", "想买", "想拍", "想下单",
-	"等会", "待会", "下次", "上次", "之前", "以前", "昨天", "前天",
+	"等会", "待会", "下次", "上次", "之前", "以前", "昨天", "前天", "去年",
 	"买过", "拍过", "取消", "退款", "退货", "退了", "失败",
 	"照片", "视频", "拍照", "截图", "你买", "你拍", "他买", "他拍", "她买", "她拍",
 	"别人", "朋友买", "朋友拍", "有人", "不是我",
+	"你付", "他付", "她付", "朋友付", "你结", "他结", "她结", "朋友结",
 }
 
 // Ordered 判断原话是否明确表达了“已经下单”。类型判成催单也要看这一条。
 func Ordered(text string) bool {
-	text = strings.TrimSpace(text)
-	if text == "" {
+	text = strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, strings.ToLower(text))
+	if text == "" || strings.ContainsAny(text, "没未吗么?？") {
 		return false
 	}
 	for _, word := range negateWords {
@@ -69,12 +79,8 @@ func Ordered(text string) bool {
 	return false
 }
 
-// Detect 判断这条互动是否属于下单：类型是下单意向，或原话明确说了已下单。
-// 不能只看类型——催单里也可能夹着“我拍了”。
-func Detect(intentType, text string) bool {
-	if strings.TrimSpace(intentType) == TypeOrder {
-		return true
-	}
+// Detect只核对原话；保留类型参数以兼容调用者，但类型本身不构成证据。
+func Detect(_ string, text string) bool {
 	return Ordered(text)
 }
 
@@ -129,6 +135,16 @@ func (g *Guard) Decide(intentType, text, key string) Decision {
 	if !Detect(intentType, text) {
 		return Decision{}
 	}
+	return g.decideConfirmed(text, key)
+}
+
+// DecideConfirmed仅供已经核验场次、人数与标准正文的程序下单模板使用。
+// 群体数量补报可能不再携带个人原话，不能用模型标签冒充这一证明。
+func (g *Guard) DecideConfirmed(text, key string) Decision {
+	return g.decideConfirmed(text, key)
+}
+
+func (g *Guard) decideConfirmed(text, key string) Decision {
 	flavor := Flavor(text)
 	if g == nil {
 		return Decision{IsOrder: true, Ring: true, Flavor: flavor, Phrase: Phrase(flavor, "")}

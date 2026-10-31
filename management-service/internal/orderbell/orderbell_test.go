@@ -6,8 +6,8 @@ import (
 )
 
 func TestDetect(t *testing.T) {
-	if !Detect("下单意向", "") {
-		t.Fatal("下单意向应算下单")
+	if Detect("下单意向", "") {
+		t.Fatal("模型标签不能代替原话下单证据")
 	}
 	// 催单里夹着「我拍了」，也算真下单。
 	if !Detect("催单", "我拍了五香，多久发") {
@@ -34,10 +34,10 @@ func TestDetect(t *testing.T) {
 
 func TestFlavorAndPhrase(t *testing.T) {
 	cases := map[string]string{
-		"拍了五香":   "五香",
+		"拍了五香":    "五香",
 		"我要两斤麻辣的": "麻辣",
-		"拍了":     "",
-		"你好":     "",
+		"拍了":      "",
+		"你好":      "",
 	}
 	for text, want := range cases {
 		if got := Flavor(text); got != want {
