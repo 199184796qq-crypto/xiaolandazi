@@ -72,6 +72,9 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 	if err := ValidateBatch(items); err != nil {
 		return BatchResult{}, err
 	}
+	if result, handled, err := generateBehaviorBatch(ctx, s, items); handled {
+		return result, err
+	}
 	if complete == nil {
 		return BatchResult{}, errors.New("互动模型未配置")
 	}

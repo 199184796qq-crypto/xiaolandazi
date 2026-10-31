@@ -18,6 +18,7 @@ type preparedBatchItemV2 struct {
 	Err     error
 }
 type prepareInputV2 struct {
+	Template        string                              `json:"template,omitempty"`
 	Protocol        string                              `json:"protocol"`
 	Task            string                              `json:"task"`
 	Epoch           string                              `json:"epoch"`
@@ -51,6 +52,7 @@ func (h HTTPPurposeResolver) prepareBatchV2(ctx context.Context, batch interacti
 		}
 		seen[w.ID] = true
 		items[i] = prepareInputV2{Protocol: interactionruntime.Protocol, Task: w.ID, Epoch: w.Scope.Epoch, Revision: w.Revision, Tenant: w.Scope.Tenant, Room: w.Scope.Room, Plan: w.Scope.Plan, Kind: w.Kind, Text: w.Text, Original: w.Original, Clarification: w.Clarification, Recent: w.Recent, Context: w.Context, Mainline: w.Mainline, EngagementToken: w.EngagementToken, Count: w.Count, AllowClarify: w.AllowClarify, Expires: w.Expires}
+		items[i].Template = w.Template
 	}
 	payload := struct {
 		Protocol string           `json:"protocol"`
@@ -137,6 +139,8 @@ func (h HTTPPurposeResolver) prepareBatchV2(ctx context.Context, batch interacti
 			continue
 		}
 		var e struct {
+			Template                    string `json:"template"`
+			EventCount                  int    `json:"event_count"`
 			Protocol, Task, Epoch, Body string
 			Revision                    uint64
 			Tenant                      int64                     `json:"tenant_id"`
@@ -148,6 +152,10 @@ func (h HTTPPurposeResolver) prepareBatchV2(ctx context.Context, batch interacti
 		w := batch.Works[i]
 		if json.Unmarshal(result.Knowledge, &e) != nil || e.Protocol != interactionruntime.Protocol || e.Task != w.ID || e.Revision != w.Revision || e.Epoch != w.Scope.Epoch || e.Tenant != w.Scope.Tenant || e.Room != w.Scope.Room || e.Plan != w.Scope.Plan || !e.Expires.Equal(w.Expires) {
 			out[i].Err = fmt.Errorf("interaction result identity changed")
+			continue
+		}
+		if e.Template != w.Template || (w.Template != "" && e.EventCount != w.Count) {
+			out[i].Err = fmt.Errorf("interaction template identity changed")
 			continue
 		}
 		out[i] = preparedBatchItemV2{Content: interactionruntime.Content{Body: e.Body, Intent: e.Intent, Knowledge: result.Knowledge}}

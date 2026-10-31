@@ -1077,7 +1077,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		cutMS := 0
 		exists := false
 		cutAction := input.Action
-		if interruptStrategy == "hard_cut" {
+		if interruptStrategy == "hard_cut" || readyWelcomeItem(*decision) {
 			cutAction = "quick"
 		}
 		if cutAction == "answer" {

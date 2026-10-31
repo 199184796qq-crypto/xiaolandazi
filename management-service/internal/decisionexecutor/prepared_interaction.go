@@ -43,6 +43,11 @@ func (w *Worker) interactionPreparationScope(ctx context.Context, session model.
 		if e.Session != session.ID || e.Tenant != session.TenantID || e.Room != session.RoomID {
 			return "", fmt.Errorf("互动缓存场次不匹配")
 		}
+		if welcome, _ := welcomeV2(item); welcome {
+			// Admission changes only this execution deadline, never the content
+			// identity. Preserve already synthesized audio during cut retries.
+			e.ExpiresAt = time.Time{}
+		}
 		return interactionDigest([]any{e, item.Nicknames, w.readingRulesFor(ctx, session)}), nil
 	}
 	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)

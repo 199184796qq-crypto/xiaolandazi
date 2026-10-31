@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"livecompanion/core/internal/roombrain"
 )
 
 const Protocol = "interaction_v2"
@@ -52,6 +54,8 @@ type Work struct {
 	At, Due, Expires                                  time.Time
 	CandidateExpires                                  time.Time
 	BatchPrepared                                     bool
+	WelcomeQuota                                      bool
+	Template                                          string
 	Count, Priority                                   int
 	AllowClarify                                      bool
 }
@@ -79,9 +83,11 @@ type Task struct {
 	State, Decision    string
 	Started, Completed time.Time
 	SelectedAt         time.Time
+	ReadyAt            time.Time
 	Failure            string
 	Attempts           int
 	Estimate           time.Duration
+	SignalRefs         map[string]uint64
 }
 type dialogue struct {
 	UID, Name, Original, Clarify  string
@@ -125,6 +131,8 @@ type room struct {
 	SemanticUsers                                  map[string]time.Time
 	SemanticStarts                                 []time.Time
 	Responded                                      map[string]time.Time
+	Welcome                                        *welcomeState
+	Behaviors                                      map[string]*behaviorLane
 }
 type Engine struct {
 	mu          sync.Mutex
@@ -169,6 +177,12 @@ func (e *Engine) CancelUser(s Scope, uid string, now time.Time) {
 	defer e.mu.Unlock()
 	r := e.room(s, now)
 	delete(r.Dialogues, uid)
+	for _, lane := range r.Behaviors {
+		delete(lane.Entries, uid)
+	}
+	if r.Welcome != nil {
+		delete(r.Welcome.Entries, uid)
+	}
 	for _, t := range r.Tasks {
 		for _, p := range t.Work.People {
 			if p.UID == uid && t.State != "playing" && t.State != "completed" {
@@ -190,7 +204,7 @@ func (e *Engine) cancel(r *room, t *Task, reason string) {
 func ttl(kind string) time.Duration {
 	switch kind {
 	case "welcome":
-		return 20 * time.Second
+		return welcomeWindow
 	case "like", "follow":
 		return 30 * time.Second
 	case "urgent":
@@ -202,8 +216,12 @@ func ttl(kind string) time.Duration {
 func band(kind string) int {
 	switch kind {
 	case "urgent":
-		return 5
+		return 6
 	case "dialogue":
+		return 5
+	case "welcome":
+		return 4
+	case "order":
 		return 4
 	case "engagement":
 		return 3
@@ -261,6 +279,9 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 	}
 	if v.Kind == "block" {
 		delete(r.Dialogues, v.UID)
+		for _, lane := range r.Behaviors {
+			delete(lane.Entries, v.UID)
+		}
 		for _, t := range r.Tasks {
 			for _, p := range t.Work.People {
 				if p.UID == v.UID {
@@ -268,6 +289,20 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 				}
 			}
 		}
+		return
+	}
+	// Explicit completed purchases bypass all text/intent models. Ordinary
+	// questions retain their existing semantic path, without an order-model pass.
+	if v.Kind == "like" || v.Kind == "follow" || v.Kind == "order" || v.Kind == "order_signal" {
+		kind := v.Kind
+		if kind == "order_signal" {
+			kind = "order"
+		}
+		recordBehavior(r, v, kind, now)
+		return
+	}
+	if (v.Kind == "chat" || v.Kind == "semantic") && roombrain.IsOrderSignalText(v.Text) {
+		recordBehavior(r, v, "order", now)
 		return
 	}
 	if v.Kind == "chat" || v.Kind == "semantic" || v.Kind == "urgent" {
@@ -307,6 +342,10 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 	}
 	if v.Urgent {
 		kind = "urgent"
+	}
+	if kind == "welcome" {
+		recordWelcome(r, v, now)
+		return
 	}
 	switch kind {
 	case "semantic", "urgent", "welcome", "like", "follow", "order":
@@ -399,6 +438,8 @@ func (e *Engine) jobs(now time.Time, limit int, batch bool) [][]Work {
 	defer e.mu.Unlock()
 	var tasks []*Task
 	for _, r := range e.rooms {
+		e.prepareWelcome(r, now)
+		e.prepareBehaviors(r, now)
 		if r.Policy != nil && !r.Policy.Active {
 			continue
 		}
@@ -468,7 +509,7 @@ func (e *Engine) jobs(now time.Time, limit int, batch bool) [][]Work {
 				e.cancel(r, t, "original_event_expired")
 				t.State = "expired"
 			}
-			if t.State == "collecting" && enabled(r, t.Work.Kind) && !now.Before(t.Work.Due) && ((batch && semanticKind(t.Work.Kind)) || !now.Before(r.Cool[t.Work.Kind])) && !(batch && semanticKind(t.Work.Kind) && preparing) {
+			if t.Work.Template == "" && t.State == "collecting" && enabled(r, t.Work.Kind) && !now.Before(t.Work.Due) && (t.Work.WelcomeQuota || (batch && semanticKind(t.Work.Kind)) || !now.Before(r.Cool[t.Work.Kind])) && !(batch && semanticKind(t.Work.Kind) && preparing) {
 				tasks = append(tasks, t)
 			}
 		}
@@ -587,6 +628,11 @@ func (e *Engine) Accept(w Work, c Content, err error, now time.Time) bool {
 		return false
 	}
 	if err != nil {
+		if t.Work.WelcomeQuota || t.Work.Template != "" {
+			t.State = "failed"
+			t.Failure = err.Error()
+			return false
+		}
 		t.Failure = err.Error()
 		if t.Attempts < 2 && now.Add(2*time.Second).Before(t.Work.Expires) {
 			t.State = "collecting"
@@ -639,6 +685,9 @@ func (e *Engine) Accept(w Work, c Content, err error, now time.Time) bool {
 		t.Work.Priority = band("urgent")
 	}
 	t.Content = c
+	if t.Work.WelcomeQuota {
+		rebindDeadline(t)
+	}
 	t.State = "body_ready"
 	t.Estimate = time.Duration(max(2, min(30, utf8.RuneCountInString(c.Body)/5))) * time.Second
 	return true
@@ -669,16 +718,15 @@ func (e *Engine) Select(s Scope, now time.Time) *Task {
 		if t.State == "selected" {
 			selected = t
 		}
-		if t.State == "body_ready" && enabled(r, t.Work.Kind) && !now.Before(r.Cool[t.Work.Kind]) && now.Before(t.Work.Expires) {
+		if t.State == "body_ready" && enabled(r, t.Work.Kind) && (t.Work.WelcomeQuota || t.Work.Template != "" || !now.Before(r.Cool[t.Work.Kind])) && now.Before(t.Work.Expires) {
 			ready = append(ready, t)
 		}
 	}
 	sortReady(r, ready)
 	if selected != nil {
-		if len(ready) == 0 || ready[0].Work.Kind != "urgent" || selected.Work.Kind == "urgent" {
+		if len(ready) == 0 || !welcomeSupersedes(ready[0], selected) {
 			return nil
 		}
-		e.cancel(r, selected, "urgent_preempted_unplayed")
 	}
 	budget := 40.0
 	if r.Density == "normal" {
@@ -689,11 +737,36 @@ func (e *Engine) Select(s Scope, now time.Time) *Task {
 	}
 	semanticAvailable := semanticQuotaAvailable(r, now, "")
 	for _, t := range ready {
+		if selected != nil && !welcomeSupersedes(t, selected) {
+			continue
+		}
 		if t.Work.BatchPrepared && semanticKind(t.Work.Kind) && !semanticAvailable {
 			continue
 		}
 		if t.Work.Kind != "urgent" && used+t.Estimate.Seconds() > budget {
 			continue
+		}
+		if t.Work.WelcomeQuota && now.Sub(t.Work.At) >= welcomeWindow {
+			e.cancel(r, t, "welcome_names_stale")
+			continue
+		}
+		if selected != nil {
+			if t.Work.WelcomeQuota {
+				// Keep the ordinary answer as a candidate; only its unclaimed
+				// queue reservation yields to the fresh welcome.
+				if selected.Decision != "" {
+					e.cancelled[r.Scope.Room] = append(e.cancelled[r.Scope.Room], selected.Decision)
+				}
+				selected.State, selected.Decision = "body_ready", ""
+				if !selected.Work.CandidateExpires.IsZero() {
+					selected.Work.Expires = selected.Work.CandidateExpires
+					selected.Work.CandidateExpires = time.Time{}
+					selected.SelectedAt = time.Time{}
+					rebindDeadline(selected)
+				}
+			} else {
+				e.cancel(r, selected, "urgent_preempted_unplayed")
+			}
 		}
 		t.State = "selected"
 		if t.Work.BatchPrepared && semanticKind(t.Work.Kind) {
@@ -701,6 +774,17 @@ func (e *Engine) Select(s Scope, now time.Time) *Task {
 				t.SelectedAt = now
 				t.Work.CandidateExpires = t.Work.Expires
 				t.Work.Expires = now.Add(50 * time.Second)
+				rebindDeadline(t)
+			}
+		}
+		if t.Work.WelcomeQuota {
+			if now.Sub(t.Work.At) >= welcomeWindow {
+				e.cancel(r, t, "welcome_names_stale")
+				continue
+			}
+			if t.SelectedAt.IsZero() {
+				t.SelectedAt = now
+				t.Work.Expires = now.Add(welcomeWindow)
 				rebindDeadline(t)
 			}
 		}
@@ -751,6 +835,9 @@ func (e *Engine) ReserveAudio(roomID int64, decision string, durationMS int, sta
 		if t.State != "selected" || !start.Before(t.Work.Expires) {
 			return false
 		}
+		if t.Work.WelcomeQuota && t.ReadyAt.IsZero() {
+			return false
+		}
 		if t.Work.BatchPrepared && semanticKind(t.Work.Kind) && !semanticQuotaAvailable(r, start, t.Work.ID) {
 			return false
 		}
@@ -795,6 +882,9 @@ func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time) {
 				e.cancel(r, t, "late_playback")
 				return
 			}
+			if t.Work.WelcomeQuota && t.ReadyAt.IsZero() {
+				return
+			}
 			t.State = "playing"
 			t.Started = at
 			if t.Work.BatchPrepared && semanticKind(t.Work.Kind) {
@@ -812,6 +902,12 @@ func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time) {
 				}
 			}
 			r.LastInteraction = at
+			if t.Work.WelcomeQuota {
+				welcomeStarted(r, t, at)
+			}
+			if t.Work.Template != "" {
+				behaviorStarted(r, t, at)
+			}
 			r.Carry = ""
 			r.Cool[t.Work.Kind] = at.Add(map[string]time.Duration{"welcome": 15 * time.Second, "like": 30 * time.Second, "follow": 20 * time.Second, "order": 5 * time.Second}[t.Work.Kind])
 			if r.Policy != nil {

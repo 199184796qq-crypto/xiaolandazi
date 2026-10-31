@@ -1396,8 +1396,11 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	}
 	item := claim.Item
 	if e, ok := interactionplan.Decode(item.PurposeKnowledge); ok && !e.ExpiresAt.IsZero() {
+		if !w.now().Before(e.ExpiresAt) {
+			return fmt.Errorf("互动任务已过期，等待重新调度")
+		}
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, e.ExpiresAt)
+		ctx, cancel = context.WithDeadline(ctx, welcomeExecutionDeadline(*item, e.ExpiresAt))
 		defer cancel()
 	}
 	item.PlannedSwitchAtMS = claim.SwitchAtMS
@@ -1571,6 +1574,11 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		}
 	})
 	ttsCtx := ttsgateway.WithSynthesisTimeout(ctx, 35*time.Second)
+	if welcome, ready := welcomeV2(*item); welcome && !ready {
+		var cancel context.CancelFunc
+		ttsCtx, cancel = context.WithDeadline(ttsCtx, item.ExpiresAt)
+		defer cancel()
+	}
 	ttsText, ssmlUsed := buildTTSText(text, item.PromptAddressPhrase, w.readingRulesFor(ctx, session), ttsgateway.SupportsSSML(ttsModel))
 	audio, err := w.synthesizeInteractionAudio(ttsCtx, item, ttsgateway.SynthesizeRequest{
 		Provider:    voiceProvider(voice),
@@ -1647,6 +1655,15 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 }
 
 func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem, text, audioURL, scope, memory string, expiresAt time.Time) error {
+	if welcome, _ := welcomeV2(*item); welcome {
+		if err := w.admitWelcomeV2(ctx, session, item); err != nil {
+			return err
+		}
+		expiresAt = item.ExpiresAt
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, expiresAt)
+		defer cancel()
+	}
 	w.updateMission(item, func(m *speechmission.Mission) {
 		m.GeneratedText = text
 		m.TTS.AudioURL = strings.TrimSpace(audioURL)
@@ -1948,6 +1965,9 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	}
 	if item == nil {
 		return "", fmt.Errorf("待执行策略为空")
+	}
+	if e, ok := interactionplan.Decode(item.PurposeKnowledge); ok && e.Template != "" {
+		return w.generateBehaviorTemplate(ctx, session, item, e)
 	}
 	if w.isInteractionV2(item, session) {
 		return w.generateInteractionV2(ctx, session, item)

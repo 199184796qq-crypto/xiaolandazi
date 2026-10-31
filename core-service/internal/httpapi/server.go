@@ -180,6 +180,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/candidates", s.internal(http.HandlerFunc(s.enqueueRoomAgentDecision)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/manual", s.internal(http.HandlerFunc(s.enqueueRoomManualDecision)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/claim", s.internal(http.HandlerFunc(s.claimRoomAgentDecision)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/welcome-ready", s.internal(http.HandlerFunc(s.admitWelcomeV2)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/complete", s.internal(http.HandlerFunc(s.completeRoomAgentDecision)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/simulation-complete", s.internal(http.HandlerFunc(s.completeRoomAgentSimulation)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/release", s.internal(http.HandlerFunc(s.releaseRoomAgentDecision)))

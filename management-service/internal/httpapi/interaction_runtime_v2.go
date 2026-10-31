@@ -12,6 +12,7 @@ import (
 )
 
 type interactionV2Input struct {
+	Template           string                           `json:"template,omitempty"`
 	PreviewInstruction string                           `json:"preview_instruction,omitempty"`
 	Context            []interactionplan.ContextMessage `json:"context,omitempty"`
 	Items              []interactionV2Input             `json:"items,omitempty"`

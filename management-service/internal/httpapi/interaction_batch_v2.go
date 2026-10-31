@@ -36,6 +36,7 @@ func batchInputsV2(batchID string, inputs []interactionV2Input, now time.Time) (
 			return nil, fmt.Errorf("互动批次期限或修订号缺失")
 		}
 		items[i] = interactionplan.BatchItem{ID: fmt.Sprintf("U%02d", i+1), Input: interactionplan.Input{Kind: in.Kind, Text: in.Text, Original: in.Original, Clarification: in.Clarification, Recent: in.Recent, Context: in.Context, CurrentMainline: in.CurrentMainline, EngagementToken: in.EngagementToken, Correction: in.PreviewInstruction, EventCount: in.EventCount, AllowClarify: in.AllowClarify}}
+		items[i].Template = in.Template
 	}
 	return items, interactionplan.ValidateBatch(items)
 }
@@ -58,6 +59,10 @@ func preparedBatchResultsV2(ctx context.Context, snapshot interactionplan.Snapsh
 			continue
 		}
 		results[i].Envelope = interactionplan.Envelope{Protocol: interactionplan.Protocol, Task: in.Task, Epoch: in.Epoch, Revision: in.Revision, Tenant: in.Tenant, Room: in.Room, Session: snapshot.Scope.Session, Plan: in.Plan, Fingerprint: snapshot.Fingerprint, Body: item.Body, Intent: item.Intent, ExpiresAt: in.ExpiresAt}
+		results[i].Envelope.Template = in.Template
+		if in.Template != "" {
+			results[i].Envelope.EventCount = in.EventCount
+		}
 	}
 	return results, generated.Issues, nil
 }

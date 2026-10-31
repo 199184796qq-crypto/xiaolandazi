@@ -39,6 +39,9 @@ func (p *Processor) SetMessageCaptain(c *messagecaptain.Captain) {
 	}
 }
 func (p *Processor) handleRuntimeMessage(_ context.Context, m messagecaptain.Message) error {
+	if m.Kind == "interaction.v2.welcome-ready" {
+		return p.readyWelcomeV2(m)
+	}
 	if m.Kind == "interaction.v2.reserve-audio" {
 		return p.reserveAudioV2(m)
 	}

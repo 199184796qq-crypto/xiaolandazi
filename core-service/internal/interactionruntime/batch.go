@@ -221,5 +221,11 @@ func rebindDeadline(t *Task) {
 	}
 	expires, _ := json.Marshal(t.Work.Expires)
 	envelope["expires_at"] = expires
+	if t.Work.WelcomeQuota {
+		envelope["welcome_quota"] = json.RawMessage("true")
+		if !t.ReadyAt.IsZero() {
+			envelope["welcome_ready_at"], _ = json.Marshal(t.ReadyAt)
+		}
+	}
 	t.Content.Knowledge, _ = json.Marshal(envelope)
 }

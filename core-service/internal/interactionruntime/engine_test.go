@@ -120,6 +120,9 @@ func add(e *Engine, s Scope, id, uid, kind, text string, at time.Time) {
 func ready(t *testing.T, e *Engine, now time.Time, intent Intent) []Work {
 	t.Helper()
 	jobs := e.Jobs(now, 10)
+	for _, batch := range e.TemplateBatches(now, 10) {
+		jobs = append(jobs, batch.Works...)
+	}
 	for _, w := range jobs {
 		if !e.Accept(w, Content{Body: "正文。", Intent: intent}, nil, now) {
 			t.Fatal("accept", w)
@@ -244,6 +247,9 @@ func TestBehaviorEarliestDeadlineAndBodyReadyBypass(t *testing.T) {
 	add(e, s, "like", "l", "like", "", base)
 	add(e, s, "wel", "w", "member", "", base)
 	jobs := e.Jobs(base.Add(time.Second), 10)
+	for _, batch := range e.TemplateBatches(base.Add(time.Second), 10) {
+		jobs = append(jobs, batch.Works...)
+	}
 	if len(jobs) != 2 {
 		t.Fatal(jobs)
 	}
@@ -265,11 +271,11 @@ func TestNoLifetimeRenewalOrLateModelResult(t *testing.T) {
 	if len(jobs) != 1 {
 		t.Fatal(jobs)
 	}
-	if e.Accept(jobs[0], Content{Body: "欢迎。", Intent: Intent{Relevant: true}}, nil, base.Add(20*time.Second)) {
+	if e.Accept(jobs[0], Content{Body: "欢迎。", Intent: Intent{Relevant: true}}, nil, jobs[0].Expires) {
 		t.Fatal("accepted expired body")
 	}
-	e.Jobs(base.Add(20*time.Second), 10)
-	if e.Select(s, base.Add(20*time.Second)) != nil {
+	e.Jobs(jobs[0].Expires, 10)
+	if e.Select(s, jobs[0].Expires) != nil {
 		t.Fatal("selected expired")
 	}
 }

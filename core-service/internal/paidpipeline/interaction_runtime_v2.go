@@ -19,11 +19,12 @@ import (
 )
 
 type interactionV2State struct {
-	engine   *interactionruntime.Engine
-	resolver HTTPPurposeResolver
-	slots    chan struct{}
-	mu       sync.Mutex
-	rooms    map[int64]interactionruntime.Scope
+	engine        *interactionruntime.Engine
+	resolver      HTTPPurposeResolver
+	slots         chan struct{}
+	templateSlots chan struct{}
+	mu            sync.Mutex
+	rooms         map[int64]interactionruntime.Scope
 }
 
 func (p *Processor) v2Policy(s interactionruntime.Scope) interactionruntime.Policy {
@@ -62,7 +63,7 @@ func (p *Processor) v2Policy(s interactionruntime.Scope) interactionruntime.Poli
 }
 
 func (p *Processor) setInteractionV2(h HTTPPurposeResolver) {
-	p.interactionV2.Store(&interactionV2State{engine: interactionruntime.New(), resolver: h, slots: make(chan struct{}, 4), rooms: map[int64]interactionruntime.Scope{}})
+	p.interactionV2.Store(&interactionV2State{engine: interactionruntime.New(), resolver: h, slots: make(chan struct{}, 4), templateSlots: make(chan struct{}, 4), rooms: map[int64]interactionruntime.Scope{}})
 }
 func (p *Processor) v2Scope(tenant, room int64) interactionruntime.Scope {
 	r := p.runtime.Get(room)
@@ -217,7 +218,7 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) bool {
 				Protocol string `json:"protocol"`
 			}
 			json.Unmarshal(queue[0].PurposeKnowledge, &envelope)
-			if len(queue) != 1 || queue[0].PlaybackTaskID != "" || envelope.Protocol != interactionruntime.Protocol {
+			if len(queue) != 1 || queue[0].PlaybackTaskID != "" || queue[0].Status == agentdecision.StatusClaimed || envelope.Protocol != interactionruntime.Protocol {
 				continue
 			}
 		}
@@ -229,6 +230,9 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) bool {
 			p.decisions.Remove(s.Room, id)
 		}
 		mission := map[string]string{"semantic": "reply_question", "dialogue": "reply_question", "urgent": "complaint", "welcome": "welcome_named", "like": "reply_like", "follow": "reply_follow", "order": "conversion_signal", "engagement": "reply_chat", "guide": "warmup"}[t.Work.Kind]
+		if t.Work.WelcomeQuota && t.Work.Count > 1 {
+			mission = "welcome_batch"
+		}
 		if t.Content.Intent.Type == "投诉" {
 			mission = "complaint"
 		}
@@ -263,10 +267,15 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) bool {
 		v.engine.Bind(t.Work, id, now)
 	}
 	free := cap(v.slots) - len(v.slots)
-	if free <= 0 {
-		return true
+	// Expiry and entitlement maintenance must run even when every model slot
+	// is busy. A stale welcome cannot retain a claimed queue item until then.
+	jobs := v.engine.Batches(now, max(0, free))
+	jobs = append(jobs, v.engine.TemplateBatches(now, cap(v.templateSlots)-len(v.templateSlots))...)
+	for _, s := range scopes {
+		for _, id := range v.engine.Cancelled(s.Room) {
+			p.decisions.Remove(s.Room, id)
+		}
 	}
-	jobs := v.engine.Batches(now, free)
 	for _, job := range jobs {
 		first := job.Works[0]
 		if !p.runtime.IsWorking(first.Scope.Room) || p.cutEpoch(first.Scope.Room) != first.Scope.Epoch {
@@ -281,9 +290,13 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) bool {
 				job.Works[i].Mainline = strings.TrimSpace(mainline + "\n" + job.Works[i].Mainline)
 			}
 		}
-		v.slots <- struct{}{}
-		go func(batch interactionruntime.Batch) {
-			defer func() { <-v.slots }()
+		slots := v.slots
+		if first.Template != "" {
+			slots = v.templateSlots
+		}
+		slots <- struct{}{}
+		go func(batch interactionruntime.Batch, slots chan struct{}) {
+			defer func() { <-slots }()
 			deadline := batch.Works[0].Expires
 			for _, w := range batch.Works {
 				if w.Expires.After(deadline) {
@@ -312,7 +325,7 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) bool {
 				}
 				v.engine.Accept(w, content, itemErr, p.clock())
 			}
-		}(job)
+		}(job, slots)
 	}
 	return true
 }

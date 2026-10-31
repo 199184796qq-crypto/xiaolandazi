@@ -48,17 +48,7 @@ func (HeuristicClassifier) Classify(text string) Classification {
 }
 
 func IsOrderSignalText(text string) bool {
-	value := strings.ToLower(strings.TrimSpace(text))
-	if value == "" {
-		return false
-	}
-	if strings.ContainsAny(value, "?？") || containsAny(value,
-		"怎么买", "怎么拍", "怎么下单", "如何买", "如何拍", "拍哪个", "哪个链接", "能买吗", "能不能买", "哪里买") {
-		return false
-	}
-	return containsAny(value,
-		"已下单", "已经下单", "下单了", "我下单", "已拍", "已经拍", "拍了", "拍好了", "拍下了", "我拍了",
-		"买了", "我买了", "买好了", "已购买", "已经购买", "购买了")
+	return completedOrderClaim(text)
 }
 
 func containsAny(value string, parts ...string) bool {

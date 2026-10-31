@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -42,6 +43,7 @@ type ContextMessage struct {
 	At   time.Time `json:"at,omitempty"`
 }
 type Input struct {
+	Template        string           `json:"template,omitempty"`
 	Kind            string           `json:"kind"`
 	Correction      string           `json:"correction,omitempty"`
 	Text            string           `json:"text"`
@@ -71,6 +73,8 @@ type Intent struct {
 // Envelope is created by the program, never by the model. It travels in the
 // existing purpose_knowledge field so the queue retains one exact task/result.
 type Envelope struct {
+	Template    string    `json:"template,omitempty"`
+	EventCount  int       `json:"event_count,omitempty"`
 	Protocol    string    `json:"protocol"`
 	Task        string    `json:"task"`
 	Epoch       string    `json:"epoch"`
@@ -475,7 +479,11 @@ func Validate(s Snapshot, text string) error {
 	if err != nil {
 		return err
 	}
-	if len(p.Scan(text, "all").Hits) > 0 {
+	if hits := p.Scan(text, "all").Hits; len(hits) > 0 {
+		// 命中内容必须落日志，否则线上只看到「未通过」，查不出是哪条规则误伤。
+		for _, hit := range hits {
+			log.Printf("interaction p0 blocked rule=%s category=%s severity=%s matched=%q text=%q", hit.RuleID, hit.Category, hit.Severity, hit.Text, text)
+		}
 		return errors.New("互动正文未通过有效P0，保持主线并跳过本任务")
 	}
 	return nil
