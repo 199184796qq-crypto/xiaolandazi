@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'vite'
 const { chromium } = createRequire(new URL('../../collector-worker/package.json', import.meta.url))('playwright-core')
-const output = 'E:/直播伴播-local/plan-prompt-sections-20261031/browser'
+const output = process.env.PLAN_PROMPT_TEST_OUTPUT || 'E:/直播伴播-local/plan-prompt-sections-20261031/browser'
 await mkdir(output, { recursive: true })
 const previous = (await readFile(new URL('./test-plan-prompt-editor.mjs', import.meta.url), 'utf8')).replace(/\r\n/g, '\n')
 let fixture = previous.split('const fixture=String.raw`')[1].split('`\nconst server=')[0]

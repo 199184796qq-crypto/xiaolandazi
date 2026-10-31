@@ -3,7 +3,7 @@ import { validateOriginalAudioFiles } from '../directAudioUpload'
 import QuestionLibraryPanel from '../components/QuestionLibraryPanel.vue'
 import RoomReadingRules from '../components/RoomReadingRules.vue'
 import PlanPromptEditor from '../components/PlanPromptEditor.vue'
-import { emptyPlanPromptSections, readPlanPromptSections, cleanPlanPromptSections, planPromptValidation } from '../planPrompt'
+import { emptyPlanPromptSections, readPlanPromptSections, planPromptValidation, type PlanPromptSections } from '../planPrompt'
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { normalizeLiveAgentPlanVersion } from '../liveAgentPlanVersion'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
@@ -267,6 +267,8 @@ const planPromptLoading = ref(false)
 const planPromptSaving = ref(false)
 const planPromptError = ref('')
 const planPromptNotice = ref('')
+const planPromptPartialSaveNotice = ref('')
+const planPromptLegacy = ref('')
 const planPromptLoadedPlan = ref(0)
 const planActionsMenu = ref<HTMLDetailsElement | null>(null)
 watch(activeMode, mode => {
@@ -333,10 +335,11 @@ async function loadPlanPrompt() {
   const planId = Number(currentRoomPlanId.value || 0)
   if (!planId) {
     planPromptSections.value = emptyPlanPromptSections()
+    planPromptLegacy.value = ''
     planPromptLoadedPlan.value = 0
     return
   }
-  if (planPromptLoadedPlan.value === planId && !planPromptError.value) return
+  if (planPromptLoadedPlan.value === planId) return
   const sequence = ++planPromptSequence
   const epoch = planAssetScopeEpoch
   const current = () => sequence === planPromptSequence && epoch === planAssetScopeEpoch && currentRoomPlanId.value === planId
@@ -346,8 +349,9 @@ async function loadPlanPrompt() {
     const result = await getLiveAgentPlanPrompt(planId)
     if (!current()) return
     planPromptSections.value = readPlanPromptSections(result.sections)
+    planPromptLegacy.value = result.legacy_prompt_md || ''
     planPromptLoadedPlan.value = planId
-    planPromptNotice.value = result.legacy_unstructured ? '旧提示词原文已保留在“互动回答要求”，请检查分区后保存。' : ''
+    planPromptNotice.value = result.legacy_unstructured ? '旧版完整提示词已单独保留，四页只显示各自保存的原文；请填写后保存。' : ''
   } catch (err) {
     if (current()) planPromptError.value = err instanceof Error ? err.message : '方案提示词读取失败'
   } finally {
@@ -361,8 +365,8 @@ async function savePlanPrompt() {
     return
   }
   if (planPromptLoadedPlan.value !== planId || planPromptLoading.value || planPromptSaving.value) return
-  if (!Object.values(planPromptSections.value).some(text => text.trim())) {
-    planPromptError.value = '请先填写方案提示词'
+  if (planPromptLegacy.value && !Object.values(planPromptSections.value).some(text => text.trim())) {
+    planPromptError.value = '请先填写四页内容；旧版完整提示词仍单独保留。'
     return
   }
   const validation = planPromptValidation(planPromptSections.value)
@@ -374,11 +378,14 @@ async function savePlanPrompt() {
   planPromptError.value = ''
   planPromptNotice.value = ''
   try {
-    const result = await saveLiveAgentPlanPrompt(planId, cleanPlanPromptSections(planPromptSections.value))
+    const original = readPlanPromptSections(planPromptSections.value)
+    const result = await saveLiveAgentPlanPrompt(planId, original)
     if (!current()) return
     planPromptSections.value = readPlanPromptSections(result.sections)
+    planPromptLegacy.value = result.legacy_prompt_md || ''
     planPromptLoadedPlan.value = planId
     planPromptNotice.value = '方案提示词已保存，已生成主播互动元提示词和主播话术生成提示词'
+    planPromptPartialSaveNotice.value = ''
   } catch (err) {
     if (current()) planPromptError.value = err instanceof Error ? err.message : '方案提示词保存失败'
   } finally {
@@ -389,11 +396,13 @@ watch(currentRoomPlanId, () => {
   planPromptScopeEpoch++
   planPromptSequence++
   planPromptSections.value = emptyPlanPromptSections()
+  planPromptLegacy.value = ''
   planPromptLoadedPlan.value = 0
   planPromptLoading.value = false
   planPromptSaving.value = false
   planPromptError.value = ''
   planPromptNotice.value = ''
+  planPromptPartialSaveNotice.value = ''
   if (activeMode.value === 'plan_prompt') void loadPlanPrompt()
 }, { flush: 'sync' })
 watch(() => planSelectionPreferenceKey(planSelectionScope()), () => {
@@ -4571,24 +4580,35 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
 
 // 一键保存方案：直接保存版本，不再因内容池状态强制前置更新或等待。
 // 保存方案时把方案提示词一起落库：提示词有自己的接口，方案版本保存不会带上它。
-async function persistPlanPromptIfAny(planId: number) {
+async function planPromptOriginalsForSave(planId: number): Promise<PlanPromptSections | null> {
+  if (planPromptSaving.value) throw new Error('方案提示词正在保存，请完成后重试')
   const epoch = planAssetScopeEpoch
   const promptEpoch = planPromptScopeEpoch
   const current = () => epoch === planAssetScopeEpoch && promptEpoch === planPromptScopeEpoch && currentRoomPlanId.value === planId
   if (planPromptLoadedPlan.value !== planId) await loadPlanPrompt()
-  if (!current()) return
+  if (!current()) throw new Error('方案已变化，本次保存已取消')
   if (planPromptLoadedPlan.value !== planId) throw new Error(planPromptError.value || '方案提示词未读取完成，请重试')
-  if (!Object.values(planPromptSections.value).some(text => text.trim())) return
+  if (planPromptLegacy.value && !Object.values(planPromptSections.value).some(text => text.trim())) return null
   const validation = planPromptValidation(planPromptSections.value)
   if (validation) throw new Error(validation)
+  return readPlanPromptSections(planPromptSections.value)
+}
+async function persistPlanPromptIfAny(planId: number, original?: PlanPromptSections | null) {
+  const epoch = planAssetScopeEpoch
+  const promptEpoch = planPromptScopeEpoch
+  const current = () => epoch === planAssetScopeEpoch && promptEpoch === planPromptScopeEpoch && currentRoomPlanId.value === planId
+  const draft = original === undefined ? await planPromptOriginalsForSave(planId) : original
+  if (!current() || draft === null) return
   if (planPromptSaving.value) throw new Error('方案提示词正在保存，请完成后重试')
   planPromptSaving.value = true
   try {
-    const result = await saveLiveAgentPlanPrompt(planId, cleanPlanPromptSections(planPromptSections.value))
+    const result = await saveLiveAgentPlanPrompt(planId, draft)
     if (!current()) return
     planPromptSections.value = readPlanPromptSections(result.sections)
+    planPromptLegacy.value = result.legacy_prompt_md || ''
     planPromptLoadedPlan.value = planId
     planPromptNotice.value = '方案提示词已保存，已生成主播互动元提示词和主播话术生成提示词'
+    planPromptPartialSaveNotice.value = ''
   } finally {
     if (current()) planPromptSaving.value = false
   }
@@ -4602,10 +4622,14 @@ async function savePlanOneClick() {
   const current = () => !contentModeDisposed && ownerEpoch === planVersionSaveEpoch
   fullShowSaveReceipt.value = null
   fullShowVersionError.value = ''
+  planPromptPartialSaveNotice.value = ''
   savePlanOneClickBusy.value = true
   try {
     if (!current()) throw new Error('页面范围或直播模式已变化，本次保存已取消')
     savePlanOneClickStage.value = '保存中…'
+    // Capture page originals at the click, before saving/refreshing other assets.
+    const promptOriginals = await planPromptOriginalsForSave(planId)
+    if (!current()) throw new Error('页面范围或直播模式已变化，本次保存已取消')
     const saved = await saveFullShowVersion()
     if (!saved) {
       if (current()) throw new Error(fullShowVersionError.value || '本次未完成正式版本保存，请查看提示后重试；原版本保持不变。')
@@ -4613,11 +4637,12 @@ async function savePlanOneClick() {
     }
     if (current()) {
       try {
-        await persistPlanPromptIfAny(planId)
+        await persistPlanPromptIfAny(planId, promptOriginals)
       } catch (err) {
         if (current()) {
           planPromptError.value = err instanceof Error ? err.message : '方案提示词保存失败'
-          fullShowNotice.value = `方案版本已保存，但方案提示词未保存：${planPromptError.value}。请到“方案提示词”重试保存。`
+          planPromptPartialSaveNotice.value = `方案版本已保存，但方案提示词未保存：${planPromptError.value}。请到“方案提示词”重试保存。`
+          fullShowNotice.value = planPromptPartialSaveNotice.value
         }
       }
     }
@@ -6919,6 +6944,7 @@ onBeforeUnmount(() => {
             </select>
           </label>
           <p v-if="fullShowVersionError && fullShowVersionError !== voiceSaveError" class="plan-save-error" role="alert">{{ fullShowVersionError }}</p>
+          <p v-else-if="planPromptPartialSaveNotice" class="plan-save-error" role="alert">{{ planPromptPartialSaveNotice }}</p>
           <p v-else-if="fullShowSaveReceipt" class="plan-save-success" role="status">本次保存成功 V{{ fullShowSaveReceipt.version_no }}。{{ fullShowSaveReceipt.room_id ? '下一次开播使用新版本，当前场次保持原快照。' : '任意直播间均可选择本方案，下次开播使用新版本。' }}</p>
         </header>
 
@@ -7530,7 +7556,8 @@ onBeforeUnmount(() => {
             :plan-id="currentRoomPlanId"
             :loaded="planPromptLoadedPlan === currentRoomPlanId"
             :loading="planPromptLoading"
-            :saving="planPromptSaving"
+            :saving="planPromptSaving || savePlanOneClickBusy || fullShowVersionSaving"
+            :legacy-prompt="planPromptLegacy"
             :error="planPromptError"
             :notice="planPromptNotice"
             @save="savePlanPrompt"

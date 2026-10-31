@@ -41,10 +41,12 @@ func compose(blocks ...string) string {
 }
 
 func (s Sections) Interaction() string {
+	s = s.Normalize()
 	return compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "互动回答要求", s.InteractionRequirementsMD)
 }
 
 func (s Sections) Speech() string {
+	s = s.Normalize()
 	return compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "直播话术要求", s.SpeechRequirementsMD)
 }
 
@@ -59,7 +61,7 @@ func (s Sections) Validate() error {
 	return nil
 }
 
-// SplitLegacy is a read-time projection: original storage is untouched until save.
+// SplitLegacy is available for explicit legacy migration, never editor readback.
 // Unrecognised content stays with its current section, including unknown headings.
 // Completely free-form legacy prompts remain intact in interaction requirements.
 func SplitLegacy(text string) (Sections, bool) {

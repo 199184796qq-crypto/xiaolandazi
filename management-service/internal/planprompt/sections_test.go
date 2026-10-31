@@ -23,6 +23,25 @@ func TestComposeSeparatesUseCasesAndNormalizesHints(t *testing.T) {
 	}
 }
 
+func TestCompileDoesNotChangePageOriginals(t *testing.T) {
+	s := Sections{
+		PersonaMD:                 "  原始人设\r\n〔提示〕只保留在原文\r\n  ",
+		FactsMD:                   "\n【互动回答要求】\n这个标题仍属于事实页\n",
+		SpeechRequirementsMD:      "\n\n",
+		InteractionRequirementsMD: " 原始互动要求 ",
+	}
+	original := s
+	interaction, speech := s.Interaction(), s.Speech()
+	if err := s.Validate(); err != nil || s != original {
+		t.Fatal("compilation/validation changed original fields", s, err)
+	}
+	for _, compiled := range []string{interaction, speech} {
+		if strings.Contains(compiled, "〔提示〕") || strings.Contains(compiled, "\r") || !strings.Contains(compiled, "这个标题仍属于事实页") {
+			t.Fatal("compiled cleanup changed", compiled)
+		}
+	}
+}
+
 func TestLegacyProjectionKeepsFactsUnknownTextAndDistinctRequirements(t *testing.T) {
 	raw := "前言\n【身份设定】\n我是主播\n【商品卡】\n1号900克87.6\n【事实依据】\n发京东\n【用词消歧】\n砍指切块\n【直播目标】\n循环介绍\n【话术规则】\n自然衔接\n【互动约束】\n先回答问题\n【未知附录】\n保留附录\n【输出格式要求】\n回答：正文"
 	s, unstructured := SplitLegacy(raw)

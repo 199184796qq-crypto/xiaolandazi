@@ -4,7 +4,7 @@ import { renderLiveAgentPlanPrompt } from '../api'
 import { compilePlanPrompts, planPromptTabs, planPromptValidation, type PlanPromptSections } from '../planPrompt'
 
 const content = defineModel<PlanPromptSections>({ required: true })
-const props = defineProps<{ planId: number | null; loaded: boolean; loading: boolean; saving: boolean; error: string; notice: string }>()
+const props = defineProps<{ planId: number | null; loaded: boolean; loading: boolean; saving: boolean; error: string; notice: string; legacyPrompt?: string }>()
 const emit = defineEmits<{ save: []; retry: []; clearFeedback: [] }>()
 const generating = ref(false)
 const generationError = ref('')
@@ -13,7 +13,6 @@ const confirmation = ref<HTMLDialogElement | null>(null)
 const cancelButton = ref<HTMLButtonElement | null>(null)
 const regenerateButton = ref<HTMLButtonElement | null>(null)
 const editor = ref<HTMLTextAreaElement | null>(null)
-const hasContent = computed(() => Object.values(content.value).some(text => text.trim()))
 const activeTab = ref<keyof PlanPromptSections>('persona_md')
 const selectedTab = computed(() => planPromptTabs.find(tab => tab.key === activeTab.value)!)
 const activeContent = computed({ get: () => content.value[activeTab.value], set: value => { content.value = { ...content.value, [activeTab.value]: value } } })
@@ -80,7 +79,7 @@ function confirmRegeneration() {
   void generate()
 }
 function save() {
-  if (unavailable.value || !hasContent.value || validation.value) return
+  if (unavailable.value || validation.value) return
   generationError.value = ''
   generationNotice.value = ''
   emit('save')
@@ -106,11 +105,11 @@ function backdrop(event: MouseEvent) {
     <header class="plan-prompt-heading">
       <div>
         <h3 id="plan-prompt-heading">方案提示词</h3>
-        <p>分别编辑人设、事实、直播话术和互动回答要求；保存后生成两份元提示词。重新生成只替换事实依据。</p>
+        <p>四页原文分别保存、原样回显；两份元提示词单独生成。重新生成只替换事实依据。</p>
       </div>
       <div class="plan-prompt-actions">
           <button ref="regenerateButton" type="button" class="plan-prompt-secondary" :disabled="unavailable" @click="requestRegeneration">{{ generating ? '生成中…' : '重新生成' }}</button>
-          <button type="button" class="plan-prompt-primary" :disabled="unavailable || !hasContent || !!validation" @click="save">{{ saving ? '保存中…' : '保存方案提示词' }}</button>
+          <button type="button" class="plan-prompt-primary" :disabled="unavailable || !!validation" @click="save">{{ saving ? '保存中…' : '保存方案提示词' }}</button>
       </div>
     </header>
 
@@ -126,6 +125,11 @@ function backdrop(event: MouseEvent) {
       <span v-for="index in 5" :key="index" aria-hidden="true"></span>
     </div>
     <div v-else class="plan-prompt-content">
+      <details v-if="legacyPrompt" class="plan-prompt-preview">
+        <summary>查看旧版完整提示词</summary>
+        <p>旧版没有保存四页原文，因此保留整份内容供你查看，不自动拆分到四页。填写四页并保存后使用新组合。</p>
+        <textarea :value="legacyPrompt" readonly rows="8" aria-label="旧版完整提示词"></textarea>
+      </details>
       <div class="plan-prompt-tabs" role="tablist" aria-label="方案提示词分区">
         <button v-for="(tab, index) in planPromptTabs" :id="'plan-prompt-tab-' + tab.key" :key="tab.key" type="button" role="tab" :aria-selected="activeTab === tab.key" aria-controls="plan-prompt-panel" :tabindex="activeTab === tab.key ? 0 : -1" @click="activeTab = tab.key" @keydown="moveTab($event, index)">{{ tab.label }}</button>
       </div>

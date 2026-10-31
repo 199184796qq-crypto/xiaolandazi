@@ -18,6 +18,7 @@ type LiveAgentPlanPromptDocument struct {
 	InteractionPromptMD string              `json:"interaction_prompt_md"`
 	SpeechPromptMD      string              `json:"speech_prompt_md"`
 	LegacyUnstructured  bool                `json:"legacy_unstructured,omitempty"`
+	LegacyPromptMD      string              `json:"legacy_prompt_md,omitempty"`
 	UpdatedAt           time.Time           `json:"updated_at,omitempty"`
 }
 
@@ -55,8 +56,10 @@ func (s *Store) GetLiveAgentPlanPromptDocument(ctx context.Context, tenantID, pl
 		}
 		out.SpeechPromptMD = speech.String
 	} else {
-		out.Sections, out.LegacyUnstructured = planprompt.SplitLegacy(out.PromptMD)
-		out.SpeechPromptMD = out.Sections.Speech()
+		// No page originals exist for a legacy document. Never reverse-parse its
+		// compiled text into editable pages; expose that old text separately.
+		out.LegacyPromptMD = out.PromptMD
+		out.LegacyUnstructured = strings.TrimSpace(out.PromptMD) != ""
 	}
 	out.InteractionPromptMD = out.PromptMD
 	return out, nil
@@ -69,10 +72,11 @@ func (s *Store) SaveLiveAgentPlanPromptSections(ctx context.Context, tenantID, p
 	if tenantID <= 0 || planID <= 0 {
 		return out, ErrLiveAgentPlanNotFound
 	}
-	sections = sections.Normalize()
 	if err := sections.Validate(); err != nil {
 		return out, err
 	}
+	// Persist page originals verbatim. Interaction/Speech compile cleaned copies;
+	// neither compilation nor later reads may mutate or repartition originals.
 	raw, err := json.Marshal(sections)
 	if err != nil {
 		return out, err

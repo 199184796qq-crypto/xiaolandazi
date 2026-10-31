@@ -4410,6 +4410,7 @@ export interface PlanPrompt {
   interaction_prompt_md: string
   speech_prompt_md: string
   legacy_unstructured?: boolean
+  legacy_prompt_md?: string
   updated_at?: string
 }
 

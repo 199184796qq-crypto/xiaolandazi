@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"livecompanion/management/internal/planprompt"
 )
@@ -49,13 +50,27 @@ func (s *Server) liveAgentPlanPromptPut(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "方案提示词请求格式错误")
 		return
 	}
-	var sections planprompt.Sections
-	if input.Sections != nil {
-		sections = input.Sections.Normalize()
-	} else {
-		// Old clients still save their single draft; partition it without dropping text.
-		sections, _ = planprompt.SplitLegacy(stripPlanPromptHints(input.PromptMD))
+	if input.Sections == nil {
+		// A legacy client has one original field, not four. Preserve that document
+		// without guessing which page each of its headings belongs to.
+		prompt := stripPlanPromptHints(input.PromptMD)
+		if utf8.RuneCountInString(prompt) > planprompt.MaxPromptRunes {
+			writeError(w, http.StatusBadRequest, "方案提示词不能超过20000字")
+			return
+		}
+		if _, err := s.store.SaveLiveAgentPlanPrompt(r.Context(), tenantID, planID, actor.UserID, prompt); err != nil {
+			writeError(w, http.StatusInternalServerError, "方案提示词保存失败")
+			return
+		}
+		document, err := s.store.GetLiveAgentPlanPromptDocument(r.Context(), tenantID, planID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "方案提示词读取失败")
+			return
+		}
+		writeJSON(w, http.StatusOK, document)
+		return
 	}
+	sections := *input.Sections
 	if err := sections.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -68,8 +83,8 @@ func (s *Server) liveAgentPlanPromptPut(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, document)
 }
 
-// stripPlanPromptHints 去掉模板渲染时带出来的填写提示行。提示只用于让用户
-// 看懂该节怎么写，一旦保存就不能再进库，否则模型会把它当作可播内容。
+// stripPlanPromptHints 仅用于旧单字段客户端。四分区原文原样保存，提示行
+// 只在编译派生副本时过滤，不能从可编辑原文中删除。
 func stripPlanPromptHints(text string) string {
 	if !strings.Contains(text, "〔提示〕") {
 		return text

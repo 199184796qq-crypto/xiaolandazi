@@ -20,7 +20,8 @@ export function readPlanPromptSections(value: unknown): PlanPromptSections {
   if (!value || typeof value !== 'object' || !planPromptTabs.every(tab => typeof (value as Record<string, unknown>)[tab.key] === 'string')) {
     throw new Error('服务端未返回完整的四分区提示词，当前内容已保留，请更新服务后重试')
   }
-  return { ...(value as PlanPromptSections) }
+  const source = value as PlanPromptSections
+  return { persona_md: source.persona_md, facts_md: source.facts_md, speech_requirements_md: source.speech_requirements_md, interaction_requirements_md: source.interaction_requirements_md }
 }
 
 export function cleanPlanPromptSections(value: PlanPromptSections): PlanPromptSections {

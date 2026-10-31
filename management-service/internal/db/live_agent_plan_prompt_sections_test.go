@@ -135,7 +135,7 @@ func TestPlanPromptSectionsAtomicStorageAndRuntimeRead(t *testing.T) {
 	}
 	state.rows[[2]int64{14, 7}] = []driver.Value{"【身份设定】\n旧人设\n【事实依据】\n旧事实\n【话术规则】\n旧主线\n【互动约束】\n旧回答", nil, nil, time.Now()}
 	legacy, err := s.GetLiveAgentPlanPromptDocument(context.Background(), 14, 7)
-	if err != nil || legacy.Sections.FactsMD != "旧事实" || strings.Contains(legacy.SpeechPromptMD, "旧回答") || state.writes != 1 {
+	if err != nil || !legacy.Sections.Empty() || legacy.LegacyPromptMD != state.rows[[2]int64{14, 7}][0] || !legacy.LegacyUnstructured || legacy.SpeechPromptMD != "" || state.writes != 1 {
 		t.Fatal(legacy, err)
 	}
 	if _, err = s.SaveLiveAgentPlanPromptSections(context.Background(), 14, 4, 28, planprompt.Sections{FactsMD: strings.Repeat("字", 20000)}); err == nil {
@@ -152,5 +152,41 @@ func TestPlanPromptSectionsAtomicStorageAndRuntimeRead(t *testing.T) {
 	state.rows[[2]int64{14, 8}] = []driver.Value{"原文", "invalid-json", nil, time.Now()}
 	if _, err := s.GetLiveAgentPlanPromptDocument(context.Background(), 14, 8); err == nil {
 		t.Fatal("corrupt sections silently accepted")
+	}
+}
+
+func TestPlanPromptRawSectionsRoundTripWithoutRepartition(t *testing.T) {
+	state := &promptSectionSQL{rows: map[[2]int64][]driver.Value{}}
+	database := sql.OpenDB(promptSectionConnector{state})
+	defer database.Close()
+	s := &Store{db: database}
+	original := planprompt.Sections{
+		PersonaMD:                 "  我的原始人设\n\n【事实依据】\n这个标题仍属于人设页\n  ",
+		FactsMD:                   "\n〔提示〕我在此页保留的原始说明\n  京东物流  \n",
+		SpeechRequirementsMD:      "\n\n",
+		InteractionRequirementsMD: "  只回答被问内容\n【主播人设】\n这是互动页原文，不能被挪走\n",
+	}
+	compiled := original.Normalize()
+	doc, err := s.SaveLiveAgentPlanPromptSections(context.Background(), 14, 4, 28, original)
+	if err != nil || doc.Sections != original {
+		t.Fatalf("raw originals changed: got=%#v err=%v", doc.Sections, err)
+	}
+	if doc.InteractionPromptMD != compiled.Interaction() || doc.SpeechPromptMD != compiled.Speech() {
+		t.Fatal("compiled assets must use a separate cleaned copy", doc)
+	}
+	state.rows[[2]int64{14, 5}] = []driver.Value{"其它方案", nil, nil, time.Now()}
+	if _, err = s.GetLiveAgentPlanPromptDocument(context.Background(), 14, 5); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := s.GetLiveAgentPlanPromptDocument(context.Background(), 14, 4)
+	if err != nil || reloaded.Sections != original || state.writes != 1 {
+		t.Fatal("switching away and back must restore only original fields", reloaded, err)
+	}
+	if _, err = s.SaveLiveAgentPlanPromptSections(context.Background(), 14, 4, 28, planprompt.Sections{}); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := s.GetLiveAgentPlanPromptDocument(context.Background(), 14, 4)
+	if err != nil || !empty.Sections.Empty() || empty.PromptMD != "" || empty.SpeechPromptMD != "" {
+		t.Fatal("explicitly clearing all four pages must persist", empty, err)
 	}
 }
