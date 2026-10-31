@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { validateOriginalAudioFiles } from '../directAudioUpload'
-import QuestionLibraryPanel from '../components/QuestionLibraryPanel.vue'
 import RoomReadingRules from '../components/RoomReadingRules.vue'
 import PlanPromptEditor from '../components/PlanPromptEditor.vue'
 import { emptyPlanPromptSections, readPlanPromptSections, planPromptValidation, type PlanPromptSections } from '../planPrompt'
@@ -8,7 +7,6 @@ import { useFeedbackErrorRef } from '../uiFeedback'
 import { normalizeLiveAgentPlanVersion } from '../liveAgentPlanVersion'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { mainlineIndustryLabel, mainlineLiveTypeLabel, mainlineRoleSequenceLabel, productPlanDirectionLabel, productRoomRolesLabel } from '../agent/mainlineDisplay'
 
 import { planDefaultVoice, planVoiceChoices, planVoiceUnavailable } from '../planAssets'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
@@ -18,13 +16,8 @@ import LiveProductLinkCards from '../components/LiveProductLinkCards.vue'
 import CreateProductCardButton from '../components/CreateProductCardButton.vue'
 import BenefitScopeEditor from '../components/BenefitScopeEditor.vue'
 import { benefitAppliesToProduct } from '../benefitScopeDisplay'
-import InteractionRulesWorkspace from '../components/InteractionRulesWorkspace.vue'
-import AnswerStrategyPanel from '../components/AnswerStrategyPanel.vue'
-import { memoryInPlan, usePlanAnswerStrategies } from '../planAnswerStrategies'
 import { planSelectionPreferenceKey, readSelectedPlan, rememberSelectedPlan, restoredPlanSelection } from '../planSelectionPreference'
-import { useInteractionReviewCount } from '../interactionReviewCount'
 import { useContentPools } from '../contentPools'
-import AnchorTrainingReceipt from '../components/AnchorTrainingReceipt.vue'
 import FactRiskEvidencePanel from '../components/FactRiskEvidencePanel.vue'
 import PlanConfigurationNavigation from '../components/PlanConfigurationNavigation.vue'
 import PlanBusinessModePanel from '../components/PlanBusinessModePanel.vue'
@@ -42,154 +35,19 @@ import { sortFormalFactsByScope, type FactScopeSortOrder } from '../formalFactSc
 import { factCategoryDefinition, factCategoryGroups, factCategoryState, loadFactCategories } from '../factCategories'
 import { useFactNameSuggestion } from '../factNameSuggestion'
 import RealtimeAnchorPreviewPanel from '../components/RealtimeAnchorPreviewPanel.vue'
-import AnchorStyleAnalysisDisplay from '../components/AnchorStyleAnalysisDisplay.vue'
-import AnchorControlBar from '../components/AnchorControlBar.vue'
 import LivePlanVersionBadge from '../components/LivePlanVersionBadge.vue'
 import { latestSavedPlanVersion } from '../livePlanVersionStatus'
-import AnchorPresenterManager from '../components/AnchorPresenterManager.vue'
-import AnchorRecommendationPicker from '../components/AnchorRecommendationPicker.vue'
-import { getCurrentAnchor, uploadAnchorAvatar } from '../anchorRecommendations'
-import type { AnchorAvatarType } from '../anchorAvatar'
-import { limitAnchorSample } from '../anchorAnalysis'
-import type { PreviewStreamEvent } from '../agent/previewStream'
+import { getCurrentAnchor } from '../anchorRecommendations';
 import RealtimeGenerationOptionsPanel from '../components/RealtimeGenerationOptionsPanel.vue'
 import { defaultSelfReference, realtimeOptionsFromVersion, realtimeGenerationOptionsError, validatedRealtimeOptions, type RealtimeGenerationOptions } from '../realtimeGenerationOptions'
 import { request } from '../api'
-import {
-  activateLiveAgentConfigVersion,
-  adoptAgentLearningSession,
-  adoptLiveAgentPlanBenefits,
-  adoptLiveAgentPlanFacts,
-  adoptLiveAgentPlanProductLinks,
-  copyLiveAgentPlanProductLink,
-  copyLiveAgentPlanBenefit,
-  archiveLiveAgentPlan,
-  cloneLiveVoiceProfile,
-  createAgentLearningSession,
-  createAgentLearningTurn,
-  createLiveAgentPlanVersion,
-  createLiveAgentPlanScript,
-  createLiveAgentPlan,
-	createLiveAgentPlanProductAttribute,
-  getLiveAgentPlanWorkspace,
-  getLiveAgentPlanVersions,
-  getLiveAgentPlans,
-  getLiveAgentPlanBenefits,
-  getLiveAgentPlanFacts,
-  getLiveAgentPlanProductLinks,
-  getLiveAgentPlanPrompt,
-  saveLiveAgentPlanPrompt,
-  getLiveAgentPlanScripts,
-  getLiveVoiceModelBindings,
-  getLiveOfficialVoices,
-  createLiveAgentConfigDraft,
-  getLiveAgentConfigVersions,
-  getLiveAddressingStrategy,
-  getLiveAgentSettings,
-  getUserUIPreferences,
-  getLiveRoomPolicyContext,
-  getRooms,
-  getRoom,
-  deactivateAgentMemory,
-  deleteLiveAgentPlanBenefit,
-  deleteLiveAgentPlanProductLink,
-	deleteLiveAgentPlanProductAttribute,
-  publishLiveRoomPolicyVersion,
-  auditLiveAgentFullShowPreview,
-  regenerateLiveAgentFullShowVariant,
-  generateLiveAgentFullShowVariantVoice,
-  rebuildLiveAgentFullShowVariantSubtitles,
-  rebuildLiveAgentCustomMainline,
-  confirmLiveAgentPlanScriptAnalysis,
-  getLiveAgentPlanStyleOverlays,
-  getAnchorStylePluginCatalog,
-  getAnchorStyleWorkbenchContext,
-  activateLiveAgentPlanStylePlugin,
-  interpretLiveAgentPlanStyleOverlay,
-  learnLiveAgentPlanStyleOverlay,
-  saveLiveAgentPlanStyleOverlays,
-  testLiveAgentAnchorStyle,
-  previewAnalyzeLiveAgentAnchorStyle,
-  listLiveAnchorStyles,
-  createLiveAnchorStyle,
-  getLiveAnchorStyle,
-  updateLiveAnchorStyle,
-  updateLiveAnchorStyleAvatar,
-  deleteLiveAnchorStyle,
-  listLiveAnchorStyleSamples,
-  createLiveAnchorStyleSample,
-  deleteLiveAnchorStyleSample,
-  analyzeLiveAnchorStyleSample,
-  getLiveAnchorAnalysisVersions,
-  fuseLiveAnchorAnalyses,
-  editLiveAnchorAnalysis,
-  useLiveAnchorAnalysis,
-  updateLiveAnchorDescription,
-  upsertLiveAnchorStylePlugin,
-  deleteLiveAnchorStylePlugin,
-  bindLiveAnchorStyleToPlan,
-  unbindLiveAnchorStyleFromPlan,
-  previewAnalyzeLiveAgentPlanScript,
-  previewGenerateLiveAgentFullShow,
-  previewRecognizeLiveAgentPlanImage,
-  updateLiveAgentPlan,
-  updateLiveAgentPlanBenefit,
-  updateLiveAgentPlanProductLink,
-	updateLiveAgentPlanProductAttribute,
-	saveLiveAgentPlanProductLinkFrequencyWeight,
-	saveLiveAgentPlanProductSellingPoints,
-  updateLiveAgentPlanScript,
-  updateLiveAgentSettings,
-  updateLiveAddressingStrategy,
-  updateUserUIPreferences,
-  uploadLiveAgentCustomMainline,
-  uploadLiveMediaAsset,
-} from '../api'
+import { activateLiveAgentConfigVersion, adoptLiveAgentPlanBenefits, adoptLiveAgentPlanFacts, adoptLiveAgentPlanProductLinks, copyLiveAgentPlanProductLink, copyLiveAgentPlanBenefit, archiveLiveAgentPlan, cloneLiveVoiceProfile, createLiveAgentPlanVersion, createLiveAgentPlanScript, createLiveAgentPlan, createLiveAgentPlanProductAttribute, getLiveAgentPlanWorkspace, getLiveAgentPlanVersions, getLiveAgentPlans, getLiveAgentPlanBenefits, getLiveAgentPlanFacts, getLiveAgentPlanProductLinks, getLiveAgentPlanPrompt, saveLiveAgentPlanPrompt, getLiveAgentPlanScripts, getLiveVoiceModelBindings, getLiveOfficialVoices, createLiveAgentConfigDraft, getLiveAgentConfigVersions, getLiveAddressingStrategy, getLiveAgentSettings, getUserUIPreferences, getLiveRoomPolicyContext, getRooms, getRoom, deleteLiveAgentPlanBenefit, deleteLiveAgentPlanProductLink, deleteLiveAgentPlanProductAttribute, publishLiveRoomPolicyVersion, auditLiveAgentFullShowPreview, regenerateLiveAgentFullShowVariant, generateLiveAgentFullShowVariantVoice, rebuildLiveAgentFullShowVariantSubtitles, rebuildLiveAgentCustomMainline, getLiveAgentPlanStyleOverlays, getAnchorStylePluginCatalog, getAnchorStyleWorkbenchContext, testLiveAgentAnchorStyle, previewAnalyzeLiveAgentAnchorStyle, listLiveAnchorStyles, getLiveAnchorStyle, listLiveAnchorStyleSamples, getLiveAnchorAnalysisVersions, previewAnalyzeLiveAgentPlanScript, previewGenerateLiveAgentFullShow, previewRecognizeLiveAgentPlanImage, updateLiveAgentPlan, updateLiveAgentPlanBenefit, updateLiveAgentPlanProductLink, updateLiveAgentPlanProductAttribute, saveLiveAgentPlanProductLinkFrequencyWeight, saveLiveAgentPlanProductSellingPoints, updateLiveAgentPlanScript, updateLiveAgentSettings, updateUserUIPreferences, uploadLiveAgentCustomMainline, uploadLiveMediaAsset } from '../api';
 import { session } from '../session'
 import '../styles/workflow-guidance.css'
 import { beginLiveSupportScope, liveSupportMediaPlaybackURL } from '../liveSupportAccess'
 import { getPlanContentMode, setPlanContentMode } from '../api'
 import { canSelectLiveContentMode, liveContentModeLabels, visibleLiveContentModes, type LiveContentMode, type LiveContentModeAccess } from '../liveContentModeOptions'
-import type {
-  AgentMemoryItem,
-  LiveAgentConfigInput,
-  LiveAgentPlan,
-  LiveAgentPlanBenefit,
-  LiveAgentPlanBenefitCandidate,
-  LiveAgentPlanFact,
-  LiveAgentPlanFactCandidate,
-  LiveAgentPlanProductLink,
-  LiveAgentPlanProductLinkCandidate,
-	LiveAgentPlanProductAttribute,
-  LiveAgentPlanScript,
-  LiveAgentPlanScriptAnalysis,
-  LiveAgentPlanAnchorStyleProfile,
-  LiveAnchorStyle,
-  LiveAnchorStyleSample,
-  LiveAnchorAnalysisState,
-  AnchorAnalysisSection,
-  LiveAnchorStyleAnalysisQC,
-  LiveAgentPlanStyleOverlayProfile,
-  LiveAnchorStyleOverlayItem,
-  AnchorStylePluginCatalog,
-  AnchorStylePluginCatalogItem,
-  AnchorStyleSellingPointWheelResponse,
-  LiveAgentFullShowGenerationContext,
-  LiveAgentFullShowPreviewResponse,
-  LiveAgentFullShowVariant,
-  LiveAgentCustomMainlineResponse,
-  LiveAgentPlanVersion,
-  LiveAgentPlanTimelineSegment,
-  LiveAgentPlanSafePoint,
-  LiveAgentVoiceIdentity,
-  LiveAgentConfigVersion,
-  LiveAgentSettings,
-  LiveAgentSettingsInput,
-  LiveAddressingOption,
-  LiveAddressingStrategy,
-  LiveRoomPolicyContext,
-  Room,
-} from '../types'
+import type { LiveAgentConfigInput, LiveAgentPlan, LiveAgentPlanBenefit, LiveAgentPlanBenefitCandidate, LiveAgentPlanFact, LiveAgentPlanFactCandidate, LiveAgentPlanProductLink, LiveAgentPlanProductLinkCandidate, LiveAgentPlanProductAttribute, LiveAgentPlanScript, LiveAgentPlanScriptAnalysis, LiveAnchorStyle, LiveAnchorStyleSample, LiveAnchorAnalysisState, LiveAnchorStyleAnalysisQC, LiveAgentPlanStyleOverlayProfile, LiveAnchorStyleOverlayItem, AnchorStylePluginCatalog, AnchorStyleSellingPointWheelResponse, LiveAgentFullShowGenerationContext, LiveAgentFullShowPreviewResponse, LiveAgentFullShowVariant, LiveAgentCustomMainlineResponse, LiveAgentPlanVersion, LiveAgentPlanTimelineSegment, LiveAgentPlanSafePoint, LiveAgentVoiceIdentity, LiveAgentConfigVersion, LiveAgentSettings, LiveAgentSettingsInput, LiveAddressingStrategy, LiveRoomPolicyContext, Room } from '../types';
 
 const props = withDefaults(defineProps<{
   supportSession?: boolean
@@ -260,7 +118,7 @@ const planActionsMenu = ref<HTMLDetailsElement | null>(null)
 watch(activeMode, mode => {
   // Compatibility events may still carry retired page names. Never reopen them.
   if (mode === 'supplement') activeMode.value = 'products'
-  else if (mode === 'knowledge' || mode === 'miner') activeMode.value = 'plan_prompt'
+  else if (['knowledge','miner','memory','addressing','strategy','anchor'].includes(mode)) activeMode.value = 'plan_prompt'
   else if (isPlanFactMode(mode)) lastFactMode.value = mode
   else if (mode === 'plan_prompt') void loadPlanPrompt()
 }, { flush: 'sync' })
@@ -271,19 +129,18 @@ function dismissPlanActionsMenu(event: MouseEvent) {
 }
 function selectPlanConfigurationSection(section: PlanConfigurationSection) {
   const modes: Record<PlanConfigurationSection, PlanConfigurationMode> = {
-    business: 'business', facts: lastFactMode.value, interaction: 'memory', reading: 'reading',
-    style: 'anchor', voice: 'voice', live: 'fullshow',
+    business: 'business', facts: lastFactMode.value, reading: 'reading',
+    voice: 'voice', live: 'fullshow',
   }
   selectPlanConfigurationMode(modes[section])
 }
 function selectPlanConfigurationMode(mode: PlanConfigurationMode) {
   if (mode === 'products' || mode === 'benefits') openSourceRiskLocation(mode)
-  else if (mode === 'memory') openInteractionPendingLocation()
   else activeMode.value = mode
 }
 const interactionReviewRoute=useRoute()
-watch(()=>interactionReviewRoute.query.interaction_review,mode=>{if(mode==='facts') activeMode.value='plan_prompt'})
-onMounted(()=>{if(interactionReviewRoute.query.interaction_review==='facts') activeMode.value='plan_prompt'})
+watch(()=>interactionReviewRoute.query.interaction_review,mode=>{if(['facts','memory','interaction','anchor','style','addressing','strategy'].includes(String(mode))) activeMode.value='plan_prompt'})
+onMounted(()=>{if(['facts','memory','interaction','anchor','style','addressing','strategy'].includes(String(interactionReviewRoute.query.interaction_review))) activeMode.value='plan_prompt'})
 const defaultSettings: LiveAgentSettings = {
   tenant_id: 0,
   display_name: '小伴直播教练',
@@ -303,9 +160,6 @@ const settingsDraft = ref<LiveAgentSettingsInput>({
 const settingsSaving = ref(false)
 const settingsError = useFeedbackErrorRef()
 const addressingStrategy = ref<LiveAddressingStrategy>({ addressing_mode: 'system', addressing: [] })
-const addressingSaving = ref(false)
-const addressingError = useFeedbackErrorRef()
-const addressingNotice = ref('')
 const configVersions = ref<LiveAgentConfigVersion[]>([])
 const livePlans = ref<LiveAgentPlan[]>([])
 const currentRoomPlanId = ref<number | null>(null)
@@ -428,7 +282,6 @@ const scriptSourceType = ref<'paste' | 'upload'>('paste')
 const scriptBusy = ref(false)
 const scriptRecognizing = ref(false)
 const scriptAnalyzing = ref(false)
-const anchorStyleApplying = ref(false)
 const scriptNotice = ref('')
 const scriptAnalysisProgress = ref(0)
 const scriptAnalysisStage = ref('')
@@ -544,23 +397,9 @@ watch(() => JSON.stringify([currentRoomPlanId.value, planTenantId.value, session
 const adoptingBenefitKey = ref('')
 const adoptingProductLinkKey = ref('')
 let scriptAnalysisProgressTimer: number | null = null
-const editingMemoryId = ref<number | null>(null)
-const memoryEditSessionId = ref<number | null>(null)
-const memoryEditFeedback = ref('')
-const memoryEditPreview = ref('')
-const memoryEditError = useFeedbackErrorRef()
-const memoryMutatingId = ref<number | null>(null)
-const memoryDeleteConfirmId = ref<number | null>(null)
 const messages = ref<Array<{ role: 'agent' | 'user'; text: string }>>([
   { role: 'agent', text: defaultSettings.greeting },
 ])
-const answerStrategyScope = () => ({ tenantId: planTenantId.value || 0, roomId: activeRoomId.value || 0, planId: currentRoomPlanId.value || 0, actorKey: session.bootstrap ? `${session.bootstrap.actor.tenant_id}:${session.bootstrap.actor.user_id}` : '' })
-const { items: memories, loading: memoriesLoading, error: memoriesError, refresh: refreshMemories } = usePlanAnswerStrategies(answerStrategyScope)
-const interactionMemories = computed(() => memories.value.filter(item => memoryInPlan(item, answerStrategyScope()) && ['semantic', 'interaction'].includes(String(item.memory_type || '').trim().toLowerCase())))
-let memoryEditEpoch = 0
-watch(() => JSON.stringify(answerStrategyScope()), () => {
-  resetMemoryEdit(); memoryMutatingId.value = null; memoryDeleteConfirmId.value = null
-}, { flush: 'sync' })
 const contentPools = useContentPools(currentRoomPlanId, planTenantId)
 const poolStatus = contentPools.status
 const poolPreview = contentPools.preview
@@ -787,8 +626,6 @@ const savedStyleScript = computed(() => planScripts.value.find((item) => item.an
 const reusableAnchorStyles = ref<LiveAnchorStyle[]>([])
 const anchorRecommendationsOpen = ref(false)
 const currentBoundAnchorId = ref(0)
-// 主播风格是可选资产：绑了就用它的腔调与评分基准，没绑就自由发挥照常开播。这里只做状态呈现，不做拦截。
-const currentBoundAnchorStyle = computed(() => reusableAnchorStyles.value.find((item) => item.id === currentBoundAnchorId.value) || null)
 const anchorBindingBusy = ref(false)
 let anchorBindingEpoch = 0, anchorWorkspaceLoadSequence = 0
 const anchorWorkspaceScope = () => `${session.bootstrap?.actor.user_id || 0}:${planTenantId.value || 0}:${currentRoomPlanId.value || 0}`
@@ -819,66 +656,18 @@ const anchorStyleProfileDraft = ref<AnchorStyleProfileDraft>({
   tone: '', audience_terms: '', self_terms: '', catchphrases: '', avoid_terms: '',
   pace: 'short', warmth: 60, expertise: 55, promotion: 40, dialect: '', extra: '',
 })
-const anchorStyleProfileSaving = ref(false)
 const reusableAnchorStyleBusy = ref(false)
 const reusableAnchorStyleNotice = ref('')
 const reusableAnchorStyleError = useFeedbackErrorRef()
-const editingReusableAnchorStyleNameId = ref<number | null>(null)
-const reusableAnchorStyleNameDraft = ref('')
-const savingReusableAnchorStyleNameId = ref<number | null>(null)
-const savingReusableAnchorAvatarIds = ref<number[]>([])
 const reusableAnchorStyleSampleDraft = ref({ title: '', raw_text: '' })
 const reusableAnchorStyleAnalysisStage = ref('')
 const reusableAnchorStyleAnalysisProgress = ref(0)
 const reusableAnchorMultiAnalysis = ref(false)
-const legacyStyleUIVisible = ref(false)
 const reusableAnchorSampleLimitNotice = ref('')
 const reusableAnchorAnalysisVersions = ref<LiveAnchorAnalysisState>({ items: [], active_version_id: 0 })
 const reusableAnchorAnalysisPreviewId = ref(0)
 const viewedAnchorSample = ref<LiveAnchorStyleSample | null>(null)
-const savingReusableAnchorDescriptionIds = ref<number[]>([])
 let reusableAnchorSelectionEpoch = 0
-const overallAnchorAnalysisText = computed(() => reusableAnchorAnalysisVersions.value.items.find(item => item.id === reusableAnchorAnalysisPreviewId.value)?.text || selectedReusableAnchorStyle.value?.profile.delivery_spec?.meta_prompt_md || '')
-const activeAnchorAnalysisVersion = computed(() => reusableAnchorAnalysisVersions.value.items.find(item => item.id === reusableAnchorAnalysisVersions.value.active_version_id))
-function syncAnchorSampleCount() {
-  const style = selectedReusableAnchorStyle.value
-  if (!style) return
-  const count = reusableAnchorStyleSamples.value.length
-  selectedReusableAnchorStyle.value = { ...style, sample_count: count }
-  reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, sample_count: count } : item)
-}
-function setAnchorSampleDraft(event: Event) {
-  const target = event.target as HTMLTextAreaElement
-  const limited = limitAnchorSample(target.value)
-  reusableAnchorStyleSampleDraft.value.raw_text = limited.text
-  target.value = limited.text
-  reusableAnchorSampleLimitNotice.value = limited.truncated ? '最多10000字，超出部分已截断。' : ''
-}
-function anchorAnalysisScope(styleId: number) {
-  const tenant = planTenantId.value, room = currentRoomPlanId.value, epoch = reusableAnchorSelectionEpoch
-  return { tenant, current: () => tenant === planTenantId.value && room === currentRoomPlanId.value && styleId === selectedReusableAnchorStyleId.value && epoch === reusableAnchorSelectionEpoch }
-}
-function anchorAnalysisProgress(event: PreviewStreamEvent) {
-  if (event.type !== 'progress') return
-  reusableAnchorStyleAnalysisStage.value = event.message
-  reusableAnchorStyleAnalysisProgress.value = event.percent ?? reusableAnchorStyleAnalysisProgress.value
-}
-async function refreshAnchorAnalysisVersions(styleId: number) {
-  const scope = anchorAnalysisScope(styleId)
-  const versions = await getLiveAnchorAnalysisVersions(styleId, scope.tenant)
-  if (!scope.current()) return
-  reusableAnchorAnalysisVersions.value = versions
-  reusableAnchorAnalysisPreviewId.value = versions.active_version_id
-}
-const reusableAnchorStyleLongTestRunning = ref(false)
-const reusableAnchorStyleLongTestText = ref('')
-const reusableAnchorStyleLongTestSegments = ref(0)
-const reusableAnchorStyleLongTestMinutes = ref(30)
-const reusableAnchorStyleLongTestOpen = ref(false)
-const reusableAnchorStyleLongTestStage = ref('等待开始')
-const reusableAnchorStyleLongTestOutput = ref<HTMLElement | null>(null)
-const reusableAnchorStyleLongTestContinuation = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>>['continuation'] | undefined>(undefined)
-const reusableAnchorStyleLongTestAdvisories = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>>['advisories']>([])
 type AnchorAddressingMode = 'inherit' | 'append' | 'replace'
 const anchorAddressingDraft = ref({
   audience_mode: 'inherit' as AnchorAddressingMode,
@@ -886,7 +675,6 @@ const anchorAddressingDraft = ref({
   self_mode: 'inherit' as AnchorAddressingMode,
   self_terms: '',
 })
-const anchorAddressingSaving = ref(false)
 const reusableAnchorStyleProfile = computed(() => selectedReusableAnchorStyle.value?.profile || null)
 const anchorStyleProfile = computed(() => reusableAnchorStyleProfile.value?.dimensions?.length
   ? reusableAnchorStyleProfile.value
@@ -894,46 +682,21 @@ const anchorStyleProfile = computed(() => reusableAnchorStyleProfile.value?.dime
     ? currentAnalysis.value.anchor_style
     : savedStyleScript.value?.analysis.anchor_style || null)
 const anchorStyleSourceText = ref('')
-const anchorStyleSampleExpanded = ref(true)
-const anchorStyleTestBusy = ref(false)
 const anchorStyleOutputOpen = ref(false)
 const anchorStylePartialText = ref('')
 const anchorStyleGenerationProgress = ref('')
-const anchorStyleTestTopic = ref('本轮主线介绍当前商品的核心价值，并从一个正式事实自然展开')
-const anchorStyleTestTargetChars = ref(500)
-const anchorStyleConversionIntensity = ref(55)
 const anchorStyleTestResult = ref<Awaited<ReturnType<typeof testLiveAgentAnchorStyle>> | null>(null)
 const anchorStyleTestError = useFeedbackErrorRef()
 const anchorStyleAnalysisQC = ref<LiveAnchorStyleAnalysisQC | null>(null)
 const anchorStyleCorrectionFeedback = ref('')
 const anchorStyleCorrectionCandidates = ref<LiveAnchorStyleOverlayItem[]>([])
 const anchorStyleCorrectionHistory = ref<Array<{ feedback: string; diagnosis: string; model: string }>>([])
-const anchorStyleAdvisoryOverrides = ref<string[]>([])
-const anchorStyleCorrectionBusy = ref(false)
 const anchorStyleCorrectionError = useFeedbackErrorRef()
 const styleOverlayProfile = ref<LiveAgentPlanStyleOverlayProfile | null>(null)
-const styleOverlaySource = ref('')
-const styleOverlayExplanation = ref('')
-const styleOverlayStrength = ref(50)
-const styleOverlayBusy = ref(false)
 const styleOverlayError = useFeedbackErrorRef()
 const styleOverlayNotice = ref('')
 const styleOverlayPending = ref<LiveAnchorStyleOverlayItem | null>(null)
-const styleOverlayMemoryMatches = ref(0)
 const stylePluginCatalog = ref<AnchorStylePluginCatalog | null>(null)
-const stylePluginBusyID = ref('')
-const anchorDelivery = computed(() => anchorStyleProfile.value?.delivery_spec)
-const anchorRulebook = computed(() => anchorDelivery.value?.version === 'anchor-delivery/v1' ? anchorDelivery.value.rulebook || '' : '')
-const enabledStyleOverlayCount = computed(() => styleOverlayProfile.value?.items.filter((item) => item.enabled).length || 0)
-const activeStylePluginIDs = computed(() => new Set((styleOverlayProfile.value?.items || []).flatMap((item) => item.plugin?.plugin_id ? [item.plugin.plugin_id] : [])))
-const canRunAnchorStyleTest = computed(() => Boolean(anchorRulebook.value) || enabledStyleOverlayCount.value > 0)
-const learnedAnchorAudienceTerms = computed(() => (anchorDelivery.value?.literal_habits || [])
-  .filter((item) => item.kind === 'audience_address' || item.kind === 'audience_pronoun')
-  .map((item) => item.text))
-const learnedAnchorSelfTerms = computed(() => (anchorDelivery.value?.literal_habits || [])
-  .filter((item) => item.kind === 'self_address')
-  .map((item) => item.text))
-const anchorCopyNotice = ref('')
 
 function loadAnchorAddressingDraft(style: LiveAnchorStyle | null) {
   const value = style?.profile.delivery_spec?.addressing_override
@@ -943,10 +706,6 @@ function loadAnchorAddressingDraft(style: LiveAnchorStyle | null) {
     self_mode: (value?.self_mode === 'append' || value?.self_mode === 'replace' ? value.self_mode : 'inherit') as AnchorAddressingMode,
     self_terms: (value?.self_terms || []).join('、'),
   }
-}
-
-function splitAnchorAddressingTerms(value: string) {
-  return Array.from(new Set(value.split(/[、,，;；\n]+/).map((item) => item.trim()).filter(Boolean))).slice(0, 12)
 }
 
 function instructionValue(style: LiveAnchorStyle, prefix: string) {
@@ -1004,177 +763,6 @@ function defaultAnchorStyleDraft(): AnchorStyleProfileDraft {
   }
 }
 
-function buildAnchorStyleCardProfile(style: LiveAnchorStyle, draft: AnchorStyleProfileDraft): LiveAgentPlanAnchorStyleProfile {
-  const audienceTerms = splitAnchorAddressingTerms(draft.audience_terms)
-  const selfTerms = splitAnchorAddressingTerms(draft.self_terms)
-  const catchphrases = splitAnchorAddressingTerms(draft.catchphrases)
-  const dialectTerms = splitAnchorAddressingTerms(draft.dialect)
-  const habits: NonNullable<NonNullable<LiveAgentPlanAnchorStyleProfile['delivery_spec']>['literal_habits']> = []
-  const addHabit = (kind: string, text: string, position: string, when: string) => {
-    if (!text.trim()) return
-    habits.push({ kind, text: text.trim(), position, when, count: 1, stability: 'stable' })
-  }
-  audienceTerms.forEach((term) => addHabit('audience_address', term, '称呼位', '称呼观众时'))
-  selfTerms.forEach((term) => addHabit('self_address', term, '自指位', '主播自指时'))
-  catchphrases.forEach((term) => addHabit('catchphrase', term, '句尾/承接位', '自然承接时少量使用'))
-  dialectTerms.forEach((term) => addHabit('dialect_marker', term, '句尾点缀', '需要地域感时少量使用'))
-  const instructions = anchorStyleProfileInstructions(draft)
-  return {
-    ...(style.style_card || style.profile),
-    summary: draft.tone.trim() || '手动设定的主播风格',
-    dimensions: [],
-    reusable_rules: instructions,
-    candidate_patterns: [],
-    excluded_from_style: ['商品事实', '价格', '库存', '链接', '促销策略'],
-    delivery_spec: {
-      version: 'anchor-delivery/v1',
-      instructions,
-      literal_habits: habits,
-      addressing_override: {
-        audience_mode: audienceTerms.length ? 'replace' : 'inherit',
-        audience_terms: audienceTerms,
-        self_mode: selfTerms.length ? 'replace' : 'inherit',
-        self_terms: selfTerms,
-      },
-      rulebook: '',
-      meta_prompt_md: '',
-      sample_chars: 0,
-      sentence_count: 0,
-      average_sentence_chars: 0,
-      sample_confidence: 'low',
-      source_sha256: '',
-    },
-  }
-}
-
-function anchorStyleProfileInstructions(draft: AnchorStyleProfileDraft) {
-  const pace = draft.pace === 'long' ? '长句、完整展开' : draft.pace === 'medium' ? '中短句、自然停顿' : '短句、口语、少绕弯'
-  return [
-    `语气：${draft.tone.trim() || '自然、口语、像在跟一个人说话'}`,
-    `句子节奏：${pace}`,
-    `热情度：${draft.warmth}/100`,
-    `专业度：${draft.expertise}/100`,
-    `促单强度：${draft.promotion}/100`,
-    draft.dialect.trim() ? `地域口音：${draft.dialect.trim()}` : '',
-    draft.avoid_terms.trim() ? `避免词：${draft.avoid_terms.trim()}` : '',
-    draft.extra.trim() ? `补充：${draft.extra.trim()}` : '',
-    '只回答当前问题，不主动扩展无关信息；事实没有的不补、不猜。',
-  ].filter(Boolean)
-}
-
-async function saveAnchorStyleProfile() {
-  const style = selectedReusableAnchorStyle.value
-  if (!style || anchorStyleProfileSaving.value) return
-  const profile = buildAnchorStyleCardProfile(style, anchorStyleProfileDraft.value)
-  anchorStyleProfileSaving.value = true
-  reusableAnchorStyleError.value = ''
-  try {
-    const updated = await updateLiveAnchorStyle(style.id, {
-      name: style.name,
-      description: style.description || '',
-      style_source_mode: 'card',
-      style_card: profile,
-    }, planTenantId.value)
-    selectedReusableAnchorStyle.value = updated
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
-    loadAnchorStyleProfileDraft(updated)
-    reusableAnchorStyleNotice.value = '主播风格卡已保存，并切换为风格卡来源；可以直接测试或用于方案。'
-  } catch (err) {
-    reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播风格失败'
-  } finally {
-    anchorStyleProfileSaving.value = false
-  }
-}
-
-async function saveAnchorSourceMode(style: LiveAnchorStyle, mode: 'card' | 'sample') {
-  if (!style || reusableAnchorStyleBusy.value) return
-  const tenant = planTenantId.value, room = currentRoomPlanId.value
-  reusableAnchorStyleBusy.value = true
-  reusableAnchorStyleError.value = ''
-  try {
-    const hasCard = !!style.style_card?.delivery_spec?.instructions?.length
-    const updated = await updateLiveAnchorStyle(style.id, mode === 'card' && !hasCard
-      ? {
-          name: style.name,
-          description: style.description || '',
-          style_source_mode: 'card',
-          style_card: buildAnchorStyleCardProfile(style, defaultAnchorStyleDraft()),
-        }
-      : {
-          name: style.name,
-          description: style.description || '',
-          style_source_mode: mode,
-        }, tenant)
-    if (tenant !== planTenantId.value || room !== currentRoomPlanId.value) return
-    selectedReusableAnchorStyle.value = updated
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
-    loadAnchorAddressingDraft(updated)
-    loadAnchorStyleProfileDraft(updated)
-    reusableAnchorStyleTab.value = mode === 'card' ? 'style' : 'samples'
-    reusableAnchorStyleNotice.value = mode === 'card' ? '已切换为风格卡。' : '已切换为风格样本。'
-  } catch (err) {
-    if (tenant === planTenantId.value && room === currentRoomPlanId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '切换风格来源失败'
-  } finally { reusableAnchorStyleBusy.value = false }
-}
-
-async function saveAnchorAddressingOverride() {
-  const style = selectedReusableAnchorStyle.value
-  if (!style?.profile.delivery_spec || anchorAddressingSaving.value) return
-  const audienceTerms = splitAnchorAddressingTerms(anchorAddressingDraft.value.audience_terms)
-  const selfTerms = splitAnchorAddressingTerms(anchorAddressingDraft.value.self_terms)
-  if (anchorAddressingDraft.value.audience_mode !== 'inherit' && !audienceTerms.length) {
-    reusableAnchorStyleError.value = '观众称呼选择添加或替换时，请至少填写一个称呼。'
-    return
-  }
-  if (anchorAddressingDraft.value.self_mode !== 'inherit' && !selfTerms.length) {
-    reusableAnchorStyleError.value = '主播自称选择添加或替换时，请至少填写一个自称。'
-    return
-  }
-  anchorAddressingSaving.value = true
-  reusableAnchorStyleError.value = ''
-  try {
-    const profile: LiveAgentPlanAnchorStyleProfile = JSON.parse(JSON.stringify(style.profile))
-    if (!profile.delivery_spec) return
-    profile.delivery_spec.addressing_override = {
-      audience_mode: anchorAddressingDraft.value.audience_mode,
-      audience_terms: audienceTerms,
-      self_mode: anchorAddressingDraft.value.self_mode,
-      self_terms: selfTerms,
-    }
-    const updated = await updateLiveAnchorStyle(style.id, {
-      name: style.name,
-      description: style.description || '',
-      profile,
-    }, planTenantId.value)
-    selectedReusableAnchorStyle.value = updated
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? updated : item)
-    loadAnchorAddressingDraft(updated)
-    reusableAnchorStyleNotice.value = '生成话术使用的称呼覆盖已保存；实时互动策略没有修改。'
-  } catch (err) {
-    reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存称呼覆盖失败'
-  } finally {
-    anchorAddressingSaving.value = false
-  }
-}
-async function copyAnchorRulebook() {
-  try {
-    await navigator.clipboard.writeText(anchorRulebook.value)
-    anchorCopyNotice.value = '口播规范已复制'
-  } catch { anchorCopyNotice.value = '复制失败，请展开规范后手动选择复制' }
-}
-
-function styleOverlayStrengthLabel(value: number) {
-  if (value <= 35) return '轻微'
-  if (value <= 70) return '适中'
-  return '明显'
-}
-
-function styleOverlayApplicationLabel(value: string) {
-  if (value === 'always') return '持续习惯'
-  if (value === 'occasional') return '偶尔出现'
-  return '按场景出现'
-}
-
 async function loadStyleOverlays() {
   const planId = currentRoomPlanId.value
   const tenantId = planTenantId.value
@@ -1222,30 +810,6 @@ async function loadReusableAnchorStyleWorkspace(preferredID?: number | null) {
   }
 }
 
-async function acceptRecommendedAnchors(items: LiveAnchorStyle[]) {
-  const tenant = planTenantId.value
-  const owned = items.filter(item => item.tenant_id === tenant)
-  if (!owned.length) return
-  const known = new Set(reusableAnchorStyles.value.map(item => item.id))
-  reusableAnchorStyles.value = [...reusableAnchorStyles.value, ...owned.filter(item => !known.has(item.id))]
-  reusableAnchorStyleNotice.value = '推荐主播已加入你的列表，选择后点击“设为当前智能体主播”即可使用。'
-  if (!selectedReusableAnchorStyleId.value) await selectReusableAnchorStyle(owned[0]!.id, false)
-}
-
-async function saveUploadedAnchorAvatar(style: LiveAnchorStyle, file: File) {
-  if (savingReusableAnchorAvatarIds.value.includes(style.id)) return
-  const tenant = planTenantId.value, room = currentRoomPlanId.value
-  savingReusableAnchorAvatarIds.value = [...savingReusableAnchorAvatarIds.value, style.id]
-  try {
-    const result = await uploadAnchorAvatar(style.id, file, tenant)
-    if (tenant !== planTenantId.value || room !== currentRoomPlanId.value) return
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, avatar_url: result.avatar_url } : item)
-    if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, avatar_url: result.avatar_url }
-    reusableAnchorStyleNotice.value = '你的主播头像已上传并保存啦。'
-  } catch (err) { if (tenant === planTenantId.value && room === currentRoomPlanId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '上传头像失败' }
-  finally { savingReusableAnchorAvatarIds.value = savingReusableAnchorAvatarIds.value.filter(id => id !== style.id) }
-}
-
 async function selectReusableAnchorStyle(styleID: number, showNotice = true) {
   const epoch = ++reusableAnchorSelectionEpoch
   const roomId = activeRoomId.value
@@ -1286,532 +850,6 @@ async function selectReusableAnchorStyle(styleID: number, showNotice = true) {
     if (epoch === reusableAnchorSelectionEpoch) reusableAnchorStyleBusy.value = false
   }
 }
-
-async function createReusableAnchorStyle() {
-  reusableAnchorStyleBusy.value = true
-  reusableAnchorStyleError.value = ''
-  try {
-    const style = await createLiveAnchorStyle({
-      name: '新主播',
-      description: '自然口语，像跟一个人说话',
-      style_source_mode: 'card',
-      tenant_id: planTenantId.value,
-    })
-    const defaultProfile = buildAnchorStyleCardProfile(style, defaultAnchorStyleDraft())
-    const updated = await updateLiveAnchorStyle(style.id, {
-      name: style.name,
-      description: style.description || '自然口语，像跟一个人说话',
-      style_source_mode: 'card',
-      style_card: defaultProfile,
-    }, planTenantId.value)
-    reusableAnchorStyles.value = [updated, ...reusableAnchorStyles.value]
-    await selectReusableAnchorStyle(style.id)
-    reusableAnchorStyleTab.value = 'style'
-  } catch (err) {
-    reusableAnchorStyleError.value = err instanceof Error ? err.message : '新建主播失败'
-  } finally { reusableAnchorStyleBusy.value = false }
-}
-
-async function saveReusableAnchorAvatar(style: LiveAnchorStyle, kind: AnchorAvatarType) {
-  if (savingReusableAnchorAvatarIds.value.includes(style.id) || (style.avatar_type === kind && !style.avatar_url)) return
-  const tenant = planTenantId.value
-  const roomId = activeRoomId.value
-  savingReusableAnchorAvatarIds.value = [...savingReusableAnchorAvatarIds.value, style.id]
-  reusableAnchorStyleError.value = ''
-  try {
-    const updated = await updateLiveAnchorStyleAvatar(style.id, kind, tenant)
-    if (tenant !== planTenantId.value || roomId !== activeRoomId.value) return
-    // Merge only presentation metadata; a concurrently completed analysis or
-    // rename must not be replaced with this request's older full response.
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, avatar_type: updated.avatar_type, avatar_url: updated.avatar_url } : item)
-    if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, avatar_type: updated.avatar_type, avatar_url: updated.avatar_url }
-    reusableAnchorStyleNotice.value = '主播头像已自动保存。'
-  } catch (err) {
-    if (tenant === planTenantId.value && roomId === activeRoomId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播头像失败'
-  } finally { savingReusableAnchorAvatarIds.value = savingReusableAnchorAvatarIds.value.filter(id => id !== style.id) }
-}
-
-function beginReusableAnchorStyleNameEdit(style: LiveAnchorStyle) {
-  editingReusableAnchorStyleNameId.value = style.id
-  reusableAnchorStyleNameDraft.value = style.name
-  reusableAnchorStyleError.value = ''
-}
-
-async function saveReusableAnchorDescription(style: LiveAnchorStyle, text: string) {
-  if (savingReusableAnchorDescriptionIds.value.includes(style.id)) return
-  const tenant = planTenantId.value, room = currentRoomPlanId.value
-  savingReusableAnchorDescriptionIds.value.push(style.id)
-  try {
-    const result = await updateLiveAnchorDescription(style.id, Array.from(text).slice(0, 50).join(''), tenant)
-    if (tenant !== planTenantId.value || room !== currentRoomPlanId.value) return
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? { ...item, description: result.description } : item)
-    if (selectedReusableAnchorStyle.value?.id === style.id) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, description: result.description }
-    reusableAnchorStyleNotice.value = '主播特征介绍已自动保存。'
-  } catch (err) { if (tenant === planTenantId.value && room === currentRoomPlanId.value) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存介绍失败' }
-  finally { savingReusableAnchorDescriptionIds.value = savingReusableAnchorDescriptionIds.value.filter(id => id !== style.id) }
-}
-
-function cancelReusableAnchorStyleNameEdit() {
-  editingReusableAnchorStyleNameId.value = null
-  reusableAnchorStyleNameDraft.value = ''
-}
-
-async function saveReusableAnchorStyleName(style: LiveAnchorStyle) {
-  if (editingReusableAnchorStyleNameId.value !== style.id || savingReusableAnchorStyleNameId.value === style.id) return
-  const name = reusableAnchorStyleNameDraft.value.trim()
-  if (!name) {
-    reusableAnchorStyleError.value = '主播名称不能为空。'
-    reusableAnchorStyleNameDraft.value = style.name
-    return
-  }
-  if (name === style.name) {
-    cancelReusableAnchorStyleNameEdit()
-    return
-  }
-  savingReusableAnchorStyleNameId.value = style.id
-  const tenant = planTenantId.value, room = currentRoomPlanId.value
-  try {
-    const updated = await updateLiveAnchorStyle(style.id, {
-      name,
-      description: style.description || '',
-    }, tenant)
-    if (tenant !== planTenantId.value || room !== currentRoomPlanId.value) return
-    if (selectedReusableAnchorStyleId.value === updated.id && selectedReusableAnchorStyle.value) selectedReusableAnchorStyle.value = { ...selectedReusableAnchorStyle.value, name: updated.name }
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map((item) => item.id === updated.id ? { ...item, name: updated.name } : item)
-    reusableAnchorStyleNotice.value = `主播名称“${updated.name}”已自动保存。`
-    cancelReusableAnchorStyleNameEdit()
-  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播风格失败' }
-  finally { savingReusableAnchorStyleNameId.value = null }
-}
-
-async function deleteReusableAnchorStyle(styleToDelete?: LiveAnchorStyle) {
-  const style = styleToDelete || selectedReusableAnchorStyle.value
-  if (!style) return
-  if (!window.confirm(`确定删除主播“${style.name}”吗？删除后该主播的样本、训练记录和绑定关系都会移除。`)) return
-  if (!window.confirm('请再次确认：这不是移出列表，而是永久删除这名主播的风格资料。')) return
-  try {
-    await deleteLiveAnchorStyle(style.id, planTenantId.value)
-    reusableAnchorStyles.value = reusableAnchorStyles.value.filter((item) => item.id !== style.id)
-    if (selectedReusableAnchorStyleId.value === style.id) {
-      selectedReusableAnchorStyleId.value = null
-      selectedReusableAnchorStyle.value = null
-      reusableAnchorStyleSamples.value = []
-      await loadReusableAnchorStyleWorkspace()
-    }
-    reusableAnchorStyleNotice.value = '主播风格已删除。'
-  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '删除主播风格失败' }
-}
-
-async function persistAnchorSample(styleId: number, tenant: number | undefined, text: string, title: string, sourceType = 'paste', originalName = '') {
-  const limited = limitAnchorSample(text.trim())
-  if (limited.truncated) reusableAnchorSampleLimitNotice.value = '最多10000字，超出部分已截断。'
-  return createLiveAnchorStyleSample(styleId, { title: Array.from(title).slice(0, 50).join(''), source_type: sourceType, original_name: originalName, raw_text: limited.text, readable_text: limited.text }, tenant)
-}
-async function addReusableAnchorStyleSample() {
-  const style = selectedReusableAnchorStyle.value
-  const text = reusableAnchorStyleSampleDraft.value.raw_text.trim()
-  if (!style || !text || reusableAnchorStyleBusy.value) return
-  const scope = anchorAnalysisScope(style.id)
-  reusableAnchorStyleBusy.value = true
-  reusableAnchorStyleError.value = ''
-  try {
-    const sample = await persistAnchorSample(style.id, scope.tenant, text, reusableAnchorStyleSampleDraft.value.title.trim() || `样本${reusableAnchorStyleSamples.value.length + 1}`)
-    if (!scope.current()) return
-    reusableAnchorStyleSamples.value = [sample, ...reusableAnchorStyleSamples.value]
-    syncAnchorSampleCount()
-    reusableAnchorStyleSampleDraft.value = { title: '', raw_text: '' }
-    reusableAnchorStyleNotice.value = '样本已保存，点击“开始分析”提取表达风格。单份分析不会覆盖多样本总风格。'
-  } catch (err) { if (scope.current()) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存主播样本失败' }
-  finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
-}
-async function importReusableAnchorStyleSamples(event: Event) {
-  const style = selectedReusableAnchorStyle.value
-  const input = event.target as HTMLInputElement
-  const files = Array.from(input.files || [])
-  input.value = ''
-  if (!style || !files.length || reusableAnchorStyleBusy.value) return
-  const scope = anchorAnalysisScope(style.id)
-  reusableAnchorStyleBusy.value = true
-  reusableAnchorStyleError.value = ''
-  let count = 0, cut = 0
-  try {
-    for (const file of files) {
-      const text = (await file.text()).trim()
-      if (!scope.current()) return
-      if (!text) continue
-      if (limitAnchorSample(text).truncated) cut++
-      const sample = await persistAnchorSample(style.id, scope.tenant, text, file.name.replace(/\.(txt|md)$/i, '') || '导入样本', 'upload', file.name)
-      if (!scope.current()) return
-      reusableAnchorStyleSamples.value.unshift(sample)
-      syncAnchorSampleCount()
-      count++
-    }
-    reusableAnchorStyleNotice.value = `已导入 ${count} 份样本。${cut ? `${cut} 份超过10000字，已截断。` : ''}请点击“开始分析”。`
-  } catch (err) { if (scope.current()) reusableAnchorStyleError.value = err instanceof Error ? err.message : '导入主播样本失败' }
-  finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
-}
-async function analyzeOneAnchorSample(styleId: number, sample: LiveAnchorStyleSample, scope: ReturnType<typeof anchorAnalysisScope>) {
-  sample.analysis_status = 'analyzing'
-  const result = await analyzeLiveAnchorStyleSample(styleId, sample.id, scope.tenant, event => { if (scope.current()) anchorAnalysisProgress(event) })
-  if (!scope.current()) return
-  selectedReusableAnchorStyle.value = result.style
-  reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === styleId ? result.style : item)
-  reusableAnchorStyleSamples.value = reusableAnchorStyleSamples.value.map(item => item.id === sample.id ? result.sample : item)
-  reusableAnchorStyleNotice.value = result.notice
-}
-function beginAnchorAnalysis() {
-  reusableAnchorStyleBusy.value = true
-  reusableAnchorStyleError.value = ''
-  reusableAnchorStyleAnalysisStage.value = '正在准备分析话术…'
-  reusableAnchorStyleAnalysisProgress.value = 0
-}
-async function analyzeReusableAnchorStyleSample(sample: LiveAnchorStyleSample) {
-  const style = selectedReusableAnchorStyle.value
-  if (!style || reusableAnchorStyleBusy.value) return
-  const scope = anchorAnalysisScope(style.id)
-  beginAnchorAnalysis()
-  try {
-    // This individual action never calls the fusion endpoint, even when the
-    // header checkbox is selected.
-    await analyzeOneAnchorSample(style.id, sample, scope)
-    if (scope.current()) await refreshAnchorAnalysisVersions(style.id)
-  } catch (err) {
-    if (scope.current()) {
-      reusableAnchorStyleError.value = err instanceof Error ? err.message : '样本分析失败，原总风格保持不变'
-      reusableAnchorStyleAnalysisStage.value = '分析未完成，原总风格保持不变'
-      const result = await listLiveAnchorStyleSamples(style.id, scope.tenant).catch(() => null)
-      if (scope.current() && result) reusableAnchorStyleSamples.value = result.items
-    }
-  } finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
-}
-async function startReusableAnchorAnalysis() {
-  const style = selectedReusableAnchorStyle.value
-  if (!style || reusableAnchorStyleBusy.value) return
-  // Capture explicit user intent. Never auto-enable fusion merely because more
-  // samples arrived or a single sample finished analysis.
-  const fuse = reusableAnchorMultiAnalysis.value
-  const scope = anchorAnalysisScope(style.id)
-  beginAnchorAnalysis()
-  try {
-    const text = reusableAnchorStyleSampleDraft.value.raw_text.trim()
-    if (text) {
-      const sample = await persistAnchorSample(style.id, scope.tenant, text, reusableAnchorStyleSampleDraft.value.title.trim() || `样本${reusableAnchorStyleSamples.value.length + 1}`)
-      if (!scope.current()) return
-      reusableAnchorStyleSamples.value.unshift(sample)
-      syncAnchorSampleCount()
-      reusableAnchorStyleSampleDraft.value = { title: '', raw_text: '' }
-    }
-    const samples = [...reusableAnchorStyleSamples.value]
-    if (!samples.length) throw new Error('请先导入主播话术。')
-    if (fuse && samples.length > 1) {
-      for (const sample of samples.filter(item => item.analysis_status !== 'analyzed')) {
-        if (!scope.current()) return
-        reusableAnchorStyleAnalysisProgress.value = 0
-        await analyzeOneAnchorSample(style.id, sample, scope)
-      }
-      if (!scope.current()) return
-      reusableAnchorStyleAnalysisProgress.value = 0
-      const result = await fuseLiveAnchorAnalyses(style.id, scope.tenant, event => { if (scope.current()) anchorAnalysisProgress(event) })
-      if (!scope.current()) return
-      selectedReusableAnchorStyle.value = result.style
-      reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? result.style : item)
-      reusableAnchorStyleNotice.value = '多样本综合分析完成，总风格和对应评分基准已更新为新版本。'
-    } else {
-      const sample = samples.find(item => item.analysis_status !== 'analyzed') || samples[0]!
-      await analyzeOneAnchorSample(style.id, sample, scope)
-    }
-    if (scope.current()) await refreshAnchorAnalysisVersions(style.id)
-  } catch (err) {
-    if (scope.current()) {
-      reusableAnchorStyleError.value = err instanceof Error ? err.message : '分析失败，原总风格不变'
-      reusableAnchorStyleAnalysisStage.value = '分析未完成，原总风格保持不变'
-      const result = await listLiveAnchorStyleSamples(style.id, scope.tenant).catch(() => null)
-      if (scope.current() && result) reusableAnchorStyleSamples.value = result.items
-    }
-  } finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
-}
-async function saveOverallAnchorAnalysis(sections: AnchorAnalysisSection[]) {
-  const style = selectedReusableAnchorStyle.value
-  if (!style || reusableAnchorStyleBusy.value || reusableAnchorAnalysisPreviewId.value !== reusableAnchorAnalysisVersions.value.active_version_id) return
-  const scope = anchorAnalysisScope(style.id)
-  const expected = reusableAnchorAnalysisVersions.value.active_version_id
-  beginAnchorAnalysis()
-  try {
-    const result = await editLiveAnchorAnalysis(style.id, expected, sections, scope.tenant, event => { if (scope.current()) anchorAnalysisProgress(event) })
-    if (!scope.current()) return
-    selectedReusableAnchorStyle.value = result.style
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? result.style : item)
-    await refreshAnchorAnalysisVersions(style.id)
-    reusableAnchorStyleNotice.value = '修改已保存为新版本，元提示词结构及评分基准已同步更新。'
-  } catch (err) { if (scope.current()) reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存失败，原版本不变' }
-  finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
-}
-async function useOverallAnchorAnalysis() {
-  const style = selectedReusableAnchorStyle.value
-  const versionId = reusableAnchorAnalysisPreviewId.value
-  if (!style || !versionId || reusableAnchorStyleBusy.value) return
-  const scope = anchorAnalysisScope(style.id)
-  reusableAnchorStyleBusy.value = true
-  try {
-    const result = await useLiveAnchorAnalysis(style.id, versionId, reusableAnchorAnalysisVersions.value.active_version_id, scope.tenant)
-    if (!scope.current()) return
-    selectedReusableAnchorStyle.value = result.style
-    reusableAnchorStyles.value = reusableAnchorStyles.value.map(item => item.id === style.id ? result.style : item)
-    await refreshAnchorAnalysisVersions(style.id)
-    reusableAnchorStyleNotice.value = '已使用所选版本及其对应评分基准，不改写单个样本。'
-  } catch (err) { if (scope.current()) reusableAnchorStyleError.value = err instanceof Error ? err.message : '切换版本失败' }
-  finally { if (scope.current()) reusableAnchorStyleBusy.value = false }
-}
-
-async function deleteReusableAnchorStyleSample(sample: LiveAnchorStyleSample) {
-  const style = selectedReusableAnchorStyle.value
-  if (!style || !window.confirm(`删除样本“${sample.title}”吗？`)) return
-  try {
-    await deleteLiveAnchorStyleSample(style.id, sample.id, planTenantId.value)
-    reusableAnchorStyleSamples.value = reusableAnchorStyleSamples.value.filter((item) => item.id !== sample.id)
-    syncAnchorSampleCount()
-  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '删除主播样本失败' }
-}
-
-async function bindReusableAnchorStyle() {
-  const style = selectedReusableAnchorStyle.value
-  if (!style) return
-  await updateReusableAnchorBinding(style, false)
-}
-
-async function unbindReusableAnchorStyle(style: LiveAnchorStyle) {
-  if (style.id !== currentBoundAnchorId.value) return
-  await updateReusableAnchorBinding(style, true)
-}
-
-async function updateReusableAnchorBinding(style: LiveAnchorStyle, unbind: boolean) {
-  const planID = currentRoomPlanId.value, tenantID = planTenantId.value
-  if (!planID || !tenantID || style.tenant_id !== tenantID || anchorBindingBusy.value) return
-  const scope = anchorWorkspaceScope(), token = ++anchorBindingEpoch
-  const current = () => scope === anchorWorkspaceScope() && token === anchorBindingEpoch
-  anchorWorkspaceLoadSequence++
-  anchorBindingBusy.value = true; reusableAnchorStyleError.value = ''; reusableAnchorStyleNotice.value = ''
-  try {
-    if (unbind) await unbindLiveAnchorStyleFromPlan(style.id, planID, tenantID)
-    else await bindLiveAnchorStyleToPlan(style.id, planID, tenantID)
-    if (!current()) return
-    currentBoundAnchorId.value = unbind ? 0 : style.id
-    await savePlanOneClick()
-    reusableAnchorStyleNotice.value = unbind
-      ? `已取消使用主播“${style.name}”，当前方案已直接保存。`
-      : `主播“${style.name}”已直接写入当前方案，无需再点保存。`
-    await loadReusableAnchorStyleWorkspace(selectedReusableAnchorStyleId.value)
-  } catch (err) {
-    if (!current()) return
-    const message = err instanceof Error ? err.message : unbind ? '取消使用主播失败' : '绑定主播风格失败'
-    await loadReusableAnchorStyleWorkspace(selectedReusableAnchorStyleId.value)
-    if (current()) reusableAnchorStyleError.value = message
-  } finally { if (current()) anchorBindingBusy.value = false }
-}
-
-async function runReusableLongTest() {
-  if (reusableAnchorStyleLongTestRunning.value || !selectedReusableAnchorStyle.value || !currentRoomPlanId.value || !planTenantId.value) return
-  const style = selectedReusableAnchorStyle.value.profile
-  const sampleText = reusableAnchorStyleSamples.value.find((item) => item.analysis_status === 'analyzed')?.readable_text || currentAnchorStyleSampleText(style)
-  if (!style?.dimensions?.length || !sampleText) { reusableAnchorStyleError.value = '请先分析至少一份主播样本，再进行长时间测试。'; return }
-  reusableAnchorStyleLongTestRunning.value = true
-  reusableAnchorStyleLongTestOpen.value = true
-  reusableAnchorStyleLongTestText.value = ''
-  reusableAnchorStyleLongTestSegments.value = 0
-  reusableAnchorStyleLongTestContinuation.value = undefined
-  reusableAnchorStyleLongTestAdvisories.value = []
-  reusableAnchorStyleLongTestStage.value = '正在准备连续主线测试…'
-  reusableAnchorStyleError.value = ''
-  try {
-    const totalSegments = Math.max(1, Math.ceil(Math.max(5, reusableAnchorStyleLongTestMinutes.value) / 5))
-    for (let index = 0; index < totalSegments && reusableAnchorStyleLongTestRunning.value; index += 1) {
-      reusableAnchorStyleLongTestStage.value = `正在生成第 ${index + 1}/${totalSegments} 段，事实检查通过后立即显示；风格失败会回退基础正文…`
-      const continuityTopic = `${anchorStyleTestTopic.value}。这是连续主线测试的第${index + 1}段，请承接上一段但换一个表达角度，不引入互动问答。`.slice(0, 280)
-      const result = await testLiveAgentAnchorStyle(currentRoomPlanId.value, {
-        room_id: 0, topic: continuityTopic,
-        target_chars: Math.min(1800, Math.max(300, anchorStyleTestTargetChars.value)),
-        style_match_intensity: anchorStyleMatchIntensity.value,
-        expansion_freedom: fullShowExpansionFreedom.value, conversion_intensity: anchorStyleConversionIntensity.value,
-        source_text: sampleText, anchor_style: style, continuation: reusableAnchorStyleLongTestContinuation.value,
-        selected_facts: selectedFactKeys.value,
-        transient_overlays: anchorStyleCorrectionCandidates.value,
-        advisory_overrides: anchorStyleAdvisoryOverrides.value,
-      })
-      reusableAnchorStyleLongTestContinuation.value = result.continuation
-      for (const advisory of result.advisories || []) {
-        if (!reusableAnchorStyleLongTestAdvisories.value?.some((item) => item.code === advisory.code)) {
-          reusableAnchorStyleLongTestAdvisories.value = [...(reusableAnchorStyleLongTestAdvisories.value || []), advisory]
-        }
-      }
-      reusableAnchorStyleLongTestText.value += (reusableAnchorStyleLongTestText.value ? '\n\n' : '') + result.text
-      reusableAnchorStyleLongTestSegments.value += 1
-      reusableAnchorStyleLongTestStage.value = `第 ${index + 1}/${totalSegments} 段已流出，继续生成下一段`
-      await nextTick()
-      reusableAnchorStyleLongTestOutput.value?.scrollTo({ top: reusableAnchorStyleLongTestOutput.value.scrollHeight, behavior: 'smooth' })
-    }
-    if (reusableAnchorStyleLongTestRunning.value) reusableAnchorStyleLongTestStage.value = `测试完成，共生成 ${reusableAnchorStyleLongTestSegments.value} 段`
-    else reusableAnchorStyleLongTestStage.value = `已停止，已保留 ${reusableAnchorStyleLongTestSegments.value} 段`
-  } catch (err) {
-    reusableAnchorStyleLongTestStage.value = '生成中断，已保留已经流出的片段'
-    reusableAnchorStyleError.value = err instanceof Error ? err.message : '长时间主播测试失败'
-  }
-  finally { reusableAnchorStyleLongTestRunning.value = false }
-}
-
-function stopReusableLongTest() {
-  reusableAnchorStyleLongTestRunning.value = false
-  reusableAnchorStyleLongTestStage.value = '正在停止，当前请求完成后停止继续生成'
-}
-
-function ignoreAnchorStyleAdvisory(code: string) {
-  if (!code || anchorStyleAdvisoryOverrides.value.includes(code)) return
-  anchorStyleAdvisoryOverrides.value = [...anchorStyleAdvisoryOverrides.value, code]
-  if (anchorStyleTestResult.value?.advisories) {
-    anchorStyleTestResult.value = {
-      ...anchorStyleTestResult.value,
-      advisories: anchorStyleTestResult.value.advisories.filter((item) => item.code !== code),
-    }
-  }
-  reusableAnchorStyleLongTestAdvisories.value = (reusableAnchorStyleLongTestAdvisories.value || []).filter((item) => item.code !== code)
-  reusableAnchorStyleNotice.value = '已记录你的选择：后续测试不再重复提示这条建议。硬规则和事实禁说边界仍然有效。'
-}
-
-async function toggleReusableAnchorPlugin(item: AnchorStylePluginCatalogItem) {
-  const style = selectedReusableAnchorStyle.value
-  if (!style) return
-  const existing = style.plugin_settings?.find((entry) => entry.plugin_id === item.manifest.id)
-  try {
-    if (existing?.enabled) {
-      await deleteLiveAnchorStylePlugin(style.id, item.manifest.id, planTenantId.value)
-      style.plugin_settings = style.plugin_settings.filter((entry) => entry.plugin_id !== item.manifest.id)
-    } else {
-      const result = await upsertLiveAnchorStylePlugin(style.id, {
-        plugin_id: item.manifest.id,
-        plugin_version: item.manifest.version,
-        enabled: true,
-        parameters: existing?.parameters || stylePluginDefaultParameters(item),
-      }, planTenantId.value)
-      style.plugin_settings = result.items
-    }
-    if (currentRoomPlanId.value && styleOverlayProfile.value && item.activation_supported) {
-      if (!existing?.enabled) {
-        await activateStylePlugin(item)
-      } else {
-        const remaining = styleOverlayProfile.value.items.filter((entry) => entry.plugin?.plugin_id !== item.manifest.id)
-        await persistStyleOverlayItems(remaining, `已停用“${item.manifest.name}”，当前方案不会再叠加这项能力。`)
-      }
-    }
-    reusableAnchorStyleNotice.value = `${item.manifest.name}已${existing?.enabled ? '停用' : '启用'}，测试生成时会读取这项设置。`
-  } catch (err) { reusableAnchorStyleError.value = err instanceof Error ? err.message : '保存个性插件失败' }
-}
-
-function stylePluginDefaultParameters(item: AnchorStylePluginCatalogItem) {
-  return Object.fromEntries(Object.entries(item.manifest.parameters || {}).flatMap(([name, definition]) => (
-    definition.default === undefined ? [] : [[name, definition.default]]
-  )))
-}
-
-async function activateStylePlugin(item: AnchorStylePluginCatalogItem) {
-  const planId = currentRoomPlanId.value
-  const profile = styleOverlayProfile.value
-  if (!planId || !profile || !item.activation_supported || stylePluginBusyID.value) return
-  stylePluginBusyID.value = item.manifest.id
-  styleOverlayError.value = ''
-  styleOverlayNotice.value = ''
-  try {
-    const result = await activateLiveAgentPlanStylePlugin(planId, {
-      expected_revision: profile.revision,
-      plugin_id: item.manifest.id,
-      plugin_version: item.manifest.version,
-      strength: 50,
-      parameters: stylePluginDefaultParameters(item),
-    }, planTenantId.value)
-    if (planId !== currentRoomPlanId.value) return
-    styleOverlayProfile.value = result.profile
-    styleOverlayNotice.value = `插件“${item.manifest.name}”已加入主播并热生效。`
-  } catch (err) {
-    styleOverlayError.value = err instanceof Error ? err.message : '启用主播风格插件失败'
-  } finally {
-    stylePluginBusyID.value = ''
-  }
-}
-
-async function interpretStyleOverlay() {
-  const planId = currentRoomPlanId.value
-  const source = styleOverlaySource.value.trim()
-  if (styleOverlayBusy.value) return
-  if (!planId) {
-    styleOverlayError.value = '请先选择直播方案'
-    return
-  }
-  if (!styleOverlayProfile.value) {
-    styleOverlayError.value = '主播风格正在加载，请稍后再试'
-    return
-  }
-  if (!source) {
-    styleOverlayError.value = '请先在“希望主播增加什么习惯”中输入内容；灰色示例文字不是已输入内容。'
-    return
-  }
-  styleOverlayBusy.value = true
-  styleOverlayError.value = ''
-  styleOverlayNotice.value = ''
-  styleOverlayPending.value = null
-  try {
-    const result = await interpretLiveAgentPlanStyleOverlay(planId, {
-      source_text: source,
-      explanation_text: styleOverlayExplanation.value.trim() || undefined,
-      strength: styleOverlayStrength.value,
-    }, planTenantId.value)
-    if (planId !== currentRoomPlanId.value) return
-    styleOverlayPending.value = result.item
-    styleOverlayMemoryMatches.value = result.memory_matches
-    styleOverlayNotice.value = `已由 ${result.model} 完成理解，请确认系统理解后再加入主播。`
-  } catch (err) {
-    styleOverlayError.value = err instanceof Error ? err.message : '叠加风格理解失败'
-  } finally {
-    styleOverlayBusy.value = false
-  }
-}
-
-async function persistStyleOverlayItems(items: LiveAnchorStyleOverlayItem[], success: string) {
-  const planId = currentRoomPlanId.value
-  const profile = styleOverlayProfile.value
-  if (!planId || !profile || styleOverlayBusy.value) return false
-  styleOverlayBusy.value = true
-  styleOverlayError.value = ''
-  styleOverlayNotice.value = ''
-  try {
-    const result = await saveLiveAgentPlanStyleOverlays(planId, { ...profile, items }, planTenantId.value)
-    if (planId !== currentRoomPlanId.value) return false
-    styleOverlayProfile.value = result.profile
-    styleOverlayNotice.value = success + (result.semantic_indexed ? '；已存入当前客户的风格理解记忆。' : '；向量服务不可用时不影响规则执行。')
-    return true
-  } catch (err) {
-    styleOverlayError.value = err instanceof Error ? err.message : '保存叠加风格失败'
-    return false
-  } finally {
-    styleOverlayBusy.value = false
-  }
-}
-
-async function confirmStyleOverlay() {
-  if (!styleOverlayPending.value || !styleOverlayProfile.value) return
-  const saved = await persistStyleOverlayItems([...styleOverlayProfile.value.items, styleOverlayPending.value], '叠加风格已保存并热生效')
-  if (!saved) return
-  styleOverlayPending.value = null
-  styleOverlaySource.value = ''
-  styleOverlayExplanation.value = ''
-}
-
-async function toggleStyleOverlay(item: LiveAnchorStyleOverlayItem) {
-  if (!styleOverlayProfile.value) return
-  await persistStyleOverlayItems(styleOverlayProfile.value.items.map((current) => current.id === item.id ? { ...current, enabled: !current.enabled } : current), item.enabled ? '叠加风格已暂停' : '叠加风格已启用')
-}
-
-async function removeStyleOverlay(item: LiveAnchorStyleOverlayItem) {
-  if (!styleOverlayProfile.value) return
-  await persistStyleOverlayItems(styleOverlayProfile.value.items.filter((current) => current.id !== item.id), '叠加风格已移除')
-}
 const fullShowDuration = ref(90)
 const fullShowDurationProgress = computed(() => ((fullShowDuration.value - 30) / 90) * 100)
 const fullShowDurationLabel = computed(() => {
@@ -1838,22 +876,10 @@ const fullShowAvoidRecent = ref(true)
 const fullShowPreviewReady = ref(false)
 const fullShowNotice = ref('')
 const fullShowGenerating = ref(false)
-type AnchorInitializationStep = { key: string; label: string; status: 'success' | 'failed' | 'skipped'; message: string }
-const anchorInitializing = ref(false)
-const anchorInitializationNotice = ref('')
-const anchorInitializationError = useFeedbackErrorRef()
-const anchorInitializationSkipped = ref('')
-const anchorInitializationSteps = ref<AnchorInitializationStep[]>([])
-const anchorInitializationProgress = ref(0)
-const anchorInitializationStage = ref('')
 const anchorSellingPointWheel = ref<AnchorStyleSellingPointWheelResponse | null>(null)
 const anchorSellingPointWheelLoading = ref(false)
 const anchorSellingPointWheelError = useFeedbackErrorRef()
 let anchorSellingPointWheelLoadToken = 0
-function startAnchorInitializationProgress() {
-  anchorInitializationProgress.value = 0
-  anchorInitializationStage.value = '正在连接初始化服务…'
-}
 async function refreshAnchorSellingPointWheel() {
   const planId = currentRoomPlanId.value
   const token = ++anchorSellingPointWheelLoadToken
@@ -1873,50 +899,6 @@ async function refreshAnchorSellingPointWheel() {
     anchorSellingPointWheelError.value = error instanceof Error ? error.message : '读取卖点轮盘失败'
   } finally {
     if (token === anchorSellingPointWheelLoadToken) anchorSellingPointWheelLoading.value = false
-  }
-}
-async function initializeAnchorGeneration(force = false) {
-  const planId = currentRoomPlanId.value
-  if (!planId || anchorInitializing.value) return
-  anchorInitializing.value = true
-  anchorInitializationError.value = ''
-  anchorInitializationSkipped.value = ''
-  anchorInitializationSteps.value = []
-  anchorInitializationNotice.value = ''
-  startAnchorInitializationProgress()
-  try {
-    const params = new URLSearchParams()
-    if (planTenantId.value) params.set('tenant_id', String(planTenantId.value))
-    if (force) params.set('force', '1')
-    const qs = params.toString()
-    const query = qs ? '?' + qs : ''
-    const result = await request<{ initialized: boolean; partial: boolean; notice: string; selling_points: number; angles: number; steps: AnchorInitializationStep[] }>('/api/v1/live-agent-plans/' + planId + '/initialize-anchor' + query, { method: 'POST', headers: { Accept: 'text/event-stream' } }, (event) => {
-      if (event.type !== 'progress') return
-      anchorInitializationProgress.value = Math.max(anchorInitializationProgress.value, event.percent || 0)
-      anchorInitializationStage.value = event.message
-    })
-    anchorInitializationSteps.value = result.steps || []
-    anchorInitializationNotice.value = result.notice || ''
-    const failed = anchorInitializationSteps.value.filter((step) => step.status === 'failed')
-    anchorInitializationError.value = failed.map((step) => `${step.label}：${step.message}`).join('\n')
-    const skipped = anchorInitializationSteps.value.filter((step) => step.status === 'skipped')
-    anchorInitializationSkipped.value = skipped.map((step) => `${step.label}：${step.message}`).join('\n')
-    anchorInitializationProgress.value = 100
-    anchorInitializationStage.value = failed.length ? '初始化完成，部分项目失败' : '初始化完成'
-    await refreshAnchorSellingPointWheel()
-    await refreshFormalProductLinks()
-    await new Promise((resolve) => window.setTimeout(resolve, 720))
-  } catch (e) {
-    anchorInitializationNotice.value = ''
-    anchorInitializationSkipped.value = ''
-    anchorInitializationError.value = e instanceof Error ? e.message : '初始化失败'
-    anchorInitializationStage.value = '初始化中断'
-    await new Promise((resolve) => window.setTimeout(resolve, 500))
-  }
-  finally {
-    anchorInitializing.value = false
-    anchorInitializationProgress.value = 0
-    anchorInitializationStage.value = ''
   }
 }
 const fullShowError = useFeedbackErrorRef()
@@ -2284,7 +1266,6 @@ const fullShowSaveBlockedReason = computed(() => {
   if (!currentRoomPlanId.value || !planTenantId.value) return '请先选择方案'
   if (planVoiceRate.loading.value || planVoiceRate.busy.value || !planVoiceRate.ready.value) return '请先在“声音”中读取或保存方案语速'
   if (fullShowVersionSaving.value) return '正在把方案收好，稍等一下哦～'
-  if (anchorInitializing.value) return '智能体正在准备中，等它完成后就能保存啦～'
   if (contentModeLoading.value || contentModeSaving.value || fullShowWorkspaceLoading.value || fullShowWorkspaceHydrating.value) return '正在准备当前方案，稍等一下就好啦～'
   if (contentModeError.value || !contentModeReady.value) return '直播模式还没准备好，去“生成智能体”重新读取一下吧～'
   if (fullShowError.value) return '方案还没成功恢复，去“生成智能体”看看提示再试吧～'
@@ -4863,15 +3844,10 @@ async function refreshFormalFacts() {
   }
 }
 
-async function onInteractionFactsUpdated(scope: { roomId: number; planId: number; tenantId: number }) {
-  if (scope.planId !== currentRoomPlanId.value || scope.tenantId !== planTenantId.value) return
-  await Promise.all([refreshFormalFacts(), contentPools.refresh(true)])
-}
-
 function onPlanTestAssetsUpdated(event: Event) {
   const scope = (event as CustomEvent<{ room_id: number; plan_id: number }>).detail
   if (!scope || scope.room_id !== activeRoomId.value || scope.plan_id !== currentRoomPlanId.value) return
-  void Promise.all([refreshFormalFacts(), refreshMemories(), contentPools.refresh(true)])
+  void Promise.all([refreshFormalFacts(), contentPools.refresh(true)])
 }
 
 async function editRiskSource(payload: { sourceKey: string; text: string }) {
@@ -4912,11 +3888,6 @@ function setFactRiskReviews(items: FactRiskReviewDisplay[]) {
 	productRiskUnresolvedCount.value = pendingForArea(reviews, 'products')
 	benefitRiskUnresolvedCount.value = pendingForArea(reviews, 'benefits')
 	if (!unresolved.some(review => review.claim_sha256 === locatedFactRiskHash.value)) locatedFactRiskHash.value = ''
-}
-
-async function openInteractionPendingLocation() {
-	activeMode.value = 'memory'
-	if (interactionPendingCount.value > 0) interactionLocationRequest.value++
 }
 
 watch([formalFacts, formalProductLinks, formalBenefits, productCards, factRiskReviews], () => { void locatePendingRiskLocation() }, { flush: 'post' })
@@ -5322,105 +4293,6 @@ async function adoptBenefitCandidate(candidate: LiveAgentPlanBenefitCandidate) {
   }
 }
 
-function resetMemoryEdit() {
-  memoryEditEpoch++
-  memoryMutatingId.value = null
-  editingMemoryId.value = null
-  memoryEditSessionId.value = null
-  memoryEditFeedback.value = ''
-  memoryEditPreview.value = ''
-  memoryEditError.value = ''
-}
-
-function beginMemoryEdit(item: AgentMemoryItem) {
-  if (!memoryInPlan(item, answerStrategyScope())) return
-  resetMemoryEdit()
-  memoryDeleteConfirmId.value = null
-  editingMemoryId.value = item.id
-  memoryEditSessionId.value = null
-  memoryEditFeedback.value = ''
-  memoryEditPreview.value = ''
-  memoryEditError.value = ''
-}
-
-async function previewMemoryEdit(item: AgentMemoryItem) {
-  const roomId = activeRoomId.value
-  const scope = answerStrategyScope(), token = memoryEditEpoch
-  const current = () => token === memoryEditEpoch && JSON.stringify(scope) === JSON.stringify(answerStrategyScope()) && editingMemoryId.value === item.id
-  const feedback = memoryEditFeedback.value.trim()
-  if (!roomId || !feedback || memoryMutatingId.value || !memoryInPlan(item, scope)) return
-  memoryMutatingId.value = item.id
-  memoryEditError.value = ''
-  try {
-    let sessionId = memoryEditSessionId.value
-    if (!sessionId) {
-      const created = await createAgentLearningSession(roomId, {
-        plan_id: scope.planId,
-        source_type: 'memory_correction',
-        source_ref: 'agent_memory:' + item.id,
-        original_reply: item.current_version?.content_text || '',
-        target: item.target,
-      })
-      if (!current()) return
-      sessionId = created.id
-      memoryEditSessionId.value = sessionId
-    }
-    const output = await createAgentLearningTurn(roomId, sessionId, feedback)
-    if (!current()) return
-    memoryEditPreview.value = output.result.result_text || ''
-  } catch (err) {
-    if (current()) memoryEditError.value = err instanceof Error ? err.message : '生成修改预览失败'
-  } finally {
-    if (current()) memoryMutatingId.value = null
-  }
-}
-
-async function adoptMemoryEdit(item: AgentMemoryItem) {
-  const roomId = activeRoomId.value
-  const scope = answerStrategyScope(), token = memoryEditEpoch
-  const current = () => token === memoryEditEpoch && JSON.stringify(scope) === JSON.stringify(answerStrategyScope())
-  const sessionId = memoryEditSessionId.value
-  if (!roomId || !sessionId || !memoryEditPreview.value || memoryMutatingId.value || !memoryInPlan(item, scope)) return
-  memoryMutatingId.value = item.id
-  memoryEditError.value = ''
-  try {
-    await adoptAgentLearningSession(roomId, sessionId)
-    if (!current()) return
-    await refreshMemories()
-    if (!current()) return
-    memoryMutatingId.value = null
-    resetMemoryEdit()
-  } catch (err) {
-    if (current()) memoryEditError.value = err instanceof Error ? err.message : '采用修改失败'
-  } finally {
-    if (current()) memoryMutatingId.value = null
-  }
-}
-
-async function deleteMemory(item: AgentMemoryItem) {
-  const roomId = activeRoomId.value
-  const scope = answerStrategyScope(), token = memoryEditEpoch
-  const current = () => token === memoryEditEpoch && JSON.stringify(scope) === JSON.stringify(answerStrategyScope())
-  if (!roomId || memoryMutatingId.value || !memoryInPlan(item, scope)) return
-  if (memoryDeleteConfirmId.value !== item.id) {
-    memoryDeleteConfirmId.value = item.id
-    return
-  }
-  memoryMutatingId.value = item.id
-  try {
-    await deactivateAgentMemory(roomId, item.id, scope.planId)
-    if (!current()) return
-    memoryMutatingId.value = null
-    if (editingMemoryId.value === item.id) resetMemoryEdit()
-    memoryDeleteConfirmId.value = null
-    await refreshMemories()
-  } catch (err) {
-    if (current()) settingsError.value = err instanceof Error ? err.message : '删除互动策略失败'
-  } finally {
-    if (current()) memoryMutatingId.value = null
-  }
-}
-
 async function handlePlanSwitch(event: Event) {
   const id = Number((event.target as HTMLSelectElement).value || 0)
   const plan = livePlans.value.find((item) => item.id === id)
@@ -5740,44 +4612,6 @@ async function analyzeCurrentPlanScript() {
   }
 }
 
-async function applyAnchorStyleHot() {
-  if (anchorStyleApplying.value || scriptAnalyzing.value) return
-  const planId = currentRoomPlanId.value
-  if (!planId || !currentPlan.value) {
-    settingsError.value = '请先选择直播方案'
-    return
-  }
-  if (!scriptReadableText.value.trim()) {
-    settingsError.value = '请先准备主播素材'
-    return
-  }
-  anchorStyleApplying.value = true
-  settingsError.value = ''
-  scriptNotice.value = ''
-  try {
-    if (anchorStyleSourceText.value && anchorStyleSourceText.value !== scriptReadableText.value.trim()) {
-      throw new Error('素材已修改，请重新分析和测试后再保存风格。')
-    }
-    const confirmedAnalysis = currentAnalysis.value
-    if (!confirmedAnalysis?.anchor_style?.dimensions?.length) {
-      throw new Error('请先分析当前素材，检查规则并测试文案后再保存。')
-    }
-    const savedScript = await savePlanScript(false)
-    if (!savedScript) return
-    const updated = await confirmLiveAgentPlanScriptAnalysis(planId, savedScript.id, scriptReadableText.value, confirmedAnalysis, planTenantId.value)
-    const index = planScripts.value.findIndex((entry) => entry.id === updated.id)
-    if (index >= 0) planScripts.value.splice(index, 1, updated)
-    else planScripts.value.unshift(updated)
-    selectedScriptId.value = updated.id
-    analysisDraft.value = null
-    scriptNotice.value = '主播风格已保存并热生效；当前主线声音继续播放，不需要重新生成。'
-  } catch (err) {
-    settingsError.value = err instanceof Error ? err.message : '保存主播风格失败'
-  } finally {
-    anchorStyleApplying.value = false
-  }
-}
-
 function factCategoryLabel(category: string) {
   return factCategoryDefinition(category).label
 }
@@ -5961,223 +4795,7 @@ async function loadAgentSettings() {
 
   await refreshLivePlans()
   await refreshCurrentRoomPlan()
-  await Promise.all([refreshPlanScripts(), refreshMemories()])
-}
-
-async function executeAnchorStyleTest(options?: { lockedSampleText?: string; learnedRegeneration?: boolean }) {
-  const planId = currentRoomPlanId.value
-  const room = planAssetContext.value
-  const sampledStyle = anchorRulebook.value ? anchorStyleProfile.value : null
-  if (!planId) {
-    anchorStyleTestError.value = '当前直播方案已变化，请刷新后重新测试。'
-    return false
-  }
-  if (!room) {
-    anchorStyleTestError.value = '当前方案已变化，请刷新后重新测试。'
-    return false
-  }
-  if (!sampledStyle && enabledStyleOverlayCount.value === 0) {
-    anchorStyleTestError.value = '当前没有可用于测试的主播样本或叠加风格。'
-    return false
-  }
-  if (anchorStyleTestBusy.value) {
-    anchorStyleTestError.value = '上一轮测试仍在生成，请完成后再试。'
-    return false
-  }
-  if (!options?.learnedRegeneration && sampledStyle && !selectedReusableAnchorStyle.value && anchorStyleSourceText.value && anchorStyleSourceText.value !== scriptReadableText.value.trim()) {
-    anchorStyleTestError.value = '素材已修改，请先重新分析。'
-    return false
-  }
-  const style: LiveAgentPlanAnchorStyleProfile = sampledStyle || {
-    dimensions: [],
-    reusable_rules: [],
-    candidate_patterns: [],
-    excluded_from_style: [],
-  }
-  const scope = `${room.tenant_id}:${planId}:${selectedReusableAnchorStyleId.value || 0}`
-  anchorStyleTestBusy.value = true
-  anchorStyleTestError.value = ''
-  anchorStyleTestResult.value = null
-  anchorStyleOutputOpen.value = true
-  anchorStylePartialText.value = ''
-  anchorStyleGenerationProgress.value = '正在连接服务器，收到正文后会立即显示…'
-  try {
-    // A feedback-learning request can take several seconds. During that time the
-    // editable source state may be normalized or refreshed by another watcher.
-    // Regenerate against the exact sample snapshot that produced the learned
-    // candidate instead of silently failing the ordinary "source changed" guard.
-    const sourceText = options?.lockedSampleText ?? currentAnchorStyleSampleText(sampledStyle)
-    const result = await testLiveAgentAnchorStyle(planId, {
-      tenant_id: room.tenant_id,
-      room_id: room.id,
-      topic: anchorStyleTestTopic.value,
-      target_chars: Math.max(100, Math.min(3000, Math.round(Number(anchorStyleTestTargetChars.value) || 500))),
-      style_match_intensity: anchorStyleMatchIntensity.value,
-      expansion_freedom: fullShowExpansionFreedom.value,
-      conversion_intensity: anchorStyleConversionIntensity.value,
-      source_text: sourceText,
-      anchor_style: style,
-      selected_facts: selectedFactKeys.value,
-      transient_overlays: anchorStyleCorrectionCandidates.value,
-      advisory_overrides: anchorStyleAdvisoryOverrides.value,
-    }, (event) => {
-      if (`${planTenantId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` !== scope) return
-      if (event.type === 'progress') anchorStyleGenerationProgress.value = event.message
-      if (event.type === 'segment') anchorStylePartialText.value = event.text
-    })
-    if (`${planTenantId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` === scope) {
-      anchorStyleTestResult.value = result
-      anchorStylePartialText.value = result.text
-      anchorStyleGenerationProgress.value = '生成完成'
-    }
-    return true
-  } catch (err) {
-    if (`${planTenantId.value}:${currentRoomPlanId.value}:${selectedReusableAnchorStyleId.value || 0}` === scope) {
-      anchorStyleTestError.value = err instanceof Error ? err.message : '风格测试失败'
-      anchorStyleGenerationProgress.value = '生成未完成，已返回的文字保留供你查看'
-    }
-    return false
-  } finally { anchorStyleTestBusy.value = false }
-}
-
-async function runAnchorStyleTest() {
-  await executeAnchorStyleTest()
-}
-
-function currentAnchorStyleSampleText(sampledStyle: LiveAgentPlanAnchorStyleProfile | null = anchorRulebook.value ? anchorStyleProfile.value : null) {
-  if (!sampledStyle) return ''
-  if (selectedReusableAnchorStyle.value) {
-    return reusableAnchorStyleSamples.value.find((item) => item.analysis_status === 'analyzed')?.readable_text || ''
-  }
-  return currentAnalysis.value?.anchor_style?.dimensions?.length
-    ? (anchorStyleSourceText.value || scriptReadableText.value)
-    : savedStyleScript.value?.readable_text || ''
-}
-
-async function learnAndRegenerateAnchorStyle() {
-  const planId = currentRoomPlanId.value
-  const result = anchorStyleTestResult.value
-  const feedback = anchorStyleCorrectionFeedback.value.trim()
-  const sampleText = currentAnchorStyleSampleText()
-  if (!planId || !result || !feedback || anchorStyleCorrectionBusy.value) return
-  if (!sampleText) {
-    anchorStyleCorrectionError.value = '要做“哪里不像”的对比学习，需要先粘贴并分析一份真实主播样本。'
-    return
-  }
-  if (anchorStyleCorrectionCandidates.value.length >= 6) {
-    anchorStyleCorrectionError.value = '本轮已累计6条调整。请先保存或放弃，再开始下一轮。'
-    return
-  }
-  anchorStyleCorrectionBusy.value = true
-  anchorStyleCorrectionError.value = ''
-  try {
-    const learned = await learnLiveAgentPlanStyleOverlay(planId, {
-      sample_text: sampleText,
-      generated_text: result.text,
-      feedback_text: feedback,
-      strength: 50,
-    }, planTenantId.value)
-    anchorStyleCorrectionCandidates.value = [...anchorStyleCorrectionCandidates.value, learned.item]
-    anchorStyleCorrectionHistory.value = [...anchorStyleCorrectionHistory.value, {
-      feedback,
-      diagnosis: learned.diagnosis,
-      model: learned.model,
-    }]
-    anchorStyleCorrectionFeedback.value = ''
-    const regenerated = await executeAnchorStyleTest({
-      lockedSampleText: sampleText,
-      learnedRegeneration: true,
-    })
-    if (!regenerated) {
-      throw new Error(anchorStyleTestError.value || '反馈已经学习，但自动重新生成未启动，请重试。')
-    }
-  } catch (err) {
-    anchorStyleCorrectionError.value = err instanceof Error ? err.message : '学习并重新生成失败'
-  } finally {
-    anchorStyleCorrectionBusy.value = false
-  }
-}
-
-async function saveAnchorStyleCorrections() {
-  const profile = styleOverlayProfile.value
-  if (!profile || !anchorStyleCorrectionCandidates.value.length || anchorStyleCorrectionBusy.value) return
-  anchorStyleCorrectionBusy.value = true
-  anchorStyleCorrectionError.value = ''
-  try {
-    const saved = await persistStyleOverlayItems(
-      [...profile.items, ...anchorStyleCorrectionCandidates.value],
-      '本轮风格调整已保存并热生效',
-    )
-    if (!saved) return
-    anchorStyleCorrectionCandidates.value = []
-    anchorStyleCorrectionHistory.value = []
-    anchorStyleCorrectionFeedback.value = ''
-  } finally {
-    anchorStyleCorrectionBusy.value = false
-  }
-}
-
-function discardAnchorStyleCorrections() {
-  anchorStyleCorrectionCandidates.value = []
-  anchorStyleCorrectionHistory.value = []
-  anchorStyleCorrectionFeedback.value = ''
-  anchorStyleCorrectionError.value = ''
-  anchorStyleTestResult.value = null
-  styleOverlayNotice.value = '本轮未保存的风格调整已放弃，已保存的主播风格没有改变。'
-}
-
-const addressingSystemOptions = computed(() => addressingStrategy.value.addressing.filter((item) => item.system_default))
-const addressingCustomOptions = computed(() => addressingStrategy.value.addressing.filter((item) => !item.system_default))
-
-function setAddressingMode(mode: 'system' | 'custom') {
-  addressingStrategy.value = { ...addressingStrategy.value, addressing_mode: mode }
-  addressingError.value = ''
-  addressingNotice.value = ''
-}
-
-function addAddressingOption() {
-  addressingStrategy.value.addressing.push({
-    key: `custom_${Date.now()}`,
-    text: '',
-    enabled: true,
-    probability: addressingCustomOptions.value.length ? 0 : 100,
-    system_default: false,
-  })
-}
-
-function removeAddressingOption(option: LiveAddressingOption) {
-  addressingStrategy.value.addressing = addressingStrategy.value.addressing.filter((item) => item !== option)
-}
-
-async function saveAddressingStrategy() {
-  if (props.supportSession || addressingSaving.value) return
-  addressingError.value = ''
-  addressingNotice.value = ''
-  if (
-    addressingStrategy.value.addressing_mode === 'custom' &&
-    !addressingCustomOptions.value.some((item) => item.enabled && item.text.trim())
-  ) {
-    addressingError.value = '请至少添加一个自己的称呼。'
-    return
-  }
-  addressingSaving.value = true
-  try {
-    const saved = await updateLiveAddressingStrategy({
-      addressing_mode: addressingStrategy.value.addressing_mode,
-      addressing: addressingStrategy.value.addressing.map((item) => ({ ...item, text: item.text.trim() })),
-    })
-    addressingStrategy.value = {
-      addressing_mode: saved.addressing_mode,
-      addressing: (saved.addressing || []).map((item) => ({ ...item })),
-    }
-    addressingNotice.value = saved.addressing_mode === 'custom'
-      ? '我的称呼已通过审核并生效。'
-      : '已切换为系统默认称呼。'
-  } catch (err) {
-    addressingError.value = err instanceof Error ? err.message : '保存称呼策略失败'
-  } finally {
-    addressingSaving.value = false
-  }
+  await refreshPlanScripts()
 }
 
 async function refreshAgentVersions() {
@@ -6444,7 +5062,6 @@ watch(
       void refreshContentMode(true)
       void refreshAnchorSellingPointWheel()
     }
-    if (mode === 'anchor') void loadReusableAnchorStyleWorkspace()
     window.localStorage.setItem('system-agent-live-mode', mode)
     notifySystemAgentContext()
   },
@@ -6505,8 +5122,6 @@ watch(
   },
 )
 
-const interactionPendingCount = useInteractionReviewCount(activeRoomId, currentRoomPlanId)
-
 onMounted(async () => {
   document.addEventListener('click', dismissPlanActionsMenu, true)
   window.addEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
@@ -6527,7 +5142,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   anchorBindingEpoch++; anchorWorkspaceLoadSequence++; reusableAnchorSelectionEpoch++
   roomPlanLoadSequence++
-  memoryEditEpoch++
   document.removeEventListener('click', dismissPlanActionsMenu, true)
   window.removeEventListener('live-strategy-assets-updated', onPlanTestAssetsUpdated)
   contentModeDisposed = true
@@ -6570,7 +5184,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="plan-configuration-actions">
-            <button id="plan-save-button" class="strategy-version-button primary plan-save-button" type="button" :disabled="savePlanOneClickDisabled || fullShowVersionSaving || anchorInitializing" :aria-busy="savePlanOneClickBusy || fullShowVersionSaving" :aria-describedby="savePlanOneClickHint ? 'plan-save-hint' : undefined" @click="savePlanOneClick"><PlanConfigurationIcon name="save" />{{ savePlanOneClickStage || (fullShowVersionSaving ? '保存中…' : '保存方案') }}</button>
+            <button id="plan-save-button" class="strategy-version-button primary plan-save-button" type="button" :disabled="savePlanOneClickDisabled || fullShowVersionSaving" :aria-busy="savePlanOneClickBusy || fullShowVersionSaving" :aria-describedby="savePlanOneClickHint ? 'plan-save-hint' : undefined" @click="savePlanOneClick"><PlanConfigurationIcon name="save" />{{ savePlanOneClickStage || (fullShowVersionSaving ? '保存中…' : '保存方案') }}</button>
             <details ref="planActionsMenu" class="plan-configuration-more">
               <summary class="strategy-version-button">更多<PlanConfigurationIcon name="chevron" /></summary>
               <div class="plan-configuration-menu">
@@ -6623,31 +5237,9 @@ onBeforeUnmount(() => {
         <div class="strategy-workflow-layout plan-configuration-layout" :class="'workflow-mode-' + activeMode">
           <PlanConfigurationNavigation
             :mode="activeMode" :product-risk-count="productRiskUnresolvedCount" :benefit-risk-count="benefitRiskUnresolvedCount"
-            :interaction-pending="interactionPendingCount"
             @select-section="selectPlanConfigurationSection" @select-mode="selectPlanConfigurationMode"
           >
-            <template #actions>
-              <AnchorControlBar
-                mode="initialize" compact
-                :initializing="anchorInitializing"
-                :initialize-progress="anchorInitializationProgress"
-                :initialize-label="anchorInitializationStage"
-                :saving="fullShowVersionSaving || savePlanOneClickBusy"
-                :save-label="savePlanOneClickStage"
-                :initialize-disabled="anchorInitializing || !currentPlan"
-                :save-disabled="savePlanOneClickDisabled"
-                :save-hint="savePlanOneClickHint"
-                @initialize="initializeAnchorGeneration"
-                @force-initialize="initializeAnchorGeneration(true)"
-                @save="savePlanOneClick"
-              />
-            </template>
             <template #feedback>
-              <div v-if="anchorInitializationError || anchorInitializationSkipped || (anchorInitializationNotice && !anchorInitializing)" class="strategy-navigation-init-feedback" aria-live="polite">
-                <div v-if="anchorInitializationError" class="strategy-script-notice strategy-anchor-initialization-error" role="alert">{{ anchorInitializationError }}</div>
-                <div v-if="anchorInitializationNotice && !anchorInitializing" class="strategy-script-notice">{{ anchorInitializationNotice }}</div>
-                <div v-if="anchorInitializationSkipped && !anchorInitializing" class="strategy-script-notice strategy-anchor-initialization-skipped">{{ anchorInitializationSkipped }}</div>
-              </div>
               <div v-if="removedRisks.length" class="strategy-removed-risks" aria-live="polite">
                 <p class="strategy-removed-risks-title">以下 {{ removedRisks.length }} 条风险事实未能安全改写，已从本次方案中剔除，不进入口播素材：</p>
                 <button v-for="risk in removedRisks" :key="risk.claim_sha256" type="button" class="strategy-removed-risk-item" @click="locateRemovedRisk(risk)">
@@ -6665,7 +5257,7 @@ onBeforeUnmount(() => {
           :saving="planBusinessMode.saving.value" :error="planBusinessMode.error.value" :disabled="!currentPlan"
           @select="planBusinessMode.select" @select-industry="planBusinessMode.selectIndustry" @retry="planBusinessMode.load"
         />
-        <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="planTenantId" :visible="['products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorInitializationNotice,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
+        <FactRiskEvidencePanel ref="factRiskController" headless :plan-id="currentRoomPlanId || 0" :tenant-id="planTenantId" :visible="['products','benefits'].includes(activeMode)" :refresh-key="JSON.stringify([formalFacts.map(f => [f.id,f.updated_at]),formalProductLinks,formalBenefits,anchorSellingPointWheel?.persisted_at])" @state="factRiskNoticeState = $event" @reviews="setFactRiskReviews" @edit-source="editRiskSource" />
 
         <div
           v-if="activeMode === 'plan' || activeMode === 'basic' || activeMode === 'strategy' || activeMode === 'anchor'"
@@ -7051,145 +5643,6 @@ onBeforeUnmount(() => {
         <section v-else-if="activeMode === 'reading'" class="strategy-v2-workspace">
         <RoomReadingRules :plan-id="currentRoomPlanId" :tenant-id="planTenantId" />
       </section>
-      <section v-else-if="activeMode === 'memory'" class="strategy-v2-workspace interaction-strategy-workspace">
-          <div class="strategy-v2-section-head interaction-strategy-head">
-            <div>
-              <h3 style="font-size:20px">互动策略</h3>
-              <p>这里只规定遇到什么情况要回应、优先级、频率和怎么组织回答；商品、履约、售后等回答内容只能来自“事实依据”。</p>
-            </div>
-          </div>
-          <QuestionLibraryPanel :plan-id="currentRoomPlanId" :tenant-id="planTenantId" />
-          <InteractionRulesWorkspace :room-id="activeRoomId" :plan-id="currentRoomPlanId" :facts="formalFacts" :location-request="interactionLocationRequest" @refresh="refreshMemories" @adopted="refreshMemories" @facts-updated="onInteractionFactsUpdated">
-          <AnswerStrategyPanel :items="interactionMemories" :loading="memoriesLoading" :error="memoriesError" :scope-key="`${planTenantId}:${activeRoomId}:${currentRoomPlanId}`" :editing-id="editingMemoryId" :mutating-id="memoryMutatingId" :delete-confirm-id="memoryDeleteConfirmId" @refresh="refreshMemories" @edit="editingMemoryId === $event.id ? resetMemoryEdit() : beginMemoryEdit($event)" @delete="deleteMemory">
-            <template #editor="{ item }">
-              <div v-if="editingMemoryId === item.id" class="strategy-memory-edit-panel">
-                <label>
-                  <span>修改要求</span>
-                  <textarea
-                    v-model="memoryEditFeedback"
-                    rows="3"
-                  ></textarea>
-                </label>
-                <div class="strategy-memory-edit-actions">
-                  <button
-                    type="button"
-                    :disabled="memoryMutatingId === item.id || !memoryEditFeedback.trim()"
-                    @click="previewMemoryEdit(item)"
-                  >{{ memoryMutatingId === item.id ? '处理中…' : memoryEditPreview ? '重新生成预览' : '生成修改预览' }}</button>
-                  <button type="button" @click="resetMemoryEdit">取消</button>
-                </div>
-                <div v-if="memoryEditPreview" class="strategy-memory-edit-preview">
-                  <strong>修改后预览</strong>
-                  <p>{{ memoryEditPreview }}</p>
-                  <button
-                    class="primary"
-                    type="button"
-                    :disabled="memoryMutatingId === item.id"
-                    @click="adoptMemoryEdit(item)"
-                  >{{ memoryMutatingId === item.id ? '采用中…' : '采用修改' }}</button>
-                </div>
-                <small v-if="memoryEditError" class="strategy-memory-edit-error">{{ memoryEditError }}</small>
-              </div>
-            </template>
-          </AnswerStrategyPanel>
-          </InteractionRulesWorkspace>
-        </section>
-
-        <section v-else-if="activeMode === 'addressing' && !props.supportSession" class="strategy-v2-workspace addressing-workspace">
-          <div class="strategy-v2-section-head">
-            <div>
-              <h3>称呼策略</h3>
-              <p>系统默认称呼由后台统一维护；你也可以切换成“我的称呼”。自定义称呼保存前会经过大模型安全审核，多个称呼按设置概率随机使用。</p>
-            </div>
-            <button
-              class="primary-button"
-              type="button"
-              :disabled="addressingSaving"
-              @click="saveAddressingStrategy"
-            >{{ addressingSaving ? '审核保存中…' : '保存称呼策略' }}</button>
-          </div>
-
-          <div v-if="addressingError" class="inline-error">{{ addressingError }}</div>
-          <div v-if="addressingNotice" class="addressing-notice">{{ addressingNotice }}</div>
-
-          <div class="addressing-mode-grid">
-            <button
-              type="button"
-              :class="{ active: addressingStrategy.addressing_mode !== 'custom' }"
-              @click="setAddressingMode('system')"
-            >
-              <strong>系统默认称呼</strong>
-              <span>直接跟随后台维护的安全称呼和默认随机概率。</span>
-            </button>
-            <button
-              type="button"
-              :class="{ active: addressingStrategy.addressing_mode === 'custom' }"
-              @click="setAddressingMode('custom')"
-            >
-              <strong>我的称呼</strong>
-              <span>自己添加和分配概率，审核通过后只作用于你的账号。</span>
-            </button>
-          </div>
-
-          <section class="addressing-system-card">
-            <header>
-              <div>
-                <span>SYSTEM DEFAULT</span>
-                <strong>系统默认称呼</strong>
-              </div>
-              <b v-if="addressingStrategy.addressing_mode !== 'custom'">正在使用</b>
-            </header>
-            <div class="addressing-chip-list">
-              <div v-for="option in addressingSystemOptions" :key="option.key" class="addressing-chip">
-                <strong>{{ option.text }}</strong>
-                <span>{{ option.enabled ? option.probability + '%' : '停用' }}</span>
-              </div>
-            </div>
-          </section>
-
-          <section class="addressing-custom-card" :class="{ inactive: addressingStrategy.addressing_mode !== 'custom' }">
-            <header>
-              <div>
-                <span>USER CUSTOM</span>
-                <strong>我的称呼</strong>
-              </div>
-              <div class="addressing-custom-actions">
-                <button type="button" class="strategy-version-button" @click="addAddressingOption">＋ 新增称呼</button>
-                <button
-                  type="button"
-                  class="primary-button addressing-save-button"
-                  :disabled="addressingSaving"
-                  @click="saveAddressingStrategy"
-                >{{ addressingSaving ? '审核保存中…' : '保存并生效' }}</button>
-              </div>
-            </header>
-
-            <div v-if="!addressingCustomOptions.length" class="strategy-v2-empty addressing-empty">
-              <strong>还没有自定义称呼</strong>
-              <span>点击“新增称呼”，例如填写“老哥”“朋友”“老板”，然后给每个称呼分配随机概率。</span>
-            </div>
-            <div v-else class="addressing-custom-list">
-              <article v-for="option in addressingCustomOptions" :key="option.key">
-                <label class="addressing-enable">
-                  <input v-model="option.enabled" type="checkbox" />
-                  <span>{{ option.enabled ? '启用' : '停用' }}</span>
-                </label>
-                <label class="addressing-name-field">
-                  <span>称呼</span>
-                  <input v-model="option.text" maxlength="12" />
-                </label>
-                <label class="addressing-probability-field">
-                  <span>随机概率</span>
-                  <div><input v-model.number="option.probability" type="number" min="0" max="100" step="1" :disabled="!option.enabled" /><b>%</b></div>
-                </label>
-                <button type="button" class="addressing-remove" @click="removeAddressingOption(option)">删除</button>
-              </article>
-            </div>
-
-            <p class="addressing-review-tip">保存生效时系统会自动优化当前称呼的实际比例。自定义称呼审核不通过时不会发布到直播间。</p>
-          </section>
-        </section>
-
         <section v-else-if="activeMode === 'plan'" class="strategy-plan-settings">
           <div class="strategy-basic-settings-head">
             <div>
@@ -7296,454 +5749,6 @@ onBeforeUnmount(() => {
             <p>{{ settingsDraft.self_introduction || '还没有填写自我介绍。' }}</p>
             <small>{{ settingsDraft.mission }}</small>
           </div>
-        </section>
-
-        <section v-else-if="activeMode === 'anchor'" class="strategy-v2-workspace strategy-anchor-style-workspace">
-          <AnchorRecommendationPicker v-if="anchorRecommendationsOpen" :tenant-id="planTenantId" :styles="reusableAnchorStyles" @close="anchorRecommendationsOpen = false" @imported="acceptRecommendedAnchors" />
-          <div class="anchor-style-binding-status" :class="{ 'is-free': !currentBoundAnchorStyle }" role="status">
-            <template v-if="currentBoundAnchorStyle">
-              <strong>当前方案使用主播：{{ currentBoundAnchorStyle.name }}</strong>
-              <span>语气按这个主播的风格生成，并按它的评分基准打分。换人：左侧选另一个主播 → 点“设为当前智能体主播”；不用风格：点该主播的“取消使用”。</span>
-            </template>
-            <template v-else>
-              <strong>当前方案未使用主播风格</strong>
-              <span>本场由模型自由发挥语气，不套固定腔调、不打分，照常开播。想用风格：左侧选一个主播（或＋新建主播 / 系统推荐）→ 点“设为当前智能体主播”。</span>
-            </template>
-          </div>
-          <div class="reusable-anchor-style-workspace">
-            <AnchorPresenterManager :styles="reusableAnchorStyles" :selected-id="selectedReusableAnchorStyleId" :current-id="currentBoundAnchorId" :binding-busy="anchorBindingBusy" :busy="reusableAnchorStyleBusy" :editing-id="editingReusableAnchorStyleNameId" :saving-name-id="savingReusableAnchorStyleNameId" :avatar-saving-ids="savingReusableAnchorAvatarIds" :description-saving-ids="savingReusableAnchorDescriptionIds" v-model:name-draft="reusableAnchorStyleNameDraft" :has-selection="!!selectedReusableAnchorStyle" :has-plan="!!currentRoomPlanId" @create="createReusableAnchorStyle" @select="selectReusableAnchorStyle" @rename="beginReusableAnchorStyleNameEdit" @save-name="saveReusableAnchorStyleName" @cancel-name="cancelReusableAnchorStyleNameEdit" @avatar="saveReusableAnchorAvatar" @upload-avatar="saveUploadedAnchorAvatar" @recommendations="anchorRecommendationsOpen = true" @description="saveReusableAnchorDescription" @remove="deleteReusableAnchorStyle" @bind="bindReusableAnchorStyle" @unbind="unbindReusableAnchorStyle" @plugins="reusableAnchorStyleTab = 'personalization'" @source-mode="saveAnchorSourceMode" />
-
-            <div class="reusable-anchor-style-main">
-              <div v-if="reusableAnchorStyleError" class="anchor-presenter-error" role="alert">{{ reusableAnchorStyleError }}</div>
-              <div v-if="reusableAnchorStyleNotice" class="notice-banner">{{ reusableAnchorStyleNotice }}</div>
-              <nav class="reusable-anchor-style-tabs" v-if="selectedReusableAnchorStyle" :class="{ 'is-card-mode': styleSourceMode(selectedReusableAnchorStyle) === 'card' }">
-                <button v-if="styleSourceMode(selectedReusableAnchorStyle) === 'card'" type="button" class="anchor-style-tab-card anchor-style-tab-profile" :class="{ active: reusableAnchorStyleTab === 'style' }" @click="reusableAnchorStyleTab = 'style'">
-                  <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="9" r="5"/><path d="M6 27c0-5 4.5-9 10-9s10 4 10 9"/><path d="M5 4h4M23 4h4M7 4v4M25 4v4"/></svg></span>
-                  <span class="anchor-style-tab-copy"><strong>主播风格</strong><small>不导入文本也能设定</small></span>
-                </button>
-                <button v-if="styleSourceMode(selectedReusableAnchorStyle) === 'sample'" type="button" class="anchor-style-tab-card anchor-style-tab-samples" :class="{ active: reusableAnchorStyleTab === 'samples' }" @click="reusableAnchorStyleTab = 'samples'">
-                  <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="11" y="4" width="10" height="17" rx="5"/><path d="M7 15v1a9 9 0 0 0 18 0v-1M16 25v4M11 29h10"/></svg></span>
-                  <span class="anchor-style-tab-copy"><strong>风格样本</strong><small>导入主播话术</small></span>
-                </button>
-                <button v-if="styleSourceMode(selectedReusableAnchorStyle) === 'sample'" type="button" class="anchor-style-tab-card anchor-style-tab-analysis" :class="{ active: reusableAnchorStyleTab === 'analysis' }" @click="reusableAnchorStyleTab = 'analysis'">
-                  <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="18" width="5" height="10" rx="1"/><rect x="13.5" y="11" width="5" height="17" rx="1"/><rect x="23" y="4" width="5" height="24" rx="1"/></svg></span>
-                  <span class="anchor-style-tab-copy"><strong>风格分析结果</strong><small>提取语言特征</small></span>
-                </button>
-                <button type="button" class="anchor-style-tab-card anchor-style-tab-personalization" :class="{ active: reusableAnchorStyleTab === 'personalization' }" @click="reusableAnchorStyleTab = 'personalization'">
-                  <span class="anchor-style-tab-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M12 4a4 4 0 1 1 8 0v5h5a4 4 0 1 1 0 8h-5v5a4 4 0 1 1-8 0v-5H7a4 4 0 1 1 0-8h5V4Z"/></svg></span>
-                  <span class="anchor-style-tab-copy"><strong>个性化挂载</strong><small>配置专属风格</small></span>
-                </button>
-              </nav>
-
-              <div v-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'style'" class="reusable-anchor-style-tab-panel anchor-style-profile-panel" aria-label="主播风格参数">
-                <div class="anchor-style-profile-head">
-                  <div><strong>主播风格</strong></div>
-                </div>
-                <div class="anchor-style-profile-grid">
-                  <label class="wide"><span>一句话人设</span><input v-model="anchorStyleProfileDraft.tone" maxlength="120" /></label>
-                  <label><span>观众称呼</span><input v-model="anchorStyleProfileDraft.audience_terms" maxlength="180" /></label>
-                  <label><span>主播自称</span><input v-model="anchorStyleProfileDraft.self_terms" maxlength="180" /></label>
-                  <label><span>口头禅 / 常用词</span><input v-model="anchorStyleProfileDraft.catchphrases" maxlength="180" /></label>
-                  <label><span>避免词</span><input v-model="anchorStyleProfileDraft.avoid_terms" maxlength="180" /></label>
-                  <label><span>句子节奏</span><select v-model="anchorStyleProfileDraft.pace"><option value="short">短句、口语、少绕弯</option><option value="medium">中短句、自然停顿</option><option value="long">长句、完整展开</option></select></label>
-                  <label><span>地域 / 口音</span><input v-model="anchorStyleProfileDraft.dialect" maxlength="60" /></label>
-                </div>
-                <div class="anchor-style-profile-ranges">
-                  <label><span>热情度 <b>{{ anchorStyleProfileDraft.warmth }}</b></span><input v-model.number="anchorStyleProfileDraft.warmth" type="range" min="0" max="100" step="5" /></label>
-                  <label><span>专业度 <b>{{ anchorStyleProfileDraft.expertise }}</b></span><input v-model.number="anchorStyleProfileDraft.expertise" type="range" min="0" max="100" step="5" /></label>
-                  <label><span>促单强度 <b>{{ anchorStyleProfileDraft.promotion }}</b></span><input v-model.number="anchorStyleProfileDraft.promotion" type="range" min="0" max="100" step="5" /></label>
-                </div>
-                <label class="anchor-style-profile-extra"><span>补充说明</span><textarea v-model="anchorStyleProfileDraft.extra" rows="3" maxlength="600"></textarea></label>
-                <div class="anchor-style-profile-actions">
-                  <button type="button" class="primary-button" :disabled="anchorStyleProfileSaving" @click="saveAnchorStyleProfile">{{ anchorStyleProfileSaving ? '保存中…' : '保存主播风格参数' }}</button>
-                </div>
-              </div>
-
-              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'samples'" class="reusable-anchor-style-tab-panel reusable-anchor-style-samples-panel">
-                <div class="reusable-anchor-style-samples-hero">
-                  <span class="reusable-anchor-style-samples-hero-icon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="11" y="4" width="10" height="17" rx="5"/><path d="M7 15v1a9 9 0 0 0 18 0v-1M16 25v4M11 29h10"/></svg></span>
-                  <div class="anchor-sample-title"><strong>导入主播话术</strong><small>文字越多风格分析越准</small></div>
-                  <div class="anchor-analysis-start"><button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy || (!reusableAnchorStyleSamples.length && !reusableAnchorStyleSampleDraft.raw_text.trim())" @click="startReusableAnchorAnalysis">开始分析</button><label v-if="reusableAnchorStyleSamples.length > 1"><input v-model="reusableAnchorMultiAnalysis" type="checkbox" :disabled="reusableAnchorStyleBusy" />多样本分析</label></div>
-                </div>
-                <div v-if="reusableAnchorStyleAnalysisStage" class="anchor-analysis-progress" role="progressbar" aria-label="主播风格分析进度" :aria-valuenow="reusableAnchorStyleAnalysisProgress" aria-valuemin="0" aria-valuemax="100"><div :style="{ width: reusableAnchorStyleAnalysisProgress + '%' }"></div><span>{{ reusableAnchorStyleAnalysisStage }} · {{ reusableAnchorStyleAnalysisProgress }}%</span></div>
-                <p v-if="reusableAnchorSampleLimitNotice" class="anchor-sample-limit-warning" role="alert">{{ reusableAnchorSampleLimitNotice }}</p>
-                <div class="reusable-anchor-style-sample-compose">
-                  <label class="reusable-anchor-style-compose-field">
-                    <span class="reusable-anchor-style-compose-icon"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M8 3h9l5 5v17H8a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Z"/><path d="M17 3v6h5M10 14h7M10 18h7"/></svg></span>
-                    <input v-model="reusableAnchorStyleSampleDraft.title" maxlength="50" />
-                    <span class="reusable-anchor-style-compose-count">{{ reusableAnchorStyleSampleDraft.title.length }}/50</span>
-                  </label>
-                  <label class="reusable-anchor-style-compose-field reusable-anchor-style-compose-textarea">
-                    <span class="reusable-anchor-style-compose-icon"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M5 5h18v14H12l-5 4v-4H5V5Z"/><path d="M10 11h.01M14 11h.01M18 11h.01"/></svg></span>
-                    <textarea :value="reusableAnchorStyleSampleDraft.raw_text" rows="8" @input="setAnchorSampleDraft"></textarea>
-                    <span class="reusable-anchor-style-compose-count">{{ Array.from(reusableAnchorStyleSampleDraft.raw_text).length }}/10000</span>
-                  </label>
-                  <div class="reusable-anchor-style-sample-compose-actions">
-                    <div class="reusable-anchor-style-sample-compose-buttons">
-                      <button type="button" class="primary-button" :disabled="reusableAnchorStyleBusy || !reusableAnchorStyleSampleDraft.raw_text.trim()" @click="addReusableAnchorStyleSample"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="m4 13 20-9-7 20-4-8-9-3Z"/><path d="m13 16 5-6"/></svg>保存这份样本</button>
-                      <label class="strategy-version-button reusable-anchor-style-file-button"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M7 3h10l5 5v17H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M17 3v6h5M14 12v8M10 16l4 4 4-4"/></svg>导入 TXT/MD<input type="file" accept=".txt,.md,text/plain,text/markdown" multiple @change="importReusableAnchorStyleSamples" /></label>
-                    </div>
-                    <div class="reusable-anchor-style-sample-tip"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M9 18c-2-2-3-4-3-7a8 8 0 1 1 16 0c0 3-1 5-3 7l-1 2h-8l-1-2ZM10 24h8M11 21h6"/><path d="M14 1v2M3 11H1M27 11h-2M5 3l2 2M23 3l-2 2"/></svg><span>提示：样本越真实越完整，生成的风格越贴近。</span></div>
-                  </div>
-                  <div class="reusable-anchor-style-sample-examples"><strong>样本示例</strong><button type="button" @click="reusableAnchorStyleSampleDraft.title = '菜籽油主线'">菜籽油主线</button><button type="button" @click="reusableAnchorStyleSampleDraft.title = '服装卖点讲解'">服装卖点讲解</button><button type="button" @click="reusableAnchorStyleSampleDraft.title = '发货与售后'">发货与售后</button><button type="button" @click="reusableAnchorStyleSampleDraft.title = '日常闲聊互动'">日常闲聊互动</button></div>
-                </div>
-                <div class="reusable-anchor-style-sample-list">
-                  <article v-for="sample in reusableAnchorStyleSamples" :key="sample.id">
-                    <header><div><strong>{{ sample.title }}</strong><small>{{ Array.from(sample.readable_text).length }} 字 · {{ sample.analysis_status === 'analyzed' ? '已分析' : sample.analysis_status === 'analyzing' ? '分析中' : sample.analysis_status === 'failed' ? '分析失败' : '待分析' }}</small></div><div><button type="button" class="strategy-version-button" :disabled="!sample.analysis.delivery_spec?.meta_prompt_md" @click="viewedAnchorSample = sample">查看样本分析</button><button type="button" class="strategy-version-button" :disabled="reusableAnchorStyleBusy" @click="analyzeReusableAnchorStyleSample(sample)">{{ sample.analysis_status === 'analyzed' ? '重新分析此样本' : '分析此样本' }}</button><button type="button" class="strategy-version-button" :disabled="reusableAnchorStyleBusy" @click="deleteReusableAnchorStyleSample(sample)">删除</button></div></header>
-                    <details><summary>查看原始样本</summary><pre>{{ sample.readable_text }}</pre></details>
-                    <p v-if="sample.error_message" class="inline-error">{{ sample.error_message }}</p>
-                  </article>
-                </div>
-              </div>
-
-              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'analysis'" class="reusable-anchor-style-tab-panel reusable-anchor-style-reserved-empty" aria-label="风格分析结果">
-                <div v-if="reusableAnchorStyleAnalysisStage" class="anchor-analysis-progress" role="progressbar" aria-label="总风格保存进度" :aria-valuenow="reusableAnchorStyleAnalysisProgress" aria-valuemin="0" aria-valuemax="100"><div :style="{ width: reusableAnchorStyleAnalysisProgress + '%' }"></div><span>{{ reusableAnchorStyleAnalysisStage }} · {{ reusableAnchorStyleAnalysisProgress }}%</span></div>
-                <AnchorStyleAnalysisDisplay :text="overallAnchorAnalysisText" :editable="!!overallAnchorAnalysisText.trim() && reusableAnchorAnalysisPreviewId === reusableAnchorAnalysisVersions.active_version_id" :busy="reusableAnchorStyleBusy" @save="saveOverallAnchorAnalysis">
-                  <template #versions><div class="anchor-analysis-version-picker"><span>{{ activeAnchorAnalysisVersion ? '当前使用 V' + activeAnchorAnalysisVersion.version_no : '暂无采纳版本' }}</span><select v-if="reusableAnchorAnalysisVersions.items.length" v-model="reusableAnchorAnalysisPreviewId" aria-label="选择历史风格版本" :disabled="reusableAnchorStyleBusy"><option v-for="version in reusableAnchorAnalysisVersions.items" :key="version.id" :value="version.id">V{{ version.version_no }} · {{ version.kind === 'multi_sample' ? '综合分析' : version.kind === 'manual_edit' ? '手动修改' : version.kind === 'legacy_import' ? '历史风格' : '单样本' }}</option></select><button v-if="reusableAnchorAnalysisVersions.items.length" type="button" class="strategy-version-button" :disabled="reusableAnchorStyleBusy || reusableAnchorAnalysisPreviewId === reusableAnchorAnalysisVersions.active_version_id" @click="useOverallAnchorAnalysis">使用</button></div></template>
-                </AnchorStyleAnalysisDisplay>
-                <div v-if="legacyStyleUIVisible">
-                <div class="reusable-anchor-style-panel-title"><div><strong>风格分析结果</strong><small>下面的内容是跨商品可复用的“怎么说”，事实、价格、链接和互动策略不在这里。</small></div><span>{{ selectedReusableAnchorStyle.sample_count }} 份样本已纳入</span></div>
-                <div v-if="!selectedReusableAnchorStyle.profile.dimensions?.length" class="reusable-anchor-style-empty">还没有分析结果。请回到“主播风格样本话术”分析至少一份样本。</div>
-                <template v-else>
-                  <section class="reusable-anchor-style-rulebook reusable-anchor-style-meta-prompt-only">
-                    <header><strong>主播元提示词</strong><small>这是给生成模型使用的可执行风格规范；商品事实、价格、链接和互动策略不写入这里。样本证据置信度：{{ selectedReusableAnchorStyle.profile.delivery_spec?.sample_confidence || '待累计' }}；短样本先看存在性，长样本才按密度约束。</small></header>
-                    <pre>{{ selectedReusableAnchorStyle.profile.delivery_spec?.rulebook || selectedReusableAnchorStyle.profile.reusable_rules.join('\n') }}</pre>
-                  </section>
-                  <section class="anchor-addressing-override">
-                    <header>
-                      <div><strong>生成话术的称呼覆盖</strong><small>未启用时沿用样本学到的称呼；这里仅影响主线话术生成，不修改直播间实时互动策略。</small></div>
-                      <button type="button" class="primary-button" :disabled="anchorAddressingSaving" @click="saveAnchorAddressingOverride">{{ anchorAddressingSaving ? '保存中…' : '保存称呼覆盖' }}</button>
-                    </header>
-                    <div class="anchor-addressing-learned">
-                      <span>样本观众称呼：{{ learnedAnchorAudienceTerms.join('、') || '未提取到稳定称呼' }}</span>
-                      <span>样本主播自称：{{ learnedAnchorSelfTerms.join('、') || '未提取到稳定自称' }}</span>
-                    </div>
-                    <div class="anchor-addressing-grid">
-                      <label><span>观众 / 粉丝称呼</span><select v-model="anchorAddressingDraft.audience_mode"><option value="inherit">不启用 · 沿用主播风格</option><option value="append">添加 · 与主播风格混合</option><option value="replace">替换 · 不再使用样本同类称呼</option></select><textarea v-if="anchorAddressingDraft.audience_mode !== 'inherit'" v-model="anchorAddressingDraft.audience_terms" rows="2" maxlength="180"></textarea></label>
-                      <label><span>主播自称</span><select v-model="anchorAddressingDraft.self_mode"><option value="inherit">不启用 · 沿用主播风格</option><option value="append">添加 · 与主播风格混合</option><option value="replace">替换 · 不再使用样本同类自称</option></select><textarea v-if="anchorAddressingDraft.self_mode !== 'inherit'" v-model="anchorAddressingDraft.self_terms" rows="2" maxlength="180"></textarea></label>
-                    </div>
-                  </section>
-                </template>
-                </div>
-              </div>
-
-              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'testing'" class="reusable-anchor-style-tab-panel reusable-anchor-style-reserved-empty" aria-label="测试与训练预留页面">
-                <div v-show="false">
-                <div class="reusable-anchor-style-panel-title"><div><strong>测试与训练</strong><small>每次先生成一小段；不满意可写差异继续校正。测试不会发布，也不会自动备份版本或改当前直播。</small></div></div>
-                <div class="strategy-anchor-test-settings reusable-anchor-style-test-settings">
-                  <label>这次主线要说什么<input v-model="anchorStyleTestTopic" maxlength="300" /></label>
-                  <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50" /></label>
-                  <label>主播风格还原强度：{{ anchorStyleMatchIntensity }}/100<input v-model.number="anchorStyleMatchIntensity" type="range" min="1" max="100" step="5" /></label>
-                  <label>事实延展空间：{{ fullShowExpansionFreedom }}/100<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5" /></label>
-                  <label>促单强度：{{ anchorStyleConversionIntensity }}/100<input v-model.number="anchorStyleConversionIntensity" type="range" min="0" max="100" step="5" /></label>
-                </div>
-                <div class="reusable-anchor-style-fact-picker"><span>可选事实（只决定说哪些事实，不改变主播风格）</span><button v-for="fact in formalFacts.slice(0, 12)" :key="fact.key" type="button" :class="{ selected: selectedFactKeys.includes(fact.key) }" @click="selectedFactKeys = selectedFactKeys.includes(fact.key) ? selectedFactKeys.filter((key) => key !== fact.key) : [...selectedFactKeys, fact.key]">{{ fact.key }}</button></div>
-                <div class="reusable-anchor-style-test-actions"><button class="primary-button" type="button" :disabled="anchorStyleTestBusy || !selectedReusableAnchorStyle.profile.dimensions?.length || !currentPlan" @click="runAnchorStyleTest">{{ anchorStyleTestBusy ? '生成中…' : '生成一小段测试文案' }}</button><button type="button" class="strategy-version-button" :disabled="reusableAnchorStyleLongTestRunning" @click="runReusableLongTest">{{ reusableAnchorStyleLongTestRunning ? '长时间测试中…' : '长时间主播测试' }}</button><button v-if="reusableAnchorStyleLongTestRunning" type="button" class="strategy-version-button" @click="stopReusableLongTest">停止</button><label v-if="!reusableAnchorStyleLongTestRunning">测试时长（分钟）<input v-model.number="reusableAnchorStyleLongTestMinutes" type="number" min="5" max="240" step="5" /></label></div>
-                <div v-if="anchorStyleTestError" class="inline-error">{{ anchorStyleTestError }}</div>
-                <section v-if="anchorStyleOutputOpen || anchorStyleTestResult" aria-live="polite" aria-label="话术生成输出">
-                  <p v-if="anchorStyleOutputOpen" class="muted-text">{{ anchorStyleGenerationProgress }}<span v-if="anchorStylePartialText"> · 已返回 {{ [...anchorStylePartialText].length }} 字</span></p>
-                  <pre class="reusable-anchor-style-generated-text">{{ anchorStyleTestResult?.text || anchorStylePartialText || '正文会从这里逐段出现，请稍等…' }}</pre>
-                </section>
-                <AnchorTrainingReceipt v-if="anchorStyleTestResult" :items="anchorStyleTestResult.applied_trainings" />
-                <div v-if="anchorStyleTestResult" class="reusable-anchor-style-score-row"><span>1000字实际稳定分：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.style_score : '累计中' }}</span><span v-if="anchorStyleTestResult.style_window?.strict">质量目标：{{ anchorStyleTestResult.style_window.target_score }}/100 · {{ anchorStyleTestResult.style_window.passed ? '已达到' : '后续窗口继续补偿' }}</span><span>已统计：{{ anchorStyleTestResult.style_window?.window_chars ?? 0 }}/1000字</span><span>原词分布：{{ anchorStyleTestResult.style_window?.ready ? anchorStyleTestResult.style_window.term_score : '—' }}</span><span>风格分只用于质量监控，不阻塞正文。</span></div>
-                <section v-if="anchorStyleTestResult?.content_strategy" class="reusable-anchor-style-advisory-panel">
-                  <header><strong>本次话术安排</strong><small>系统一次规划最多8个短期小段，正文仍逐段生成、校验并立即显示；互动或事实变化时只废弃尚未生成的部分。选择不合适或超时，由系统兜底。</small></header>
-                  <p>直播类型：{{ mainlineLiveTypeLabel(anchorStyleTestResult.content_strategy.live_type) }} · 商品行业：{{ mainlineIndustryLabel(anchorStyleTestResult.content_strategy.industry_code) }} · 促单强度：{{ anchorStyleTestResult.content_strategy.conversion_intensity }}/100</p>
-                  <p>行动节点：目标 {{ anchorStyleTestResult.content_strategy.action_target ?? 0 }} · 实际 {{ anchorStyleTestResult.content_strategy.action_planned ?? 0 }} · 直接CTA {{ anchorStyleTestResult.content_strategy.direct_cta_mentions ?? 0 }} 处</p>
-                  <template v-if="anchorStyleTestResult.content_strategy.actual_steps?.length">
-                    <p>本次实际顺序：{{ mainlineRoleSequenceLabel(anchorStyleTestResult.content_strategy.actual_steps.map((step) => step.role), anchorStyleTestResult.content_strategy.live_type) }}</p>
-                    <details><summary>看看每段为什么这样安排</summary><p v-for="step in anchorStyleTestResult.content_strategy.actual_steps" :key="step.index">第 {{ step.index }} 段 · {{ step.mainline_phase || 'body' }} / {{ step.body_function || mainlineRoleSequenceLabel([step.role], anchorStyleTestResult.content_strategy.live_type) }}<template v-if="step.cta_type"> · CTA={{ step.cta_type }}</template> · {{ step.source.startsWith('model') ? '模型短期规划' : '系统校正/兜底' }}：{{ step.reason }}</p></details>
-                  </template>
-                  <p v-else>默认环节参考（不是本次实际顺序）：{{ mainlineRoleSequenceLabel(anchorStyleTestResult.content_strategy.role_sequence, anchorStyleTestResult.content_strategy.live_type) }}</p>
-                  <details v-if="anchorStyleTestResult.content_strategy.product_plan?.length" open>
-                    <summary>商品讲解方向（由直播间定位生成，本次方案可变）</summary>
-                    <article v-for="item in anchorStyleTestResult.content_strategy.product_plan" :key="item.link_key">
-                      <strong>{{ item.link_key }} · {{ item.product_name || '未命名商品' }}</strong>
-                      <span>直播间定位：{{ productRoomRolesLabel(item.room_roles || []) }} · {{ productPlanDirectionLabel(item.emphasis, item.revisit) }}</span>
-                      <small>{{ item.reason }}</small>
-                      <small v-if="item.primary_angles?.length">优先内容：{{ item.primary_angles.join('、') }}</small>
-                      <small v-for="transition in (item.transitions || [])" :key="transition.target_link_key">可承接 {{ transition.target_link_key }}：{{ transition.reason }}</small>
-                    </article>
-                  </details>
-                </section>
-                <section v-if="anchorStyleTestResult?.advisories?.length" class="reusable-anchor-style-advisory-panel">
-                  <header><strong>后台校对建议</strong><small>建议不会进入主话术或 TTS；你可以保留当前表达，系统会记住本次选择。</small></header>
-                  <article v-for="item in anchorStyleTestResult.advisories" :key="item.code">
-                    <strong>{{ item.title }}</strong><span>{{ item.message }}</span><small>建议：{{ item.suggestion }}</small>
-                    <button v-if="item.user_decidable && !item.hard_boundary" type="button" class="strategy-version-button" @click="ignoreAnchorStyleAdvisory(item.code)">保留当前表达</button>
-                    <em v-else>硬边界：必须改写或补充依据</em>
-                  </article>
-                </section>
-                <section v-if="anchorStyleTestResult" class="strategy-style-correction-loop reusable-anchor-style-training-loop">
-                  <header><div><span>ITERATIVE CALIBRATION</span><strong>哪里不像，就继续告诉系统</strong></div><em>{{ anchorStyleCorrectionCandidates.length }} 条未保存调整</em></header>
-                  <p>直接写这版和真实主播哪里不同，也可以粘贴其他 AI 的差异分析。系统只提取可复用的说话方式，重新生成一小段给你比较；满意前不会改变正式主播风格。</p>
-                  <div v-if="anchorStyleCorrectionHistory.length" class="strategy-style-correction-history">
-                    <article v-for="(entry, index) in anchorStyleCorrectionHistory" :key="`${index}:${entry.feedback}`">
-                      <span>第 {{ index + 1 }} 轮 · {{ entry.model }}</span>
-                      <p><b>你的反馈：</b>{{ entry.feedback }}</p>
-                      <p><b>系统归纳：</b>{{ entry.diagnosis }}</p>
-                    </article>
-                  </div>
-                  <label><span>这版哪里还不像</span><textarea v-model="anchorStyleCorrectionFeedback" rows="3" maxlength="300"></textarea></label>
-                  <div class="strategy-style-correction-actions">
-                    <button class="primary-button" type="button" :disabled="!anchorStyleCorrectionFeedback.trim() || !anchorRulebook || anchorStyleCorrectionBusy || anchorStyleTestBusy" @click="learnAndRegenerateAnchorStyle">{{ anchorStyleCorrectionBusy ? '正在学习并重生成…' : '学习这条反馈并重新生成' }}</button>
-                    <button v-if="anchorStyleCorrectionCandidates.length" class="primary-button" type="button" :disabled="anchorStyleCorrectionBusy || styleOverlayBusy" @click="saveAnchorStyleCorrections">满意，保存这些调整</button>
-                    <button v-if="anchorStyleCorrectionCandidates.length" class="strategy-version-button" type="button" :disabled="anchorStyleCorrectionBusy" @click="discardAnchorStyleCorrections">放弃本轮调整</button>
-                  </div>
-                  <small v-if="!anchorRulebook">需要先分析真实主播样本，系统才能判断“哪里不像”。</small>
-                  <div v-if="anchorStyleCorrectionError" class="inline-error">{{ anchorStyleCorrectionError }}</div>
-                </section>
-                 <div v-if="reusableAnchorStyleLongTestText" class="reusable-anchor-style-long-test"><header><div><strong>长时间测试结果</strong><span>{{ reusableAnchorStyleLongTestStage }}</span></div><button type="button" class="strategy-version-button" @click="reusableAnchorStyleLongTestOpen = true">打开连续输出窗口</button></header><pre>{{ reusableAnchorStyleLongTestText }}</pre></div>
-                 <section v-if="reusableAnchorStyleLongTestAdvisories?.length" class="reusable-anchor-style-advisory-panel"><header><strong>长时间测试的后台建议</strong><small>只供校对，不会进入连续主线正文；建议会按代码去重。</small></header><article v-for="item in reusableAnchorStyleLongTestAdvisories" :key="item.code"><strong>{{ item.title }}</strong><span>{{ item.message }}</span><small>建议：{{ item.suggestion }}</small><button v-if="item.user_decidable && !item.hard_boundary" type="button" class="strategy-version-button" @click="ignoreAnchorStyleAdvisory(item.code)">保留当前表达</button><em v-else>硬边界：必须改写或补充依据</em></article></section>
-                 <div v-if="reusableAnchorStyleLongTestOpen" class="reusable-anchor-style-stream-backdrop" @click.self="reusableAnchorStyleLongTestOpen = false">
-                   <section class="reusable-anchor-style-stream-window" role="dialog" aria-modal="true" aria-label="连续主线输出窗口">
-                     <header class="reusable-anchor-style-stream-header"><div><span>LIVE MAINLINE PREVIEW</span><strong>主播主线连续输出</strong><small>{{ reusableAnchorStyleLongTestStage }}</small></div><button type="button" class="strategy-version-button" @click="reusableAnchorStyleLongTestOpen = false">关闭窗口</button></header>
-                     <div class="reusable-anchor-style-stream-metrics"><span>已生成 <b>{{ reusableAnchorStyleLongTestSegments }}</b> 段</span><span>测试时长 <b>{{ reusableAnchorStyleLongTestMinutes }}</b> 分钟</span><span>模式 <b>小段连续生成</b></span></div>
-                     <pre ref="reusableAnchorStyleLongTestOutput" class="reusable-anchor-style-stream-output">{{ reusableAnchorStyleLongTestText || '等待第一段通过事实检查并流出…' }}</pre>
-                     <footer><span>每段先通过事实和结构检查，再尝试风格包装；包装失败立即显示基础正文。本窗口只用于测试，不发布、不生成声音。</span><button v-if="reusableAnchorStyleLongTestRunning" type="button" class="danger-button" @click="stopReusableLongTest">停止继续生成</button></footer>
-                   </section>
-                 </div>
-                </div>
-              </div>
-
-              <div v-else-if="selectedReusableAnchorStyle && reusableAnchorStyleTab === 'personalization'" class="reusable-anchor-style-tab-panel">
-                <div class="reusable-anchor-style-panel-title"><div><strong>个性化挂载</strong><small>插件是主播的表达叠加能力，例如偶尔幽默、偶尔自我纠正、轻微口结。启用后参与测试生成，不改变事实库和互动策略。</small></div></div>
-                <div v-if="stylePluginCatalog?.items.length" class="reusable-anchor-style-plugin-grid"><article v-for="pluginItem in stylePluginCatalog.items" :key="pluginItem.manifest.id"><div><strong>{{ pluginItem.manifest.name }}</strong><small>{{ pluginItem.manifest.description }}</small></div><button type="button" :disabled="!pluginItem.activation_supported" @click="toggleReusableAnchorPlugin(pluginItem)">{{ selectedReusableAnchorStyle.plugin_settings?.some((setting) => setting.plugin_id === pluginItem.manifest.id && setting.enabled) ? '已启用 · 点击卸载' : '启用这个插件' }}</button></article></div>
-                <div v-else class="reusable-anchor-style-empty">当前方案还没有读取插件目录，请先选择一个直播方案。</div>
-              </div>
-            </div>
-          </div>
-          <Teleport to="body"><div v-if="viewedAnchorSample" class="anchor-sample-modal-backdrop" @click.self="viewedAnchorSample = null"><section class="anchor-sample-modal" role="dialog" aria-modal="true" tabindex="-1" :aria-label="'样本分析：' + viewedAnchorSample.title" @keydown.esc.stop="viewedAnchorSample = null"><header><strong>{{ viewedAnchorSample.title }} · 样本分析</strong><button type="button" aria-label="关闭样本分析" @click="viewedAnchorSample = null">关闭 ×</button></header><AnchorStyleAnalysisDisplay :text="viewedAnchorSample.analysis.delivery_spec?.meta_prompt_md || ''" title="样本分析结果" /></section></div></Teleport>
-          <details v-if="legacyStyleUIVisible" class="reusable-anchor-style-legacy">
-          <div class="strategy-v2-section-head">
-            <div>
-              <h3>主播风格</h3>
-              <p>从直播素材和已采纳参考中只学习“怎么说”。商品、价格、规格、链接、产地、活动福利和履约事实不会进入主播风格规则。</p>
-            </div>
-            <div class="strategy-anchor-style-actions">
-              <button
-                class="strategy-version-button"
-                type="button"
-                :disabled="!currentPlan || scriptAnalyzing || anchorStyleApplying"
-                @click="analyzeCurrentPlanScript"
-              >
-                {{ scriptAnalyzing ? '分析中…' : '重新分析当前素材' }}
-              </button>
-              <button
-                class="primary-button"
-                type="button"
-                :disabled="!currentPlan || scriptAnalyzing || anchorStyleApplying || !scriptReadableText.trim() || !anchorRulebook"
-                @click="applyAnchorStyleHot"
-              >
-                {{ anchorStyleApplying ? '保存生效中…' : '保存口播规范并生效' }}
-              </button>
-            </div>
-          </div>
-
-          <section class="strategy-anchor-core-panel">
-            <header><strong>主流程：粘贴主播原文 → 分析 → 生成测试文案 → 反馈校正</strong><button class="strategy-version-button" @click="anchorStyleSampleExpanded = !anchorStyleSampleExpanded">{{ anchorStyleSampleExpanded ? '收起主播原文' : '展开并粘贴主播原文' }}</button></header>
-            <p>这里才是主播样本入口。下面的“额外习惯”不是样本分析；它只用于你主动追加一句长期要求。</p>
-            <template v-if="anchorStyleSampleExpanded">
-              <label>主播真实口播原文（必填）<textarea v-model="scriptReadableText" rows="8" maxlength="60000" @input="syncSimpleScriptText"></textarea></label>
-              <small>当前已输入 {{ scriptReadableText.trim().length }} 字；灰色提示文字不计入输入。</small>
-              <button class="primary-button" :disabled="scriptAnalyzing" @click="analyzeCurrentPlanScript">{{ scriptAnalyzing ? '分析规则中…' : '开始分析主播样本' }}</button>
-              <div v-if="settingsError" class="inline-error">{{ settingsError }}</div>
-            </template>
-            <small v-if="savedStyleScript && !currentAnalysis?.anchor_style?.dimensions?.length">当前显示当前方案已保存素材「{{ savedStyleScript.title || '主播素材' }}」的风格；不会因新建未分析素材而隐藏。</small>
-          </section>
-
-          <section class="strategy-style-overlay-panel">
-            <header>
-              <div>
-                <span>PERSONA LAYERS</span>
-                <strong>可选：额外习惯</strong>
-                <p>这不是主播原文分析。只有想主动增加“偶尔幽默”“先说重点”等长期要求时才填写。</p>
-              </div>
-              <em>{{ styleOverlayProfile?.items.filter((item) => item.enabled).length || 0 }} 条生效</em>
-            </header>
-
-            <details class="strategy-style-plugin-library">
-              <summary>
-                <div><span>ADVANCED</span><strong>高级：主播能力插件</strong><p>一般不需要操作；只有希望直接叠加预制能力时再展开。</p></div>
-                <em>{{ stylePluginCatalog?.items.length || 0 }} 个能力</em>
-              </summary>
-              <div v-if="stylePluginCatalog?.items.length" class="strategy-style-plugin-grid">
-                <article v-for="pluginItem in stylePluginCatalog.items" :key="`${pluginItem.manifest.id}@${pluginItem.manifest.version}`" :class="{ locked: !pluginItem.activation_supported }">
-                  <div class="strategy-style-plugin-title"><div><span>{{ pluginItem.manifest.mode === 'declarative' ? '声明式' : '可信执行器' }} · v{{ pluginItem.manifest.version }}</span><strong>{{ pluginItem.manifest.name }}</strong></div><code>{{ pluginItem.manifest.id }}</code></div>
-                  <p>{{ pluginItem.manifest.description }}</p>
-                  <small>场景：{{ pluginItem.manifest.scenes.join('、') }} · 参数 {{ Object.keys(pluginItem.manifest.parameters || {}).length }} 项</small>
-                  <small v-if="pluginItem.activation_reason" class="strategy-style-plugin-reason">{{ pluginItem.activation_reason }}</small>
-                  <button
-                    type="button"
-                    :disabled="!pluginItem.activation_supported || activeStylePluginIDs.has(pluginItem.manifest.id) || Boolean(stylePluginBusyID) || !styleOverlayProfile"
-                    @click="activateStylePlugin(pluginItem)"
-                  >
-                    {{ activeStylePluginIDs.has(pluginItem.manifest.id) ? '已加入主播' : stylePluginBusyID === pluginItem.manifest.id ? '启用中…' : pluginItem.activation_supported ? '加入当前主播' : '执行链待接入' }}
-                  </button>
-                </article>
-              </div>
-              <div v-else class="strategy-style-overlay-empty">服务器尚未加载主播风格插件目录。</div>
-            </details>
-
-            <div v-if="styleOverlayProfile?.items.length" class="strategy-style-overlay-list">
-              <article v-for="item in styleOverlayProfile.items" :key="item.id" :class="{ disabled: !item.enabled }">
-                <div class="strategy-style-overlay-card-head">
-                  <div>
-                    <span>{{ item.plugin ? `插件 ${item.plugin.plugin_id} · ` : '' }}{{ styleOverlayApplicationLabel(item.rule.application) }} · {{ styleOverlayStrengthLabel(item.rule.strength) }}</span>
-                    <strong>{{ item.rule.label }}</strong>
-                  </div>
-                  <div>
-                    <button type="button" :disabled="styleOverlayBusy" @click="toggleStyleOverlay(item)">{{ item.enabled ? '暂停' : '启用' }}</button>
-                    <button type="button" :disabled="styleOverlayBusy" @click="removeStyleOverlay(item)">删除</button>
-                  </div>
-                </div>
-                <p>{{ item.rule.mainline_instruction }}</p>
-                <small>短互动：{{ item.rule.interaction_instruction }}</small>
-                <small>严肃场景：{{ item.rule.serious_instruction }}</small>
-                <small v-if="item.rule.mainline_max_per_1000_chars">频率：每1000字 {{ item.rule.mainline_min_per_1000_chars || 0 }}～{{ item.rule.mainline_max_per_1000_chars }} 次；短答最多 {{ item.rule.interaction_max_occurrences || 0 }} 次</small>
-                <details>
-                  <summary>查看原始表达与理解依据</summary>
-                  <p>原话：{{ item.source_text }}</p>
-                  <p v-if="item.explanation_text">补充解释：{{ item.explanation_text }}</p>
-                  <p>避免：{{ item.rule.avoid.join('、') || '无额外项' }} · 理解置信度 {{ item.rule.confidence }}/100</p>
-                </details>
-              </article>
-            </div>
-            <div v-else class="strategy-style-overlay-empty">还没有风格或策略外挂。可以输入“喜欢时不时幽默一下”“喜欢用数字比价”“喜欢把核心事实隔一段换个动作讲回来”等自然语言。</div>
-
-            <div class="strategy-style-overlay-compose">
-              <label>
-                <span>希望增加什么风格或本场策略</span>
-                <textarea v-model="styleOverlaySource" rows="2" maxlength="300"></textarea>
-              </label>
-              <label>
-                <span>补充我的意思 <small>选填；系统理解不准时再填写</small></span>
-                <textarea v-model="styleOverlayExplanation" rows="2" maxlength="600"></textarea>
-              </label>
-              <label class="strategy-style-overlay-strength">
-                <span>叠加强度：{{ styleOverlayStrengthLabel(styleOverlayStrength) }}</span>
-                <input v-model.number="styleOverlayStrength" type="range" min="10" max="90" step="5" />
-              </label>
-              <button class="primary-button" type="button" :disabled="!currentPlan || !styleOverlayProfile || styleOverlayBusy" @click="interpretStyleOverlay">
-                {{ styleOverlayBusy ? '正在理解…' : '智能理解' }}
-              </button>
-            </div>
-
-            <div v-if="styleOverlayPending" class="strategy-style-overlay-preview">
-              <header><div><span>系统理解</span><strong>{{ styleOverlayPending.rule.label }}</strong></div><em>置信度 {{ styleOverlayPending.rule.confidence }}/100</em></header>
-              <p><b>长主线：</b>{{ styleOverlayPending.rule.mainline_instruction }}</p>
-              <p><b>短互动：</b>{{ styleOverlayPending.rule.interaction_instruction }}</p>
-              <p><b>严肃场景：</b>{{ styleOverlayPending.rule.serious_instruction }}</p>
-              <p v-if="styleOverlayPending.rule.mainline_max_per_1000_chars"><b>次数预算：</b>每1000字 {{ styleOverlayPending.rule.mainline_min_per_1000_chars || 0 }}～{{ styleOverlayPending.rule.mainline_max_per_1000_chars }} 次，短答最多 {{ styleOverlayPending.rule.interaction_max_occurrences || 0 }} 次。</p>
-              <small>参考了 {{ styleOverlayMemoryMatches }} 条当前客户已确认的相似理解；用户补充解释始终优先。</small>
-              <div><button type="button" class="strategy-version-button" @click="styleOverlayPending = null">重新描述</button><button type="button" class="primary-button" :disabled="styleOverlayBusy" @click="confirmStyleOverlay">确认加入当前方案</button></div>
-            </div>
-            <div v-if="styleOverlayError" class="inline-error">{{ styleOverlayError }}</div>
-            <div v-if="styleOverlayNotice" class="notice-banner">{{ styleOverlayNotice }}</div>
-            <small>底层主播风格来自真人样本；这里保存的是当前直播方案的风格或策略外挂。数字比价、连续算账、事实回环不会反写成主播永久风格。</small>
-          </section>
-          <div v-if="scriptNotice" class="notice-banner">{{ scriptNotice }}</div>
-			<div v-if="anchorStyleAnalysisQC" class="notice-banner" :class="{ 'inline-error': !anchorStyleAnalysisQC.passed }">
-				<strong>Qwen 同步质检：{{ anchorStyleAnalysisQC.passed ? '通过' : '未通过' }}</strong>
-				<span v-if="anchorStyleAnalysisQC.available">证据覆盖 {{ anchorStyleAnalysisQC.coverage_score }}/100 · 风格纯度 {{ anchorStyleAnalysisQC.purity_score }}/100 · {{ anchorStyleAnalysisQC.summary }}</span>
-				<span v-else>{{ anchorStyleAnalysisQC.error || '质检服务暂不可用；当前分析仅供查看。' }}</span>
-			</div>
-
-          <div v-if="settingsError" class="inline-error">{{ settingsError }}</div>
-          <div v-if="scriptAnalyzing" class="strategy-analysis-progress" role="status" aria-live="polite">
-            <div class="strategy-analysis-progress-head">
-              <strong>{{ scriptAnalysisStage || '正在分析主播风格' }}</strong>
-              <span>等待模型返回并校验规范</span>
-            </div>
-            <div class="strategy-analysis-progress-track">
-              <span class="anchor-analysis-indeterminate"></span>
-            </div>
-          </div>
-
-          <div v-if="!anchorStyleProfile?.dimensions?.length" class="strategy-v2-empty">
-            <strong>还没有主播口播规范</strong>
-            <span v-if="enabledStyleOverlayCount">已启用 {{ enabledStyleOverlayCount }} 条叠加风格，可以先直接生成测试文案；以后仍可粘贴真人样本作为底层风格。</span>
-            <span v-else>粘贴主播真实口播，系统提取本人的表达习惯、核对原词并生成可执行规范；也可以先添加叠加风格，从零搭建。</span>
-          </div>
-          <template v-else>
-            <section class="strategy-anchor-style-summary">
-              <div>
-                <span>分析结果统计</span>
-                <strong>{{ anchorStyleProfile.summary || '已完成样本分析' }}</strong>
-                <small>统计由程序依据本次样本计算。规范只约束怎么说，不复制商品事实；单篇样本不能代表主播的所有场景。</small>
-              </div>
-              <div class="strategy-anchor-style-metrics">
-                <div><strong>{{ anchorDelivery?.sample_chars || '—' }}</strong><span>样本字数</span></div>
-                <div><strong>{{ anchorDelivery?.sentence_count || '—' }}</strong><span>标点分句</span></div>
-                <div><strong>{{ anchorDelivery?.literal_habits?.length ?? '—' }}</strong><span>原词习惯</span></div>
-                <div><strong>{{ anchorDelivery?.instructions?.length || '—' }}</strong><span>执行规则</span></div>
-              </div>
-            </section>
-            <details v-if="anchorRulebook" class="strategy-anchor-rulebook">
-              <summary><strong>主播口播规范</strong><span>展开查看 · 可复制 · 测试、主线与互动共用</span></summary>
-              <div class="strategy-anchor-rulebook-body">
-                <button class="strategy-version-button" @click="copyAnchorRulebook">复制口播规范</button>
-                <small role="status">{{ anchorCopyNotice }}</small>
-                <pre>{{ anchorRulebook }}</pre>
-              </div>
-            </details>
-            <div v-else class="notice-banner">这是旧版分析结果。请点击“重新分析当前素材”，生成新版可执行的主播口播规范；旧内容不会自动改写。</div>
-          </template>
-          <section v-if="canRunAnchorStyleTest" class="strategy-anchor-core-panel">
-            <header><strong>用当前风格生成测试文案</strong><button class="primary-button" :disabled="!canRunAnchorStyleTest || anchorStyleTestBusy || scriptAnalyzing" @click="runAnchorStyleTest">{{ anchorStyleTestBusy ? '生成并自动校验中…' : '生成测试文案' }}</button></header>
-            <div class="strategy-anchor-test-settings">
-              <label>测试主题<input v-model="anchorStyleTestTopic" maxlength="300"></label>
-              <label>目标字数<input v-model.number="anchorStyleTestTargetChars" type="number" min="100" max="3000" step="50"></label>
-              <label>主播风格还原强度（{{ anchorStyleMatchIntensity }}/100）<input v-model.number="anchorStyleMatchIntensity" type="range" min="1" max="100" step="5"></label>
-              <label>内容扩展授权（{{ fullShowExpansionLabel }} {{ fullShowExpansionFreedom }}/100）<input v-model.number="fullShowExpansionFreedom" type="range" min="0" max="100" step="5"></label>
-            </div>
-            <p>{{ anchorRulebook ? '使用样本底层风格与已启用的方案外挂共同测试；' : '本次没有真人样本，只测试已启用的方案外挂；' }}系统按时间单元逐段生成，主播风格按最近1000字滚动追踪，单个短段不做机械词频打卡。测试不发布、不生成声音，也不改变当前直播。</p>
-            <div v-if="anchorStyleTestError" class="inline-error">{{ anchorStyleTestError }}</div>
-            <section v-if="anchorStyleOutputOpen && !anchorStyleTestResult" aria-live="polite"><p>{{ anchorStyleGenerationProgress }}</p><pre class="reusable-anchor-style-generated-text">{{ anchorStylePartialText || '正文会从这里逐段出现，请稍等…' }}</pre></section>
-            <template v-if="anchorStyleTestResult">
-              <p class="strategy-anchor-test-text">{{ anchorStyleTestResult.text }}</p>
-              <AnchorTrainingReceipt :items="anchorStyleTestResult.applied_trainings" />
-              <small>长度：实际 {{ anchorStyleTestResult.actual_chars }} 字；目标 {{ anchorStyleTestResult.target_chars }} 字，合格范围 {{ anchorStyleTestResult.min_chars }}–{{ anchorStyleTestResult.max_chars }} 字。</small>
-              <small>本次独立参数：主播风格还原强度 {{ anchorStyleTestResult.style_match_intensity }}/100；事实延展空间 {{ anchorStyleTestResult.fact_expansion_freedom }}/100。还原强度是生成目标，实际分数由下方1000字窗口独立测量；两项参数互不联动。</small>
-              <small v-if="anchorStyleTestResult.generation_mode === 'horizon_streaming_segments'">生成方式：每次短期规划最多8段，正文按 {{ anchorStyleTestResult.segment_count || '多个' }} 个时间单元逐段校验并流式追加；首段 {{ anchorStyleTestResult.first_segment_ms ?? '—' }}ms，规划调用 {{ anchorStyleTestResult.planning_call_count ?? 0 }} 次，正文调用 {{ anchorStyleTestResult.render_call_count ?? 0 }} 次，其中返修 {{ anchorStyleTestResult.repair_call_count ?? 0 }} 次。</small>
-              <small v-if="anchorStyleTestResult.style_degraded || anchorStyleTestResult.style_patched_segments?.length || anchorStyleTestResult.fact_template_segments?.length || anchorStyleTestResult.fallback_segments?.length || anchorStyleTestResult.style_fallback_segments?.length" class="notice-banner">本次自动恢复：确定性风格补丁 {{ anchorStyleTestResult.style_patched_segments?.length || 0 }} 段、确认事实模板 {{ anchorStyleTestResult.fact_template_segments?.length || 0 }} 段、中性正文兜底 {{ anchorStyleTestResult.fallback_segments?.length || 0 }} 段、风格包装回退 {{ anchorStyleTestResult.style_fallback_segments?.length || 0 }} 段；跳段始终为0。事实和硬规则始终有效，后续窗口继续补偿风格。</small>
-              <small v-else-if="anchorStyleTestResult.generation_mode === 'time_driven_segments'">生成方式：按 {{ anchorStyleTestResult.segment_count || '多个' }} 个虚拟时间单元连续生成；只对出错小段补正，不整篇重写。</small>
-              <small v-if="anchorStyleTestResult.style_coverage_warnings?.length" class="notice-banner">本次仍已生成，但样本里有 {{ anchorStyleTestResult.style_coverage_warnings.length }} 处说话习惯没有完全学到：{{ anchorStyleTestResult.style_coverage_warnings.join('；') }}。你可以先比较文案，再用“哪里还不像”补充。</small>
-              <small>样本规范原词检查：{{ anchorStyleTestResult.style_check.passed ? '通过' : `有 ${anchorStyleTestResult.style_check.missing.length} 项偏差，后续窗口继续补偿` }}；事实、数字与链接硬边界检查通过{{ anchorStyleTestResult.repair_attempted ? '（有小段经过内容补正或安全回退）' : '' }}。风格质量不作为直播放行闸门。</small>
-              <small v-if="anchorStyleTestResult.style_purity">纯风格边界检查：{{ anchorStyleTestResult.style_purity.passed ? '通过' : `发现 ${anchorStyleTestResult.style_purity.issues.length} 项内容策略混入` }}。</small>
-              <small v-if="anchorRulebook && anchorStyleTestResult.style_window">主播风格窗口：最近 {{ anchorStyleTestResult.style_window.window_chars }}/{{ anchorStyleTestResult.style_window.window_target }} 字；{{ anchorStyleTestResult.style_window.ready ? `实际稳定分 ${anchorStyleTestResult.style_window.style_score}/100（原词分布 ${anchorStyleTestResult.style_window.term_score}/100）` : '仍在累计，满1000字后给出稳定分' }}<template v-if="anchorStyleTestResult.style_window.strict">；质量目标 {{ anchorStyleTestResult.style_window.target_score }}/100，{{ anchorStyleTestResult.style_window.passed ? '已达到' : '未达到时由后续小段补偿' }}</template>。窗口追踪称呼、自指、语气词、观众指代、方言密度和句式节奏；数字比价、算账和重复回环仍由业务策略控制。</small>
-              <small v-if="anchorRulebook && anchorStyleTestResult.runtime_evaluation">防照抄评测：与原样本12字片段覆盖 {{ anchorStyleTestResult.runtime_evaluation.copy_containment_pct }}%，最长连续复用 {{ anchorStyleTestResult.runtime_evaluation.longest_shared_runes }} 字。</small>
-              <small v-else>当前是纯叠加风格测试，没有真人样本，因此不伪造样本相似度分数。</small>
-              <small v-if="anchorStyleTestResult.style_vector_evaluation?.available">风格向量影子分 {{ anchorStyleTestResult.style_vector_evaluation.score }}/100（{{ anchorStyleTestResult.style_vector_evaluation.model }}）；当前只用于校准，不参与放行。</small>
-              <small v-if="anchorStyleTestResult.overlay_qc?.available" :class="{ 'inline-error': !anchorStyleTestResult.overlay_qc.passed }">Qwen 同步质检：{{ anchorStyleTestResult.overlay_qc.passed ? '通过' : '发现风格偏差' }} · 执行度 {{ anchorStyleTestResult.overlay_qc.adherence_score }}/100 · 过量风险 {{ anchorStyleTestResult.overlay_qc.overuse_risk }}/100。质检只观察和提示，不会擅自重写整篇。{{ anchorStyleTestResult.overlay_qc.summary }}</small>
-              <small v-else-if="enabledStyleOverlayCount" class="inline-error">Qwen 同步质检暂不可用：{{ anchorStyleTestResult.overlay_qc?.error || '未返回质检结果' }}。本次文案仅供查看，不应据此确认风格。</small>
-              <section class="strategy-style-correction-loop">
-                <header><div><span>ITERATIVE CALIBRATION</span><strong>哪里不像，就继续告诉系统</strong></div><em>{{ anchorStyleCorrectionCandidates.length }} 条未保存调整</em></header>
-                <p>直接写你的感觉，也可以粘贴其他 AI 给出的差异分析。系统只提取可复用的说话方式，重新生成给你看；满意前不会改变正式主播。</p>
-                <div v-if="anchorStyleCorrectionHistory.length" class="strategy-style-correction-history">
-                  <article v-for="(entry, index) in anchorStyleCorrectionHistory" :key="`${index}:${entry.feedback}`">
-                    <span>第 {{ index + 1 }} 轮 · {{ entry.model }}</span>
-                    <p><b>你的反馈：</b>{{ entry.feedback }}</p>
-                    <p><b>系统归纳：</b>{{ entry.diagnosis }}</p>
-                  </article>
-                </div>
-                <label>
-                  <span>这版哪里还不像</span>
-                  <textarea v-model="anchorStyleCorrectionFeedback" rows="3" maxlength="300"></textarea>
-                </label>
-                <div class="strategy-style-correction-actions">
-                  <button class="primary-button" type="button" :disabled="!anchorStyleCorrectionFeedback.trim() || !anchorRulebook || anchorStyleCorrectionBusy || anchorStyleTestBusy" @click="learnAndRegenerateAnchorStyle">
-                    {{ anchorStyleCorrectionBusy ? '正在学习并重生成…' : '学习这条反馈并重新生成' }}
-                  </button>
-                  <button v-if="anchorStyleCorrectionCandidates.length" class="primary-button" type="button" :disabled="anchorStyleCorrectionBusy || styleOverlayBusy" @click="saveAnchorStyleCorrections">满意，保存这些调整</button>
-                  <button v-if="anchorStyleCorrectionCandidates.length" class="strategy-version-button" type="button" :disabled="anchorStyleCorrectionBusy" @click="discardAnchorStyleCorrections">放弃本轮调整</button>
-                </div>
-                <small v-if="!anchorRulebook">需要先粘贴并分析真实主播样本，系统才能判断“哪里不像”。</small>
-                <div v-if="anchorStyleCorrectionError" class="inline-error">{{ anchorStyleCorrectionError }}</div>
-              </section>
-            </template>
-          </section>
-          </details>
         </section>
 
         <section v-else-if="activeMode === 'voice'">

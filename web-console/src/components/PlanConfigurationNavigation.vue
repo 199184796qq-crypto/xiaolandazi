@@ -7,8 +7,7 @@ const props = withDefaults(defineProps<{
   mode: string
   productRiskCount?: number
   benefitRiskCount?: number
-  interactionPending?: number
-}>(), { productRiskCount: 0, benefitRiskCount: 0, interactionPending: 0 })
+}>(), { productRiskCount: 0, benefitRiskCount: 0 })
 const emit = defineEmits<{
   selectSection: [section: PlanConfigurationSection]
   selectMode: [mode: PlanConfigurationMode]
@@ -18,9 +17,7 @@ const factsPending = computed(() => props.productRiskCount + props.benefitRiskCo
 const sections: { key: PlanConfigurationSection; label: string; icon?: string }[] = [
   { key: 'business', label: '业务模式' },
   { key: 'facts', label: '商品与事实' },
-  { key: 'interaction', label: '互动规则' },
   { key: 'reading', label: '读写规则' },
-  { key: 'style', label: '主播风格' },
   { key: 'voice', label: '声音' },
   { key: 'live', label: '直播模式', icon: 'preview' },
 ]
@@ -41,9 +38,7 @@ function pending(mode: PlanConfigurationMode) {
         <PlanConfigurationIcon :name="item.icon || item.key" />
         {{ item.label }}
         <span v-if="item.key === 'facts' && factsPending" class="plan-navigation-count" :aria-label="`${factsPending}项待处理`">{{ factsPending }}</span>
-        <span v-if="item.key === 'interaction' && interactionPending" class="plan-navigation-count" :aria-label="`${interactionPending}条互动待纠正`">{{ interactionPending > 99 ? '99+' : interactionPending }}</span>
       </button>
-      <div v-if="$slots.actions" class="plan-navigation-actions"><slot name="actions" /></div>
     </nav>
     <slot name="feedback" />
     <nav v-if="section === 'facts'" class="plan-configuration-fact-tabs" aria-label="商品与事实栏目">
@@ -59,7 +54,7 @@ function pending(mode: PlanConfigurationMode) {
 .plan-configuration-navigation{min-width:0;background:transparent}
 .plan-configuration-sections,.plan-configuration-fact-tabs{display:flex;align-items:stretch;gap:14px;flex-wrap:wrap}
 .plan-configuration-sections{padding:0 10px;border:1px solid #e5e8fd;border-radius:17px;background:linear-gradient(115deg,#fffffffa,#fcfdff);box-shadow:0 8px 24px #8499eb08}
-.plan-navigation-actions{display:flex;flex:0 1 240px;align-items:center;min-width:0;max-width:100%;padding:10px 0}
+
 .plan-configuration-sections button{display:flex;align-items:center;gap:12px;min-height:78px;padding:19px 25px;border:0;border-bottom:4px solid transparent;background:transparent;color:#56648e;font:inherit;font-size:20px;font-weight:700;cursor:pointer;transition:color .15s,background .15s}
 .plan-configuration-sections button.active{border-bottom-color:#4d49ff;color:#4545f4}
 .plan-configuration-sections button:hover{color:#4d49eb;background:#f5f6ff}.plan-configuration-sections button:first-child{border-bottom-left-radius:10px}
@@ -71,6 +66,5 @@ function pending(mode: PlanConfigurationMode) {
 .plan-configuration-sections button:focus-visible,.plan-configuration-fact-tabs>button:focus-visible{outline:3px solid #a9a7ff;outline-offset:3px}
 @media(max-width:1400px){.plan-configuration-sections button{padding:16px 18px;font-size:16px;gap:10px}.plan-configuration-fact-tabs>button{padding:11px 16px;font-size:16px}}
 @media(max-width:700px){.plan-configuration-sections{padding:0 4px;gap:0;border-radius:13px}.plan-configuration-sections button{flex:1 1 calc(50% - 8px);justify-content:center;min-height:65px;padding:10px 5px;font-size:16px;gap:5px}.plan-configuration-sections :deep(.plan-configuration-icon){width:19px;height:19px}.plan-configuration-fact-tabs{gap:8px;padding:14px 12px;margin-top:12px}.plan-configuration-fact-tabs>button{flex:1 1 calc(50% - 8px);justify-content:center;min-height:44px;padding:9px 8px;font-size:16px;gap:7px}.plan-configuration-fact-tabs :deep(.fact-risk-tab-notice){flex-wrap:wrap}}
-@media(max-width:700px){.plan-navigation-actions{flex:1 1 100%;justify-content:center;padding:8px}}
 @media(prefers-reduced-motion:reduce){.plan-configuration-sections button,.plan-configuration-fact-tabs>button{transition:none}}
 </style>
