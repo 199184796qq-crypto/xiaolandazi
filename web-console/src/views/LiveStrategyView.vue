@@ -3,6 +3,7 @@ import { validateOriginalAudioFiles } from '../directAudioUpload'
 import QuestionLibraryPanel from '../components/QuestionLibraryPanel.vue'
 import RoomReadingRules from '../components/RoomReadingRules.vue'
 import PlanPromptEditor from '../components/PlanPromptEditor.vue'
+import { emptyPlanPromptSections, readPlanPromptSections, cleanPlanPromptSections, planPromptValidation } from '../planPrompt'
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { normalizeLiveAgentPlanVersion } from '../liveAgentPlanVersion'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
@@ -261,7 +262,7 @@ type StrategyMode =
 // “直播素材”是旧版资料入口，保留内部兼容状态但不再作为前台页面；进入策略页默认落在商品链接。
 const activeMode = ref<StrategyMode>('products')
 const lastFactMode = ref<PlanFactMode>('products')
-const planPromptMD = ref('')
+const planPromptSections = ref(emptyPlanPromptSections())
 const planPromptLoading = ref(false)
 const planPromptSaving = ref(false)
 const planPromptError = ref('')
@@ -326,24 +327,31 @@ const planSelectionScope = () => ({
 })
 let roomPlanLoadSequence = 0
 let planAssetScopeEpoch = 0
+let planPromptSequence = 0
+let planPromptScopeEpoch = 0
 async function loadPlanPrompt() {
   const planId = Number(currentRoomPlanId.value || 0)
   if (!planId) {
-    planPromptMD.value = ''
+    planPromptSections.value = emptyPlanPromptSections()
     planPromptLoadedPlan.value = 0
     return
   }
   if (planPromptLoadedPlan.value === planId && !planPromptError.value) return
+  const sequence = ++planPromptSequence
+  const epoch = planAssetScopeEpoch
+  const current = () => sequence === planPromptSequence && epoch === planAssetScopeEpoch && currentRoomPlanId.value === planId
   planPromptLoading.value = true
   planPromptError.value = ''
   try {
     const result = await getLiveAgentPlanPrompt(planId)
-    planPromptMD.value = result.prompt_md || ''
+    if (!current()) return
+    planPromptSections.value = readPlanPromptSections(result.sections)
     planPromptLoadedPlan.value = planId
+    planPromptNotice.value = result.legacy_unstructured ? '旧提示词原文已保留在“互动回答要求”，请检查分区后保存。' : ''
   } catch (err) {
-    planPromptError.value = err instanceof Error ? err.message : '方案提示词读取失败'
+    if (current()) planPromptError.value = err instanceof Error ? err.message : '方案提示词读取失败'
   } finally {
-    planPromptLoading.value = false
+    if (current()) planPromptLoading.value = false
   }
 }
 async function savePlanPrompt() {
@@ -352,27 +360,42 @@ async function savePlanPrompt() {
     planPromptError.value = '请先选择直播方案'
     return
   }
-  if (!planPromptMD.value.trim()) {
+  if (planPromptLoadedPlan.value !== planId || planPromptLoading.value || planPromptSaving.value) return
+  if (!Object.values(planPromptSections.value).some(text => text.trim())) {
     planPromptError.value = '请先填写方案提示词'
     return
   }
+  const validation = planPromptValidation(planPromptSections.value)
+  if (validation) { planPromptError.value = validation; return }
+  const epoch = planAssetScopeEpoch
+  const promptEpoch = planPromptScopeEpoch
+  const current = () => epoch === planAssetScopeEpoch && promptEpoch === planPromptScopeEpoch && currentRoomPlanId.value === planId
   planPromptSaving.value = true
   planPromptError.value = ''
   planPromptNotice.value = ''
   try {
-    const result = await saveLiveAgentPlanPrompt(planId, planPromptMD.value)
-    planPromptMD.value = result.prompt_md || planPromptMD.value
+    const result = await saveLiveAgentPlanPrompt(planId, cleanPlanPromptSections(planPromptSections.value))
+    if (!current()) return
+    planPromptSections.value = readPlanPromptSections(result.sections)
     planPromptLoadedPlan.value = planId
-    planPromptNotice.value = '方案提示词已保存'
+    planPromptNotice.value = '方案提示词已保存，已生成主播互动元提示词和主播话术生成提示词'
   } catch (err) {
-    planPromptError.value = err instanceof Error ? err.message : '方案提示词保存失败'
+    if (current()) planPromptError.value = err instanceof Error ? err.message : '方案提示词保存失败'
   } finally {
-    planPromptSaving.value = false
+    if (current()) planPromptSaving.value = false
   }
 }
 watch(currentRoomPlanId, () => {
+  planPromptScopeEpoch++
+  planPromptSequence++
+  planPromptSections.value = emptyPlanPromptSections()
+  planPromptLoadedPlan.value = 0
+  planPromptLoading.value = false
+  planPromptSaving.value = false
+  planPromptError.value = ''
+  planPromptNotice.value = ''
   if (activeMode.value === 'plan_prompt') void loadPlanPrompt()
-})
+}, { flush: 'sync' })
 watch(() => planSelectionPreferenceKey(planSelectionScope()), () => {
   roomPlanLoadSequence++
   planAssetScopeEpoch++
@@ -4547,6 +4570,29 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
 }
 
 // 一键保存方案：直接保存版本，不再因内容池状态强制前置更新或等待。
+// 保存方案时把方案提示词一起落库：提示词有自己的接口，方案版本保存不会带上它。
+async function persistPlanPromptIfAny(planId: number) {
+  const epoch = planAssetScopeEpoch
+  const promptEpoch = planPromptScopeEpoch
+  const current = () => epoch === planAssetScopeEpoch && promptEpoch === planPromptScopeEpoch && currentRoomPlanId.value === planId
+  if (planPromptLoadedPlan.value !== planId) await loadPlanPrompt()
+  if (!current()) return
+  if (planPromptLoadedPlan.value !== planId) throw new Error(planPromptError.value || '方案提示词未读取完成，请重试')
+  if (!Object.values(planPromptSections.value).some(text => text.trim())) return
+  const validation = planPromptValidation(planPromptSections.value)
+  if (validation) throw new Error(validation)
+  if (planPromptSaving.value) throw new Error('方案提示词正在保存，请完成后重试')
+  planPromptSaving.value = true
+  try {
+    const result = await saveLiveAgentPlanPrompt(planId, cleanPlanPromptSections(planPromptSections.value))
+    if (!current()) return
+    planPromptSections.value = readPlanPromptSections(result.sections)
+    planPromptLoadedPlan.value = planId
+    planPromptNotice.value = '方案提示词已保存，已生成主播互动元提示词和主播话术生成提示词'
+  } finally {
+    if (current()) planPromptSaving.value = false
+  }
+}
 async function savePlanOneClick() {
   if (savePlanOneClickBusy.value || fullShowVersionSaving.value) return
   const planId = currentRoomPlanId.value
@@ -4561,8 +4607,19 @@ async function savePlanOneClick() {
     if (!current()) throw new Error('页面范围或直播模式已变化，本次保存已取消')
     savePlanOneClickStage.value = '保存中…'
     const saved = await saveFullShowVersion()
-    if (!saved && current() && !fullShowVersionError.value) {
-      throw new Error('本次未完成正式版本保存，请查看提示后重试；原版本保持不变。')
+    if (!saved) {
+      if (current()) throw new Error(fullShowVersionError.value || '本次未完成正式版本保存，请查看提示后重试；原版本保持不变。')
+      return
+    }
+    if (current()) {
+      try {
+        await persistPlanPromptIfAny(planId)
+      } catch (err) {
+        if (current()) {
+          planPromptError.value = err instanceof Error ? err.message : '方案提示词保存失败'
+          fullShowNotice.value = `方案版本已保存，但方案提示词未保存：${planPromptError.value}。请到“方案提示词”重试保存。`
+        }
+      }
     }
   } catch (err) {
     if (current()) {
@@ -7469,7 +7526,7 @@ onBeforeUnmount(() => {
         <section v-else-if="activeMode === 'plan_prompt'" class="strategy-v2-workspace">
           <PlanPromptEditor
             :key="planSelectionPreferenceKey(planSelectionScope()) + ':' + currentRoomPlanId"
-            v-model="planPromptMD"
+            v-model="planPromptSections"
             :plan-id="currentRoomPlanId"
             :loaded="planPromptLoadedPlan === currentRoomPlanId"
             :loading="planPromptLoading"

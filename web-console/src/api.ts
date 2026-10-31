@@ -4406,6 +4406,10 @@ export function setPlanProductCategory(planId: number, category: string) {
 
 export interface PlanPrompt {
   prompt_md: string
+  sections: import('./planPrompt').PlanPromptSections
+  interaction_prompt_md: string
+  speech_prompt_md: string
+  legacy_unstructured?: boolean
   updated_at?: string
 }
 
@@ -4416,15 +4420,15 @@ export function getLiveAgentPlanPrompt(planId: number) {
   )
 }
 
-export function saveLiveAgentPlanPrompt(planId: number, promptMD: string) {
+export function saveLiveAgentPlanPrompt(planId: number, sections: import('./planPrompt').PlanPromptSections) {
   return request<PlanPrompt>(
     '/api/v1/live-agent-plans/' + planId + '/prompt',
-    { method: 'PUT', body: JSON.stringify({ prompt_md: promptMD }) },
+    { method: 'PUT', body: JSON.stringify({ sections }) },
   )
 }
 
 export function renderLiveAgentPlanPrompt(planId: number) {
-  return request<PlanPrompt>(
+  return request<{ facts_md: string; prompt_md: string; master_sha256?: string }>(
     '/api/v1/live-agent-plans/' + planId + '/prompt/render',
     { method: 'POST', body: JSON.stringify({}), suppressErrorDialog: true },
   )

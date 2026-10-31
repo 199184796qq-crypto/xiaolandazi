@@ -122,12 +122,25 @@ func (s *Store) Migrate(ctx context.Context) error {
 			KEY idx_admin_audit_source (source, occurred_at),
 			KEY idx_admin_audit_action (action, occurred_at)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
+		`CREATE TABLE IF NOT EXISTS live_agent_plan_prompts (
+			tenant_id BIGINT UNSIGNED NOT NULL,
+			plan_id BIGINT UNSIGNED NOT NULL,
+			prompt_md MEDIUMTEXT NOT NULL,
+			sections_json MEDIUMTEXT NULL,
+			speech_prompt_md MEDIUMTEXT NULL,
+			updated_by_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+			updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+			PRIMARY KEY (tenant_id, plan_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
 	}
 
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("apply management schema: %w", err)
 		}
+	}
+	if err := s.ensureLiveAgentPlanPromptColumns(ctx); err != nil {
+		return fmt.Errorf("migrate plan prompt sections: %w", err)
 	}
 	if err := s.ensureGeneratedSpeechHistoryColumns(ctx); err != nil {
 		return fmt.Errorf("migrate generated speech history columns: %w", err)
