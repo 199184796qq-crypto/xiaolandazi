@@ -2,6 +2,7 @@ package ttsgateway
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -47,7 +48,7 @@ func WithSynthesisTimeout(ctx context.Context, timeout time.Duration) context.Co
 	return context.WithValue(ctx, synthesisTimeoutKey{}, timeout)
 }
 func (g *Gateway) scheduledSynthesis(ctx context.Context, p Provider, request SynthesizeRequest) (result SynthesizeResponse, err error) {
-	if g.scheduler != nil && (request.Provider == ProviderQwen || request.Provider == ProviderCosyVoice) {
+	if g.scheduler != nil && (request.Provider == ProviderQwen || request.Provider == ProviderCosyVoice || request.Provider == ProviderVolcengine) {
 		scope, _ := ctx.Value(queueScopeKey{}).(ttsscheduler.Scope)
 		permit, claimErr := g.scheduler.Acquire(ctx, ttsscheduler.Work{Model: request.Model, Provider: request.Provider, VoiceID: request.VoiceID, Scope: scope})
 		if claimErr != nil {
@@ -61,20 +62,11 @@ func (g *Gateway) scheduledSynthesis(ctx context.Context, p Provider, request Sy
 			permit.Finish(status)
 		}()
 		if permit.AccountID != ttsscheduler.CurrentAccountID {
-			config := QwenConfigFromEnv()
-			// Preserve the configured endpoint/client; only change account identity.
-			switch source := p.(type) {
-			case *qwenProvider:
-				config = QwenConfig{TTSBaseURL: source.ttsBaseURL, CustomizationURL: source.customizationURL, Client: source.client}
-			case *cosyVoiceProvider:
-				config = QwenConfig{TTSBaseURL: source.transport.ttsBaseURL, CustomizationURL: source.transport.customizationURL, Client: source.transport.client}
+			adapter, ok := p.(accountProvider)
+			if !ok {
+				return result, notSent(errors.New("该供应商不支持账户池凭据注入"))
 			}
-			config.APIKey = permit.APIKey
-			if request.Provider == ProviderCosyVoice {
-				p = NewCosyVoiceProvider(config)
-			} else {
-				p = NewQwenProvider(config)
-			}
+			p = adapter.withAccountKey(permit.APIKey)
 		}
 		if permit.VoiceID != "" {
 			request.VoiceID = permit.VoiceID

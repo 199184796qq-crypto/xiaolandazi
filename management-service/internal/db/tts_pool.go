@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/ttsgateway"
 	"livecompanion/management/internal/ttsscheduler"
 )
 
@@ -31,7 +32,7 @@ func (s *Store) MigrateTTSPool(ctx context.Context, apiKey string) error {
    configured BOOLEAN NOT NULL,enabled BOOLEAN NOT NULL DEFAULT TRUE,
    rpm INT NOT NULL DEFAULT 180,rps INT NOT NULL DEFAULT 3,revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
    updated_by_user_id BIGINT NOT NULL DEFAULT 0,updated_at DATETIME(6) NOT NULL,
-   UNIQUE KEY uk_tts_account_uid(account_uid),UNIQUE KEY uk_tts_key(key_fingerprint)
+   UNIQUE KEY uk_tts_account_uid(provider,account_uid),UNIQUE KEY uk_tts_key(key_fingerprint)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS mgmt_tts_pool_jobs (
    seq BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -64,7 +65,10 @@ func (s *Store) MigrateTTSPool(ctx context.Context, apiKey string) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `UPDATE mgmt_tts_pool_accounts SET configured=?,key_fingerprint=? WHERE id=?`, strings.TrimSpace(apiKey) != "", fingerprint, ttsscheduler.CurrentAccountID)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.migrateTTSRoomPools(ctx)
 }
 
 // Older pool previews stored only the current environment account. Add fields
@@ -76,6 +80,7 @@ func (s *Store) upgradeTTSPoolSchema(ctx context.Context) error {
 		{"mgmt_tts_pool_accounts", "key_fingerprint", "CHAR(64) NOT NULL DEFAULT ''"},
 		{"mgmt_tts_pool_accounts", "voices_json", "JSON NULL"},
 		{"mgmt_tts_pool_accounts", "models_json", "JSON NULL"},
+		{"mgmt_tts_pool_accounts", "max_concurrent", "INT NOT NULL DEFAULT 0"},
 		{"mgmt_tts_pool_jobs", "provider", "VARCHAR(32) NOT NULL DEFAULT 'aliyun'"},
 		{"mgmt_tts_pool_jobs", "voice_id", "VARCHAR(200) NOT NULL DEFAULT ''"},
 		{"mgmt_tts_pool_jobs", "heartbeat_at", "DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"},
@@ -109,7 +114,7 @@ func (s *Store) upgradeTTSPoolSchema(ctx context.Context) error {
 		}
 	}
 	for _, index := range []struct{ name, definition string }{
-		{"uk_tts_account_uid", "UNIQUE KEY uk_tts_account_uid(account_uid)"},
+		{"uk_tts_account_uid", "UNIQUE KEY uk_tts_account_uid(provider,account_uid)"},
 		{"uk_tts_key", "UNIQUE KEY uk_tts_key(key_fingerprint)"},
 	} {
 		var count int
@@ -121,6 +126,17 @@ func (s *Store) upgradeTTSPoolSchema(ctx context.Context) error {
 				return err
 			}
 		}
+	}
+	var uidColumns string
+	if err := s.db.QueryRowContext(ctx, `SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='mgmt_tts_pool_accounts' AND INDEX_NAME='uk_tts_account_uid'`).Scan(&uidColumns); err != nil {
+		return err
+	}
+	if uidColumns == "account_uid" {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE mgmt_tts_pool_accounts DROP INDEX uk_tts_account_uid, ADD UNIQUE KEY uk_tts_account_uid(provider,account_uid)`); err != nil {
+			return err
+		}
+	} else if uidColumns != "provider,account_uid" {
+		return errors.New("TTS账号唯一索引不匹配")
 	}
 	return nil
 }
@@ -134,17 +150,42 @@ func lockTTSPool(ctx context.Context, tx *sql.Tx) (time.Time, error) {
 	return now, err
 }
 func validateTTSAccount(a *ttsscheduler.AccountInput) error {
+	if a.Provider == "" {
+		a.Provider = "aliyun"
+	}
+	a.Provider = ttsscheduler.AccountProvider(a.Provider)
+	if a.Provider == "" {
+		return errors.New("请选择阿里云或火山引擎TTS供应商")
+	}
+	if a.ID == ttsscheduler.CurrentAccountID && a.Provider != "aliyun" {
+		return errors.New("现有环境账号只能使用阿里云")
+	}
+	if a.MaxConcurrent < 0 || a.MaxConcurrent > 100 {
+		return errors.New("同时合成上限须为0到100")
+	}
+	if a.Provider == "volcengine" {
+		if a.MaxConcurrent == 0 {
+			a.MaxConcurrent = 10
+		}
+		if a.MaxConcurrent > 10 {
+			return errors.New("火山账号同时合成上限须为1到10")
+		}
+		// Volcengine uses concurrent syntheses; it does not inherit Aliyun's
+		// starts-per-minute or starts-per-second gates, including from old clients.
+		a.RPM, a.RPS = 0, 0
+	}
+
 	a.Name = strings.TrimSpace(a.Name)
 	a.NewAPIKey = strings.TrimSpace(a.NewAPIKey)
 	a.AccountUID = strings.TrimSpace(a.AccountUID)
 	if a.Name == "" || utf8.RuneCountInString(a.Name) > 80 || strings.IndexFunc(a.Name, unicode.IsControl) >= 0 {
 		return errors.New("账户名称须为1—80个字")
 	}
-	if a.RPM < 1 || a.RPM > 180 || a.RPS < 1 || a.RPS > 3 {
+	if a.Provider == "aliyun" && (a.RPM < 1 || a.RPM > 180 || a.RPS < 1 || a.RPS > 3) {
 		return errors.New("每个账号每分钟须为1—180次、每秒须为1—3次")
 	}
 	if len(a.AccountUID) < 1 || len(a.AccountUID) > 80 || strings.IndexFunc(a.AccountUID, func(r rune) bool { return r > 127 || unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
-		return errors.New("请填写阿里云主账号UID，相同主账号只能登记一次")
+		return errors.New("请填写供应商主账号UID，同一供应商主账号只能登记一次")
 	}
 	if a.ID != "" && (a.Revision == 0 || len(a.ID) > 64) {
 		return ttsscheduler.ErrRevision
@@ -167,7 +208,7 @@ func validateTTSAccount(a *ttsscheduler.AccountInput) error {
 	models := map[string]bool{}
 	for i, model := range a.Models {
 		model = strings.TrimSpace(model)
-		if !ttsModelToken(model) || models[model] {
+		if !ttsModelToken(model) || models[model] || (a.Provider == "volcengine" && model != "seed-icl-2.0") || (a.Provider == "aliyun" && model == "seed-icl-2.0") {
 			return errors.New("TTS模型ID格式错误或重复")
 		}
 		a.Models[i] = model
@@ -178,7 +219,10 @@ func validateTTSAccount(a *ttsscheduler.AccountInput) error {
 		if !ttsVoiceToken(source) || !ttsVoiceToken(target) || !bound || !ttsModelToken(model) || voice == "" {
 			return errors.New("音色编号格式错误")
 		}
-		if len(models) > 0 && !models[model] {
+		if a.Provider == "volcengine" && (!ttsgateway.ValidVolcengineVoiceID(voice) || !ttsgateway.ValidVolcengineVoiceID(target)) {
+			return errors.New("火山音色对应需要填写有效的S_音色ID")
+		}
+		if (len(models) > 0 && !models[model]) || (a.Provider == "volcengine" && model != "seed-icl-2.0") || (a.Provider == "aliyun" && model == "seed-icl-2.0") {
 			return errors.New("音色对应的模型必须在该账号的可用TTS模型中")
 		}
 	}
@@ -199,6 +243,11 @@ func ttsVoiceToken(s string) bool {
 	return len(s) > 0 && len(s) <= 400 && strings.IndexFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) < 0
 }
 func (s *Store) SaveTTSAccount(ctx context.Context, a ttsscheduler.AccountInput, actor int64) error {
+	if a.Provider == "" && a.ID != "" {
+		if err := s.db.QueryRowContext(ctx, `SELECT provider FROM mgmt_tts_pool_accounts WHERE id=?`, a.ID).Scan(&a.Provider); err != nil {
+			return ttsscheduler.ErrRevision
+		}
+	}
 	if err := validateTTSAccount(&a); err != nil {
 		if errors.Is(err, ttsscheduler.ErrRevision) {
 			return err
@@ -221,7 +270,7 @@ func (s *Store) SaveTTSAccount(ctx context.Context, a ttsscheduler.AccountInput,
 		if err = tx.QueryRowContext(ctx, `SELECT account_uid FROM mgmt_tts_pool_accounts WHERE id=?`, ttsscheduler.CurrentAccountID).Scan(&currentUID); err != nil {
 			return err
 		}
-		if currentUID == "current" {
+		if a.Provider == "aliyun" && currentUID == "current" {
 			return fmt.Errorf("%w：添加备用账号前，请先补充当前账号的阿里云主账号UID", ttsscheduler.ErrConfig)
 		}
 		var raw [16]byte
@@ -231,9 +280,12 @@ func (s *Store) SaveTTSAccount(ctx context.Context, a ttsscheduler.AccountInput,
 		a.ID = "tts-account-" + hex.EncodeToString(raw[:])
 	} else {
 		var revision uint64
-		var oldUID string
-		if err = tx.QueryRowContext(ctx, `SELECT sealed_key,key_fingerprint,revision,account_uid FROM mgmt_tts_pool_accounts WHERE id=?`, a.ID).Scan(&sealed, &fingerprint, &revision, &oldUID); err != nil {
+		var oldUID, oldProvider string
+		if err = tx.QueryRowContext(ctx, `SELECT sealed_key,key_fingerprint,revision,account_uid,provider FROM mgmt_tts_pool_accounts WHERE id=?`, a.ID).Scan(&sealed, &fingerprint, &revision, &oldUID, &oldProvider); err != nil {
 			return ttsscheduler.ErrRevision
+		}
+		if oldProvider != a.Provider {
+			return fmt.Errorf("%w：已登记账号不能更换供应商，请停用后新增", ttsscheduler.ErrConfig)
 		}
 		if revision != a.Revision {
 			return ttsscheduler.ErrRevision
@@ -250,7 +302,7 @@ func (s *Store) SaveTTSAccount(ctx context.Context, a ttsscheduler.AccountInput,
 		fingerprint = modelPoolFingerprint(a.NewAPIKey)
 	}
 	var duplicate int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mgmt_tts_pool_accounts WHERE id<>? AND (account_uid=? OR key_fingerprint=?)`, a.ID, a.AccountUID, fingerprint).Scan(&duplicate); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mgmt_tts_pool_accounts WHERE id<>? AND ((provider=? AND account_uid=?) OR key_fingerprint=?)`, a.ID, a.Provider, a.AccountUID, fingerprint).Scan(&duplicate); err != nil {
 		return err
 	}
 	if duplicate > 0 {
@@ -266,11 +318,14 @@ func (s *Store) SaveTTSAccount(ctx context.Context, a ttsscheduler.AccountInput,
 		models = string(raw)
 	}
 	if a.Revision == 0 {
-		_, err = tx.ExecContext(ctx, `INSERT INTO mgmt_tts_pool_accounts(id,name,account_uid,provider,credential_source,sealed_key,key_fingerprint,voices_json,configured,enabled,rpm,rps,updated_by_user_id,updated_at) VALUES(?,?,?,'aliyun','encrypted',?,?,?,TRUE,?,?,?,?,?)`, a.ID, a.Name, a.AccountUID, sealed, fingerprint, voices, a.Enabled, a.RPM, a.RPS, actor, now)
+		_, err = tx.ExecContext(ctx, `INSERT INTO mgmt_tts_pool_accounts(id,name,account_uid,provider,credential_source,sealed_key,key_fingerprint,voices_json,configured,enabled,rpm,rps,updated_by_user_id,updated_at) VALUES(?,?,?,?,'encrypted',?,?,?,TRUE,?,?,?,?,?)`, a.ID, a.Name, a.AccountUID, a.Provider, sealed, fingerprint, voices, a.Enabled, a.RPM, a.RPS, actor, now)
 	} else {
 		_, err = tx.ExecContext(ctx, `UPDATE mgmt_tts_pool_accounts SET name=?,account_uid=?,sealed_key=?,key_fingerprint=?,voices_json=?,enabled=?,rpm=?,rps=?,revision=revision+1,updated_by_user_id=?,updated_at=? WHERE id=? AND revision=?`, a.Name, a.AccountUID, sealed, fingerprint, voices, a.Enabled, a.RPM, a.RPS, actor, now, a.ID, a.Revision)
 	}
 	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE mgmt_tts_pool_accounts SET max_concurrent=? WHERE id=?`, a.MaxConcurrent, a.ID); err != nil {
 		return err
 	}
 	if a.Revision == 0 || a.Models != nil {
@@ -325,6 +380,9 @@ func (s *Store) EnqueueTTS(ctx context.Context, w ttsscheduler.Work) error {
 	if err = expireTTSJobs(ctx, tx, now); err != nil {
 		return err
 	}
+	if err = checkTTSRoomPool(ctx, tx, w.TenantID, w.RoomID, w.Provider); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM mgmt_tts_pool_jobs WHERE status NOT IN ('queued','running') AND queued_at<? AND (admitted_at IS NULL OR admitted_at<?) LIMIT 1000`, now.Add(-10*time.Minute), now.Add(-time.Minute)); err != nil {
 		return err
 	}
@@ -348,7 +406,7 @@ type ttsPoolAccount struct {
 }
 
 func ttsAccountsTx(ctx context.Context, tx *sql.Tx) (out []ttsPoolAccount, err error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id,name,account_uid,provider,credential_source,configured,enabled,rpm,rps,revision,voices_json,sealed_key,models_json FROM mgmt_tts_pool_accounts ORDER BY (id='current-aliyun-tts') DESC,id`)
+	rows, err := tx.QueryContext(ctx, `SELECT id,name,account_uid,provider,credential_source,configured,enabled,rpm,rps,revision,voices_json,sealed_key,models_json,max_concurrent FROM mgmt_tts_pool_accounts ORDER BY (id='current-aliyun-tts') DESC,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -357,8 +415,14 @@ func ttsAccountsTx(ctx context.Context, tx *sql.Tx) (out []ttsPoolAccount, err e
 		var a ttsPoolAccount
 		var voices []byte
 		var models sql.NullString
-		if err = rows.Scan(&a.ID, &a.Name, &a.AccountUID, &a.Provider, &a.CredentialSource, &a.Configured, &a.Enabled, &a.RPM, &a.RPS, &a.Revision, &voices, &a.sealed, &models); err != nil {
+		if err = rows.Scan(&a.ID, &a.Name, &a.AccountUID, &a.Provider, &a.CredentialSource, &a.Configured, &a.Enabled, &a.RPM, &a.RPS, &a.Revision, &voices, &a.sealed, &models, &a.MaxConcurrent); err != nil {
 			return nil, err
+		}
+		if a.Provider == "volcengine" {
+			a.RPM, a.RPS = 0, 0
+			if a.MaxConcurrent <= 0 || a.MaxConcurrent > 10 {
+				a.MaxConcurrent = 10
+			}
 		}
 		if err = json.Unmarshal(voices, &a.Voices); err != nil {
 			return nil, err
@@ -387,6 +451,9 @@ func ttsAccountsTx(ctx context.Context, tx *sql.Tx) (out []ttsPoolAccount, err e
 	return out, rows.Err()
 }
 func ttsMappedVoice(a ttsPoolAccount, model, voice string) (string, bool) {
+	if (model == ttsgateway.VolcengineICL2) != (a.Provider == "volcengine") {
+		return "", false
+	}
 	if !a.Enabled || !a.Configured {
 		return "", false
 	}
@@ -419,9 +486,10 @@ func (s *Store) ClaimTTS(ctx context.Context, id string) (out ttsscheduler.Claim
 	if err = expireTTSJobs(ctx, tx, now); err != nil {
 		return out, err
 	}
-	var status, model, voice string
+	var status, model, voice, provider string
+	var tenant, room int64
 	var seq uint64
-	if err = tx.QueryRowContext(ctx, `SELECT status,model,voice_id,seq FROM mgmt_tts_pool_jobs WHERE id=?`, id).Scan(&status, &model, &voice, &seq); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT status,model,voice_id,seq,provider,tenant_id,room_id FROM mgmt_tts_pool_jobs WHERE id=?`, id).Scan(&status, &model, &voice, &seq, &provider, &tenant, &room); err != nil {
 		return out, err
 	}
 	if status != "queued" {
@@ -431,6 +499,9 @@ func (s *Store) ClaimTTS(ctx context.Context, id string) (out ttsscheduler.Claim
 		return out, ttsscheduler.ErrExpired
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE mgmt_tts_pool_jobs SET heartbeat_at=? WHERE id=? AND status='queued'`, now, id); err != nil {
+		return out, err
+	}
+	if err = checkTTSRoomPool(ctx, tx, tenant, room, provider); err != nil {
 		return out, err
 	}
 	var paused int
@@ -445,15 +516,15 @@ func (s *Store) ClaimTTS(ctx context.Context, id string) (out ttsscheduler.Claim
 		return out, err
 	}
 	// FIFO per compatible account. An unavailable voice cannot block other rooms.
-	type earlier struct{ model, voice string }
+	type earlier struct{ model, voice, provider string }
 	var prior []earlier
-	rows, err := tx.QueryContext(ctx, `SELECT j.model,j.voice_id FROM mgmt_tts_pool_jobs j LEFT JOIN live_runtime_sessions r ON r.id=j.session_id WHERE j.status='queued' AND j.seq<? AND (j.session_id=0 OR r.status='running') ORDER BY j.seq`, seq)
+	rows, err := tx.QueryContext(ctx, `SELECT j.model,j.voice_id,j.provider FROM mgmt_tts_pool_jobs j LEFT JOIN live_runtime_sessions r ON r.id=j.session_id WHERE j.status='queued' AND j.seq<? AND (j.session_id=0 OR r.status='running') ORDER BY j.seq`, seq)
 	if err != nil {
 		return out, err
 	}
 	for rows.Next() {
 		var p earlier
-		if err = rows.Scan(&p.model, &p.voice); err != nil {
+		if err = rows.Scan(&p.model, &p.voice, &p.provider); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -465,13 +536,16 @@ func (s *Store) ClaimTTS(ctx context.Context, id string) (out ttsscheduler.Claim
 		return out, err
 	}
 	for _, a := range accounts {
+		if !ttsscheduler.CompatibleProvider(a.Provider, provider) {
+			continue
+		}
 		mapped, ok := ttsMappedVoice(a, model, voice)
 		if !ok {
 			continue
 		}
 		blocked := false
 		for _, p := range prior {
-			if _, ok := ttsMappedVoice(a, p.model, p.voice); ok {
+			if _, ok := ttsMappedVoice(a, p.model, p.voice); ok && ttsscheduler.CompatibleProvider(a.Provider, p.provider) {
 				blocked = true
 				break
 			}
@@ -479,27 +553,38 @@ func (s *Store) ClaimTTS(ctx context.Context, id string) (out ttsscheduler.Claim
 		if blocked {
 			continue
 		}
-		rows, err = tx.QueryContext(ctx, `SELECT admitted_at FROM mgmt_tts_pool_jobs WHERE account_id=? AND admitted_at>? ORDER BY admitted_at`, a.ID, now.Add(-time.Minute))
-		if err != nil {
-			return out, err
-		}
-		var admitted []time.Time
-		for rows.Next() {
-			var at time.Time
-			if err = rows.Scan(&at); err != nil {
-				rows.Close()
+		if a.MaxConcurrent > 0 {
+			var inFlight int
+			if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mgmt_tts_pool_jobs WHERE account_id=? AND status='running' AND expires_at>?`, a.ID, now).Scan(&inFlight); err != nil {
 				return out, err
 			}
-			admitted = append(admitted, at)
+			if inFlight >= a.MaxConcurrent {
+				continue
+			}
 		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return out, err
-		}
-		if wait := ttsscheduler.WaitForQuota(now, admitted, a.RPM, a.RPS); wait > 0 {
-			out.Wait = min(out.Wait, wait)
-			continue
+		if a.Provider == "aliyun" {
+			rows, err = tx.QueryContext(ctx, `SELECT admitted_at FROM mgmt_tts_pool_jobs WHERE account_id=? AND admitted_at>? ORDER BY admitted_at`, a.ID, now.Add(-time.Minute))
+			if err != nil {
+				return out, err
+			}
+			var admitted []time.Time
+			for rows.Next() {
+				var at time.Time
+				if err = rows.Scan(&at); err != nil {
+					rows.Close()
+					return out, err
+				}
+				admitted = append(admitted, at)
+			}
+			err = rows.Err()
+			rows.Close()
+			if err != nil {
+				return out, err
+			}
+			if wait := ttsscheduler.WaitForQuota(now, admitted, a.RPM, a.RPS); wait > 0 {
+				out.Wait = min(out.Wait, wait)
+				continue
+			}
 		}
 		credential := ttsscheduler.Credential{AccountID: a.ID, VoiceID: mapped}
 		if a.CredentialSource != "current" {

@@ -9,6 +9,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { useRoute } from 'vue-router'
 
 import { planDefaultVoice, planVoiceChoices, planVoiceUnavailable } from '../planAssets'
+import { getLiveVoiceProfiles } from '../api'
+import { getPoolOfficialVoices, poolVoiceError, voicePoolID, type TTSPoolID } from '../ttsPools'
 import LiveVoiceCenter from '../components/LiveVoiceCenter.vue'
 import PlanVoiceRateControl from '../components/PlanVoiceRateControl.vue'
 import { usePlanVoiceRate } from '../usePlanVoiceRate'
@@ -41,7 +43,7 @@ import { getCurrentAnchor } from '../anchorRecommendations';
 import RealtimeGenerationOptionsPanel from '../components/RealtimeGenerationOptionsPanel.vue'
 import { defaultSelfReference, realtimeOptionsFromVersion, realtimeGenerationOptionsError, validatedRealtimeOptions, type RealtimeGenerationOptions } from '../realtimeGenerationOptions'
 import { request } from '../api'
-import { activateLiveAgentConfigVersion, adoptLiveAgentPlanBenefits, adoptLiveAgentPlanFacts, adoptLiveAgentPlanProductLinks, copyLiveAgentPlanProductLink, copyLiveAgentPlanBenefit, archiveLiveAgentPlan, cloneLiveVoiceProfile, createLiveAgentPlanVersion, createLiveAgentPlanScript, createLiveAgentPlan, createLiveAgentPlanProductAttribute, getLiveAgentPlanWorkspace, getLiveAgentPlanVersions, getLiveAgentPlans, getLiveAgentPlanBenefits, getLiveAgentPlanFacts, getLiveAgentPlanProductLinks, getLiveAgentPlanPrompt, saveLiveAgentPlanPrompt, getLiveAgentPlanScripts, getLiveVoiceModelBindings, getLiveOfficialVoices, createLiveAgentConfigDraft, getLiveAgentConfigVersions, getLiveAddressingStrategy, getLiveAgentSettings, getUserUIPreferences, getLiveRoomPolicyContext, getRooms, getRoom, deleteLiveAgentPlanBenefit, deleteLiveAgentPlanProductLink, deleteLiveAgentPlanProductAttribute, publishLiveRoomPolicyVersion, auditLiveAgentFullShowPreview, regenerateLiveAgentFullShowVariant, generateLiveAgentFullShowVariantVoice, rebuildLiveAgentFullShowVariantSubtitles, rebuildLiveAgentCustomMainline, getLiveAgentPlanStyleOverlays, getAnchorStylePluginCatalog, getAnchorStyleWorkbenchContext, testLiveAgentAnchorStyle, previewAnalyzeLiveAgentAnchorStyle, listLiveAnchorStyles, getLiveAnchorStyle, listLiveAnchorStyleSamples, getLiveAnchorAnalysisVersions, previewAnalyzeLiveAgentPlanScript, previewGenerateLiveAgentFullShow, previewRecognizeLiveAgentPlanImage, updateLiveAgentPlan, updateLiveAgentPlanBenefit, updateLiveAgentPlanProductLink, updateLiveAgentPlanProductAttribute, saveLiveAgentPlanProductLinkFrequencyWeight, saveLiveAgentPlanProductSellingPoints, updateLiveAgentPlanScript, updateLiveAgentSettings, updateUserUIPreferences, uploadLiveAgentCustomMainline, uploadLiveMediaAsset } from '../api';
+import { activateLiveAgentConfigVersion, adoptLiveAgentPlanBenefits, adoptLiveAgentPlanFacts, adoptLiveAgentPlanProductLinks, copyLiveAgentPlanProductLink, copyLiveAgentPlanBenefit, archiveLiveAgentPlan, cloneLiveVoiceProfile, createLiveAgentPlanVersion, createLiveAgentPlanScript, createLiveAgentPlan, createLiveAgentPlanProductAttribute, getLiveAgentPlanWorkspace, getLiveAgentPlanVersions, getLiveAgentPlans, getLiveAgentPlanBenefits, getLiveAgentPlanFacts, getLiveAgentPlanProductLinks, getLiveAgentPlanPrompt, saveLiveAgentPlanPrompt, getLiveAgentPlanScripts, getLiveVoiceModelBindings, createLiveAgentConfigDraft, getLiveAgentConfigVersions, getLiveAddressingStrategy, getLiveAgentSettings, getUserUIPreferences, getLiveRoomPolicyContext, getRooms, getRoom, deleteLiveAgentPlanBenefit, deleteLiveAgentPlanProductLink, deleteLiveAgentPlanProductAttribute, publishLiveRoomPolicyVersion, auditLiveAgentFullShowPreview, regenerateLiveAgentFullShowVariant, generateLiveAgentFullShowVariantVoice, rebuildLiveAgentFullShowVariantSubtitles, rebuildLiveAgentCustomMainline, getLiveAgentPlanStyleOverlays, getAnchorStylePluginCatalog, getAnchorStyleWorkbenchContext, testLiveAgentAnchorStyle, previewAnalyzeLiveAgentAnchorStyle, listLiveAnchorStyles, getLiveAnchorStyle, listLiveAnchorStyleSamples, getLiveAnchorAnalysisVersions, previewAnalyzeLiveAgentPlanScript, previewGenerateLiveAgentFullShow, previewRecognizeLiveAgentPlanImage, updateLiveAgentPlan, updateLiveAgentPlanBenefit, updateLiveAgentPlanProductLink, updateLiveAgentPlanProductAttribute, saveLiveAgentPlanProductLinkFrequencyWeight, saveLiveAgentPlanProductSellingPoints, updateLiveAgentPlanScript, updateLiveAgentSettings, updateUserUIPreferences, uploadLiveAgentCustomMainline, uploadLiveMediaAsset } from '../api';
 import { session } from '../session'
 import '../styles/workflow-guidance.css'
 import { beginLiveSupportScope, liveSupportMediaPlaybackURL } from '../liveSupportAccess'
@@ -1359,6 +1361,7 @@ const planVoiceIdentity = computed<LiveAgentVoiceIdentity>(() => {
     version: String(voice.version || 'V1').trim(),
     source: String(voice.source || 'official').trim(),
     provider: String(voice.provider || '').trim(),
+    tts_pool: String(voice.tts_pool || '').trim() || undefined,
     voice_id: String(voice.voice_id || '').trim(),
     profile_id: Number(voice.profile_id || 0) || undefined,
     binding_id: Number(voice.binding_id || 0) || undefined,
@@ -3114,13 +3117,14 @@ async function loadFullShowWorkspace() {
   try {
     const contentMode = contentModeAccess.value?.content_mode
     if (!contentMode) return
-    const [workspace, bindings, official] = await Promise.all([
+    const [workspace, bindings, official, profiles] = await Promise.all([
       getLiveAgentPlanWorkspace(planId, room.id, room.tenant_id, contentMode),
       getLiveVoiceModelBindings(),
-      getLiveOfficialVoices(),
+      getPoolOfficialVoices('standard'),
+      getLiveVoiceProfiles(),
     ])
     if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || planTenantId.value !== room.tenant_id) return
-    availablePlanVoices.value = planVoiceChoices(bindings || [], official.items || [], official.configured === true)
+    availablePlanVoices.value = planVoiceChoices(bindings || [], official.items || [], official.configured === true, profiles || [])
     systemDefaultVoice.value = planDefaultVoice(official.items || [], official.configured === true)
     if (workspace.version && (workspace.version.plan_id !== planId || workspace.version.tenant_id !== room.tenant_id)) throw new Error('返回的方案版本不属于当前账号和方案，请重新读取')
     fullShowWorkspaceChecks.value = workspace.checks || []
@@ -3187,6 +3191,7 @@ function cleanVersionVoiceIdentity(identity: LiveAgentVoiceIdentity) {
     version: String(identity.version || ''),
     source: String(identity.source || ''),
     provider: String(identity.provider || ''),
+    tts_pool: identity.tts_pool || undefined,
     voice_id: String(identity.voice_id || ''),
     profile_id: Number(identity.profile_id || 0) || undefined,
     binding_id: Number(identity.binding_id || 0) || undefined,
@@ -3245,12 +3250,14 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   fullShowVersionSaving.value = true
   fullShowNotice.value = '正在核对方案声音与保存内容。'
   try {
-    const [bindings, official] = await Promise.all([getLiveVoiceModelBindings(), getLiveOfficialVoices()])
-    assertCurrent()
-    availablePlanVoices.value = planVoiceChoices(bindings || [], official.items || [], official.configured === true)
-    systemDefaultVoice.value = planDefaultVoice(official.items || [], official.configured === true)
     const voiceAtSave = cleanVersionVoiceIdentity(currentVoiceIdentity.value)
-    voiceSaveError.value = planVoiceUnavailable(voiceAtSave, bindings || [], official.items || [], official.configured === true)
+    const mismatch = poolVoiceError(voiceAtSave)
+    if (mismatch) throw new Error(mismatch)
+    const [bindings, official, profiles] = await Promise.all([getLiveVoiceModelBindings(), getPoolOfficialVoices(voiceAtSave.tts_pool || voicePoolID(voiceAtSave) || undefined), getLiveVoiceProfiles()])
+    assertCurrent()
+    availablePlanVoices.value = planVoiceChoices(bindings || [], official.items || [], official.configured === true, profiles || [])
+    systemDefaultVoice.value = planDefaultVoice(official.items || [], official.configured === true)
+    voiceSaveError.value = planVoiceUnavailable(voiceAtSave, bindings || [], official.items || [], official.configured === true, profiles || [])
     if (voiceSaveError.value) throw new Error(voiceSaveError.value)
     if (roomModeAtSave === 'user_audio' && recordingVoiceMode.value === 'original' && readyRecordingOriginal.value) {
       await applyCustomMainlineAsFormal(readyRecordingOriginal.value)
@@ -4832,6 +4839,10 @@ function chooseAvailablePlanVoice(event: Event) {
   const voice = availablePlanVoices.value[Number((event.target as HTMLSelectElement).value)]
   if (voice) handleLiveVoiceChanged(voice)
 }
+function handleLiveVoicePoolChanged(pool: TTSPoolID) {
+  handleLiveVoiceChanged({ ...currentVoiceIdentity.value, tts_pool: pool })
+  fullShowNotice.value = '已切换语音池，请选择该池可用的声音后保存方案。'
+}
 
 async function saveAgentSettings() {
   settingsSaving.value = true
@@ -5764,6 +5775,7 @@ onBeforeUnmount(() => {
           :disabled="fullShowVersionSaving || fullShowWorkspaceLoading || fullShowWorkspaceHydrating"
           :support-session="props.supportSession"
           @selected="handleLiveVoiceChanged"
+          @pool-selected="handleLiveVoicePoolChanged"
         />
         </section>
 

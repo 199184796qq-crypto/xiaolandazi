@@ -176,6 +176,7 @@ func WaitForQuota(now time.Time, admitted []time.Time, rpm, rps int) time.Durati
 }
 
 type Account struct {
+	MaxConcurrent    int               `json:"max_concurrent"`
 	ID               string            `json:"id"`
 	Name             string            `json:"name"`
 	Provider         string            `json:"provider"`
@@ -202,15 +203,17 @@ type ModelUsage struct {
 }
 
 type AccountInput struct {
-	ID         string            `json:"id"`
-	Name       string            `json:"name"`
-	Enabled    bool              `json:"enabled"`
-	RPM        int               `json:"rpm"`
-	RPS        int               `json:"rps"`
-	Revision   uint64            `json:"revision"`
-	AccountUID string            `json:"account_uid"`
-	NewAPIKey  string            `json:"new_api_key,omitempty"`
-	Voices     map[string]string `json:"voices"`
+	Provider      string            `json:"provider,omitempty"`
+	MaxConcurrent int               `json:"max_concurrent"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Enabled       bool              `json:"enabled"`
+	RPM           int               `json:"rpm"`
+	RPS           int               `json:"rps"`
+	Revision      uint64            `json:"revision"`
+	AccountUID    string            `json:"account_uid"`
+	NewAPIKey     string            `json:"new_api_key,omitempty"`
+	Voices        map[string]string `json:"voices"`
 	// Omitted by older clients: preserve the saved selection. An explicit empty
 	// selection lets the current environment account follow the plan as before.
 	Models []string `json:"models,omitempty"`

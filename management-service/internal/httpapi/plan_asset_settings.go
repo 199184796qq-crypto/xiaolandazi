@@ -6,6 +6,7 @@ import (
 )
 
 func (s *Server) registerPlanAssetRoutes(mux *http.ServeMux) {
+	s.registerTTSRoomPoolRoutes(mux)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/content-mode", s.planAssetMode)
 	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/content-mode", s.planAssetMode)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/reading-rules", s.roomReadingRules)

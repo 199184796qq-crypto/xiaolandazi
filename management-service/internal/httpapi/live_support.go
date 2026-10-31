@@ -544,6 +544,11 @@ func validateSupportVoiceInput(input *model.VoiceProfileInput) bool {
 	input.Provider = strings.TrimSpace(input.Provider)
 	input.VoiceID = strings.TrimSpace(input.VoiceID)
 	input.CloneStatus = strings.TrimSpace(input.CloneStatus)
+	targetModel, _ := input.Config["target_model"].(string)
+	if strings.TrimSpace(targetModel) == "seed-icl-2.0" || strings.EqualFold(input.Provider, "volcengine") {
+		return false
+	}
+
 	if input.Name == "" || input.Provider == "" {
 		return false
 	}

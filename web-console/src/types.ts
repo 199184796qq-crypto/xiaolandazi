@@ -2135,6 +2135,7 @@ export interface LiveAgentFullShowRegenerateResponse {
 }
 
 export interface LiveAgentVoiceIdentity {
+  tts_pool?: 'standard' | 'high_fidelity' | string
   name: string
   version: string
   source: 'official' | 'clone' | string

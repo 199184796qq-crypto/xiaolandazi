@@ -88,6 +88,7 @@ func NewFromEnv() *Gateway {
 	g.scheduler = currentScheduler()
 	g.Register(NewQwenProvider(QwenConfigFromEnv()), "qwen", "dashscope", "qwen_audio_3_0")
 	g.Register(NewCosyVoiceProvider(QwenConfigFromEnv()), "aliyun_cosyvoice", "aliyun_cosyvoice_clone")
+	g.Register(NewVolcengineProvider(VolcengineConfigFromEnv()), "doubao", "volcano")
 	g.Register(NewTencentProvider(TencentConfigFromEnv()), "tencent", "tencent_cloud")
 	return g
 }
@@ -140,7 +141,7 @@ func (g *Gateway) SynthesizeURL(ctx context.Context, request SynthesizeRequest) 
 	if math.IsNaN(request.Rate) || math.IsInf(request.Rate, 0) || request.Rate < 0.5 || request.Rate > 2.0 {
 		return SynthesizeResponse{}, errors.New("tts rate must be between 0.5 and 2.0")
 	}
-	if request.Provider == "" && (IsCosyVoiceModel(request.Model) || request.Model == TencentPremiumModel) {
+	if request.Provider == "" && (IsCosyVoiceModel(request.Model) || request.Model == TencentPremiumModel || request.Model == VolcengineICL2) {
 		request.Provider = ProviderForModel(request.Model)
 	}
 	if request.Model == TencentPremiumModel && normalize(request.Provider) != ProviderTencent && normalize(request.Provider) != "tencent" && normalize(request.Provider) != "tencent_cloud" {
@@ -150,11 +151,17 @@ func (g *Gateway) SynthesizeURL(ctx context.Context, request SynthesizeRequest) 
 	if err != nil {
 		return SynthesizeResponse{}, err
 	}
+	if (request.Model == VolcengineICL2) != (canonical == ProviderVolcengine) {
+		return SynthesizeResponse{}, notSent(errors.New("火山模型与合成服务不匹配"))
+	}
 	request.Provider = canonical
 	return g.scheduledSynthesis(ctx, p, request)
 }
 
 func (g *Gateway) CloneVoice(ctx context.Context, request CloneRequest) (CloneResponse, error) {
+	if strings.TrimSpace(request.TargetModel) == VolcengineICL2 {
+		return CloneResponse{}, errors.New("火山当前仅接入已有音色合成，不执行复刻训练")
+	}
 	if request.Provider == "" && IsCosyVoiceModel(request.TargetModel) {
 		request.Provider = ProviderCosyVoice
 	}

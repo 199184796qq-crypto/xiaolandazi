@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/ttsgateway"
 )
 
 const maxMediaAssetBytes int64 = 2 << 30
@@ -509,10 +510,7 @@ func (s *Server) liveSaveVoiceProfile(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 	var input model.VoiceProfileInput
-	if actor.IsInternalStaff() {
-		writeError(w, http.StatusForbidden, "共享声音档案的修改须由客户完成；授权协助可创建新声音")
-		return
-	}
+
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "声音克隆档案格式错误")
 		return
@@ -521,6 +519,59 @@ func (s *Server) liveSaveVoiceProfile(w http.ResponseWriter, r *http.Request, pr
 	input.Provider = strings.TrimSpace(input.Provider)
 	input.VoiceID = strings.TrimSpace(input.VoiceID)
 	input.CloneStatus = strings.TrimSpace(input.CloneStatus)
+	imported := input.Provider == ttsgateway.ProviderVolcengine || strings.TrimSpace(fmt.Sprint(input.Config["target_model"])) == ttsgateway.VolcengineICL2
+	if profileID > 0 {
+		old, err := s.store.GetVoiceProfile(r.Context(), tenantID, profileID)
+		if err != nil {
+			writeError(w, 404, "声音档案不存在")
+			return
+		}
+		imported = imported || old.Provider == ttsgateway.ProviderVolcengine || profileLibraryModel(old) == ttsgateway.VolcengineICL2
+	}
+	if imported {
+		if _, ok := s.requireAgentPromptAdmin(w, r); !ok {
+			return
+		}
+		roomID, valid := liveSupportScopeRoomID(r)
+		if !valid || roomID <= 0 {
+			writeError(w, http.StatusForbidden, "请在客户已授权的直播间方案中导入已有音色")
+			return
+		}
+		if profileID > 0 {
+			old, _ := s.store.GetVoiceProfile(r.Context(), tenantID, profileID)
+			if !s.requireLiveSupportVoice(w, r, actor, tenantID, old, false) {
+				return
+			}
+		}
+		if err := validateVolcengineImportedVoice(&input); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		pool, err := s.store.TTSPoolSnapshot(r.Context())
+		if err != nil {
+			writeError(w, 500, "读取火山TTS账号失败")
+			return
+		}
+		allowed := false
+		for _, account := range pool.Accounts {
+			if account.Provider == ttsgateway.ProviderVolcengine && account.Enabled && account.Configured && account.Voices[ttsgateway.VolcengineICL2+"/"+input.VoiceID] != "" {
+				allowed = true
+			}
+		}
+		if !allowed {
+			writeError(w, 409, "请先在TTS账户池为火山账号配置该音色对应关系")
+			return
+		}
+		// The verified customer grant scopes staff access to this new asset.
+		// Customers still own the voice and may use it in any of their plans.
+		input.Config["support_room_id"] = roomID
+	} else {
+		if actor.IsInternalStaff() {
+			writeError(w, http.StatusForbidden, "共享声音档案的修改须由客户完成；授权协助可创建新声音")
+			return
+		}
+	}
+
 	if input.Name == "" || input.Provider == "" {
 		writeError(w, http.StatusBadRequest, "声音名称和服务商不能为空")
 		return

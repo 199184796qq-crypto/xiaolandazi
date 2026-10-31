@@ -15,6 +15,7 @@ import (
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
+	"livecompanion/management/internal/ttsscheduler"
 	"livecompanion/management/internal/voicecatalog"
 )
 
@@ -63,6 +64,10 @@ func normalizeLiveAgentVoiceIdentity(identity *model.LiveAgentVoiceIdentity) err
 	identity.VoiceID = strings.TrimSpace(identity.VoiceID)
 	identity.Model = strings.TrimSpace(identity.Model)
 	identity.Emotion = strings.TrimSpace(identity.Emotion)
+	identity.TTSPool = strings.TrimSpace(identity.TTSPool)
+	if err := ttsscheduler.ValidateVoicePool(identity.TTSPool, identity.Provider, identity.Model); err != nil {
+		return err
+	}
 	if identity.Version == "" {
 		identity.Version = "V1"
 	}
@@ -861,7 +866,8 @@ func (s *Server) liveAgentPlanPublishRoomVoiceBinding(w http.ResponseWriter, r *
 		rate = 1
 	}
 	identity := model.LiveAgentVoiceIdentity{
-		Name: profile.Name, Version: "V1", Source: "clone", Provider: binding.Provider,
+		TTSPool: ttsscheduler.PoolForProvider(binding.Provider),
+		Name:    profile.Name, Version: "V1", Source: "clone", Provider: binding.Provider,
 		VoiceID: binding.VoiceID, ProfileID: profile.ID, BindingID: binding.ID,
 		Model: binding.Model, Rate: rate,
 		EmotionEnabled: published.VoiceIdentity.EmotionEnabled,
@@ -873,6 +879,7 @@ func (s *Server) liveAgentPlanPublishRoomVoiceBinding(w http.ResponseWriter, r *
 		VoiceIdentity: identity, Variants: append([]model.LiveAgentPlanVersionVariant(nil), published.Variants...),
 		GenerationContext: published.GenerationContext,
 	}
+	published.VoiceIdentity = identity
 	if err := s.validateLiveContentVersion(r.Context(), tenantID, roomID, published); err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
@@ -944,7 +951,18 @@ func (s *Server) validatePlanVoiceIdentity(ctx context.Context, tenantID int64, 
 		if settings.OfficialLibrary == ttsgateway.TencentPremiumModel {
 			configured = ttsgateway.TencentConfigured()
 		}
-		for _, v := range voicecatalog.CustomerOfficial(settings.OfficialLibrary) {
+		library := settings.OfficialLibrary
+		if identity.TTSPool != "" {
+			if identity.TTSPool != ttsscheduler.PoolStandard {
+				return errors.New("高仿真语音池请在我的声音中选择已配置的声音")
+			}
+			library = ttsgateway.ProviderQwen
+			configured, err = s.ttsPoolConfigured(ctx, identity.TTSPool)
+			if err != nil {
+				return errors.New("读取语音池状态失败")
+			}
+		}
+		for _, v := range voicecatalog.CustomerOfficial(library) {
 			provider := v.Provider
 			if provider == "" {
 				provider = "aliyun_qwen"
@@ -954,6 +972,17 @@ func (s *Server) validatePlanVoiceIdentity(ctx context.Context, tenantID int64, 
 			}
 		}
 		return errors.New("该官方声音暂不可用，请重新选择声音后再保存")
+	}
+	profile, err := s.store.GetVoiceProfile(ctx, tenantID, identity.ProfileID)
+	if err != nil || selectedCloneProfileError(profile) != nil {
+		return errors.New("该声音已失效或已停用，请重新选择声音后再保存")
+	}
+	if identity.BindingID == 0 {
+		voice, modelName, resolveErr := resolveSelectedCloneVoice(profile, fullShowVariantVoiceInput{Source: "clone", ProfileID: identity.ProfileID, VoiceID: identity.VoiceID, Model: identity.Model}, nil)
+		if resolveErr != nil || profile.Provider != identity.Provider || voice != identity.VoiceID || modelName != identity.Model {
+			return errors.New("所选声音与原始档案不匹配，请重新选择声音后保存")
+		}
+		return nil
 	}
 	binding, err := s.store.GetVoiceModelBinding(ctx, tenantID, identity.BindingID)
 	if err != nil || binding.Status != "ready" || binding.VoiceID != identity.VoiceID || binding.Model != identity.Model || binding.Provider != identity.Provider || binding.ProfileID != identity.ProfileID {

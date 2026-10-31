@@ -20,6 +20,7 @@ import (
 
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
+	"livecompanion/management/internal/ttsscheduler"
 	"livecompanion/management/internal/voicecatalog"
 )
 
@@ -90,6 +91,23 @@ func findOfficialVoice(id string) (officialVoice, bool) {
 
 func (s *Server) liveOfficialVoices(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.resolveActor(w, r); !ok {
+		return
+	}
+	if pool := strings.TrimSpace(r.URL.Query().Get("pool")); pool != "" {
+		if ttsscheduler.PoolLabel(pool) == "" {
+			writeError(w, 400, "语音池无效")
+			return
+		}
+		configured, err := s.ttsPoolConfigured(r.Context(), pool)
+		if err != nil {
+			writeError(w, 500, "读取语音池状态失败")
+			return
+		}
+		items := []voicecatalog.Voice{}
+		if pool == ttsscheduler.PoolStandard {
+			items = voicecatalog.CustomerOfficial(ttsgateway.ProviderQwen)
+		}
+		writeJSON(w, 200, map[string]any{"items": items, "configured": configured})
 		return
 	}
 	settings, err := s.store.VoiceModelSettings(r.Context())

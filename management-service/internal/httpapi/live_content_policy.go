@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/ttsscheduler"
 	"net/http"
 )
 
@@ -34,6 +35,12 @@ func (s *Server) applyLiveContentModeVersion(ctx context.Context, tenantID, room
 }
 
 func (s *Server) validateLiveContentVersion(ctx context.Context, tenantID, roomID int64, version model.LiveAgentPlanVersion) error {
+	if err := ttsscheduler.ValidateVoicePool(version.VoiceIdentity.TTSPool, version.VoiceIdentity.Provider, version.VoiceIdentity.Model); err != nil {
+		return err
+	}
+	if err := s.store.CheckTTSRoomPool(ctx, tenantID, roomID, version.VoiceIdentity.Provider); err != nil {
+		return err
+	}
 	access, err := s.store.GetLiveContentMode(ctx, tenantID, roomID)
 	if err != nil {
 		return err

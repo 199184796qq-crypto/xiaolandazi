@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  createLiveVoiceProfile,
+  previewLiveVoiceProfile,
   cloneLiveVoiceModelBinding,
   cloneLiveVoiceProfile,
   designLiveVoiceProfile,
   deleteLiveVoiceProfile,
   renameLiveVoiceProfile,
   getLiveVoiceSettings,
-  getLiveOfficialVoices,
   getLiveVoiceModelBindings,
   getLiveVoiceProfileQuota,
   getLiveVoiceProfiles,
@@ -16,19 +17,29 @@ import {
   uploadLiveMediaAsset,
 } from '../api'
 import type { LiveAgentVoiceIdentity, OfficialVoice, VoiceModelBinding, VoiceProfile } from '../types'
+import { session } from '../session'
 import { liveSupportMediaPlaybackURL } from '../liveSupportAccess'
 import { useFeedbackErrorRef } from '../uiFeedback'
+import { getPoolOfficialVoices, poolVoiceError, ttsPoolOptions, voicePoolID, type TTSPoolID } from '../ttsPools'
 
 const props = defineProps<{ planId: number | null; planName?: string; selectedVoice: LiveAgentVoiceIdentity; scopeKey: string; disabled?: boolean; supportSession?: boolean }>()
-const emit = defineEmits<{ selected: [voice: LiveAgentVoiceIdentity] }>()
+const emit = defineEmits<{ selected: [voice: LiveAgentVoiceIdentity]; poolSelected: [pool: TTSPoolID] }>()
+const selectedPool = computed(() => String(props.selectedVoice.tts_pool || voicePoolID(props.selectedVoice) || (props.selectedVoice.provider ? '' : 'standard')))
+function changePool(event: Event) {
+  if (props.disabled || loading.value || selecting.value || importing.value || !props.planId) return
+  const pool = (event.target as HTMLSelectElement).value as TTSPoolID
+  if (!ttsPoolOptions.some(item => item.id === pool)) return
+  stopPreview()
+  emit('poolSelected', pool)
+}
 
 const VOICE_PREVIEW_TEXT = '你好，我是你的主播，欢迎为你效劳。'
 const MIN_SAMPLE_SECONDS = 5
 const MAX_SAMPLE_SECONDS = 60
 const MAX_SAMPLE_BYTES = 10 * 1024 * 1024
 const voiceSettings = ref({ custom_model: '', can_design: false })
-const canDesign = computed(() => voiceSettings.value.can_design)
-const visibleVoiceProfiles = computed(() => voiceProfiles.value)
+const canDesign = computed(() => selectedPool.value !== 'high_fidelity' && voiceSettings.value.can_design)
+const visibleVoiceProfiles = computed(() => voiceProfiles.value.filter(profile => !selectedPool.value || voicePoolID({ provider: profile.provider, model: profileModel(profile) }) === selectedPool.value))
 const avatarOptions = [
   { key: 'female_young', label: '女年轻', emoji: '👩🏻', tone: 'rose' },
   { key: 'female_middle', label: '女中年', emoji: '👩', tone: 'violet' },
@@ -64,6 +75,23 @@ const previewPhase = ref<'idle' | 'loading' | 'playing'>('idle')
 let previewEpoch = 0
 let previewAudio: HTMLAudioElement | null = null
 
+const importOpen = ref(false), importing = ref(false), importName = ref(''), importVoiceID = ref(''), importError = ref('')
+const canImport = computed(() => selectedPool.value === 'high_fidelity' && props.supportSession && (session.bootstrap?.actor.role === 'platform_admin' || session.bootstrap?.staff_access?.is_super_admin === true))
+function isImportedVoice(profile: VoiceProfile) { return profile.provider === 'volcengine' && asRecord(profile.config).target_model === 'seed-icl-2.0' }
+function profileModel(profile: VoiceProfile) { return isImportedVoice(profile) ? 'seed-icl-2.0' : voiceSettings.value.custom_model }
+async function importVoice() {
+  if (!canImport.value || importing.value || !props.planId) return
+  const name = importName.value.trim(), voice = importVoiceID.value.trim(), scope = nameScope
+  if (!name || Array.from(name).length > 80 || !/^S_[A-Za-z0-9_-]{1,128}$/.test(voice)) { importError.value = '请输入声音名称及有效的S_音色ID'; return }
+  importing.value = true; importError.value = ''
+  try {
+    await createLiveVoiceProfile({ name, provider: 'volcengine', voice_id: voice, clone_status: 'ready', config: { target_model: 'seed-icl-2.0', source: 'imported_existing_voice' } })
+    if (scope !== nameScope) return
+    importOpen.value = false; importName.value = ''; importVoiceID.value = ''; await load()
+    if (scope === nameScope) notice.value = '已有音色已登记。试听确认后可选择并保存到方案。'
+  } catch (e) { if (scope === nameScope) importError.value = e instanceof Error ? e.message : '导入声音失败' }
+  finally { if (scope === nameScope) importing.value = false }
+}
 const cloneOpen = ref(false)
 const cloneMode = ref<'upload' | 'design'>('upload')
 const voiceDescription = ref('')
@@ -109,7 +137,7 @@ async function load() {
   error.value = ''
   try {
     const [official, profiles, bindings, profileQuota, settings] = await Promise.all([
-      getLiveOfficialVoices(),
+      getPoolOfficialVoices(selectedPool.value),
       getLiveVoiceProfiles(),
       getLiveVoiceModelBindings(),
       getLiveVoiceProfileQuota(),
@@ -166,10 +194,10 @@ async function saveName(profile: VoiceProfile) {
 }
 
 function isCustomModelSelected(profile: VoiceProfile) {
-  return isCustomSelected(profile) && selectedVoice.value.model === voiceSettings.value.custom_model
+  return isCustomSelected(profile) && selectedVoice.value.model === profileModel(profile)
 }
 
-function customPreviewKey(profile: VoiceProfile) { return `custom-${profile.id}-${voiceSettings.value.custom_model}` }
+function customPreviewKey(profile: VoiceProfile) { return `custom-${profile.id}-${profileModel(profile)}` }
 
 function stopPreview() {
   ++previewEpoch
@@ -214,7 +242,10 @@ async function playURL(key: string, factory: () => Promise<{ audio_url: string }
 function selectVoice(voice: LiveAgentVoiceIdentity) {
   if (!props.planId || props.disabled || loading.value || selecting.value) return
   error.value = ''
-  emit('selected', voice)
+  const selected = { ...voice, tts_pool: selectedPool.value || voicePoolID(voice) || undefined }
+  const mismatch = poolVoiceError(selected)
+  if (mismatch) { error.value = mismatch; return }
+  emit('selected', selected)
   notice.value = `“${voice.name}”已选入方案「${props.planName || '当前方案'}」，请点击“保存方案”完成保存。`
 }
 
@@ -261,6 +292,7 @@ async function ensureBinding(profile: VoiceProfile, model: string): Promise<Voic
 }
 
 async function previewCustom(profile: VoiceProfile) {
+  if (isImportedVoice(profile)) return playURL(customPreviewKey(profile), () => previewLiveVoiceProfile(profile.id, VOICE_PREVIEW_TEXT))
   const model = voiceSettings.value.custom_model
   await playURL(customPreviewKey(profile), async () => {
     const binding = await ensureBinding(profile, model)
@@ -271,6 +303,10 @@ async function previewCustom(profile: VoiceProfile) {
 
 async function useCustom(profile: VoiceProfile) {
   if (!props.planId || props.disabled || loading.value || selecting.value) return
+  if (isImportedVoice(profile)) {
+    selectVoice({ version: 'V1', source: 'clone', provider: profile.provider, name: profile.name, voice_id: profile.voice_id, profile_id: profile.id, model: profileModel(profile), rate: 1 })
+    return
+  }
   const scope = nameScope, plan = props.planId
   const model = voiceSettings.value.custom_model
   selecting.value = true
@@ -286,6 +322,7 @@ async function useCustom(profile: VoiceProfile) {
 }
 
 function openCloneDialog(mode: 'upload' | 'design' = 'upload') {
+  if (selectedPool.value === 'high_fidelity') return
   error.value = ''
   notice.value = ''
   activeLibrary.value = 'custom'
@@ -366,6 +403,7 @@ async function chooseSample(event: Event) {
 }
 
 async function submitClone() {
+  if (selectedPool.value === 'high_fidelity') return
   if (!canSubmitClone.value || (cloneMode.value === 'upload' && !sampleFile.value)) return
   const scope = nameScope
   const mode = cloneMode.value, targetModel = voiceSettings.value.custom_model
@@ -460,13 +498,15 @@ function createdLabel(value: string) {
   })
 }
 
-watch(() => [props.scopeKey, props.planId], () => { nameScope++; officialVoices.value = []; voiceProfiles.value = []; voiceBindings.value = []; officialConfigured.value = false; notice.value = ''; error.value = ''; voiceSettings.value = { custom_model: '', can_design: false }; cloneOpen.value = false; resetCloneForm(); stopPreview(); bindingBusyKey.value = ''; selecting.value = false; editingNameId.value = 0; savingNameId.value = 0; nameError.value = ''; void load() })
-onMounted(() => void load())
+watch(() => [props.scopeKey, props.planId], () => { nameScope++; importOpen.value = false; importing.value = false; importError.value = ''; importName.value = ''; importVoiceID.value = ''; officialVoices.value = []; voiceProfiles.value = []; voiceBindings.value = []; officialConfigured.value = false; notice.value = ''; error.value = ''; voiceSettings.value = { custom_model: '', can_design: false }; cloneOpen.value = false; resetCloneForm(); stopPreview(); bindingBusyKey.value = ''; selecting.value = false; editingNameId.value = 0; savingNameId.value = 0; nameError.value = ''; void load() })
+watch(selectedPool, pool => { stopPreview(); cloneOpen.value = false; resetCloneForm(); importOpen.value = false; activeLibrary.value = pool === 'high_fidelity' ? 'custom' : 'official'; void load() })
+onMounted(() => { if (selectedPool.value === 'high_fidelity') activeLibrary.value = 'custom'; void load() })
 onBeforeUnmount(() => { nameScope++; stopPreview() })
 </script>
 
 <template>
   <section class="voice-center">
+    <label class="voice-pool-picker"><span>语音池</span><select :value="selectedPool" :disabled="disabled || !planId || loading || selecting || importing" @change="changePool"><option v-if="!selectedPool" value="" disabled>当前声音（历史配置）</option><option v-for="pool in ttsPoolOptions" :key="pool.id" :value="pool.id">{{ pool.name }}</option></select><span>随方案保存；直播间需由后台开通对应语音池。</span></label>
     <div class="voice-room-strip">
       <div><span class="section-kicker">VOICE MANAGEMENT</span><strong>样本声音 · 自定义音色</strong></div>
       <div class="room-voice-state">
@@ -499,15 +539,17 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
           <div>
             <div class="voice-title-line"><h3>{{ activeLibrary === 'official' ? '官方声音' : '我的声音' }}</h3><span v-if="activeLibrary === 'custom'" class="quota-chip">{{ quota.used }} / {{ quota.limit }} 个</span></div>
             <p v-if="activeLibrary === 'official'">选择喜欢的音色；先试听，再选择使用</p>
+            <p v-else-if="selectedPool === 'high_fidelity'">选择已配置的高仿真声音</p>
             <p v-else>上传录音或描述想要的声音，创建你的专属音色</p>
           </div>
-          <div v-if="activeLibrary === 'custom'" class="voice-create-actions"><button v-if="canDesign" type="button" class="design-voice-button" :disabled="selecting" @click="openCloneDialog('design')">描述生成声音</button><button type="button" class="upload-sample-button" :disabled="selecting" @click="openCloneDialog()"><span>＋</span> 上传声音样本</button></div>
+          <div v-if="activeLibrary === 'custom'" class="voice-create-actions"><button v-if="canImport" type="button" class="upload-sample-button" :disabled="loading || importing || selecting || disabled" @click="stopPreview(); importOpen = true; importError = ''">导入已有音色</button><button v-if="canDesign" type="button" class="design-voice-button" :disabled="selecting" @click="openCloneDialog('design')">描述生成声音</button><button v-if="selectedPool !== 'high_fidelity'" type="button" class="upload-sample-button" :disabled="selecting" @click="openCloneDialog()"><span>＋</span> 上传声音样本</button></div>
         </header>
 
         <div v-if="loading" class="voice-loading">正在读取声音…</div>
         <div v-else-if="activeLibrary === 'official'" class="voice-rows">
-          <p v-if="!officialConfigured" class="inline-notice" role="status">官方声音尚未配置，请联系后台完成配置。</p>
-          <label class="official-preview-text"><span>试听文字</span><textarea v-model="officialPreviewText" rows="2" maxlength="1000" placeholder="可输入要测试的话术；留空使用简短问候语" /></label>
+          <p v-if="selectedPool === 'high_fidelity'" class="inline-notice" role="status">请在“我的声音”中选择已配置的高仿真声音。</p>
+          <p v-else-if="!officialConfigured" class="inline-notice" role="status">官方声音尚未配置，请联系后台完成配置。</p>
+          <label v-if="selectedPool !== 'high_fidelity'" class="official-preview-text"><span>试听文字</span><textarea v-model="officialPreviewText" rows="2" maxlength="1000" placeholder="可输入要测试的话术；留空使用简短问候语" /></label>
           <article v-for="(item, index) in officialVoices" :key="item.id" class="voice-row" :class="{ selected: isOfficialSelected(item) }">
             <div class="voice-avatar" :class="'tone-' + officialAvatar(item, index).tone"><span>{{ officialAvatar(item, index).emoji }}</span><i class="avatar-wave">▂▅▃▆▂</i></div>
             <div class="voice-row-copy"><div><strong>{{ item.name }}</strong><span>{{ officialTag(item) }}</span></div><p>{{ item.description }}</p></div>
@@ -535,12 +577,22 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
           </article>
         </div>
 
-        <div v-else-if="activeLibrary === 'custom'" class="voice-empty"><span>♫</span><strong>还没有自定义声音</strong><p>上传清晰录音，推荐 10–20 秒，最长 60 秒，创建你的专属音色。</p><div class="empty-create-actions"><button type="button" @click="openCloneDialog()">＋ 上传声音样本</button><button v-if="canDesign" type="button" @click="openCloneDialog('design')">描述生成声音</button></div></div>
+        <div v-else-if="activeLibrary === 'custom'" class="voice-empty"><span>♫</span><strong>{{ selectedPool === 'high_fidelity' ? '还没有高仿真声音' : '还没有自定义声音' }}</strong><p v-if="selectedPool === 'high_fidelity'">请联系后台配置可用音色。</p><p v-else>上传清晰录音，推荐 10–20 秒，最长 60 秒，创建你的专属音色。</p><div v-if="selectedPool !== 'high_fidelity'" class="empty-create-actions"><button type="button" @click="openCloneDialog()">＋ 上传声音样本</button><button v-if="canDesign" type="button" @click="openCloneDialog('design')">描述生成声音</button></div></div>
         <div v-if="previewingKey" class="voice-preview-wave-panel" :class="{ 'is-playing': previewPhase === 'playing' }" role="status"><span>{{ previewPhase === 'playing' ? '正在试听' : '正在准备试听声音…' }}</span><div class="voice-preview-wave" aria-hidden="true"><i v-for="bar in 27" :key="bar" :style="{ '--bar-height': (12 + Math.abs(Math.sin(bar * .77)) * 30) + 'px', '--bar-delay': (bar % 7) * -.12 + 's' }"></i></div><button type="button" @click="stopPreview">停止</button></div>
       </section>
     </div>
 
     <Teleport to="body">
+      <div v-if="importOpen" class="voice-dialog-overlay" @click.self="!importing && (importOpen = false)">
+        <section class="voice-dialog voice-import-dialog" role="dialog" aria-modal="true" aria-label="导入已有音色">
+          <header><h3>导入已有音色</h3><button type="button" class="voice-close" :disabled="importing" @click="importOpen = false">×</button></header>
+          <p>火山 Doubao 声音复刻2.0。先在TTS账户池配置对应账号及音色；这里只登记已有ID，不执行训练或合成。实际可用性以试听结果为准。</p>
+          <label class="voice-clone-field"><span>声音名称</span><input v-model="importName" :disabled="importing" maxlength="80" /></label>
+          <label class="voice-clone-field"><span>已有音色ID</span><input v-model="importVoiceID" :disabled="importing" maxlength="130" placeholder="S_…" /></label>
+          <p v-if="importError" class="sample-error" role="alert">{{ importError }}</p>
+          <div class="voice-clone-actions"><button type="button" :disabled="importing" @click="importOpen = false">取消</button><button type="button" class="upload-sample-button" :disabled="importing || !importName.trim() || !importVoiceID.trim()" @click="importVoice">{{ importing ? '登记中…' : '导入音色' }}</button></div>
+        </section>
+      </div>
       <div v-if="cloneOpen" class="voice-dialog-overlay" @click.self="closeCloneDialog">
         <section class="voice-dialog" role="dialog" aria-modal="true" :aria-label="cloneMode === 'design' ? '描述生成声音' : '上传声音样本'">
           <header><div><span class="section-kicker">CUSTOM VOICE</span><h3>{{ cloneMode === 'design' ? '描述生成声音' : '上传声音样本' }}</h3><p>{{ cloneMode === 'design' ? '描述声音的性别、年龄、音调和风格，创建专属主播声音。' : '选择头像、填写名称，再上传单人清晰录音：推荐 10–20 秒，最长 60 秒。' }}</p></div><button type="button" class="voice-close" :disabled="selecting" @click="closeCloneDialog">×</button></header>
@@ -570,6 +622,9 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
 </template>
 
 <style scoped>
+.voice-pool-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px 24px; font-size: 16px; color: #526282; }
+.voice-pool-picker select { min-width: 140px; max-width: 100%; padding: 10px 16px; border: 1px solid #dce3ff; border-radius: 12px; background: white; color: #313c5b; font: inherit; }
+.voice-dialog.voice-import-dialog{box-sizing:border-box;width:min(720px,100%);max-width:100%;font-size:16px}.voice-import-dialog input{box-sizing:border-box;min-width:0;width:100%}.voice-import-dialog .sample-error{font-size:16px}
 .official-preview-text{display:grid;gap:8px;margin-bottom:12px;color:#53627c;font-size:14px;font-weight:700}.official-preview-text textarea{width:100%;box-sizing:border-box;min-width:0;padding:12px;border:1px solid #dce2f7;border-radius:12px;font:inherit;font-weight:400;line-height:1.65;resize:vertical}.preview-button:disabled{opacity:.5;cursor:not-allowed}
 .voice-library-nav button.active b{color:#fff}.voice-library-nav button:not(.active) b{color:#253654}
 .voice-create-actions,.empty-create-actions{display:flex;gap:10px;flex-wrap:wrap}.design-voice-button{min-height:43px;padding:0 17px;border:1px solid #d9e1f0;border-radius:13px;background:#f0f3ff;color:#5265d9;font-weight:900;cursor:pointer}.cosy-official-empty{min-height:380px}.voice-clone-field textarea{min-height:110px;padding:12px;border:1px solid #d2dbea;border-radius:12px;background:#fff;resize:vertical;font:inherit;line-height:1.6}.voice-clone-field small{font-size:12px;color:#7e8ca3;font-weight:500}@media(max-width:860px){.voice-create-actions{justify-content:flex-end}}@media(max-width:560px){.voice-create-actions{justify-content:flex-start}}

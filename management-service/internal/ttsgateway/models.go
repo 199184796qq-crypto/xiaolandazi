@@ -22,6 +22,9 @@ func SupportsCloneModel(model string) bool {
 }
 
 func ProviderForModel(model string) string {
+	if strings.TrimSpace(model) == VolcengineICL2 {
+		return ProviderVolcengine
+	}
 	if strings.TrimSpace(model) == TencentPremiumModel {
 		return ProviderTencent
 	}
@@ -38,7 +41,7 @@ func VoiceLibraryMatches(library, target string) bool {
 		return true
 	}
 	if library == ProviderQwen {
-		return !IsCosyVoiceModel(target) && target != TencentPremiumModel
+		return !IsCosyVoiceModel(target) && target != TencentPremiumModel && target != VolcengineICL2
 	}
 	return library == target
 }

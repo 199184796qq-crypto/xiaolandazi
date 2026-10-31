@@ -12,7 +12,7 @@ import (
 
 func voiceLibraryQuery(w http.ResponseWriter, r *http.Request) (string, bool) {
 	library := strings.TrimSpace(r.URL.Query().Get("model"))
-	if library != "" && library != ttsgateway.ProviderQwen && library != ttsgateway.TencentPremiumModel && !ttsgateway.IsCosyVoiceModel(library) {
+	if library != "" && library != ttsgateway.ProviderQwen && library != ttsgateway.TencentPremiumModel && !ttsgateway.IsCosyVoiceModel(library) && library != ttsgateway.VolcengineICL2 {
 		writeError(w, http.StatusBadRequest, "声音库模型无效")
 		return "", false
 	}
@@ -36,7 +36,7 @@ func filterVoiceLibrary(library string, profiles []model.VoiceProfile) []model.V
 
 func validateVoiceLibraryBinding(profile model.VoiceProfile, target string) error {
 	configured := profileLibraryModel(profile)
-	if ttsgateway.IsCosyVoiceModel(configured) || ttsgateway.IsCosyVoiceModel(target) {
+	if ttsgateway.IsCosyVoiceModel(configured) || ttsgateway.IsCosyVoiceModel(target) || configured == ttsgateway.VolcengineICL2 || target == ttsgateway.VolcengineICL2 {
 		if configured != target {
 			return errors.New("这个声音属于其他模型，请在所选模型的声音库中重新上传或设计声音")
 		}

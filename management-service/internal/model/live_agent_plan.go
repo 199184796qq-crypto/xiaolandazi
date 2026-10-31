@@ -900,6 +900,7 @@ type LiveAgentFullShowPreviewResponse struct {
 const LiveSpeechEmotionEnabled = true
 
 type LiveAgentVoiceIdentity struct {
+	TTSPool        string         `json:"tts_pool,omitempty"`
 	Name           string         `json:"name"`
 	Version        string         `json:"version"`
 	Source         string         `json:"source"`
