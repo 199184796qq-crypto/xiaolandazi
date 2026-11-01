@@ -22,6 +22,12 @@ func archiveUntimedScriptFirstAsset(ctx context.Context, registry *storage.Regis
 	if registry == nil {
 		return 0, errors.New("媒体存储尚未初始化")
 	}
+	// Preserve the original paid file. Publish canonical playback headers so
+	// downstream decoders do not inherit the supplier's unknown-length marker.
+	raw, err := normalizeScriptFirstWAVHeader(raw)
+	if err != nil {
+		return 0, err
+	}
 	objectKey, err := newMediaObjectKey(tenant, "generated_voice", "paragraph-"+key[:min(len(key), 20)]+".wav")
 	if err != nil {
 		return 0, err

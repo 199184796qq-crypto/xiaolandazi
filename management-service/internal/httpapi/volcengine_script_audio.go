@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -60,14 +61,23 @@ func volcengineWAVDuration(path string) (int64, error) {
 	if err != nil || info.Size() <= 44 || info.Size() > maxVolcengineRenderBytes {
 		return 0, errors.New("长段音频大小无效")
 	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxVolcengineRenderBytes+1))
+	if err != nil || int64(len(raw)) != info.Size() {
+		return 0, errors.New("长段WAV读取不完整")
+	}
+	raw, err = normalizeScriptFirstWAVHeader(raw)
+	if err != nil {
+		return 0, err
+	}
+	reader := bytes.NewReader(raw)
 	header := make([]byte, 12)
-	if _, err = io.ReadFull(f, header); err != nil || string(header[:4]) != "RIFF" || string(header[8:]) != "WAVE" {
+	if _, err = io.ReadFull(reader, header); err != nil || string(header[:4]) != "RIFF" || string(header[8:]) != "WAVE" {
 		return 0, errors.New("长段音频不是WAV")
 	}
 	var byteRate int64
 	for offset := int64(12); offset+8 <= info.Size(); {
 		chunk := make([]byte, 8)
-		if _, err = io.ReadFull(f, chunk); err != nil {
+		if _, err = io.ReadFull(reader, chunk); err != nil {
 			return 0, err
 		}
 		n := int64(binary.LittleEndian.Uint32(chunk[4:]))
@@ -80,7 +90,7 @@ func volcengineWAVDuration(path string) (int64, error) {
 				return 0, errors.New("长段WAV格式无效")
 			}
 			format := make([]byte, n)
-			if _, err = io.ReadFull(f, format); err != nil {
+			if _, err = io.ReadFull(reader, format); err != nil {
 				return 0, err
 			}
 			if binary.LittleEndian.Uint16(format) != 1 || binary.LittleEndian.Uint16(format[2:]) != 1 || binary.LittleEndian.Uint32(format[4:]) != 24000 || binary.LittleEndian.Uint16(format[14:]) != 16 {
@@ -96,12 +106,12 @@ func volcengineWAVDuration(path string) (int64, error) {
 			}
 			return n * 1000 / byteRate, nil
 		default:
-			if _, err = f.Seek(n, io.SeekCurrent); err != nil {
+			if _, err = reader.Seek(n, io.SeekCurrent); err != nil {
 				return 0, err
 			}
 		}
 		if n%2 != 0 {
-			if _, err = f.Seek(1, io.SeekCurrent); err != nil {
+			if _, err = reader.Seek(1, io.SeekCurrent); err != nil {
 				return 0, err
 			}
 		}

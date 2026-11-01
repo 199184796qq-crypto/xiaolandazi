@@ -51,6 +51,10 @@ func readWAVPCM16Mono(path string) ([]int16, int, error) {
 	if int64(len(raw)) > maxVolcengineRenderBytes || len(raw) < 44 || string(raw[0:4]) != "RIFF" || string(raw[8:12]) != "WAVE" {
 		return nil, 0, errors.New("不是 WAV 文件")
 	}
+	raw, err = normalizeScriptFirstWAVHeader(raw)
+	if err != nil {
+		return nil, 0, err
+	}
 	var sampleRate int
 	var channels int
 	var bits int
