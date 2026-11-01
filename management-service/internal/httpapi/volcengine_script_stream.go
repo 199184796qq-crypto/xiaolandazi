@@ -184,6 +184,11 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 	if err != nil {
 		return err
 	}
+	// 方案级首段预热：把保存时预先合成的首段复制进本房间缓存，
+	// 开播立即有声音；房间已有付费缓存时不覆盖。
+	if len(units) > 0 {
+		s.hydrateFirstParagraphFromPlan(ctx, tenant, room, v, units[0])
+	}
 	signature := ""
 	for _, unit := range units {
 		signature += unit.Key

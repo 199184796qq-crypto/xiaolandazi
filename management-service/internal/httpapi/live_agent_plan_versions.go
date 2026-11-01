@@ -482,6 +482,9 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	reportAnchorAnalysis(r.Context(), 100, "智能体方案已保存，下次开播直接使用")
+	// 保存即下一场的生效点：异步预热首段到方案级缓存，开播时复制进房间缓存，
+	// 避免首段现场合成干等。首段文本与声音没变时 key 命中，不重复计费。
+	s.warmPlanFirstParagraph(tenantID, planID, item)
 	writeJSON(w, http.StatusCreated, item)
 }
 
@@ -955,7 +958,12 @@ func (s *Server) validatePlanVoiceIdentity(ctx context.Context, tenantID int64, 
 			if identity.Provider != ttsgateway.ProviderVolcengine || identity.Model != ttsgateway.VolcengineICL2 || identity.TTSPool != ttsscheduler.PoolHighFidelity || identity.ProfileID != 0 || identity.BindingID != 0 {
 				return errors.New("高仿真声音身份不匹配，请重新选择声音")
 			}
-			_, err := s.findHighFidelityPoolVoice(ctx, identity.VoiceID)
+			voice, err := s.findHighFidelityPoolVoice(ctx, identity.VoiceID)
+			if err == nil {
+				// Only a newly saved snapshot adopts current display data. Never
+				// rewrite historical versions or the running program's identity.
+				identity.Name = voice.Name
+			}
 			return err
 		}
 		settings, err := s.store.VoiceModelSettings(ctx)
