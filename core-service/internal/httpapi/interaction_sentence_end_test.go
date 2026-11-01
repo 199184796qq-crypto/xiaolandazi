@@ -20,7 +20,7 @@ import (
 	"livecompanion/core/internal/roomaudio"
 )
 
-func TestQuickHTTPWaitsForActualFinalSentencePCM(t *testing.T) {
+func TestLegacyNonSequentialHTTPWaitsForActualFinalSentencePCM(t *testing.T) {
 	for _, test := range []struct {
 		name, text, action, strategy string
 		duration                     int
@@ -57,7 +57,7 @@ func TestQuickHTTPWaitsForActualFinalSentencePCM(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer unsubscribe()
-			_, err = client.StartProgram(context.Background(), audioout.StartProgramInput{RoomID: 94, Sequential: true, Tracks: []audioout.ProgramTrack{
+			_, err = client.StartProgram(context.Background(), audioout.StartProgramInput{RoomID: 94, Tracks: []audioout.ProgramTrack{
 				{ID: "last-sentence", AudioURL: audio.URL + "/a", Text: test.text, DurationMS: test.duration, Timeline: []audioout.ProgramTimelineSegment{{SegmentID: "end", Index: 1, EndMS: test.duration, Text: test.text, SafeCut: true}}},
 				{ID: "next", AudioURL: audio.URL + "/b", Text: "下一完整单元。", DurationMS: test.duration},
 			}})
@@ -123,7 +123,7 @@ func TestQuickHTTPWaitsForActualFinalSentencePCM(t *testing.T) {
 	}
 }
 
-func TestQuickHTTPWithoutSentenceBoundaryLeavesMainlinePlaying(t *testing.T) {
+func TestLegacyNonSequentialHTTPWithoutSentenceBoundaryLeavesMainlinePlaying(t *testing.T) {
 	database, _ := sql.Open("phase1-return-room", "")
 	defer database.Close()
 	s := New(roomstore.NewStore(database), nil, nil, nil, nil, "development", "probe-token")
@@ -136,7 +136,7 @@ func TestQuickHTTPWithoutSentenceBoundaryLeavesMainlinePlaying(t *testing.T) {
 	_, _ = s.agentWork.StartAgent(94, 0)
 	audio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(phase1PCM(1000)) }))
 	defer audio.Close()
-	start, err := client.StartProgram(context.Background(), audioout.StartProgramInput{RoomID: 94, Sequential: true, Tracks: []audioout.ProgramTrack{{ID: "unverified", AudioURL: audio.URL, Text: "未完成的一句话，", DurationMS: 1000}}})
+	start, err := client.StartProgram(context.Background(), audioout.StartProgramInput{RoomID: 94, Tracks: []audioout.ProgramTrack{{ID: "unverified", AudioURL: audio.URL, Text: "未完成的一句话，", DurationMS: 1000}}})
 	if err != nil {
 		t.Fatal(err)
 	}

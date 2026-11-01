@@ -24,6 +24,7 @@ import (
 )
 
 type programTrack struct {
+	Acoustic               *acousticTable
 	UntimedTranscript      bool
 	AllowConsecutiveRepeat bool
 	ID                     string
@@ -38,6 +39,8 @@ type programTrack struct {
 }
 
 type programState struct {
+	CutWaitingAcoustic  bool
+	AcousticResume      bool
 	PlaybackCoverage    map[string]playbackCoverage
 	PlaybackReceipts    []audioout.MainlineCoverageReceipt
 	PlaybackSequence    uint64
@@ -94,7 +97,8 @@ type programState struct {
 }
 
 type Client struct {
-	mu sync.RWMutex
+	scanSlots chan struct{}
+	mu        sync.RWMutex
 
 	hub               *audiohub.Hub
 	roomAudio         *roomaudio.Engine
@@ -132,6 +136,7 @@ func (c *Client) recordActualStart(program *programState, taskID string) {
 
 func New(hub *audiohub.Hub, publicURL, testWAVPath string) (*Client, error) {
 	client := &Client{
+		scanSlots: make(chan struct{}, 4),
 		hub:       hub,
 		publicURL: strings.TrimRight(strings.TrimSpace(publicURL), "/"),
 		programs:  make(map[int64]*programState),
@@ -889,7 +894,16 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	if input.ExpectedTaskID != "" && input.ExpectedTaskID != currentTaskID {
 		return audioout.RoomProgramSnapshot{}, audioout.ErrInteractionSwitchStale
 	}
-	if sequential && (input.SwitchAtMS == nil || !verifiedInteractionSentenceEnd(track, *input.SwitchAtMS, input.SkipCurrentSentence)) {
+	if input.AcousticCut {
+		if input.SwitchAtMS == nil || !verifiedAcousticCut(track, *input.SwitchAtMS) || c.roomAudio == nil {
+			return audioout.RoomProgramSnapshot{}, acousticSwitchError()
+		}
+		// This explicit mode never enters sentence-unit selection, skip/dedup,
+		// or bridge return. Presence of SwitchAtMS alone is not a mode flag.
+		input.DeferredReturn, input.SkipCurrentSentence = false, false
+		resume := *input.SwitchAtMS
+		input.ResumeOffsetMS = &resume
+	} else if sequential && (input.SwitchAtMS == nil || !verifiedInteractionSentenceEnd(track, *input.SwitchAtMS, input.SkipCurrentSentence)) {
 		return audioout.RoomProgramSnapshot{}, fmt.Errorf("%w: live interaction requires a verified sentence end", audioout.ErrInteractionSwitchStale)
 	}
 
@@ -954,12 +968,14 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 			}
 			program.CutWaitingTaskID = currentTaskID
 			program.CutWaitingMS = target
+			program.CutWaitingAcoustic = input.AcousticCut
 			program.CutWaitingEnded = false
 			c.mu.Unlock()
 			defer func() {
 				c.mu.Lock()
 				program.CutWaitingTaskID = ""
 				program.CutWaitingMS = 0
+				program.CutWaitingAcoustic = false
 				advance := program.CutWaitingEnded && program.Running && !program.Suspended && program.CurrentTaskID == currentTaskID
 				program.CutWaitingEnded = false
 				c.mu.Unlock()
@@ -1068,6 +1084,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	cancelMainlineRecoveryLocked(program)
 	program.ManualPaused = false
 	program.ResumeOffsetMS = resumeMS
+	program.AcousticResume = input.AcousticCut
 	if reservedReturn != nil && program.InteractionReturn == reservedReturn && reservedReturn.snapshot.TaskID == interactionID {
 		reservedReturn.pendingMainlineTask = ""
 	} else {
@@ -1566,6 +1583,12 @@ func (c *Client) programSnapshotLocked(program *programState, now time.Time) aud
 		ActualStartedAt:          program.ActualStartedAt,
 		ServerTime:               now,
 	}
+	if program.TrackIndex >= 0 && program.TrackIndex < len(program.Tracks) {
+		if cuts := program.Tracks[program.TrackIndex].Acoustic; cuts != nil {
+			snapshot.AcousticReady = true
+			snapshot.AcousticCuts = append([]audioout.AcousticPoint(nil), cuts.Points...)
+		}
+	}
 	if program.PendingRefresh != nil {
 		snapshot.PendingGeneration = program.PendingRefresh.Generation
 		snapshot.PendingJobID = program.PendingRefresh.JobID
@@ -1722,6 +1745,8 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 	}
 	c.roomAudio.SetMainlineTimeline(program.RoomID, captionTimeline)
 	resumePhase := c.roomAudio.Snapshot(program.RoomID).Phase == roomaudio.PhaseResume
+	acousticResume := program.AcousticResume && startOffsetMS > 0
+	program.AcousticResume = false
 	if !resumePhase {
 		if _, err := c.roomAudio.StartMainline(program.RoomID, segmentID); err != nil {
 			log.Printf("room audio mirror start room=%d task=%s failed: %v", program.RoomID, taskID, err)
@@ -1741,6 +1766,9 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 		var cutRemainder []byte
 		cutRemainderMS := 0
 		publishFrame := func(pcm []byte, cursorMS int) error {
+			if first && acousticResume {
+				acousticRamp(pcm, true)
+			}
 			if !first {
 				select {
 				case <-ctx.Done():
@@ -1786,6 +1814,15 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 			attemptOffsetMS := nextOffsetMS
 			attemptCtx, attemptCancel := context.WithTimeout(ctx, time.Duration(max(track.DurationMS-attemptOffsetMS, 0)+15000)*time.Millisecond)
 			source, err := c.openMainlineAudio(attemptCtx, program, taskID, position, track)
+			if err == nil && program.Sequential {
+				var prepared io.ReadCloser
+				prepared, err = c.acousticPlaybackSource(attemptCtx, program, taskID, position, track, source)
+				if err == nil {
+					source = prepared
+				} else {
+					source.Close()
+				}
+			}
 			if err == nil {
 				err = roomaudio.StreamWAVPCM(attemptCtx, source, attemptOffsetMS, publishFrame)
 				source.Close()
@@ -2038,6 +2075,9 @@ func (c *Client) publishMainlineSentenceFrame(ctx context.Context, program *prog
 			}
 		}
 		var remainder []byte
+		if program.CutWaitingAcoustic && cut == cursorMS+roomaudio.FrameDurationMS {
+			acousticRamp(pcm, false)
+		}
 		if cut > cursorMS && cut < cursorMS+roomaudio.FrameDurationMS {
 			bytesToCut := (cut - cursorMS) * roomaudio.PCMBytesPerFrame / roomaudio.FrameDurationMS
 			if cut < track.DurationMS {

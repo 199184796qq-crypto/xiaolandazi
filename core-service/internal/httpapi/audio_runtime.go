@@ -1041,6 +1041,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	var program audioout.RoomProgramSnapshot
 	var switchAtMS *int
 	var resumeOffsetMS *int
+	acousticMode := false
 	resumeMode := "DIRECT"
 	bridgeUsed := false
 	resumeDedupTriggered := false
@@ -1094,7 +1095,22 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		if interruptStrategy == "hard_cut" || readyWelcomeItem(*decision) {
 			cutAction = "quick"
 		}
-		if cutAction == "answer" {
+		if program.Sequential {
+			acousticMode = true
+			maxLead := 30000
+			deadline := decision.ExpiresAt
+			if decision.AudioPrepared && !decision.PreparedUntil.IsZero() {
+				deadline = decision.PreparedUntil
+			} else if !decision.CompletionUntil.IsZero() {
+				deadline = decision.CompletionUntil
+			}
+			if !deadline.IsZero() {
+				maxLead = min(maxLead, int(time.Until(deadline).Milliseconds())-200)
+			}
+			cutMS, exists = chooseAcousticInteractionCut(program.AcousticCuts, currentMS, maxLead)
+			input.DeferredReturn = false
+			resumeMode = "EXACT"
+		} else if cutAction == "answer" {
 			preferred := input.SwitchAtMS
 			if input.DeferredReturn {
 				var plans []interactionCutPlan
@@ -1127,7 +1143,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		// Both quick and ordinary answers wait for the same physical sentence
 		// ending. A later resume position can never authorize an immediate cut.
 		switchAtMS, resumeOffsetMS = roomInteractionCutOffsets(cutMS)
-		if !input.DeferredReturn && switchAtMS != nil && resumeOffsetMS != nil && s.strategyPolicies != nil {
+		if !acousticMode && !input.DeferredReturn && switchAtMS != nil && resumeOffsetMS != nil && s.strategyPolicies != nil {
 			estimatedMS := estimatedInteractionDurationMS(input.ReplyText)
 			candidates := resumeCandidatesForInteraction(program, *switchAtMS, estimatedMS, input.Topic)
 			requested := strings.ToUpper(strings.TrimSpace(input.ResumeStrategy))
@@ -1202,7 +1218,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 				)
 			}
 		}
-		if input.Action == "quick" {
+		if !acousticMode && input.Action == "quick" {
 			// Low-flow/manual quick answers cut at the next spoken pause
 			// (comma or sentence end), never in the middle of a phrase.
 			if cutMS, ok := nextPauseCut(program, currentMS); ok {
@@ -1240,7 +1256,9 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 	if input.Action == "quick" {
 		source = "manual_quick"
 		label = "抢答"
-		resumeMode = "HARD"
+		if !acousticMode {
+			resumeMode = "HARD"
+		}
 	}
 	if s.speechRuntime != nil {
 		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
@@ -1306,6 +1324,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		callbackURL := callbackBase + "/internal/v1/audio/events"
 		var snapshot audioout.RoomProgramSnapshot
 		snapshot, err = state.client.InsertTestProgramInteraction(dispatchCtx, audioout.InsertInteractionInput{
+			AcousticCut:    acousticMode,
 			ExpectedTaskID: program.Task.ID,
 			RoomID:         roomID,
 			SessionID:      program.Task.SessionID,

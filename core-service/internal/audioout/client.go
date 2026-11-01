@@ -40,6 +40,7 @@ type CreateExternalTaskInput struct {
 }
 
 type InsertInteractionInput struct {
+	AcousticCut            bool
 	AllowConsecutiveRepeat bool
 	DeferredReturn         bool
 	SkipCurrentSentence    bool
@@ -176,6 +177,8 @@ type MainlinePlaybackReceipt struct {
 }
 
 type RoomProgramSnapshot struct {
+	AcousticReady            bool                      `json:"acoustic_ready,omitempty"`
+	AcousticCuts             []AcousticPoint           `json:"acoustic_cuts,omitempty"`
 	SessionID                string                    `json:"session_id,omitempty"`
 	ManualPaused             bool                      `json:"manual_paused"`
 	ControlRevision          uint64                    `json:"control_revision"`
@@ -216,6 +219,11 @@ type RoomProgramSnapshot struct {
 	StartedAt                time.Time                 `json:"started_at,omitempty"`
 	ActualStartedAt          time.Time                 `json:"actual_started_at,omitempty"`
 	ServerTime               time.Time                 `json:"server_time"`
+}
+
+type AcousticPoint struct {
+	CutMS int    `json:"cut_ms"`
+	Grade string `json:"grade"`
 }
 
 type PlaybackEvent struct {

@@ -91,6 +91,14 @@ func preparationContext(program audioout.RoomProgramSnapshot, currentMS int) (in
 }
 
 func actualInteractionCutLevel(program audioout.RoomProgramSnapshot, cutMS int) string {
+	if program.Sequential {
+		for _, point := range program.AcousticCuts {
+			if point.CutMS == cutMS {
+				return point.Grade
+			}
+		}
+		return "C"
+	}
 	for _, point := range effectiveRoomProgramSafePoints(program) {
 		if point.CutMS == cutMS {
 			if point.Grade == "A" || point.Grade == "B" {

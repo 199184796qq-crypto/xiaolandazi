@@ -67,7 +67,7 @@ func phase1PCM(duration int) []byte {
 	return wav
 }
 
-func TestInteractionHTTPBridgePCMAndReturnCompletion(t *testing.T) {
+func TestInteractionHTTPExactPCMAndReturnCompletion(t *testing.T) {
 	db, err := sql.Open("phase1-return-room", "")
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +102,17 @@ func TestInteractionHTTPBridgePCMAndReturnCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.StopProgram(context.Background(), 94)
+	readyUntil := time.Now().Add(time.Second)
+	for {
+		current, _ := client.ProgramSnapshot(context.Background(), 94)
+		if current.AcousticReady {
+			break
+		}
+		if time.Now().After(readyUntil) {
+			t.Fatal("audio was not ready for interaction")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	decision := s.agentDecisions.Enqueue(94, agentdecision.Candidate{Topic: "PURPOSE:price", Scene: "product_question", Question: "多少钱", MaxRetries: 2}).Item
 	claimed, ok := s.agentDecisions.ClaimNext(94)
 	if !ok {
@@ -121,30 +132,16 @@ func TestInteractionHTTPBridgePCMAndReturnCompletion(t *testing.T) {
 		s.Handler().ServeHTTP(rec, r)
 		done <- rec
 	}()
-	var plan audioout.InteractionReturnSnapshot
-	until := time.Now().Add(time.Second)
-	for time.Now().Before(until) {
-		plan, err = client.InteractionReturnSnapshot(context.Background(), 94, "")
-		if err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatal("no pre-cut plan", err)
-	}
-	raw, _ := json.Marshal(map[string]any{"decision_id": decision.ID, "task_id": plan.TaskID, "token": plan.Token, "text": "刚才说到用法，咱们接着讲。", "audio_url": audio.URL + "/bridge"})
-	r := httptest.NewRequest("POST", "/internal/v1/rooms/94/audio/interaction-bridge?tenant_id=7", bytes.NewReader(raw))
-	r.Header.Set("X-Core-Token", "probe-token")
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, r)
-	if rec.Code != 200 {
-		t.Fatal("bridge stage", rec.Code, rec.Body.String())
-	}
 	dispatch := <-done
 	if dispatch.Code != 200 {
 		t.Fatal("dispatch", dispatch.Code, dispatch.Body.String())
 	}
+	playing, _ := client.ProgramSnapshot(context.Background(), 94)
+	plan := audioout.InteractionReturnSnapshot{TaskID: playing.Task.ID}
+	if _, err = client.InteractionReturnSnapshot(context.Background(), 94, plan.TaskID); err == nil {
+		t.Fatal("live acoustic mode created a legacy return plan")
+	}
+	until := time.Now()
 	s.applyAudioInteractionPlaybackEvent(context.Background(), s.audioDevState(), audioout.PlaybackEvent{RoomID: 94, SpeechTaskID: plan.TaskID, ReceiverID: "media-only", Status: "COMPLETED", OccurredAt: time.Now()})
 	if speech, _ := s.speechRuntime.Snapshot(94); speech.Interrupt.Status == speechruntime.StatusCompleted {
 		t.Fatal("early media-only terminal completed task")
@@ -161,15 +158,15 @@ func TestInteractionHTTPBridgePCMAndReturnCompletion(t *testing.T) {
 				t.Fatal("wrong completion accounting", snapshot.Completion)
 			}
 			speech, _ := s.speechRuntime.Snapshot(94)
-			if speech.Interrupt.Status != speechruntime.StatusCompleted || !speech.Interrupt.BridgeUsed {
-				t.Fatal("answer/bridge/return incomplete", speech.Interrupt)
+			if speech.Interrupt.Status != speechruntime.StatusCompleted || speech.Interrupt.BridgeUsed {
+				t.Fatal("answer/exact return incomplete", speech.Interrupt)
 			}
 			srtRequest := httptest.NewRequest("GET", "/internal/v1/rooms/94/composite.srt?tenant_id=7", nil)
 			srtRequest.Header.Set("X-Core-Token", "probe-token")
 			srtResponse := httptest.NewRecorder()
 			s.Handler().ServeHTTP(srtResponse, srtRequest)
-			if srtResponse.Code != 200 || !strings.Contains(srtResponse.Body.String(), "刚才说到用法") || !strings.Contains(srtResponse.Body.String(), "回归后的下一完整单元") {
-				t.Fatal("SRT export missing actual bridge/return", srtResponse.Code, srtResponse.Body.String())
+			if srtResponse.Code != 200 || strings.Contains(srtResponse.Body.String(), "刚才说到用法") || !strings.Contains(srtResponse.Body.String(), "切入前完整语义") {
+				t.Fatal("SRT export missing the resumed original cue", srtResponse.Code, srtResponse.Body.String())
 			}
 			unauthorized := httptest.NewRecorder()
 			s.Handler().ServeHTTP(unauthorized, httptest.NewRequest("GET", "/internal/v1/rooms/94/composite.srt?tenant_id=7", nil))
