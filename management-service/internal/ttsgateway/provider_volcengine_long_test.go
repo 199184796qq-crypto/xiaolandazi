@@ -2,6 +2,8 @@ package ttsgateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +17,36 @@ import (
 
 	"livecompanion/management/internal/ttsscheduler"
 )
+
+func TestVolcengineFidelityDoesNotAdoptOrResubmitLegacyTask(t *testing.T) {
+	r := SynthesizeRequest{Model: VolcengineICL2, VoiceID: "S_a", Rate: 1, Text: "原文。", LongText: &LongTextJob{StatePath: filepath.Join(t.TempDir(), "job.json")}}
+	legacyInput, _ := json.Marshal([]any{VolcengineICL2, r.VoiceID, r.Text, r.Rate, "pcm-24000-v1"})
+	sum := sha256.Sum256(legacyInput)
+	wav := tencentPCMToWAV([]byte{1, 2, 3, 4})
+	audioSum := sha256.Sum256(wav)
+	state := longTextState{Version: 1, InputSHA: hex.EncodeToString(sum[:]), CredentialSHA: digestSynthesisText("fixture"), VoiceID: r.VoiceID, TaskID: "legacy-paid-task", Complete: true, AudioSHA: hex.EncodeToString(audioSum[:])}
+	if err := os.WriteFile(r.LongText.StatePath+".wav", wav, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLongTextState(r.LongText.StatePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := LoadLongTextResult(r); ok {
+		t.Fatal("legacy task accepted as restored-reference audio")
+	}
+	var sent atomic.Int32
+	p := NewVolcengineProvider(VolcengineConfig{APIKey: "fixture", Client: &http.Client{Transport: longTestTransport(func(*http.Request) (*http.Response, error) {
+		sent.Add(1)
+		return nil, errors.New("must retain the legacy task")
+	})}})
+	if _, err := p.SynthesizeURL(t.Context(), r); err == nil || sent.Load() != 0 {
+		t.Fatal("legacy checkpoint overwritten or charged again", err)
+	}
+	retained, err := readLongTextState(r.LongText.StatePath)
+	if err != nil || retained.InputSHA != state.InputSHA || retained.TaskID != state.TaskID {
+		t.Fatal("legacy checkpoint changed", err)
+	}
+}
 
 type longTestTransport func(*http.Request) (*http.Response, error)
 
@@ -52,6 +84,11 @@ func TestVolcengineLongSubmitOnceResumeAndNativeUsage(t *testing.T) {
 			a := p["audio_params"].(map[string]any)
 			if p["speaker"] != "S_mapped" || p["text"] != "测试。" || p["model"] != "seed-tts-2.0-standard" || a["enable_timestamp"] != true || a["format"] != "pcm" {
 				t.Error("bad long payload")
+			}
+			additions, ok := p["additions"].(string)
+			var flags map[string]bool
+			if !ok || json.Unmarshal([]byte(additions), &flags) != nil || !flags["tone_fidelity"] {
+				t.Error("reference-tone mode missing from actual long submit")
 			}
 			return longTestResponse(`{"code":20000000,"data":{"task_id":"` + id + `"}}`), nil
 		}

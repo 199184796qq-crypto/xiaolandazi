@@ -81,7 +81,7 @@ func readVolcengineJSON(path string, value any) error {
 	return json.Unmarshal(raw, value)
 }
 func volcengineParagraphKey(voice, text string, rate float64) string {
-	raw, _ := json.Marshal([]any{"volcengine-paragraph-v1", ttsgateway.VolcengineICL2, voice, rate, text})
+	raw, _ := json.Marshal([]any{"volcengine-paragraph-v1", ttsgateway.VolcengineICL2, voice, rate, text, ttsgateway.VolcengineSynthesisProfile})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }

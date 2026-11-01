@@ -22,6 +22,11 @@ import (
 
 const ProviderVolcengine = "volcengine"
 const VolcengineICL2 = "seed-icl-2.0"
+
+// The profile is part of paid-audio identities: legacy audio must not be
+// mistaken for a synthesis made with the restored reference speaking style.
+const VolcengineSynthesisProfile = "tone-fidelity-v1"
+const volcengineFidelityAdditions = `{"tone_fidelity":true}`
 const volcengineTTSEndpoint = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
 
 var volcengineSpeaker = regexp.MustCompile(`^S_[A-Za-z0-9_-]{1,128}$`)
@@ -95,7 +100,7 @@ func (p *volcengineProvider) SynthesizeURL(ctx context.Context, r SynthesizeRequ
 	requestID = requestID[:8] + "-" + requestID[8:12] + "-" + requestID[12:16] + "-" + requestID[16:20] + "-" + requestID[20:]
 	body, _ := json.Marshal(map[string]any{
 		"user":       map[string]string{"uid": "xiaolan-tts"},
-		"req_params": map[string]any{"text": r.Text, "speaker": r.VoiceID, "audio_params": map[string]any{"format": "pcm", "sample_rate": 24000, "speech_rate": int(math.Round((r.Rate - 1) * 100))}},
+		"req_params": map[string]any{"text": r.Text, "speaker": r.VoiceID, "model": "seed-tts-2.0-standard", "additions": volcengineFidelityAdditions, "audio_params": map[string]any{"format": "pcm", "sample_rate": 24000, "speech_rate": int(math.Round((r.Rate - 1) * 100))}},
 	})
 	req, e := http.NewRequestWithContext(ctx, http.MethodPost, p.config.Endpoint, bytes.NewReader(body))
 	if e != nil {

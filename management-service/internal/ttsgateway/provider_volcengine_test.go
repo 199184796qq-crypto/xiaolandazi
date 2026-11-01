@@ -24,8 +24,8 @@ func TestVolcengineScheduledCompleteAudioAndUsage(t *testing.T) {
 		}
 		var body struct {
 			Params struct {
-				Text, Speaker string
-				Audio         struct {
+				Text, Speaker, Model, Additions string
+				Audio                           struct {
 					Format string
 					Rate   int `json:"speech_rate"`
 					Sample int `json:"sample_rate"`
@@ -37,6 +37,10 @@ func TestVolcengineScheduledCompleteAudioAndUsage(t *testing.T) {
 		}
 		if body.Params.Speaker != "S_mapped" || body.Params.Text != "测试。" || body.Params.Audio.Rate != 1 || body.Params.Audio.Sample != 24000 || body.Params.Audio.Format != "pcm" {
 			t.Error("wrong payload", body)
+		}
+		var additions map[string]bool
+		if err := json.Unmarshal([]byte(body.Params.Additions), &additions); err != nil || !additions["tone_fidelity"] || body.Params.Model != "seed-tts-2.0-standard" {
+			t.Error("reference-tone mode missing from actual short request", body.Params.Additions)
 		}
 		w.Header().Set("X-Tt-Logid", "safe-log-id")
 		fmt.Fprintf(w, `{"code":0,"data":%q}`+"\n"+`{"code":0,"data":%q}`+"\n"+`{"code":20000000,"usage":{"text_words":3}}`, base64.StdEncoding.EncodeToString([]byte{1, 2}), base64.StdEncoding.EncodeToString([]byte{3, 4}))

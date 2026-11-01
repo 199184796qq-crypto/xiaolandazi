@@ -61,7 +61,7 @@ func longTextInputSHA(r SynthesizeRequest) string {
 	if r.LongText != nil && r.LongText.SourceVoiceID != "" {
 		voice = r.LongText.SourceVoiceID
 	}
-	raw, _ := json.Marshal([]any{VolcengineICL2, voice, r.Text, r.Rate, "pcm-24000-v1"})
+	raw, _ := json.Marshal([]any{VolcengineICL2, voice, r.Text, r.Rate, "pcm-24000-v1", VolcengineSynthesisProfile})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
@@ -224,7 +224,7 @@ func (p *volcengineProvider) synthesizeLongText(ctx context.Context, r Synthesiz
 			_ = os.Remove(path)
 			return SynthesizeResponse{}, notSent(err)
 		}
-		_, err = post("submit", map[string]any{"user": map[string]string{"uid": "xiaolan-script"}, "unique_id": state.TaskID, "req_params": map[string]any{"text": r.Text, "speaker": r.VoiceID, "model": "seed-tts-2.0-standard", "audio_params": map[string]any{"format": "pcm", "sample_rate": 24000, "speech_rate": int(math.Round((r.Rate - 1) * 100)), "enable_timestamp": true}}})
+		_, err = post("submit", map[string]any{"user": map[string]string{"uid": "xiaolan-script"}, "unique_id": state.TaskID, "req_params": map[string]any{"text": r.Text, "speaker": r.VoiceID, "model": "seed-tts-2.0-standard", "additions": volcengineFidelityAdditions, "audio_params": map[string]any{"format": "pcm", "sample_rate": 24000, "speech_rate": int(math.Round((r.Rate - 1) * 100)), "enable_timestamp": true}}})
 		if err != nil {
 			var uncertain *longTextUncertainError
 			if !errors.As(err, &uncertain) {
