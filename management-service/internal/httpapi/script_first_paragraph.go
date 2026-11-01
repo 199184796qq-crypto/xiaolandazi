@@ -89,7 +89,9 @@ func (s *Server) ensureScriptFirstParagraph(ctx context.Context, tenant, room, s
 			return audio, err
 		}
 	}
-	return s.ensureScriptFirstBlocks(ctx, tenant, room, v, unit, audio)
+	// 播放分块已取消：一段话术合成后就是一条音轨，不再按约 60 秒切成子块逐块归档。
+	// 互动切断由已上线 Core 的声学切点负责，不再依赖块首块尾。
+	return audio, nil
 }
 
 func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, session int64, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, allowSynthesis bool) (volcengineCachedAudio, error) {

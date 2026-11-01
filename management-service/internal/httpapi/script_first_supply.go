@@ -77,7 +77,9 @@ func scriptFirstParagraphKey(v model.LiveAgentPlanVersion, text string) string {
 	if v.VoiceIdentity.Model == ttsgateway.VolcengineICL2 {
 		return volcengineParagraphKey(v.VoiceIdentity.VoiceID, text, v.VoiceIdentity.Rate)
 	}
-	raw, _ := json.Marshal([]any{"script-paragraph-v1", ttsgateway.ProviderForModel(v.VoiceIdentity.Model), v.VoiceIdentity.Model, v.VoiceIdentity.VoiceID, v.VoiceIdentity.Rate, text, recordingInstructionForVersion(v, text), "untimed-transcript-v1"})
+	// 版本令牌带 mandarin：指令加入普通话约束后，旧缓存（仍会夹带四川话）必须失效重合成，
+	// 否则已付费的飘音会一直被复用。改了指令就要同步改这个令牌。
+	raw, _ := json.Marshal([]any{"script-paragraph-v1", ttsgateway.ProviderForModel(v.VoiceIdentity.Model), v.VoiceIdentity.Model, v.VoiceIdentity.VoiceID, v.VoiceIdentity.Rate, text, recordingInstructionForVersion(v, text), "untimed-transcript-v2-mandarin"})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }

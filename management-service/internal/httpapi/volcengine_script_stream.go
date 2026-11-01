@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"unicode/utf8"
 
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/coreclient"
@@ -28,17 +29,20 @@ type volcenginePendingTrack struct {
 	NextBlock int                   `json:"next_block,omitempty"`
 }
 type volcengineScriptCursor struct {
-	VersionID            int64                   `json:"version_id"`
-	Signature            string                  `json:"signature"`
-	ProgramID            string                  `json:"program_id"`
-	Round                int                     `json:"round"`
-	Order                []int                   `json:"order"`
-	Position             int                     `json:"position"`
-	Sequence             int                     `json:"sequence"`
-	Previous             int                     `json:"previous"`
-	Pending              *volcenginePendingTrack `json:"pending,omitempty"`
-	LastQueued           int                     `json:"last_queued,omitempty"`
-	ConsecutiveFallbacks int                     `json:"consecutive_fallbacks,omitempty"`
+	VersionID            int64                           `json:"version_id"`
+	Signature            string                          `json:"signature"`
+	ProgramID            string                          `json:"program_id"`
+	Round                int                             `json:"round"`
+	Order                []int                           `json:"order"`
+	Position             int                             `json:"position"`
+	Sequence             int                             `json:"sequence"`
+	Previous             int                             `json:"previous"`
+	Pending              *volcenginePendingTrack         `json:"pending,omitempty"`
+	LastQueued           int                             `json:"last_queued,omitempty"`
+	ConsecutiveFallbacks int                             `json:"consecutive_fallbacks,omitempty"`
+	SilenceBlocks        int                             `json:"silence_blocks,omitempty"`
+	SilenceAssetID       int64                           `json:"silence_asset_id,omitempty"`
+	PendingSilence       *coreclient.ProgramRefreshTrack `json:"pending_silence,omitempty"`
 }
 
 func usesVolcengineParagraphs(v model.LiveAgentPlanVersion) bool {
@@ -81,8 +85,31 @@ func validVolcengineCursor(c volcengineScriptCursor, version int64, signature st
 	}
 	return c.Pending == nil || (c.Pending.Unit >= 0 && c.Pending.Unit < n && c.Pending.Audio.AssetID > 0 && c.Pending.ID != "" && c.Pending.NextBlock >= 0 && c.Pending.NextBlock <= max(1, len(c.Pending.Audio.Blocks)))
 }
-func volcengineSupplyDue(snapshot coreclient.ProgramRefreshSnapshot) bool {
-	return snapshot.WaitingForContent || snapshot.BufferedMainlineMS < volcengineSupplyThresholdMS
+func volcengineSupplyDue(snapshot coreclient.ProgramRefreshSnapshot, leadMS int64) bool {
+	return snapshot.WaitingForContent || snapshot.BufferedMainlineMS < leadMS
+}
+
+// 处理开销：单段归档上传、下载校验。取消播放分块后每段只归档一次。
+const volcengineProcessOverheadMS int64 = 2000
+
+// 安全余量：吸收网络抖动与供应商排队。
+const volcengineSupplyMarginMS int64 = 15000
+
+// scriptFirstSupplyLead 按下一段字数估算预取余量。
+// 复用段不需要合成，直接用 40 秒下限；只有首轮新生才按字数算。
+func scriptFirstSupplyLead(units []volcengineScriptUnit, index int, model string, fresh bool) int64 {
+	if !fresh || index < 0 || index >= len(units) {
+		return volcengineSupplyThresholdMS
+	}
+	perRune := int64(26) // 阿里实测 24.5—29 ms/字，取 26
+	if ttsgateway.ProviderForModel(model) == ttsgateway.ProviderVolcengine {
+		perRune = 20 // 火山实测 18.4—21.3 ms/字
+	}
+	lead := int64(utf8.RuneCountInString(units[index].Text))*perRune + volcengineProcessOverheadMS + volcengineSupplyMarginMS
+	if lead < volcengineSupplyThresholdMS {
+		return volcengineSupplyThresholdMS
+	}
+	return lead
 }
 
 // One worker owns the pending cloud request; the caller remains free to replay
@@ -281,6 +308,7 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 	}
 	queue := func(c context.Context, index int, audio volcengineCachedAudio, advance bool) error {
 		cursor.Sequence++
+		cursor.SilenceBlocks = 0
 		cursor.Pending = &volcenginePendingTrack{Unit: index, Audio: audio, ID: fmt.Sprintf("long-%d-%d", session, cursor.Sequence), Advance: advance}
 		if e := save(); e != nil {
 			return e
@@ -298,7 +326,20 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		if cursor.Pending != nil {
 			return publish(c)
 		}
-		if cursor.ProgramID != "" && p.BufferedMainlineMS >= volcengineReplayThresholdMS && !p.WaitingForContent {
+		pad, fallback := scriptFirstSilenceDue(p, cursor.SilenceBlocks)
+		if cursor.PendingSilence != nil || (cursor.ProgramID != "" && pad) {
+			if e = s.queueSilence(c, tenant, room, session, v, &cursor, save); e == nil {
+				return nil
+			}
+			// An uncertain delivery must retain the identical ID/body for retry;
+			// never enqueue a real paragraph ahead of a pending silence receipt.
+			if cursor.PendingSilence != nil {
+				return e
+			}
+			log.Printf("script supply silence failed tenant=%d room=%d session=%d error=%v", tenant, room, session, e)
+			fallback = true // Unavailable storage must not strand playable cache.
+		}
+		if !fallback {
 			return nil
 		}
 		if len(known) == 0 {
@@ -323,6 +364,15 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 	for {
 		if err = ctx.Err(); err != nil {
 			return err
+		}
+		if cursor.PendingSilence != nil {
+			if err = checkOwner(ctx); err != nil {
+				return err
+			}
+			if err = s.queueSilence(ctx, tenant, room, session, v, &cursor, save); err != nil {
+				return err
+			}
+			continue
 		}
 		if cursor.Pending != nil {
 			if err = publish(ctx); err != nil {
@@ -353,7 +403,9 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		if e != nil {
 			return e
 		}
-		if cursor.ProgramID != "" && !volcengineSupplyDue(p) {
+		nextIndex := cursor.Order[cursor.Position]
+		needsSynthesis := cursor.Round == 0 && known[nextIndex].AssetID <= 0
+		if cursor.ProgramID != "" && !volcengineSupplyDue(p, scriptFirstSupplyLead(units, nextIndex, v.VoiceIdentity.Model, needsSynthesis)) {
 			if err = waitLiveProducer(ctx); err != nil {
 				return err
 			}
@@ -362,8 +414,8 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		index := cursor.Order[cursor.Position]
 		// 循环变速已关闭：跨轮固定 1.0 倍率，直接复用首轮原速音频。
 		// 关闭原因是每轮每段一次 ffmpeg atempo 渲染对机器压力明显（2026-11-01）。
-		// This check is the sole paid lookahead gate: no next submission while
-		// buffered mainline is >=40s. Exactly one paragraph is ever in flight.
+		// This check is the sole paid lookahead gate: no next submission until
+		// buffered mainline reaches its length-based lead. One paragraph is in flight.
 		work, done := context.WithCancel(ctx)
 		allowSynthesis := cursor.Round == 0
 		audio, e := awaitVolcengineParagraph(work, 500*time.Millisecond, func(c context.Context) (volcengineCachedAudio, error) {

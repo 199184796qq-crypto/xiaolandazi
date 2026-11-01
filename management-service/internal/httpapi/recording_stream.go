@@ -441,7 +441,9 @@ func (s *Server) combineRecordingStreamBlock(ctx context.Context, tenant int64, 
 // for each TTS chunk. It never changes the spoken text; it only tells the
 // cloned voice how to phrase it (questions lift, prices slow down, urgency is
 // tighter, ordinary chat keeps a relaxed pause and drawl).
-const naturalBreathInstruction = "自然换气起句，尾字说完整，收尾后短停，不要突然切断。"
+// Apply the same Mandarin direction to independently synthesized paragraphs.
+// This is a synthesis instruction, not a guarantee of deterministic accent.
+const naturalBreathInstruction = "自然换气起句，尾字说完整，收尾后短停，不要突然切断；请用标准普通话朗读，不要带方言口音。"
 
 // withNaturalBreathInstruction asks the TTS model to phrase each mainline
 // segment with a natural breath at the start and a complete final syllable.

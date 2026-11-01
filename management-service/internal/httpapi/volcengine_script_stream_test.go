@@ -59,7 +59,7 @@ func TestVolcengineFortySecondPaidGate(t *testing.T) {
 		ms  int64
 		due bool
 	}{{104000, false}, {40001, false}, {40000, false}, {39999, true}, {15000, true}, {0, true}} {
-		if got := volcengineSupplyDue(coreclient.ProgramRefreshSnapshot{BufferedMainlineMS: tc.ms}); got != tc.due {
+		if got := volcengineSupplyDue(coreclient.ProgramRefreshSnapshot{BufferedMainlineMS: tc.ms}, volcengineSupplyThresholdMS); got != tc.due {
 			t.Fatalf("buffer %d due %v", tc.ms, got)
 		}
 	}
