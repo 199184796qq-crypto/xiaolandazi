@@ -369,6 +369,13 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	paragraphVersion := model.LiveAgentPlanVersion{GenerationContext: input.GenerationContext, VoiceIdentity: input.VoiceIdentity, Variants: input.Variants}
+	if usesScriptFirstParagraphs(paragraphVersion) {
+		if err := validateScriptFirstTexts(recordingStreamTexts(paragraphVersion)); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	if err := validateLiveAgentPlanVersionInput(&input); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

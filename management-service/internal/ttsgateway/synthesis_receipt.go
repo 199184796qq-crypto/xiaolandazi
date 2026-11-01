@@ -100,7 +100,8 @@ func notSent(err error) error {
 	return &synthesisNotSentError{cause: err}
 }
 
-// DefinitelyNotSent is true only for local validation/preparation failures.
+// DefinitelyNotSent is true for local validation/preparation failures and an
+// explicit supplier rejection proving that the task was never accepted.
 // HTTP failures, disconnects and cancellation after a request may have been sent
 // remain unknown and must not be automatically refunded.
 func DefinitelyNotSent(err error) bool {

@@ -77,8 +77,15 @@ func parseSessionDownloadRange(from, to string) (*time.Time, *time.Time, error) 
 
 func sessionTranscript(items []model.SessionSpeechAsset) string {
 	texts := []string{}
+	untimedGroups := map[string]bool{}
 	for _, a := range sessionDownloadItems(items) {
 		if a.PlayedAt != nil && strings.TrimSpace(a.Text) != "" {
+			if group := scriptFirstUntimedPlaybackGroup(a.SourceRef); group != "" {
+				if untimedGroups[group] {
+					continue
+				}
+				untimedGroups[group] = true
+			}
 			texts = append(texts, strings.TrimSpace(a.Text))
 		}
 	}

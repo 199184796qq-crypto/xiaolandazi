@@ -107,6 +107,16 @@ func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequ
 	}
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	if request.ParagraphPath != "" {
+		if err := ctx.Err(); err != nil {
+			return SynthesizeResponse{}, notSent(err)
+		}
+		// After admission, drain the one accepted request even if the room
+		// stops. Its permit remains held until this method returns.
+		work, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
+		defer cancel()
+		req = req.WithContext(work)
+	}
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return SynthesizeResponse{}, err
@@ -154,6 +164,12 @@ func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequ
 		return synthesis, errors.New("qwen tts provider returned no audio URL")
 	}
 	synthesis.AudioURL = audioURL
+	if request.ParagraphPath != "" {
+		if err := retainQwenParagraphWAV(req.Context(), p.client, audioURL, request.ParagraphPath); err != nil {
+			return synthesis, err
+		}
+		synthesis.AudioFile = request.ParagraphPath
+	}
 	return synthesis, nil
 }
 

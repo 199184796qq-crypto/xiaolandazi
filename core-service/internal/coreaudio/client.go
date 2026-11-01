@@ -24,6 +24,7 @@ import (
 )
 
 type programTrack struct {
+	UntimedTranscript      bool
 	AllowConsecutiveRepeat bool
 	ID                     string
 	Label                  string
@@ -415,6 +416,7 @@ func (c *Client) prepareProgramTracks(ctx context.Context, tracks []audioout.Pro
 			return nil, fmt.Errorf("track %d safe points: %w", index+1, err)
 		}
 		prepared = append(prepared, programTrack{
+			UntimedTranscript:      track.UntimedTranscript,
 			AllowConsecutiveRepeat: track.AllowConsecutiveRepeat,
 			ID:                     id,
 			Label:                  label,
@@ -1713,7 +1715,7 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 	segmentID := roomAudioSegmentAt(track.Timeline, startOffsetMS)
 	captionTimeline := roomAudioSpeechTimeline(track.Timeline)
 	fallbackCaptionID := ""
-	if len(captionTimeline) == 0 && strings.TrimSpace(track.Text) != "" && track.DurationMS > 0 {
+	if !track.UntimedTranscript && len(captionTimeline) == 0 && strings.TrimSpace(track.Text) != "" && track.DurationMS > 0 {
 		fallbackCaptionID = taskID + "-caption"
 		segmentID = fallbackCaptionID
 		captionTimeline = []roomaudio.SpeechSegment{{SegmentID: fallbackCaptionID, StartMS: 0, EndMS: track.DurationMS, Text: track.Text}}

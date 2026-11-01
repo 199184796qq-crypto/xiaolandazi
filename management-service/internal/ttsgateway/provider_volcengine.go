@@ -124,6 +124,10 @@ func (p *volcengineProvider) SynthesizeURL(ctx context.Context, r SynthesizeRequ
 	defer resp.Body.Close()
 	out.ProviderRequestID = resp.Header.Get("X-Tt-Logid")
 	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
+		if volcengineConcurrencyRejection(raw) {
+			return out, notSent(&ConcurrencyLimitError{})
+		}
 		return out, fmt.Errorf("火山合成HTTP %d，请检查账号权限或配额", resp.StatusCode)
 	}
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 48<<20))

@@ -38,6 +38,7 @@ type ProgramRefreshSafePoint struct {
 }
 
 type ProgramRefreshTrack struct {
+	UntimedTranscript      bool                            `json:"untimed_transcript,omitempty"`
 	AllowConsecutiveRepeat bool                            `json:"allow_consecutive_repeat,omitempty"`
 	ID                     string                          `json:"id,omitempty"`
 	Label                  string                          `json:"label,omitempty"`

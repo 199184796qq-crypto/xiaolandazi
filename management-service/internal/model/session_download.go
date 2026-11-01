@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"time"
 )
@@ -37,8 +38,13 @@ type SessionSpeechArchiveWriter interface {
 }
 
 func SessionMainlineRef(program, track string) string {
+	if match := untimedParagraphTrack.FindStringSubmatch(track); len(match) == 3 {
+		return fmt.Sprintf("mainline:raw:%x:b%s", sha256.Sum256([]byte(program+"\x00"+match[1])), match[2])
+	}
 	return fmt.Sprintf("mainline:%x", sha256.Sum256([]byte(program+"\x00"+track)))
 }
+
+var untimedParagraphTrack = regexp.MustCompile(`^(long-[0-9]+-[0-9]+-u[0-9]+)-b([0-9]+)-raw$`)
 
 func SessionAudioExpiry(address string) *time.Time {
 	u, err := url.Parse(address)

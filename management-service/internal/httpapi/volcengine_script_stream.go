@@ -21,21 +21,24 @@ const volcengineReplayThresholdMS int64 = 15000
 
 type volcengineScriptUnit struct{ Text, Key, Dir string }
 type volcenginePendingTrack struct {
-	Unit    int                   `json:"unit"`
-	Audio   volcengineCachedAudio `json:"audio"`
-	ID      string                `json:"id"`
-	Advance bool                  `json:"advance"`
+	Unit      int                   `json:"unit"`
+	Audio     volcengineCachedAudio `json:"audio"`
+	ID        string                `json:"id"`
+	Advance   bool                  `json:"advance"`
+	NextBlock int                   `json:"next_block,omitempty"`
 }
 type volcengineScriptCursor struct {
-	VersionID int64                   `json:"version_id"`
-	Signature string                  `json:"signature"`
-	ProgramID string                  `json:"program_id"`
-	Round     int                     `json:"round"`
-	Order     []int                   `json:"order"`
-	Position  int                     `json:"position"`
-	Sequence  int                     `json:"sequence"`
-	Previous  int                     `json:"previous"`
-	Pending   *volcenginePendingTrack `json:"pending,omitempty"`
+	VersionID            int64                   `json:"version_id"`
+	Signature            string                  `json:"signature"`
+	ProgramID            string                  `json:"program_id"`
+	Round                int                     `json:"round"`
+	Order                []int                   `json:"order"`
+	Position             int                     `json:"position"`
+	Sequence             int                     `json:"sequence"`
+	Previous             int                     `json:"previous"`
+	Pending              *volcenginePendingTrack `json:"pending,omitempty"`
+	LastQueued           int                     `json:"last_queued,omitempty"`
+	ConsecutiveFallbacks int                     `json:"consecutive_fallbacks,omitempty"`
 }
 
 func usesVolcengineParagraphs(v model.LiveAgentPlanVersion) bool {
@@ -76,7 +79,7 @@ func validVolcengineCursor(c volcengineScriptCursor, version int64, signature st
 		}
 		seen[x] = true
 	}
-	return c.Pending == nil || (c.Pending.Unit >= 0 && c.Pending.Unit < n && c.Pending.Audio.AssetID > 0 && c.Pending.ID != "")
+	return c.Pending == nil || (c.Pending.Unit >= 0 && c.Pending.Unit < n && c.Pending.Audio.AssetID > 0 && c.Pending.ID != "" && c.Pending.NextBlock >= 0 && c.Pending.NextBlock <= max(1, len(c.Pending.Audio.Blocks)))
 }
 func volcengineSupplyDue(snapshot coreclient.ProgramRefreshSnapshot) bool {
 	return snapshot.WaitingForContent || snapshot.BufferedMainlineMS < volcengineSupplyThresholdMS
@@ -133,8 +136,8 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 	if err != nil {
 		return err
 	}
-	if modelName != ttsgateway.VolcengineICL2 {
-		return errors.New("高仿真长段模型与方案不一致")
+	if !ttsgateway.SupportsScriptParagraphs(modelName) {
+		return errors.New("声音模型不支持话术整段合成")
 	}
 	v.VoiceIdentity.VoiceID = id
 	v.VoiceIdentity.Model = modelName
@@ -145,10 +148,14 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 	if !ok {
 		return errors.New("高仿真长段缓存目录不可用")
 	}
-	dir := scope.CacheDir("volcengine-longtext-v1", "paragraphs")
-	units := volcengineScriptUnits(v, dir)
-	if len(units) == 0 {
-		return errors.New("话术优先没有可用长段原文")
+	namespace := "volcengine-longtext-v1"
+	if modelName != ttsgateway.VolcengineICL2 {
+		namespace = "script-first-v1"
+	}
+	dir := scope.CacheDir(namespace, "paragraphs")
+	units, err := scriptFirstUnits(v, dir)
+	if err != nil {
+		return err
 	}
 	signature := ""
 	for _, unit := range units {
@@ -217,28 +224,57 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		if e := checkOwner(c); e != nil {
 			return e
 		}
-		url, e := s.recordingStreamAssetURL(c, tenant, pending.Audio.AssetID)
-		if e != nil {
-			return e
+		blocks := pending.Audio.Blocks
+		if len(blocks) == 0 {
+			blocks = []scriptFirstCachedBlock{{AssetID: pending.Audio.AssetID, DurationMS: pending.Audio.DurationMS, Text: units[pending.Unit].Text, Timeline: pending.Audio.Timeline}}
 		}
-		track := coreclient.ProgramRefreshTrack{ID: pending.ID, Label: "高仿真原文长段", Text: units[pending.Unit].Text, AudioURL: url, DurationMS: int(pending.Audio.DurationMS), AllowConsecutiveRepeat: true,
-			Timeline: recordingStreamTimeline(pending.Audio.Timeline), SafePoints: recordingStreamSafePoints(volcengineSemanticSafePoints(pending.Audio.Timeline))}
-		if cursor.ProgramID == "" {
-			p, e := s.startLiveReadyProgram(c, tenant, room, v, fmt.Sprintf("volcengine-long-%d", session), fmt.Sprintf("高仿真长段 V%d", v.VersionNo), track)
+		if err := publishScriptFirstBlocks(c, pending, blocks, func(c context.Context, blockIndex int, block scriptFirstCachedBlock) error {
+			if e := checkOwner(c); e != nil {
+				return e
+			}
+			url, e := s.recordingStreamAssetURL(c, tenant, block.AssetID)
 			if e != nil {
 				return e
 			}
-			cursor.ProgramID = p.ProgramID
-			s.reportLiveStartup(c, tenant, room, session, "sending_audio")
-		} else {
-			if _, e = s.appendRecordingStreamTrack(c, tenant, room, v, cursor.ProgramID, track); e != nil {
-				return e
+			id := pending.ID
+			if len(pending.Audio.Blocks) > 0 {
+				id = scriptFirstTrackID(session, cursor.Sequence, pending.Unit, blockIndex)
 			}
+			if pending.Audio.UntimedTranscript {
+				id += "-raw"
+			}
+			track := coreclient.ProgramRefreshTrack{ID: id, Label: "话术原文整段", Text: block.Text, AudioURL: url, DurationMS: int(block.DurationMS), AllowConsecutiveRepeat: true,
+				UntimedTranscript: pending.Audio.UntimedTranscript,
+				Timeline:          recordingStreamTimeline(block.Timeline), SafePoints: recordingStreamSafePoints(volcengineSemanticSafePoints(block.Timeline))}
+			if cursor.ProgramID == "" {
+				p, e := s.startLiveReadyProgram(c, tenant, room, v, fmt.Sprintf("volcengine-long-%d", session), fmt.Sprintf("话术整段 V%d", v.VersionNo), track)
+				if e != nil {
+					return e
+				}
+				cursor.ProgramID = p.ProgramID
+				s.reportLiveStartup(c, tenant, room, session, "sending_audio")
+			} else {
+				if _, e = s.appendRecordingStreamTrack(c, tenant, room, v, cursor.ProgramID, track); e != nil {
+					return e
+				}
+			}
+			s.archiveTTSCacheReplay(c, tenant, room, session, cursor.ProgramID, track)
+			return nil
+		}, save); err != nil {
+			return err
 		}
-		s.archiveTTSCacheReplay(c, tenant, room, session, cursor.ProgramID, track)
 		if pending.Advance {
 			cursor.Position++
 			cursor.Previous = pending.Unit
+		}
+		cursor.LastQueued = pending.Unit
+		if pending.Advance {
+			cursor.ConsecutiveFallbacks = 0
+		} else {
+			cursor.ConsecutiveFallbacks++
+			if len(known) == 1 || cursor.ConsecutiveFallbacks == 6 {
+				log.Printf("script supply fallback tenant=%d room=%d session=%d cached=%d consecutive=%d", tenant, room, session, len(known), cursor.ConsecutiveFallbacks)
+			}
 		}
 		cursor.Pending = nil
 		return save()
@@ -269,13 +305,12 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			return nil
 		}
 		// No model/TTS/tempo rendering in the waiting path, only a fresh URL.
-		start := rng.Intn(len(units))
-		for j := 0; j < len(units); j++ {
-			i := (start + j) % len(units)
-			audio, exists := known[i]
-			if !exists {
-				continue
+		for len(known) > 0 {
+			i, ok := scriptFirstFallback(known, scriptFirstPlayingUnit(p.TrackID, session), cursor.LastQueued, rng)
+			if !ok {
+				return nil
 			}
+			audio := known[i]
 			if _, e = s.recordingStreamAssetURL(c, tenant, audio.AssetID); e != nil {
 				delete(known, i)
 				continue
@@ -284,6 +319,7 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		}
 		return nil
 	}
+	retryAttempt := 0
 	for {
 		if err = ctx.Err(); err != nil {
 			return err
@@ -324,16 +360,14 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			continue
 		}
 		index := cursor.Order[cursor.Position]
-		percent := 100
-		if cursor.Round > 0 {
-			percent = 90 + rng.Intn(21)
-		}
+		// 循环变速已关闭：跨轮固定 1.0 倍率，直接复用首轮原速音频。
+		// 关闭原因是每轮每段一次 ffmpeg atempo 渲染对机器压力明显（2026-11-01）。
 		// This check is the sole paid lookahead gate: no next submission while
 		// buffered mainline is >=40s. Exactly one paragraph is ever in flight.
 		work, done := context.WithCancel(ctx)
 		allowSynthesis := cursor.Round == 0
 		audio, e := awaitVolcengineParagraph(work, 500*time.Millisecond, func(c context.Context) (volcengineCachedAudio, error) {
-			return s.ensureVolcengineParagraph(c, tenant, room, session, v, units[index], percent, allowSynthesis)
+			return s.ensureScriptFirstParagraph(c, tenant, room, session, v, units[index], allowSynthesis)
 		}, keepPlaying)
 		done()
 		if e != nil {
@@ -345,7 +379,9 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			}
 			log.Printf("volcengine paragraph waiting tenant=%d room=%d session=%d unit=%d error=%v", tenant, room, session, index, e)
 			// Retry the same staging task, never skip to a partial random loop.
-			for until := time.Now().Add(5 * time.Second); time.Now().Before(until); {
+			delay := scriptFirstRetryDelay(retryAttempt, rng)
+			retryAttempt++
+			for until := time.Now().Add(delay); time.Now().Before(until); {
 				if err = keepPlaying(ctx); err != nil {
 					return err
 				}
@@ -355,9 +391,8 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			}
 			continue
 		}
-		if percent == 100 {
-			known[index] = audio
-		}
+		retryAttempt = 0
+		known[index] = audio
 		if err = queue(ctx, index, audio, true); err != nil {
 			return err
 		}

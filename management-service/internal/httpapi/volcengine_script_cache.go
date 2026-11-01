@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,10 +18,12 @@ import (
 )
 
 type volcengineCachedAudio struct {
-	AssetID    int64                                `json:"asset_id"`
-	DurationMS int64                                `json:"duration_ms"`
-	VoiceID    string                               `json:"voice_id"`
-	Timeline   []model.LiveAgentPlanTimelineSegment `json:"timeline"`
+	UntimedTranscript bool                                 `json:"untimed_transcript,omitempty"`
+	AssetID           int64                                `json:"asset_id"`
+	DurationMS        int64                                `json:"duration_ms"`
+	VoiceID           string                               `json:"voice_id"`
+	Timeline          []model.LiveAgentPlanTimelineSegment `json:"timeline"`
+	Blocks            []scriptFirstCachedBlock             `json:"blocks,omitempty"`
 }
 type volcengineParagraphCache struct {
 	Key   string                        `json:"key"`
@@ -223,6 +226,11 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 	cache.Audio[percent] = audio
 	if err = writeVolcengineJSON(indexPath, cache); err != nil {
 		return empty, err
+	}
+	// 切点表在干净 PCM 上计算并随资产归档。失败只记日志，不阻断播放：
+	// 缺表时保留完整音频，不根据猜测的位置硬切。
+	if _, cutErr := s.ensureVolcengineCuts(ctx, path, unit.Dir, unit.Key, percent); cutErr != nil {
+		log.Printf("cuts scan skipped key=%s percent=%d err=%v", unit.Key[:min(len(unit.Key), 8)], percent, cutErr)
 	}
 	return audio, nil
 }

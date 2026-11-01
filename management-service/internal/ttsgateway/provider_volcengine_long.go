@@ -197,16 +197,28 @@ func (p *volcengineProvider) synthesizeLongText(ctx context.Context, r Synthesiz
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
+			if action == "submit" && volcengineConcurrencyRejection(raw) {
+				return nil, notSent(&ConcurrencyLimitError{})
+			}
 			return nil, fmt.Errorf("长文本任务HTTP %d", resp.StatusCode)
 		}
 		var envelope struct {
-			Code int                        `json:"code"`
-			Data map[string]json.RawMessage `json:"data"`
+			Code    int                        `json:"code"`
+			Data    map[string]json.RawMessage `json:"data"`
+			Message string                     `json:"message"`
+			Msg     string                     `json:"msg"`
 		}
 		if err = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&envelope); err != nil {
 			return nil, &longTextUncertainError{}
 		}
 		if envelope.Code != 20000000 {
+			if action == "submit" {
+				raw, _ := json.Marshal(map[string]string{"message": envelope.Message, "msg": envelope.Msg})
+				if volcengineConcurrencyRejection(raw) {
+					return nil, notSent(&ConcurrencyLimitError{})
+				}
+			}
 			return nil, fmt.Errorf("长文本任务失败（code=%d），未重复提交", envelope.Code)
 		}
 		return envelope.Data, nil
@@ -226,6 +238,14 @@ func (p *volcengineProvider) synthesizeLongText(ctx context.Context, r Synthesiz
 		}
 		_, err = post("submit", map[string]any{"user": map[string]string{"uid": "xiaolan-script"}, "unique_id": state.TaskID, "req_params": map[string]any{"text": r.Text, "speaker": r.VoiceID, "model": "seed-tts-2.0-standard", "additions": volcengineFidelityAdditions, "audio_params": map[string]any{"format": "pcm", "sample_rate": 24000, "speech_rate": int(math.Round((r.Rate - 1) * 100)), "enable_timestamp": true}}})
 		if err != nil {
+			if IsConcurrencyLimit(err) {
+				// The vendor explicitly rejected this unique task before acceptance.
+				// Do not clear an ambiguous or already accepted checkpoint.
+				if e := os.Remove(path); e != nil {
+					return SynthesizeResponse{}, errors.New("并发拒绝后的任务状态无法保存，未重新提交")
+				}
+				return SynthesizeResponse{}, err
+			}
 			var uncertain *longTextUncertainError
 			if !errors.As(err, &uncertain) {
 				return SynthesizeResponse{}, err

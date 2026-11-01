@@ -21,6 +21,9 @@ type SynthesizeRequest struct {
 	Text        string
 	Rate        float64
 	Instruction string
+	// ParagraphPath is a server-owned durable WAV destination, never sent to
+	// the supplier. Paid audio survives downstream archive/live cancellation.
+	ParagraphPath string `json:"-"`
 	// LongText is internal to the script-first Volcengine producer. Interactive
 	// speech and other providers retain the existing short synthesis contract.
 	LongText *LongTextJob
