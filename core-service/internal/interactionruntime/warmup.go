@@ -37,7 +37,7 @@ func warmupAllowed(r *room, now time.Time) bool {
 	if last.Before(r.Started) {
 		last = r.Started
 	}
-	return !now.Before(last.Add(WarmupMinGap)) && now.Sub(r.LastEvent) >= 60*time.Second
+	return !now.Before(last.Add(max(WarmupMinGap, configuredInterval(r, "guide")))) && now.Sub(r.LastEvent) >= 60*time.Second
 }
 
 func (e *Engine) cancelWarmups(r *room, reason, except string) {

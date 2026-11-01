@@ -23,8 +23,8 @@ type preparedInteractionKey struct {
 	Decision              string
 }
 
-// Disposable execution state, not an answer cache: only the same unplayed
-// decision in the same session can reuse this audio after an explicit rejection.
+// Disposable execution state, not a cross-session answer cache. Normal replies
+// require the same decision; mandatory reports follow the same outstanding quota.
 type preparedInteraction struct {
 	Item           decisionItem
 	Text, AudioURL string
@@ -33,12 +33,16 @@ type preparedInteraction struct {
 }
 
 func preparationKey(session model.LiveRuntimeSession, item decisionItem) preparedInteractionKey {
-	return preparedInteractionKey{session.TenantID, session.RoomID, session.ID, item.ID}
+	decision := item.ID
+	if retryableTimeReport(item) {
+		decision = "time-report:" + strings.ToUpper(item.Topic)
+	}
+	return preparedInteractionKey{session.TenantID, session.RoomID, session.ID, decision}
 }
 
 // Exclude playback cursors and heat, which move while TTS is being prepared.
 // Include the event, selected plan, published facts/voice and live corrections.
-func (w *Worker) interactionPreparationScope(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, error) {
+func (w *Worker) interactionContentScope(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, error) {
 	if e, ok := interactionplan.Decode(item.PurposeKnowledge); ok {
 		if e.Session != session.ID || e.Tenant != session.TenantID || e.Room != session.RoomID {
 			return "", fmt.Errorf("互动缓存场次不匹配")
@@ -114,8 +118,11 @@ func (w *Worker) takePreparedInteraction(session model.LiveRuntimeSession, item 
 	defer w.mu.Unlock()
 	key := preparationKey(session, item)
 	prepared, ok := w.prepared[key]
-	delete(w.prepared, key) // uncertain submission errors cannot leave reusable audio
+	if !retryableTimeReport(item) {
+		delete(w.prepared, key)
+	} // reports remain owned by Core until actual completion
 	if !ok || !w.now().Before(prepared.ExpiresAt) || prepared.Scope != scope || prepared.Memory != memory {
+		delete(w.prepared, key)
 		return preparedInteraction{}, false
 	}
 	return prepared, true
@@ -150,6 +157,32 @@ func (w *Worker) savePreparedInteraction(session model.LiveRuntimeSession, item 
 
 func (w *Worker) prunePreparedInteractions(sessions []model.LiveRuntimeSession) {
 	active := make(map[[3]int64]bool)
+	controls := map[[3]int64]model.RoomInteractionControls{}
+	// Only disposable cached work needs a database check. Bound the entire cleanup
+	// pass so a database outage does not block scheduling all other live rooms.
+	cached := map[[3]int64]bool{}
+	w.mu.Lock()
+	for key := range w.prepared {
+		cached[[3]int64{key.Tenant, key.Room, key.Session}] = true
+	}
+	for key := range w.timeReportDrafts {
+		cached[[3]int64{key.Tenant, key.Room, key.Session}] = true
+	}
+	w.mu.Unlock()
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	for _, session := range sessions {
+		key := [3]int64{session.TenantID, session.RoomID, session.ID}
+		if !cached[key] {
+			continue
+		}
+		if cleanupCtx.Err() != nil {
+			break
+		}
+		if current, err := w.readInteractionControls(cleanupCtx, session); err == nil {
+			controls[key] = current
+		}
+	}
 	for _, session := range sessions {
 		if session.Status == "running" && session.BelongsToExecutionRealm(w.executionRealm) {
 			active[[3]int64{session.TenantID, session.RoomID, session.ID}] = true
@@ -157,7 +190,16 @@ func (w *Worker) prunePreparedInteractions(sessions []model.LiveRuntimeSession) 
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	for key, value := range w.timeReportDrafts {
+		if !active[[3]int64{key.Tenant, key.Room, key.Session}] || !w.now().Before(value.ValidUntil) {
+			delete(w.timeReportDrafts, key)
+		}
+	}
 	for key, value := range w.prepared {
+		if c, ok := controls[[3]int64{key.Tenant, key.Room, key.Session}]; ok && (!c.Enabled(interactionControlKind(value.Item)) || c.DisabledAt[interactionControlKind(value.Item)] > value.Item.ControlsRevision) {
+			delete(w.prepared, key)
+			continue
+		}
 		if !active[[3]int64{key.Tenant, key.Room, key.Session}] || !w.now().Before(value.ExpiresAt) {
 			delete(w.prepared, key)
 		}

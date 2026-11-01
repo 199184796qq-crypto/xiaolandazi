@@ -64,6 +64,7 @@ type InteractionDecision struct {
 }
 
 type Candidate struct {
+	ControlsRevision   uint64          `json:"interaction_controls_revision,omitempty"`
 	PurposeID          string          `json:"purpose_id,omitempty"`
 	PurposeKnowledge   json.RawMessage `json:"purpose_knowledge,omitempty"`
 	EventExpiresAt     time.Time       `json:"event_expires_at,omitempty"`
@@ -104,6 +105,7 @@ type Candidate struct {
 }
 
 type Item struct {
+	ControlsRevision     uint64          `json:"interaction_controls_revision,omitempty"`
 	TimeReportValidUntil time.Time       `json:"time_report_valid_until,omitempty"`
 	CompletionUntil      time.Time       `json:"completion_until,omitempty"`
 	PreparationCutPlans  json.RawMessage `json:"preparation_cut_plans,omitempty"`
@@ -426,7 +428,8 @@ func (q *Queue) Enqueue(roomID int64, input Candidate) EnqueueResult {
 	priority := normalizePriority(input)
 	id := fmt.Sprintf("d-%d-%d-%06d", roomID, now.UnixMilli(), q.seq.Add(1))
 	item := &Item{
-		PurposeID: input.PurposeID, PurposeKnowledge: append(json.RawMessage(nil), input.PurposeKnowledge...),
+		ControlsRevision: input.ControlsRevision,
+		PurposeID:        input.PurposeID, PurposeKnowledge: append(json.RawMessage(nil), input.PurposeKnowledge...),
 		PreparedTaskID: input.PreparedTaskID, PreparedCutMS: input.PreparedCutMS,
 		ID:                   id,
 		RoomID:               roomID,

@@ -21,9 +21,13 @@ type Scope struct {
 	Epoch              string
 }
 type Policy struct {
+	ControlsRevision uint64
+	DisabledAt       map[string]uint64
 	Active           bool
 	Enabled          map[string]bool
 	Cooldown         map[string]time.Duration
+	Minimum          map[string]time.Duration
+	Disabled         map[string]bool
 	SessionStartedAt time.Time
 	LastEndedAt      time.Time
 	Busy             bool
@@ -81,6 +85,8 @@ type Content struct {
 	Knowledge json.RawMessage
 }
 type Task struct {
+	ControlsRevision   uint64
+	BlockedAtCreation  map[string]bool
 	Work               Work
 	Content            Content
 	State, Decision    string
@@ -127,6 +133,7 @@ type room struct {
 	Carry                               string
 	Density                             string
 	Cool                                map[string]time.Time
+	Starts                              map[string]time.Time
 	Policy                              *Policy
 	Named                               map[string]time.Time
 	DispatchSeq                         uint64
@@ -159,7 +166,9 @@ func (e *Engine) SetPolicy(s Scope, p Policy, now time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r := e.room(s, now)
+	old := r.Policy
 	r.Policy = &p
+	e.clearDisabled(r, old)
 	if !p.SessionStartedAt.IsZero() && !p.SessionStartedAt.After(now) {
 		if r.LastEvent.Equal(r.Started) {
 			r.LastEvent = p.SessionStartedAt
@@ -256,8 +265,15 @@ func (e *Engine) add(r *room, w Work) *Task {
 	w.Revision = 1
 	w.Sequence = e.seq
 	w.Priority = band(w.Kind)
-	w.AllowClarify = w.Kind == "semantic" || w.Kind == "urgent"
+	w.AllowClarify = (w.Kind == "semantic" || w.Kind == "urgent") && enabled(r, "dialogue")
 	t := &Task{Work: w, State: "collecting"}
+	if r.Policy != nil {
+		t.ControlsRevision = r.Policy.ControlsRevision
+		t.BlockedAtCreation = map[string]bool{}
+		for k, v := range r.Policy.Disabled {
+			t.BlockedAtCreation[k] = v
+		}
+	}
 	r.Tasks[w.ID] = t
 	return t
 }
@@ -315,11 +331,15 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 		if kind == "order_signal" {
 			kind = "order"
 		}
-		recordBehavior(r, v, kind, now)
+		if controlsEnabled(r, kind) {
+			recordBehavior(r, v, kind, now)
+		}
 		return
 	}
 	if (v.Kind == "chat" || v.Kind == "semantic") && roombrain.IsOrderSignalText(v.Text) {
-		recordBehavior(r, v, "order", now)
+		if controlsEnabled(r, "order") {
+			recordBehavior(r, v, "order", now)
+		}
 		return
 	}
 	if v.Kind == "chat" || v.Kind == "semantic" || v.Kind == "urgent" {
@@ -327,7 +347,7 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 		r.Chat = append(r.Chat, now)
 		rememberUser(r, v)
 		// Stable UID owns dialogue before short numeric/command filtering.
-		if d := r.Dialogues[v.UID]; d != nil && v.UID != "" && now.Before(d.Deadline) && now.Sub(d.Opened) < 180*time.Second && d.Round < 3 && !v.Urgent {
+		if d := r.Dialogues[v.UID]; enabled(r, "dialogue") && d != nil && v.UID != "" && now.Before(d.Deadline) && now.Sub(d.Opened) < 180*time.Second && d.Round < 3 && !v.Urgent {
 			if old := r.Tasks[d.Pending]; old != nil && old.State != "playing" && old.State != "completed" {
 				e.cancel(r, old, "new_dialogue_input")
 			}
@@ -367,6 +387,9 @@ func (e *Engine) Add(s Scope, v Event, now time.Time) {
 	switch kind {
 	case "semantic", "urgent", "welcome", "like", "follow", "order":
 	default:
+		return
+	}
+	if !classificationControlsEnabled(r, kind) {
 		return
 	}
 	if len(r.Tasks) >= 256 {
@@ -526,7 +549,7 @@ func (e *Engine) jobs(now time.Time, limit int, batch bool) [][]Work {
 				e.cancel(r, t, "original_event_expired")
 				t.State = "expired"
 			}
-			if t.Work.Template == "" && t.State == "collecting" && enabled(r, t.Work.Kind) && !now.Before(t.Work.Due) && (t.Work.WelcomeQuota || (batch && semanticKind(t.Work.Kind)) || !now.Before(r.Cool[t.Work.Kind])) && !(batch && semanticKind(t.Work.Kind) && preparing) {
+			if t.Work.Template == "" && t.State == "collecting" && classificationEnabled(r, t.Work.Kind) && !now.Before(t.Work.Due) && (t.Work.WelcomeQuota || (batch && semanticKind(t.Work.Kind)) || !now.Before(r.Cool[t.Work.Kind])) && !(batch && semanticKind(t.Work.Kind) && preparing) {
 				tasks = append(tasks, t)
 			}
 		}
@@ -659,6 +682,29 @@ func (e *Engine) Accept(w Work, c Content, err error, now time.Time) bool {
 		}
 		return false
 	}
+	if !classificationEnabled(r, t.Work.Kind) {
+		e.cancel(r, t, "kind_disabled")
+		return false
+	}
+	urgent := c.Intent.Type == "投诉" && c.Intent.Priority == "紧急" && strings.TrimSpace(c.Intent.PriorityReason) != ""
+	if urgent && !enabled(r, "urgent") {
+		e.cancel(r, t, "kind_disabled")
+		return false
+	}
+	finalKind := t.Work.Kind
+	if urgent {
+		finalKind = "urgent"
+	} else if c.Intent.NeedClarify {
+		finalKind = "dialogue"
+	}
+	if t.BlockedAtCreation[finalKind] || controlGenerationExpired(r, t, finalKind) {
+		e.cancel(r, t, "kind_disabled")
+		return false
+	}
+	if c.Intent.NeedClarify && !enabled(r, "dialogue") {
+		e.cancel(r, t, "kind_disabled")
+		return false
+	}
 	// Classification is independent of playback quota. Raw pending messages,
 	// participation and spam must not inflate the confirmed semantic density.
 	if semanticKind(w.Kind) && c.Intent.Type == "主动互动" && w.Kind != "dialogue" {
@@ -668,7 +714,7 @@ func (e *Engine) Accept(w Work, c Content, err error, now time.Time) bool {
 		return false
 	}
 	rememberSemantic(r, w, c.Intent)
-	if w.Kind == "semantic" {
+	if w.Kind == "semantic" && !urgent {
 		kind := "chat"
 		if c.Intent.Question {
 			kind = "question"
@@ -739,7 +785,7 @@ func (e *Engine) Select(s Scope, now time.Time) *Task {
 		if t.State == "selected" {
 			selected = t
 		}
-		if t.State == "body_ready" && enabled(r, t.Work.Kind) && (t.Work.WelcomeQuota || t.Work.Template != "" || !now.Before(r.Cool[t.Work.Kind])) && now.Before(t.Work.Expires) {
+		if t.State == "body_ready" && enabled(r, t.Work.Kind) && minimumReady(r, t.Work.Kind, now) && (t.Work.WelcomeQuota || t.Work.Template != "" || !now.Before(r.Cool[t.Work.Kind])) && now.Before(t.Work.Expires) {
 			ready = append(ready, t)
 		}
 	}
@@ -853,7 +899,7 @@ func (e *Engine) ReserveAudio(roomID int64, decision string, durationMS int, sta
 		if t.Decision != decision {
 			continue
 		}
-		if t.State != "selected" || !start.Before(t.Work.Expires) {
+		if t.State != "selected" || !enabled(r, t.Work.Kind) || !minimumReady(r, t.Work.Kind, start) || !start.Before(t.Work.Expires) {
 			return false
 		}
 		if t.Work.Kind == "guide" && !warmupAllowed(r, start) {
@@ -919,6 +965,10 @@ func (e *Engine) receiptsLocked(r *room, decision, status string, at time.Time) 
 			}
 			t.State = "playing"
 			t.Started = at
+			if r.Starts == nil {
+				r.Starts = map[string]time.Time{}
+			}
+			r.Starts[t.Work.Kind] = at
 			if t.Work.BatchPrepared && semanticKind(t.Work.Kind) {
 				r.SemanticStarts = append(r.SemanticStarts, at)
 			}

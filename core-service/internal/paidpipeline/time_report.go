@@ -18,6 +18,8 @@ type timeReportSchedule struct {
 	Epoch, Topic, Decision string
 	Due, RetryAt           time.Time
 	Sequence               uint64
+	Extra                  time.Duration
+	ControlsRevision       uint64
 }
 
 func (p *Processor) flushTimeReports(now time.Time) {
@@ -35,6 +37,21 @@ func (p *Processor) flushTimeReports(now time.Time) {
 			continue
 		}
 		active[r.RoomID] = true
+		if p.policies != nil && !p.policies.RoomInteractionPreferences(r.RoomID).ControlEnabled("time_report") {
+			if state := p.timeReports[r.RoomID]; state != nil {
+				if item, ok := p.decisions.Get(r.RoomID, state.Decision); ok && item.PlaybackTaskID == "" {
+					p.decisions.Remove(r.RoomID, state.Decision)
+				}
+				delete(p.timeReports, r.RoomID)
+			}
+			continue
+		}
+		if state := p.timeReports[r.RoomID]; state != nil && p.policies != nil && p.policies.RoomInteractionPreferences(r.RoomID).DisabledAt["time_report"] > state.ControlsRevision {
+			if item, ok := p.decisions.Get(r.RoomID, state.Decision); ok && item.PlaybackTaskID == "" {
+				p.decisions.Remove(r.RoomID, state.Decision)
+			}
+			delete(p.timeReports, r.RoomID)
+		}
 		epoch := p.cutEpoch(r.RoomID)
 		state := p.timeReports[r.RoomID]
 		if state == nil || state.Epoch != epoch {
@@ -45,15 +62,26 @@ func (p *Processor) flushTimeReports(now time.Time) {
 			if r.WorkingSince != nil {
 				base = *r.WorkingSince
 			}
-			state = &timeReportSchedule{Epoch: epoch, Due: base.Add(nextTimeReportDelay())}
+			if p.policies != nil {
+				pref := p.policies.RoomInteractionPreferences(r.RoomID)
+				if pref.InteractionActive != nil && pref.UpdatedAt.After(base) {
+					base = pref.UpdatedAt
+				}
+			}
+			state = &timeReportSchedule{Epoch: epoch, Due: base.Add(p.timeReportDelay(r.RoomID)), Extra: p.timeReportExtra(r.RoomID), ControlsRevision: p.roomControlsRevision(r.RoomID)}
 			p.timeReports[r.RoomID] = state
+		}
+		if extra := p.timeReportExtra(r.RoomID); extra != state.Extra && state.Topic == "" && state.Decision == "" {
+			state.Due = state.Due.Add(extra - state.Extra)
+			state.Extra = extra
 		}
 		if state.Decision != "" {
 			view := p.decisions.Snapshot(r.RoomID)
 			finished := false
 			for _, receipt := range view.TerminalHistory {
 				if receipt.DecisionID == state.Decision && receipt.Status == "COMPLETED" && receipt.Reason == "actual_mainline_return" {
-					state.Due = receipt.At.Add(nextTimeReportDelay())
+					state.Due = receipt.At.Add(p.timeReportDelay(r.RoomID))
+					state.Extra = p.timeReportExtra(r.RoomID)
 					state.Topic, state.Decision, state.RetryAt = "", "", time.Time{}
 					finished = true
 					break
@@ -124,4 +152,21 @@ func (p *Processor) flushTimeReports(now time.Time) {
 			delete(p.timeReports, room)
 		}
 	}
+}
+
+func (p *Processor) timeReportExtra(room int64) time.Duration {
+	if p.policies == nil {
+		return 0
+	}
+	return time.Duration(p.policies.RoomInteractionPreferences(room).Cooldowns["time_report"]) * time.Second
+}
+func (p *Processor) timeReportDelay(room int64) time.Duration {
+	return nextTimeReportDelay() + p.timeReportExtra(room)
+}
+
+func (p *Processor) roomControlsRevision(room int64) uint64 {
+	if p.policies == nil {
+		return 0
+	}
+	return p.policies.RoomInteractionPreferences(room).ControlsRevision
 }

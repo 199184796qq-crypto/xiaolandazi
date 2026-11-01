@@ -25,6 +25,9 @@ func hasInteractionV2Body(item agentdecision.Item) bool {
 	return ok
 }
 func (s *Server) validInteractionV2Item(item agentdecision.Item, roomID, tenantID int64, now time.Time) bool {
+	if !s.interactionControlAllowed(roomID, item) {
+		return false
+	}
 	e, v2 := decodeInteractionV2Item(item)
 	if !v2 {
 		return true

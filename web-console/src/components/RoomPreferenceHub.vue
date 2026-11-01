@@ -18,10 +18,10 @@ const props = withDefaults(defineProps<{
 const tabs = [
   {
     key: 'interaction' as const,
-    label: '互动偏好',
+    label: '互动开关',
     english: 'INTERACTION',
-    desc: '你决定更想回应什么，小蓝会按直播间热度自动调整节奏。',
-    status: '智能随人气调整',
+    desc: '设置各类互动开关和冷却秒数，保留直播间热度自适应。',
+    status: '即时生效',
     tone: 'blue',
     component: markRaw(RoomInteractionPreferences),
   },
@@ -133,7 +133,7 @@ function selectTab(next: PreferenceTab) {
 }
 .preference-hub-heading .heading-english{
   color:#98a4b9;
-  font-size:10px;
+  font-size:16px;
   font-weight:900;
   line-height:1;
   letter-spacing:2px;
@@ -142,7 +142,7 @@ function selectTab(next: PreferenceTab) {
 .preference-hub-heading .heading-desc{
   max-width:620px;
   color:#53627d;
-  font-size:14px;
+  font-size:16px;
   font-weight:750;
   line-height:1.55;
 }
@@ -156,7 +156,7 @@ function selectTab(next: PreferenceTab) {
   border-radius:999px;
   background:linear-gradient(180deg,#effbf5,#e9f8f1);
   color:#277653;
-  font-size:13px;
+  font-size:16px;
   font-weight:900;
   white-space:nowrap;
   box-shadow:inset 0 0 0 1px rgba(79,185,136,.04);
@@ -187,7 +187,7 @@ function selectTab(next: PreferenceTab) {
 }
 .preference-hub-tab .tab-chinese{
   padding-left:2px;
-  font-size:12.5px;
+  font-size:16px;
   font-weight:900;
   line-height:1.15;
   transition:color .2s ease,transform .2s ease;
@@ -232,19 +232,19 @@ function selectTab(next: PreferenceTab) {
 .pref-slide-back-leave-to{opacity:0;transform:translateX(28px)}
 .room-preference-hub.compact{gap:10px;padding:14px 12px;border-radius:17px}
 .room-preference-hub.compact .preference-hub-heading strong{font-size:21px}
-.room-preference-hub.compact .preference-hub-heading .heading-desc{font-size:12.5px;line-height:1.4}
-.room-preference-hub.compact .preference-hub-heading .heading-english{font-size:8.5px;letter-spacing:1.7px}
-.room-preference-hub.compact .preference-hub-status{min-height:32px;padding:0 9px;font-size:11px}
+.room-preference-hub.compact .preference-hub-heading .heading-desc{font-size:16px;line-height:1.4}
+.room-preference-hub.compact .preference-hub-heading .heading-english{font-size:16px;letter-spacing:1.7px}
+.room-preference-hub.compact .preference-hub-status{min-height:32px;padding:0 9px;font-size:16px}
 .room-preference-hub.compact .preference-hub-status i{width:8px;height:8px}
 .room-preference-hub.compact .preference-hub-tabs{gap:8px}
-.room-preference-hub.compact .preference-hub-tab .tab-chinese{font-size:11px}
+.room-preference-hub.compact .preference-hub-tab .tab-chinese{font-size:16px}
 .room-preference-hub.mobile{box-shadow:none}
 @media (max-width:760px){
   .room-preference-hub{padding:14px;border-radius:16px}
   .preference-hub-header{grid-template-columns:1fr}
   .preference-hub-status{justify-self:start}
   .preference-hub-tabs{gap:6px}
-  .preference-hub-tab .tab-chinese{font-size:11px}
+  .preference-hub-tab .tab-chinese{font-size:16px}
 }
 @media (prefers-reduced-motion: reduce){
   .pref-slide-forward-enter-active,

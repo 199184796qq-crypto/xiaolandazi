@@ -67,7 +67,7 @@ func (s *Store) GetRoomInteractionPreferences(ctx context.Context, tenantID, roo
 	if errors.Is(err, sql.ErrNoRows) {
 		schedule, scheduleErr := s.GetRoomInteractionSchedule(ctx, tenantID, roomID)
 		item.Schedule = &schedule
-		return item, scheduleErr
+		return s.withRoomInteractionControls(ctx, item, scheduleErr)
 	}
 	if err != nil {
 		return model.RoomInteractionPreferences{}, err
@@ -81,7 +81,7 @@ func (s *Store) GetRoomInteractionPreferences(ctx context.Context, tenantID, roo
 	}
 	schedule, scheduleErr := s.GetRoomInteractionSchedule(ctx, tenantID, roomID)
 	item.Schedule = &schedule
-	return item, scheduleErr
+	return s.withRoomInteractionControls(ctx, item, scheduleErr)
 }
 
 func (s *Store) UpsertRoomInteractionPreferences(
@@ -89,7 +89,14 @@ func (s *Store) UpsertRoomInteractionPreferences(
 	tenantID, roomID, userID int64,
 	input model.RoomInteractionPreferencesInput,
 ) (model.RoomInteractionPreferences, error) {
+	if err := model.ValidateInteractionControls(input.Switches, input.Cooldowns); err != nil {
+		return model.RoomInteractionPreferences{}, err
+	}
 	input = normalizeRoomInteractionPreferencesInput(input)
+	var owned int64
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM core_rooms WHERE tenant_id=? AND id=?`, tenantID, roomID).Scan(&owned); err != nil {
+		return model.RoomInteractionPreferences{}, err
+	}
 	current, err := s.GetRoomInteractionSchedule(ctx, tenantID, roomID)
 	if err != nil {
 		return model.RoomInteractionPreferences{}, err
@@ -140,6 +147,9 @@ func (s *Store) UpsertRoomInteractionPreferences(
 		if _, err := s.saveRoomInteractionScheduleTx(ctx, tx, tenantID, roomID, userID, *input.Schedule, current); err != nil {
 			return model.RoomInteractionPreferences{}, err
 		}
+	}
+	if err = s.saveRoomInteractionControlsTx(ctx, tx, tenantID, roomID, userID, input); err != nil {
+		return model.RoomInteractionPreferences{}, err
 	}
 	if err = tx.Commit(); err != nil {
 		return model.RoomInteractionPreferences{}, err

@@ -59,6 +59,12 @@ func (p *Processor) decorateCandidate(roomID, tenantID int64, c *agentdecision.C
 	if !p.InteractionsAllowed(roomID, tenantID) {
 		return false
 	}
+	if p.policies != nil && !p.policies.RoomInteractionPreferences(roomID).ControlEnabled(c.MissionKind) {
+		return false
+	}
+	if p.policies != nil {
+		c.ControlsRevision = p.policies.RoomInteractionPreferences(roomID).ControlsRevision
+	}
 	cfg, err := p.schedule(roomID, tenantID)
 	if err != nil {
 		return false

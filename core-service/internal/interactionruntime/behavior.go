@@ -160,10 +160,10 @@ func (e *Engine) prepareBehaviors(r *room, now time.Time) {
 		if !enabled(r, kind) || now.Before(w.RetryAt) {
 			continue
 		}
-		if kind != "order" && !w.LastStart.IsZero() && now.Before(w.LastStart.Add(w.Interval)) {
+		if kind != "order" && !w.LastStart.IsZero() && now.Before(w.LastStart.Add(max(w.Interval, configuredInterval(r, kind)))) {
 			continue
 		}
-		if kind == "order" && !w.Pending && now.Before(r.Cool[kind]) {
+		if kind == "order" && !w.Pending && (now.Before(r.Cool[kind]) || !minimumReady(r, kind, now)) {
 			continue
 		}
 		busy := false

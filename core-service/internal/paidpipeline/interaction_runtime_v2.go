@@ -85,6 +85,33 @@ func (p *Processor) v2Policy(s interactionruntime.Scope) interactionruntime.Poli
 	if p.runtime.Mode(s.Room) != agentwork.ModeAnchor || (eligible != nil && !eligible(s.Room)) {
 		policy.Enabled["guide"] = false
 	}
+	if p.policies != nil {
+		pref := p.policies.RoomInteractionPreferences(s.Room)
+		policy.Minimum = map[string]time.Duration{}
+		policy.Disabled = map[string]bool{}
+		policy.ControlsRevision = pref.ControlsRevision
+		policy.DisabledAt = pref.DisabledAt
+		for kind, seconds := range pref.Cooldowns {
+			policy.Minimum[kind] = time.Duration(seconds) * time.Second
+			if kind == "order" {
+				policy.Cooldown[kind] = time.Duration(seconds) * time.Second
+			} else {
+				policy.Cooldown[kind] = max(policy.Cooldown[kind], time.Duration(seconds)*time.Second)
+			}
+		}
+		for _, kind := range []string{"semantic", "question", "chat", "urgent", "welcome", "like", "follow", "order", "engagement", "guide", "dialogue"} {
+			if pref.InteractionActive != nil {
+				policy.Enabled[kind] = true
+				if kind == "guide" && (p.runtime.Mode(s.Room) != agentwork.ModeAnchor || (eligible != nil && !eligible(s.Room))) {
+					policy.Enabled[kind] = false
+				}
+			}
+			if !pref.ControlEnabled(kind) {
+				policy.Enabled[kind] = false
+				policy.Disabled[kind] = true
+			}
+		}
+	}
 	return policy
 }
 
@@ -101,6 +128,7 @@ func (p *Processor) handleInteractionV2(event model.RoomEvent, signal basepipeli
 		return
 	}
 	s := p.v2Scope(event.TenantID, event.RoomID)
+	v.engine.SetPolicy(s, p.v2Policy(s), p.clock())
 	if s.Plan <= 0 {
 		return
 	}
@@ -191,6 +219,9 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) {
 			}
 		}
 		v.engine.SetPolicy(s, p.v2Policy(s), now)
+		for _, id := range v.engine.Cancelled(s.Room) {
+			p.decisions.Remove(s.Room, id)
+		}
 		p.publishInteractionStats(s.Room, now)
 		if !p.InteractionsAllowed(s.Room, s.Tenant) {
 			continue
@@ -243,7 +274,7 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) {
 				unique = view.Intelligence.UniqueChatters30s
 			}
 		}
-		candidate := agentdecision.Candidate{Source: agentdecision.SourceAgent, Topic: t.Work.ID, Title: "互动 · " + mission, Question: t.Work.Text, MissionKind: mission, MissionEventCount: t.Work.Count, UserID: uid, Nicknames: names, Priority: 50 + t.Work.Priority*10, EventExpiresAt: t.Work.Expires, TTLSeconds: ttl, PurposeKnowledge: t.Content.Knowledge, OriginPlanID: s.Plan, Scene: "interaction_v2", InteractionDecision: agentdecision.InteractionDecision{Handle: true, UniqueChatters30s: unique, PrimaryEvent: t.Work.Kind, DeadlineAt: t.Work.Expires, BudgetAllowed: true}}
+		candidate := agentdecision.Candidate{ControlsRevision: t.ControlsRevision, Source: agentdecision.SourceAgent, Topic: t.Work.ID, Title: "互动 · " + mission, Question: t.Work.Text, MissionKind: mission, MissionEventCount: t.Work.Count, UserID: uid, Nicknames: names, Priority: 50 + t.Work.Priority*10, EventExpiresAt: t.Work.Expires, TTLSeconds: ttl, PurposeKnowledge: t.Content.Knowledge, OriginPlanID: s.Plan, Scene: "interaction_v2", InteractionDecision: agentdecision.InteractionDecision{Handle: true, UniqueChatters30s: unique, PrimaryEvent: t.Work.Kind, DeadlineAt: t.Work.Expires, BudgetAllowed: true}}
 		result := p.decisions.Enqueue(s.Room, candidate)
 		id := ""
 		if result.Item != nil {
@@ -290,6 +321,9 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) {
 			}
 			workCtx, cancel := context.WithDeadline(ctx, deadline)
 			defer cancel()
+			if !v.engine.HasPreparingWork(batch.Works, p.clock()) {
+				return
+			}
 			results, err := v.resolver.prepareBatchV2(workCtx, batch)
 			if err != nil {
 				log.Printf("interaction v2 batch room=%d batch=%s count=%d failed=%v", batch.Works[0].Scope.Room, batch.ID, len(batch.Works), err)

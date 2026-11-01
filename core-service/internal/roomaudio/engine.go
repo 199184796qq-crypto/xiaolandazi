@@ -229,9 +229,10 @@ func (e *Engine) SetInterruptTranscriptTimeline(roomID int64, timeline []SpeechS
 	e.setInterruptTimeline(roomID, timeline, true)
 }
 
-// SetInterruptCurrentText retains the internal spoken observer's segments but
-// displays one complete, known TTS utterance only within its playback window.
-// This is current speech text, not invented per-word/subsentence timestamps.
+// SetInterruptCurrentText displays the known TTS body in rolling sentence rows
+// within its actual playback window. The supplied segments remain estimates for
+// the spoken observer/display only; they must not be exported as timed SRT.
+// Without sentence segments, the complete body is the single current row.
 func (e *Engine) SetInterruptCurrentText(roomID int64, timeline []SpeechSegment, text string, durationMS int) {
 	var caption *SpeechSegment
 	if text = strings.TrimSpace(text); text != "" && durationMS > 0 {
@@ -658,7 +659,18 @@ func speechFeedLocked(state *roomState) SpeechFeedSnapshot {
 			// was actually sent, so the last guard frame cannot show text early.
 			cursorMS := state.interruptCursorMS - FrameDurationMS
 			if state.activeSource == SourceInterrupt && state.phase == PhaseInterrupt && cursorMS >= caption.StartMS && cursorMS < caption.EndMS {
-				feed.Current = speechFeedItem(state, *caption, SpeechToneInterrupt)
+				index := speechSegmentIndex(state.interruptTimeline, speechSegmentAt(state.interruptTimeline, cursorMS))
+				if index >= 0 {
+					feed.Current = speechFeedItem(state, state.interruptTimeline[index], SpeechToneInterrupt)
+					if index > 0 && state.interruptTimeline[index-1].EndMS > caption.StartMS {
+						feed.Previous = speechFeedItem(state, state.interruptTimeline[index-1], SpeechToneInterrupt)
+					}
+					if index+1 < len(state.interruptTimeline) && state.interruptTimeline[index+1].StartMS < caption.EndMS {
+						feed.Next = speechFeedItem(state, state.interruptTimeline[index+1], SpeechToneInterrupt)
+					}
+				} else if len(state.interruptTimeline) == 0 {
+					feed.Current = speechFeedItem(state, *caption, SpeechToneInterrupt)
+				}
 			}
 			return feed
 		}

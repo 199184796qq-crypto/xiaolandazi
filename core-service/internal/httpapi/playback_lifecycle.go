@@ -38,6 +38,9 @@ func (s *Server) validatePCMInteractionStart(ctx context.Context, event audioout
 	if !ok || item.Status != agentdecision.StatusClaimed || item.PlaybackTaskID != event.SpeechTaskID || meta.RoomID != event.RoomID || meta.RuntimeEpoch == "" || meta.RuntimeEpoch != s.currentInteractionEpoch(meta.RoomID) || !s.agentWork.IsWorking(meta.RoomID) {
 		return fmt.Errorf("playback decision/run changed")
 	}
+	if !s.interactionControlAllowed(meta.RoomID, *item) {
+		return fmt.Errorf("interaction disabled before PCM")
+	}
 	var envelope interactionV2Envelope
 	json.Unmarshal(item.PurposeKnowledge, &envelope)
 	if envelope.Protocol == "interaction_v2" && !s.validInteractionV2Item(*item, meta.RoomID, envelope.Tenant, time.Now()) {

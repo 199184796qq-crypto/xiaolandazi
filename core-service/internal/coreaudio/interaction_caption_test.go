@@ -10,11 +10,11 @@ import (
 	"time"
 )
 
-func TestUntimedInteractionShowsCurrentTTSBodyAndClearsOnMainlineReturn(t *testing.T) {
+func TestUntimedInteractionRollsTTSBodyAndClearsOnMainlineReturn(t *testing.T) {
 	main := acousticTestWAV(1600, 700, 900, 5000)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/reply" {
-			_, _ = w.Write(testWAV(400))
+			_, _ = w.Write(testWAV(1000))
 			return
 		}
 		_, _ = w.Write(main)
@@ -43,22 +43,44 @@ func TestUntimedInteractionShowsCurrentTTSBodyAndClearsOnMainlineReturn(t *testi
 		t.Fatal("untimed mainline text leaked", f)
 	}
 	cut := 800
-	text := "欢迎新朋友。这个问题我来回答。"
+	text := "欢迎刚进直播间的新朋友，有什么问题可以直接提出来。这个问题我现在来回答，咱们慢慢聊清楚。"
+	timeline := roomAudioInteractionTimeline(text, 1000)
+	if len(timeline) < 2 {
+		t.Fatal("test requires multiple caption rows", timeline)
+	}
 	reply, err := c.InsertTestProgramInteraction(t.Context(), audioout.InsertInteractionInput{RoomID: 903, ExpectedTaskID: start.Task.ID, AudioURL: server.URL + "/reply", Text: text, AcousticCut: true, SwitchAtMS: &cut})
 	if err != nil {
 		t.Fatal(err)
 	}
 	until = time.Now().Add(2 * time.Second)
+	seen := make(map[string]bool)
 	for {
 		f := e.Snapshot(903).SpeechFeed
 		if f.Current != nil {
-			if f.Current.Text != text {
-				t.Fatal("only full current TTS body should display", f)
+			if f.Current.Text == text {
+				t.Fatal("full body replaced rolling rows", f)
 			}
+			for index, segment := range timeline {
+				if segment.SegmentID != f.Current.SegmentID {
+					continue
+				}
+				if f.Current.Text != segment.Text {
+					t.Fatal("caption differs from final TTS body", f)
+				}
+				if index > 0 && (f.Previous == nil || f.Previous.Text != timeline[index-1].Text) {
+					t.Fatal("previous row did not advance", f)
+				}
+				if index+1 < len(timeline) && (f.Next == nil || f.Next.Text != timeline[index+1].Text) {
+					t.Fatal("next row did not advance", f)
+				}
+				seen[segment.SegmentID] = true
+			}
+		}
+		if len(seen) == len(timeline) {
 			break
 		}
 		if time.Now().After(until) {
-			t.Fatal("current interaction body was hidden")
+			t.Fatal("interaction captions did not roll through all rows", seen)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

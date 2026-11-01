@@ -1921,3 +1921,31 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_asset_settings (
  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
  PRIMARY KEY(tenant_id,plan_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_room_interaction_controls (
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ room_id BIGINT UNSIGNED NOT NULL,
+ active TINYINT(1) NOT NULL DEFAULT 1,
+ switches JSON NOT NULL,
+ cooldowns JSON NOT NULL,
+ disabled_revisions JSON NOT NULL,
+ revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+ updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+ updated_by BIGINT UNSIGNED NOT NULL,
+ PRIMARY KEY(tenant_id,room_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_room_interaction_control_history (
+ id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ room_id BIGINT UNSIGNED NOT NULL,
+ revision BIGINT UNSIGNED NOT NULL,
+ before_json JSON NOT NULL,
+ after_json JSON NOT NULL,
+ updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+ updated_by BIGINT UNSIGNED NOT NULL,
+ PRIMARY KEY(id),
+ UNIQUE KEY uq_room_control_revision(tenant_id,room_id,revision)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

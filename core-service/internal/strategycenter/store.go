@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -41,6 +42,11 @@ type Policy struct {
 }
 
 type RoomInteractionPreferences struct {
+	DisabledAt           map[string]uint64    `json:"interaction_disabled_revisions,omitempty"`
+	InteractionActive    *bool                `json:"interaction_active,omitempty"`
+	Switches             map[string]bool      `json:"interaction_switches,omitempty"`
+	Cooldowns            map[string]int       `json:"interaction_cooldowns,omitempty"`
+	ControlsRevision     uint64               `json:"interaction_controls_revision,omitempty"`
 	Schedule             *InteractionSchedule `json:"schedule,omitempty"`
 	TenantID             int64                `json:"tenant_id"`
 	RoomID               int64                `json:"room_id"`
@@ -313,7 +319,11 @@ func (s *Store) Load(ctx context.Context, db *sql.DB) error {
 		}
 		s.PutRoomInteractionPreferences(item.RoomID, item)
 	}
-	return preferenceRows.Err()
+	if err := preferenceRows.Err(); err != nil {
+		return err
+	}
+	preferenceRows.Close()
+	return s.loadInteractionControls(ctx, db)
 }
 
 func DefaultRoomInteractionPreferences(roomID int64) RoomInteractionPreferences {
@@ -351,18 +361,55 @@ func normalizeRoomInteractionPreferences(roomID int64, input RoomInteractionPref
 }
 
 func (s *Store) PutRoomInteractionPreferences(roomID int64, input RoomInteractionPreferences) RoomInteractionPreferences {
+	item, _ := s.PutRoomInteractionPreferencesChecked(roomID, input)
+	return item
+}
+func (s *Store) PutRoomInteractionPreferencesChecked(roomID int64, input RoomInteractionPreferences) (RoomInteractionPreferences, bool) {
 	input = normalizeRoomInteractionPreferences(roomID, input)
 	if s == nil || roomID <= 0 {
-		return input
+		return input, true
 	}
 	s.mu.Lock()
+	if old, ok := s.roomPreferences[roomID]; ok {
+		hasControls := input.InteractionActive != nil || input.Switches != nil || input.Cooldowns != nil || input.DisabledAt != nil
+		if input.ControlsRevision < old.ControlsRevision && (hasControls || input.ControlsRevision > 0) {
+			s.mu.Unlock()
+			return cloneInteractionControls(old), false
+		}
+		if input.ControlsRevision > 0 && input.ControlsRevision == old.ControlsRevision && hasControls {
+			if (input.InteractionActive != nil && (old.InteractionActive == nil || *input.InteractionActive != *old.InteractionActive)) || (input.Switches != nil && !reflect.DeepEqual(input.Switches, old.Switches)) || (input.Cooldowns != nil && !reflect.DeepEqual(input.Cooldowns, old.Cooldowns)) || (input.DisabledAt != nil && !reflect.DeepEqual(input.DisabledAt, old.DisabledAt)) {
+				s.mu.Unlock()
+				return cloneInteractionControls(old), false
+			}
+		}
+		if input.InteractionActive == nil {
+			input.InteractionActive = old.InteractionActive
+		}
+		if input.DisabledAt == nil {
+			input.DisabledAt = old.DisabledAt
+		}
+		if input.Switches == nil {
+			input.Switches = old.Switches
+		}
+		if input.Cooldowns == nil {
+			input.Cooldowns = old.Cooldowns
+		}
+		if input.ControlsRevision == 0 {
+			input.ControlsRevision = old.ControlsRevision
+		}
+	}
+	if input.InteractionActive == nil && (input.Switches != nil || input.Cooldowns != nil) {
+		on := true
+		input.InteractionActive = &on
+	}
+	input = cloneInteractionControls(input)
 	if input.Schedule != nil {
 		copy := CloneInteractionSchedule(*input.Schedule)
 		input.Schedule = &copy
 	}
 	s.roomPreferences[roomID] = input
 	s.mu.Unlock()
-	return input
+	return cloneInteractionControls(input), true
 }
 
 func (s *Store) RoomInteractionPreferences(roomID int64) RoomInteractionPreferences {
@@ -380,7 +427,7 @@ func (s *Store) RoomInteractionPreferences(roomID int64) RoomInteractionPreferen
 		copy := CloneInteractionSchedule(*item.Schedule)
 		item.Schedule = &copy
 	}
-	return normalizeRoomInteractionPreferences(roomID, item)
+	return cloneInteractionControls(normalizeRoomInteractionPreferences(roomID, item))
 }
 
 func preferenceFactor(score int, less, more float64) float64 {
@@ -403,6 +450,12 @@ func preferenceFactor(score int, less, more float64) float64 {
 
 func (s *Store) InteractionPreferenceFactor(roomID int64, kind string) float64 {
 	prefs := s.RoomInteractionPreferences(roomID)
+	if prefs.InteractionActive != nil {
+		if !prefs.ControlsActive() {
+			return 0
+		}
+		return 1
+	}
 	factor := preferenceFactor(prefs.OverallInteraction, 0.78, 1.24)
 	if factor <= 0 {
 		return 0

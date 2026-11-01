@@ -1332,3 +1332,8 @@
 - 同类可恢复的正文/审核、TTS、单段下发失败通过既有cycleSupply跳过续播；已回归核验，并新增下发失败不取消AI的测试。未知运行异常不再统称TTS生成失败。两个完整Go包anchorcycle/httpapi共799项（含子测试）通过，真实V3/id116及用户自行保存的V4/id117均56/56任务通过共享保存/启动离线重放，没有真实模型/TTS/Core调用。
 - 301场于16:31:11.963由用户manual_stop，发布前两次AI/Core空闲守卫通过；没有为发布停止用户场次。发布后只读核对plan5最新V4/id117、room26发布117，没有改写方案或自动开播。本统一版的新场实际播放尚待后续开播验证；301的Core version114不算这次多商品验证。
 - 当前没有待发布任务。代码已推送GitHub main并同步work/main-merge-20261014，完整开发仍work/model-pool-source；WorkBuddy原E:/speech-generator-build文件35项捕获指纹再次一致。证明work/live-stop-check-20261016/root-deployment-report.json、root-production-verification.json、root-full-tests.jsonl、shared-v3-preparation-replay.log、shared-v4-preparation-replay.log；前端指针work/frontend-preservation/latest.json已指向本版本并复用逐项核验一致的完整备份。后续仍按actual current和实际指纹发布，不能强制历史版本。
+
+
+## 互动开关与滚动字幕发布授权（2026-11-02）
+
+用户明确“提交上线”。48个拥有路径整合欢迎/点赞/关注/下单/暖场/问答/紧急/报时/对话九开关、总开关及冷却秒数输入和短互动逐句滚动；补齐controls.go。准确本地快照Core726/Management3121项通过、两项隔离MySQL及11项DOM验证、前端计算六组检查；构建包继承当前fd8ecf3实际运行源码依赖，仅含拥有改动。配套Core/Management/前端和两张新增表，保留其它配置/母版/旧前端资源及客户数据。发布以实际指纹/共享锁/全场空闲与最终回执为准，不开停客户直播或调用模型TTS/ASR，不恢复监控。证据E:/直播伴播-local/interaction-controls-release-20261102。

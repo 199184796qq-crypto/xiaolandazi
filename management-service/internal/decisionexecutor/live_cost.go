@@ -52,6 +52,9 @@ func (w *Worker) workerPaidScope(ctx context.Context, session model.LiveRuntimeS
 	return workerPaidScope{session: session, planID: plan.ID, key: key}, nil
 }
 func (w *Worker) completePaidModel(ctx context.Context, session model.LiveRuntimeSession, request agentgateway.Request, key string) (agentgateway.Response, error) {
+	if err := checkInteractionControl(ctx); err != nil {
+		return agentgateway.Response{}, err
+	}
 	if w.paidModelCompleter == nil || session.ID <= 0 || paidWorkerOptOut(ctx) {
 		return w.agent.Complete(ctx, request)
 	}
@@ -65,6 +68,9 @@ func (w *Worker) completePaidModel(ctx context.Context, session model.LiveRuntim
 	return w.paidModelCompleter(ctx, session, request, scope.planID, logical, w.agent.Complete)
 }
 func (w *Worker) synthesizePaidAudio(ctx context.Context, session model.LiveRuntimeSession, stage, key string, request ttsgateway.SynthesizeRequest) (ttsgateway.SynthesizeResponse, error) {
+	if err := checkInteractionControl(ctx); err != nil {
+		return ttsgateway.SynthesizeResponse{}, err
+	}
 	if w.paidContextFactory == nil || session.ID <= 0 || paidWorkerOptOut(ctx) {
 		return w.tts.SynthesizeURL(ctx, request)
 	}

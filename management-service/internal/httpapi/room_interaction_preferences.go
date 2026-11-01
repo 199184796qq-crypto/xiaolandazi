@@ -28,6 +28,9 @@ func validateRoomInteractionPreferences(input *model.RoomInteractionPreferencesI
 			return fmt.Errorf("%s必须在 0 到 100 之间", label)
 		}
 	}
+	if err := model.ValidateInteractionControls(input.Switches, input.Cooldowns); err != nil {
+		return err
+	}
 	if input.Schedule != nil {
 		return interactionpolicy.Validate(*input.Schedule)
 	}
@@ -72,7 +75,7 @@ func (s *Server) roomInteractionPreferences(w http.ResponseWriter, r *http.Reque
 	}
 	item, err := s.store.UpsertRoomInteractionPreferences(r.Context(), tenantID, roomID, actor.UserID, input)
 	if err != nil {
-		if errors.Is(err, appdb.ErrInteractionScheduleConflict) {
+		if errors.Is(err, appdb.ErrInteractionScheduleConflict) || errors.Is(err, appdb.ErrInteractionControlsConflict) {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"livecompanion/management/internal/orderbell"
 	"log"
 	"math/rand"
 	"net/http"
@@ -33,7 +34,6 @@ import (
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/interactionpurpose"
 	"livecompanion/management/internal/model"
-	"livecompanion/management/internal/orderbell"
 	"livecompanion/management/internal/semantic"
 	"livecompanion/management/internal/speechmission"
 	"livecompanion/management/internal/ttsgateway"
@@ -132,34 +132,40 @@ type Worker struct {
 	readingRules         map[string]readingRulesCacheEntry
 	benefitRedis         *redis.Client
 	prepared             map[preparedInteractionKey]preparedInteraction
+	timeReportDrafts     map[preparedInteractionKey]timeReportDraft
 }
 
 type decisionItem struct {
-	OrderBell           bool                       `json:"-"`
-	BusinessCoreOnly    bool                       `json:"-"`
-	RecentAnswers       []InteractionRecentAnswer  `json:"-"`
-	PreparationCutPlans json.RawMessage            `json:"-"`
-	CompletionUntil     time.Time                  `json:"completion_until,omitempty"`
-	AudioPrepared       bool                       `json:"audio_prepared,omitempty"`
-	PreparedUntil       time.Time                  `json:"prepared_until,omitempty"`
-	PurposeID           string                     `json:"purpose_id,omitempty"`
-	PurposeKnowledge    json.RawMessage            `json:"purpose_knowledge,omitempty"`
-	IntentAngles        []contentstrategy.Row      `json:"-"`
-	SelectedContentPlan *contentstrategy.Selection `json:"-"`
-	FullFacts           string                     `json:"-"`
-	DomainCard          *domaincard.Card           `json:"-"`
-	ScopedFacts         string                     `json:"-"`
-	AnswerScope         string                     `json:"-"`
-	ExpiresAt           time.Time                  `json:"expires_at,omitempty"`
-	Scene               string                     `json:"scene,omitempty"`
-	OrderSource         string                     `json:"order_source,omitempty"`
-	OriginPlanID        int64                      `json:"origin_plan_id,omitempty"`
-	OriginMainline      string                     `json:"origin_mainline,omitempty"`
-	OriginTrackID       string                     `json:"origin_track_id,omitempty"`
-	Schedule            json.RawMessage            `json:"schedule,omitempty"`
-	ContentGoal         string                     `json:"-"`
-	ContentAngle        string                     `json:"-"`
-	contentError        error
+	ControlsRevision       uint64                     `json:"interaction_controls_revision,omitempty"`
+	Sources                []string                   `json:"sources,omitempty"`
+	OrderBell              bool                       `json:"-"`
+	TimeReportAudioVersion uint64                     `json:"-"`
+	TimeReportGeneratedAt  time.Time                  `json:"-"`
+	TimeReportValidUntil   time.Time                  `json:"-"`
+	BusinessCoreOnly       bool                       `json:"-"`
+	RecentAnswers          []InteractionRecentAnswer  `json:"-"`
+	PreparationCutPlans    json.RawMessage            `json:"-"`
+	CompletionUntil        time.Time                  `json:"completion_until,omitempty"`
+	AudioPrepared          bool                       `json:"audio_prepared,omitempty"`
+	PreparedUntil          time.Time                  `json:"prepared_until,omitempty"`
+	PurposeID              string                     `json:"purpose_id,omitempty"`
+	PurposeKnowledge       json.RawMessage            `json:"purpose_knowledge,omitempty"`
+	IntentAngles           []contentstrategy.Row      `json:"-"`
+	SelectedContentPlan    *contentstrategy.Selection `json:"-"`
+	FullFacts              string                     `json:"-"`
+	DomainCard             *domaincard.Card           `json:"-"`
+	ScopedFacts            string                     `json:"-"`
+	AnswerScope            string                     `json:"-"`
+	ExpiresAt              time.Time                  `json:"expires_at,omitempty"`
+	Scene                  string                     `json:"scene,omitempty"`
+	OrderSource            string                     `json:"order_source,omitempty"`
+	OriginPlanID           int64                      `json:"origin_plan_id,omitempty"`
+	OriginMainline         string                     `json:"origin_mainline,omitempty"`
+	OriginTrackID          string                     `json:"origin_track_id,omitempty"`
+	Schedule               json.RawMessage            `json:"schedule,omitempty"`
+	ContentGoal            string                     `json:"-"`
+	ContentAngle           string                     `json:"-"`
+	contentError           error
 
 	ID                     string                                `json:"id"`
 	MissionID              string                                `json:"mission_id,omitempty"`
@@ -1445,6 +1451,12 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		}
 	}()
 
+	guarded, stopControls, controlErr := w.watchInteractionControls(ctx, session, *item)
+	if controlErr != nil {
+		return controlErr
+	}
+	ctx = guarded
+	defer stopControls()
 	manualOrigin := strings.ToLower(strings.TrimSpace(item.ManualOrigin))
 	isSimulation := manualOrigin == "test_simulation" || manualOrigin == "agent_input_preview"
 	if isSimulation {
@@ -1464,7 +1476,13 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 			// Keep the generated reply and its voice directives, but let Core
 			// select a safe boundary on the current mainline instead of the old one.
 			current, resume, segment := item.CurrentMainline, item.ResumeMainline, item.ResumeSegmentID
+			execution := *item
 			*item = prepared.Item
+			if retryableTimeReport(execution) {
+				item.ID, item.MissionID = execution.ID, execution.MissionID
+				item.ExpiresAt, item.CompletionUntil = execution.ExpiresAt, execution.CompletionUntil
+				item.AudioPrepared, item.PreparedUntil = execution.AudioPrepared, execution.PreparedUntil
+			}
 			item.CurrentMainline, item.ResumeMainline, item.ResumeSegmentID = current, resume, segment
 			item.PlannedSwitchAtMS = 0
 			w.transitionMission(item, speechmission.StateWaitingCutPoint, "prepared_audio_reused", "复用已审核正文和声音，仅重新安排当前主线切点")
@@ -1486,6 +1504,9 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 			return planErr
 		}
 		ctx = withWorkerPaidScope(ctx, session, plan.ID, item.ID+":"+preparationScope)
+	}
+	if isTimeReport(*item) {
+		ctx = context.WithValue(ctx, timeReportContextKey{}, timeReportIdentity{Scope: preparationScope, Memory: memoryBefore})
 	}
 	text, err := w.generateDecisionTextMutable(ctx, session, item)
 	if err != nil {
@@ -1544,6 +1565,18 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		return err
 	}
 
+	if isTimeReport(*item) {
+		until, valid := timeReportValidity(text, item.TimeReportGeneratedAt)
+		if !valid {
+			return errTimeReportStale
+		}
+		if until.Before(item.TimeReportValidUntil) {
+			item.TimeReportValidUntil = until
+		}
+	}
+	if err := w.checkTimeReport(*item); err != nil {
+		return err
+	}
 	voice, ok := w.v2Voice(ctx, session, *item)
 	if !ok {
 		voice, ok, err = w.readyVoice(ctx, session.TenantID, session.RoomID)
@@ -1585,6 +1618,9 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 			Rate: voiceRate(voice), Instruction: ttsInstruction,
 		}
 	})
+	if isTimeReport(*item) {
+		ctx = timeReportPaidContext(ctx, item.TimeReportGeneratedAt, &item.TimeReportAudioVersion)
+	}
 	ttsCtx := ttsgateway.WithSynthesisTimeout(ctx, 35*time.Second)
 	if welcome, ready := welcomeV2(*item); welcome && !ready {
 		var cancel context.CancelFunc
@@ -1635,6 +1671,9 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		return err
 	}
 	if memoryNow != memoryBefore {
+		if isTimeReport(*item) {
+			return fmt.Errorf("报时纠正规则已更新，撤销旧声音并重新调度")
+		}
 		// Corrections remain hard constraints, unlike advisory host style.
 		// 规则更新后只用最新文本重新合成语音，不再做长度兜底修复。
 		text = item.nicknameSpeechText(text)
@@ -1657,8 +1696,12 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if latestScope != preparationScope {
 		return fmt.Errorf("商品事实、方案或播出规则已变化，撤销旧声音并重新排队")
 	}
+	preparedUntil := w.now().Add(preparedInteractionTTL)
 	audio.AudioURL = w.prependOrderBell(ctx, item, audio.AudioURL)
-	err = w.dispatchPreparedInteraction(ctx, session, item, text, audio.AudioURL, preparationScope, memoryNow, w.now().Add(preparedInteractionTTL))
+	if retryableTimeReport(*item) {
+		preparedUntil = item.TimeReportValidUntil
+	}
+	err = w.dispatchPreparedInteraction(ctx, session, item, text, audio.AudioURL, preparationScope, memoryNow, preparedUntil)
 	if errors.Is(err, errPreparedInteractionWaiting) {
 		reschedule = true
 		return nil
@@ -1668,6 +1711,19 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 }
 
 func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem, text, audioURL, scope, memory string, expiresAt time.Time) error {
+	if err := w.checkTimeReport(*item); err != nil {
+		return err
+	}
+	if retryableTimeReport(*item) {
+		if bounded := timeReportAudioExpiry(audioURL, item.TimeReportValidUntil, w.now()); bounded.Before(expiresAt) {
+			expiresAt = bounded
+		}
+		w.rememberTimeReportAudio(session, *item, expiresAt)
+		if !w.now().Before(expiresAt) {
+			return fmt.Errorf("报时音频地址已失效，保留有效文字重新合成")
+		}
+		w.savePreparedInteraction(session, *item, text, audioURL, scope, memory, expiresAt)
+	}
 	if welcome, _ := welcomeV2(*item); welcome {
 		if err := w.admitWelcomeV2(ctx, session, item); err != nil {
 			return err
@@ -2042,7 +2098,12 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 	if strings.TrimSpace(item.FullFacts) == "" && len(item.PurposeKnowledge) > 0 {
 		w.prepareSingleInteractionFacts(ctx, session, item)
 	}
-	text := w.lightweightInteractionText(ctx, session, *item)
+	var text string
+	if isTimeReport(*item) {
+		text = w.timeReportText(ctx, session, item)
+	} else {
+		text = w.lightweightInteractionText(ctx, session, *item)
+	}
 	text = item.nicknameSpeechText(text)
 	text = normalizeNameListSeparators(text, item.resolvedAddressingPlan.SelectedNames)
 	text = ensureAddressPunctuation(text, item.PromptAddressPhrase)
@@ -2372,6 +2433,13 @@ func (w *Worker) dispatchOnce(
 	item decisionItem,
 	action, text, audioURL string,
 ) (dispatchResult, error) {
+	if err := w.checkTimeReport(item); err != nil {
+		return dispatchResult{}, err
+	}
+	if err := checkInteractionControl(ctx); err != nil {
+		return dispatchResult{}, err
+	}
+	handoffInteractionControl(ctx)
 	query := tenantQuery(session.TenantID)
 	resp, err := w.core.DoRoom(
 		ctx, session.TenantID, session.RoomID, http.MethodPost,
@@ -2383,6 +2451,7 @@ func (w *Worker) dispatchOnce(
 			"decision_id":              item.ID,
 			"mission_id":               missionID(&item),
 			"mission_kind":             strings.ToLower(strings.TrimSpace(item.MissionKind)),
+			"time_report_valid_until":  item.TimeReportValidUntil,
 			"content_goal":             item.ContentGoal, "content_angle": item.ContentAngle,
 			"selected_content_plan": item.SelectedContentPlan,
 			"preparation_cut_plans": item.PreparationCutPlans,

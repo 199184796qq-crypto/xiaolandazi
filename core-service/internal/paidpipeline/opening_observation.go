@@ -12,6 +12,9 @@ func (p *Processor) SetAudioStartedReader(reader func(int64) time.Time) {
 }
 
 func (p *Processor) InteractionsAllowed(roomID, tenantID int64) bool {
+	if p.policies != nil && !p.policies.RoomInteractionPreferences(roomID).ControlsActive() {
+		return false
+	}
 	if p.runtime.Get(roomID).Mode == agentwork.ModeControl {
 		return true
 	}

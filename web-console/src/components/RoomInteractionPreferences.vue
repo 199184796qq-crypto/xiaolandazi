@@ -1,376 +1,103 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { getRoomInteractionPreferences, updateRoomInteractionPreferences } from '../api'
-import PreferenceSlider from './ui/PreferenceSlider.vue'
-import type {
-  RoomInteractionPreferences,
-  RoomInteractionPreferencesInput,
-} from '../types'
-
-const props = withDefaults(defineProps<{
-  roomId: number
-  compact?: boolean
-  mobile?: boolean
-  embedded?: boolean
-}>(), {
-  compact: false,
-  mobile: false,
-  embedded: false,
-})
-
-const emit = defineEmits<{
-  (event: 'updated', value: RoomInteractionPreferences): void
-}>()
-
-const loading = ref(false)
-const savingKey = ref('')
-const error = ref('')
-const notice = ref('')
-const preferenceCommand = ref('')
-const value = ref<RoomInteractionPreferences>({
-  tenant_id: 0,
-  room_id: props.roomId,
-  overall_interaction: 50,
-  question_preference: 50,
-  welcome_preference: 50,
-  engagement_preference: 50,
-  chat_preference: 50,
-  conversion_preference: 50,
-  auto_heat: true,
-})
-
-type PreferenceKey = keyof Pick<
-  RoomInteractionPreferencesInput,
-  'overall_interaction'
-  | 'question_preference'
-  | 'welcome_preference'
-  | 'engagement_preference'
-  | 'chat_preference'
-  | 'conversion_preference'
->
-
-const rows = computed(() => [
-  { key: 'question_preference' as PreferenceKey, label: '回答问题', desc: '优先回复用户问题', icon: '▣', tone: 'violet' },
-  { key: 'welcome_preference' as PreferenceKey, label: '欢迎新人', desc: '新人进入时的互动', icon: '+', tone: 'amber' },
-  { key: 'engagement_preference' as PreferenceKey, label: '点赞关注', desc: '感谢点赞和关注', icon: '♥', tone: 'rose' },
-  { key: 'chat_preference' as PreferenceKey, label: '聊天互动', desc: '普通聊天和非问题弹幕', icon: '•••', tone: 'sky' },
-  { key: 'conversion_preference' as PreferenceKey, label: '成交互动', desc: '价格 / 库存 / 购买信号', icon: '▰', tone: 'mint' },
-])
-
-function predictionLevel(score: number) {
-  if (score === 0) return '关闭'
-  if (score <= 30) return '偏少'
-  if (score <= 70) return '自然'
-  return '偏多'
-}
-
-const predictionItems = computed(() => [
-  { label: '问题互动', value: predictionLevel(value.value.question_preference), tone: 'violet' },
-  { label: '欢迎新人', value: predictionLevel(value.value.welcome_preference), tone: 'mint' },
-  { label: '成交互动', value: predictionLevel(value.value.conversion_preference), tone: 'purple' },
-])
-
-function inputPayload(): RoomInteractionPreferencesInput {
-  return {
-    schedule: value.value.schedule,
-    overall_interaction: value.value.overall_interaction,
-    question_preference: value.value.question_preference,
-    welcome_preference: value.value.welcome_preference,
-    engagement_preference: value.value.engagement_preference,
-    chat_preference: value.value.chat_preference,
-    conversion_preference: value.value.conversion_preference,
-    auto_heat: value.value.auto_heat,
+import type { InteractionControlKind, RoomInteractionPreferences, RoomInteractionPreferencesInput } from '../types'
+const props = withDefaults(defineProps<{ roomId: number; compact?: boolean; mobile?: boolean; embedded?: boolean }>(), { compact: false, mobile: false, embedded: false })
+const emit = defineEmits<{ (event: 'updated', value: RoomInteractionPreferences): void }>()
+const rows: { key: InteractionControlKind; label: string; description: string; initial: number; hint: string }[] = [
+  { key: 'welcome', label: '欢迎新人', description: '按进房与弹幕热度自适应，设置值作为下限。', initial: 0, hint: '0 = 自适应' },
+  { key: 'like', label: '点赞感谢', description: '合并最近 30 秒不同观众的点赞。', initial: 30, hint: '人气高时自动延长' },
+  { key: 'follow', label: '关注感谢', description: '合并最近 30 秒不同观众的关注。', initial: 20, hint: '人气高时自动延长' },
+  { key: 'order', label: '下单播报', description: '播报已确认下单，未播成的补报沿用原配额。', initial: 5, hint: '补报仍按原规则重试' },
+  { key: 'guide', label: '互动暖场', description: '距最后一次互动结束至少 180 秒才可暖场。', initial: 180, hint: '系统下限为 180 秒' },
+  { key: 'semantic', label: '弹幕问答', description: '保留原问答筛选与配额，也控制“扣 1”等主动互动。', initial: 0, hint: '0 = 保留原节奏' },
+  { key: 'urgent', label: '紧急投诉', description: '控制紧急投诉通道，关闭后不再自动播报。', initial: 0, hint: '间隔不可调' },
+  { key: 'time_report', label: '报时', description: '在原报时计划上额外延后设置的秒数。', initial: 0, hint: '0 = 保留原节奏' },
+  { key: 'dialogue', label: '追问澄清', description: '控制追问与后续对话，不改变弹幕筛选窗口。', initial: 0, hint: '0 = 保留原节奏' },
+]
+const loading = ref(true), saving = ref(false), error = ref(''), notice = ref('')
+const value = ref<RoomInteractionPreferences>(), active = ref(true)
+const switches = ref<Partial<Record<InteractionControlKind, boolean>>>({})
+const seconds = ref<Partial<Record<InteractionControlKind, number | string>>>({})
+let generation = 0
+const busy = computed(() => loading.value || saving.value || !value.value)
+const allOff = computed(() => !active.value || rows.every(row => switches.value[row.key] === false))
+function hydrate(item: RoomInteractionPreferences) {
+  value.value = item; active.value = item.interaction_active ?? item.overall_interaction > 0
+  const legacy: Partial<Record<InteractionControlKind, boolean>> = { welcome: item.welcome_preference > 0, like: item.engagement_preference > 0, follow: item.engagement_preference > 0, order: item.conversion_preference > 0, semantic: item.question_preference > 0 || item.chat_preference > 0 }
+  if (item.interaction_active === undefined && item.schedule) {
+    const allowed = (scene: string) => { const rule = item.schedule?.events[scene]; return !rule || (rule.enabled && rule.weight > 0) }
+    legacy.welcome = legacy.welcome && allowed('welcome'); legacy.like = legacy.like && allowed('like_follow'); legacy.follow = legacy.follow && allowed('like_follow'); legacy.order = legacy.order && allowed('order')
+    legacy.semantic = (item.question_preference > 0 && allowed('product_question')) || (item.chat_preference > 0 && allowed('smalltalk'))
+    legacy.urgent = allowed('complaint'); legacy.dialogue = allowed('product_question'); legacy.guide = allowed('warmup')
   }
+  switches.value = Object.fromEntries(rows.map(row => [row.key, item.interaction_switches?.[row.key] ?? (item.interaction_active === undefined ? legacy[row.key] ?? true : true)]))
+  seconds.value = Object.fromEntries(rows.filter(row => row.key !== 'urgent').map(row => [row.key, item.interaction_cooldowns?.[row.key] ?? row.initial]))
 }
-
-async function load() {
-  if (!props.roomId) return
-  loading.value = true
-  error.value = ''
+async function load(keepError = false) {
+  const id = props.roomId, token = ++generation
+  loading.value = true; saving.value = false; value.value = undefined
+  if (!keepError) { error.value = ''; notice.value = '' }
+  try { if (id) { const item = await getRoomInteractionPreferences(id); if (token === generation && id === props.roomId) hydrate(item) } }
+  catch (err) { if (token === generation) error.value = err instanceof Error ? err.message : '读取互动设置失败' }
+  finally { if (token === generation) loading.value = false }
+}
+function invalid(key: InteractionControlKind) { const n = seconds.value[key]; return n === '' || n === undefined || !Number.isInteger(Number(n)) || Number(n) < 0 || Number(n) > 3600 }
+function belowDefault(key: InteractionControlKind, initial: number) { return !invalid(key) && Number(seconds.value[key]) < initial }
+async function persist() {
+  if (busy.value || !value.value) return
+  const bad = rows.find(row => row.key !== 'urgent' && invalid(row.key))
+  if (bad) { error.value = `${bad.label}的冷却时间必须为 0–3600 秒的整数`; return }
+  const item = value.value, id = props.roomId, token = generation
+  const payload: RoomInteractionPreferencesInput = {
+    overall_interaction: item.overall_interaction, question_preference: item.question_preference, welcome_preference: item.welcome_preference,
+    engagement_preference: item.engagement_preference, chat_preference: item.chat_preference, conversion_preference: item.conversion_preference, auto_heat: item.auto_heat,
+    interaction_active: active.value, interaction_switches: { ...switches.value },
+    interaction_cooldowns: Object.fromEntries(rows.filter(row => row.key !== 'urgent').map(row => [row.key, Number(seconds.value[row.key])])), interaction_controls_revision: item.interaction_controls_revision ?? 0,
+  }
+  // These room controls must not resave the immutable plan schedule.
+  saving.value = true; error.value = ''; notice.value = ''
   try {
-    value.value = await getRoomInteractionPreferences(props.roomId)
+    const saved = await updateRoomInteractionPreferences(id, payload)
+    if (token !== generation || id !== props.roomId) return
+    hydrate(saved); notice.value = '已保存并热生效。关闭时撤销未播任务，正在播出的互动正常完成。'; emit('updated', saved)
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '读取互动偏好失败'
-  } finally {
-    loading.value = false
-  }
+    if (token !== generation || id !== props.roomId) return
+    error.value = err instanceof Error ? err.message : '保存互动设置失败'
+    // A failed hot-sync can have persisted. Reload the saved version for retry.
+    await load(true)
+  } finally { if (token === generation) saving.value = false }
 }
-
-async function persist(key: string) {
-  if (!props.roomId || savingKey.value) return
-  savingKey.value = key
-  error.value = ''
-  notice.value = ''
-  try {
-    value.value = await updateRoomInteractionPreferences(props.roomId, inputPayload())
-    notice.value = key.startsWith('schedule') ? '已保存，事件权重配置将在下次启动直播搭子时使用；当前回答继续完成。' : '互动频率已更新，已入队任务保持原配置。'
-    emit('updated', value.value)
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '保存互动偏好失败'
-    await load()
-  } finally {
-    savingKey.value = ''
-  }
+function toggle(key?: InteractionControlKind) {
+  if (busy.value || (key && !active.value)) return
+  let restored = false
+  for (const row of rows) { if (row.key !== 'urgent' && invalid(row.key)) { seconds.value[row.key] = value.value?.interaction_cooldowns?.[row.key] ?? row.initial; restored = true } }
+  if (key) switches.value[key] = !switches.value[key]; else active.value = !active.value
+  void persist().then(() => { if (restored && !error.value) notice.value += ' 无效的冷却时间未保存。' })
 }
-
-function finishSlider(key: PreferenceKey) {
-  void persist(key)
-}
-
-function toggleAutoHeat() {
-  value.value.auto_heat = !value.value.auto_heat
-  void persist('auto_heat')
-}
-
-function applyNaturalPreferenceCommand() {
-  const text = preferenceCommand.value.trim()
-  if (!text) return
-  let matched = false
-  const has = (...terms: string[]) => terms.some((term) => text.includes(term))
-  const set = (key: PreferenceKey, next: number) => {
-    value.value[key] = next
-    matched = true
-  }
-
-  if (has('完全不互动', '关闭互动', '不要互动')) set('overall_interaction', 0)
-  else if (has('安静一点', '少互动', '互动少一点')) set('overall_interaction', 25)
-  if (has('热情一点', '多互动', '积极互动')) set('overall_interaction', 75)
-
-  if (has('不要回答问题', '关闭回答问题', '问题不互动')) set('question_preference', 0)
-  else if (has('多回答', '多答问题', '优先回答')) set('question_preference', 75)
-  else if (has('少回答', '少答问题')) set('question_preference', 25)
-
-  if (has('不要欢迎新人', '关闭欢迎新人', '新人不欢迎')) set('welcome_preference', 0)
-  else if (has('多欢迎', '多迎新', '新人多欢迎')) set('welcome_preference', 75)
-  else if (has('少欢迎', '别总欢迎', '不要一直欢迎')) set('welcome_preference', 25)
-
-  if (has('点赞不用', '不用感谢点赞', '关闭点赞互动')) set('engagement_preference', 0)
-  else if (has('少感谢点赞', '点赞少一点')) set('engagement_preference', 25)
-  else if (has('多感谢点赞', '多感谢关注', '点赞多互动')) set('engagement_preference', 75)
-
-  if (has('不要聊天', '关闭聊天', '不闲聊')) set('chat_preference', 0)
-  else if (has('多聊天', '多聊两句')) set('chat_preference', 75)
-  else if (has('少聊天', '别闲聊')) set('chat_preference', 25)
-
-  if (has('不促单', '关闭成交互动', '成交不互动')) set('conversion_preference', 0)
-  else if (has('成交积极', '多促单', '多逼单')) set('conversion_preference', 75)
-  else if (has('成交稳一点', '少逼单', '别一直促单')) set('conversion_preference', 25)
-  if (has('人少', '人多', '热度', '人气', '自动调整')) {
-    value.value.auto_heat = true
-    matched = true
-  }
-  if (!matched) {
-    error.value = '没有识别到明确偏好，可以说“多回答问题、少感谢点赞、人少多欢迎”。'
-    return
-  }
-  error.value = ''
-  preferenceCommand.value = ''
-  void persist('natural_language')
-}
-
-watch(() => props.roomId, () => void load())
-onMounted(() => void load())
+watch(() => props.roomId, () => void load(), { immediate: true })
+onBeforeUnmount(() => { generation++ })
 </script>
 
 <template>
-  <section class="interaction-preferences" :class="{ compact, mobile, embedded }">
-    <header v-if="!embedded" class="preference-header">
-      <div class="preference-heading">
-        <strong>互动偏好</strong>
-        <span>你决定更想回应什么；滑到最左侧 0 时，该项绝对不自动互动。</span>
-      </div>
-      <div class="smart-badge" :class="{ active: value.auto_heat }">
-        <i></i>
-        {{ loading ? '正在读取' : savingKey ? '正在生效' : value.auto_heat ? '智能随人气调整' : '固定偏好' }}
-      </div>
-    </header>
-
-    <div v-if="error" class="interaction-pref-error">{{ error }}</div>
-
-    <div class="preference-list">
-      <article class="preference-row overall-row">
-        <div class="preference-row-main">
-          <span class="preference-icon tone-blue" aria-hidden="true">≋</span>
-          <div class="interaction-pref-copy">
-            <strong>整体互动</strong>
-            <span>控制整体互动频率</span>
-          </div>
+  <section class="interaction-preferences" :class="{ compact, mobile, embedded }" aria-label="互动开关与冷却">
+    <header v-if="!embedded"><strong>互动开关与冷却</strong><span>按房间保存，修改后立即生效。</span></header>
+    <div v-if="error" class="message error" role="alert">{{ error }} <button type="button" :disabled="busy" @click="persist()">重试保存</button> <button type="button" :disabled="busy" @click="load()">重新读取</button></div>
+    <div v-if="notice" class="message success" role="status">{{ notice }}</div>
+    <div class="master"><div><strong>互动总开关</strong><span>{{ loading ? '正在读取设置…' : saving ? '正在保存…' : allOff ? '互动已关闭，主线继续播放' : '自动互动已开启' }}</span></div><button type="button" class="switch" role="switch" aria-label="互动总开关" :aria-checked="active" :disabled="busy" @click="toggle()"><i></i><span>{{ active ? '开' : '关' }}</span></button></div>
+    <div class="list" :class="{ 'master-off': !active }">
+      <article v-for="row in rows" :key="row.key" class="row" :class="{ off: switches[row.key] === false }">
+        <div class="copy"><strong>{{ row.label }}</strong><span>{{ row.description }}</span></div>
+        <div class="actions"><button type="button" class="switch" role="switch" :aria-label="`${row.label}开关`" :aria-checked="switches[row.key] !== false" :disabled="busy || !active" @click="toggle(row.key)"><i></i><span>{{ switches[row.key] !== false ? '开' : '关' }}</span></button>
+          <label v-if="row.key !== 'urgent'" class="interval"><span>{{ row.key === 'time_report' ? '额外冷却' : '冷却时间' }}</span><input v-model="seconds[row.key]" type="number" min="0" max="3600" step="1" inputmode="numeric" :aria-label="`${row.label}冷却时间`" :aria-invalid="invalid(row.key)" :disabled="busy || !active || switches[row.key] === false" @change="persist()" @keydown.enter.prevent="persist()"><span>秒</span></label><span v-else class="fixed">间隔不可调</span>
         </div>
-        <PreferenceSlider
-          v-model="value.overall_interaction"
-          :compact="compact"
-          :disabled="loading || Boolean(savingKey)"
-          aria-label="整体互动频率"
-          @commit="finishSlider('overall_interaction')"
-        />
-      </article>
-
-      <article v-for="row in rows" :key="row.key" class="preference-row">
-        <div class="preference-row-main">
-          <span class="preference-icon" :class="'tone-' + row.tone" aria-hidden="true">{{ row.icon }}</span>
-          <div class="interaction-pref-copy">
-            <strong>{{ row.label }}</strong>
-            <span>{{ row.desc }}</span>
-          </div>
-        </div>
-        <PreferenceSlider
-          v-model="value[row.key]"
-          :compact="compact"
-          :disabled="loading || Boolean(savingKey)"
-          :aria-label="row.label"
-          @commit="finishSlider(row.key)"
-        />
+        <p v-if="row.key !== 'urgent'" class="hint" :class="{ warning: belowDefault(row.key, row.initial) }">{{ row.hint }}<template v-if="belowDefault(row.key, row.initial)"> · 低于默认值，仍受系统下限及自适应限制。</template></p>
       </article>
     </div>
-
-    <details v-if="value.schedule" class="event-schedule-panel">
-      <summary>互动事件权重 · 方案配置 V{{ value.schedule.version }}</summary>
-      <p>优先级决定先后，权重决定同级事件的处理顺序。紧急事件排到等待队列前面，正在回答的问题先答完。保存后下次启动使用。</p>
-      <article v-for="(rule, key) in value.schedule.events" :key="key" class="event-rule-row">
-        <label><input v-model="rule.enabled" type="checkbox" :disabled="loading || Boolean(savingKey)" @change="persist('schedule:' + key)" />{{ rule.name }}</label>
-        <select v-model="rule.priority" :disabled="loading || Boolean(savingKey)" :aria-label="rule.name + '优先级'" @change="persist('schedule:' + key)">
-          <option v-for="(label, priority) in value.schedule.priority_labels" :key="priority" :value="priority">{{ label }}</option>
-        </select>
-        <label class="event-weight">处理权重 <input v-model.number="rule.weight" type="number" min="0" max="100" :disabled="loading || Boolean(savingKey)" :aria-label="rule.name + '处理权重'" @change="persist('schedule:' + key)" /></label>
-        <small>{{ rule.goals.map(goal => goal.name).join(' / ') }}</small>
-      </article>
-    </details>
-
-    <section class="ai-prediction-strip">
-      <div class="ai-prediction-title">
-        <span class="ai-spark" aria-hidden="true">✦</span>
-        <div>
-          <strong>互动频率</strong>
-          <small>基于当前互动偏好与直播节奏</small>
-        </div>
-      </div>
-      <div class="prediction-items">
-        <div v-for="item in predictionItems" :key="item.label" class="prediction-item" :class="'tone-' + item.tone">
-          <i></i>
-          <span>{{ item.label }}</span>
-          <strong>{{ item.value }}</strong>
-        </div>
-      </div>
-    </section>
-
-    <section class="natural-pref-command">
-      <span class="ai-spark small" aria-hidden="true">✦</span>
-      <input
-        v-model="preferenceCommand"
-        type="text"
-        :disabled="loading || Boolean(savingKey)"
-        placeholder="直接告诉小蓝：人少多欢迎，多回答问题，点赞不用太频繁感谢"
-        @keyup.enter="applyNaturalPreferenceCommand"
-      />
-      <button type="button" :disabled="loading || Boolean(savingKey) || !preferenceCommand.trim()" @click="applyNaturalPreferenceCommand">应用</button>
-    </section>
-
-    <section class="auto-adjust-row">
-      <div class="auto-adjust-copy">
-        <span class="ai-spark small" aria-hidden="true">✦</span>
-        <div>
-          <strong>随热度调整</strong>
-          <span>根据在线人数、互动密度和成交阶段，智能优化上述设置。</span>
-          <small v-if="notice && !savingKey">{{ notice }}</small>
-        </div>
-      </div>
-      <button
-        type="button"
-        class="auto-toggle"
-        :class="{ active: value.auto_heat }"
-        :aria-pressed="value.auto_heat"
-        :disabled="loading || Boolean(savingKey)"
-        @click="toggleAutoHeat"
-      >
-        <i></i>
-      </button>
-    </section>
+    <footer>一般冷却从实际播报开始计算；暖场从上次互动结束计算，报时是在原计划上额外延后。填 0 不会关闭互动，请使用开关。</footer>
   </section>
 </template>
 
 <style scoped>
-.event-schedule-panel{border:1px solid #dce4f4;border-radius:13px;padding:12px;background:#fbfcff;color:#24385e}
-.event-schedule-panel summary{font-weight:850;cursor:pointer}
-.event-schedule-panel p{font-size:12px;line-height:1.6;color:#62718d}
-.event-rule-row{display:grid;grid-template-columns:minmax(110px,1fr) 110px 150px;gap:8px;align-items:center;padding:9px 0;border-top:1px solid #e4e8f3;font-size:13px}
-.event-rule-row label{display:flex;gap:7px;align-items:center}.event-rule-row select,.event-rule-row input[type=number]{min-width:0;border:1px solid #dce4f4;border-radius:7px;padding:5px;background:white;color:#24385e}.event-rule-row input[type=number]{width:58px}.event-rule-row small{grid-column:1/-1;color:#62718d;line-height:1.5}.event-weight{justify-content:flex-end}
-@media(max-width:600px){.event-rule-row{grid-template-columns:minmax(100px,1fr) 105px}.event-weight{grid-column:1/-1;justify-content:flex-start}}
-
-.interaction-preferences{display:grid;gap:12px;padding:18px;border:1px solid #dce4f4;border-radius:20px;background:linear-gradient(180deg,#fff 0%,#fbfcff 100%);box-shadow:0 14px 34px rgba(65,83,140,.08)}
-.preference-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:8px 16px}
-.preference-heading{display:grid;gap:6px;min-width:0}
-.preference-heading strong{color:#172a52;font-size:26px;font-weight:950;letter-spacing:-.5px}
-.preference-heading span{color:#53627d;font-size:14px;font-weight:750;line-height:1.55}
-.smart-badge{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 13px;border:1px solid #d8dfeb;border-radius:999px;background:#f7f9fc;color:#637087;font-size:13px;font-weight:900;white-space:nowrap}
-.smart-badge i{width:9px;height:9px;border-radius:50%;background:#a7b1c2}
-.smart-badge.active{border-color:#bfe9d7;background:linear-gradient(180deg,#effbf5,#e9f8f1);color:#277653;box-shadow:inset 0 0 0 1px rgba(79,185,136,.04)}
-.smart-badge.active i{background:#37b87c;box-shadow:0 0 0 5px rgba(55,184,124,.12)}
-.interaction-pref-error{padding:10px 12px;border:1px solid #f3ced3;border-radius:11px;background:#fff2f3;color:#b34450;font-size:13px;font-weight:850}
-.preference-list{display:grid;gap:8px}
-.preference-row{display:grid;grid-template-columns:minmax(210px,1fr) minmax(300px,460px);align-items:center;gap:18px;padding:9px 12px;border:1px solid #e9edf7;border-radius:13px;background:linear-gradient(90deg,#f7f9fe 0%,#fbfcff 56%,#fff 100%);transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease}
-.preference-row:hover{border-color:#d4dcf3;box-shadow:0 7px 18px rgba(79,99,164,.07);transform:translateY(-1px)}
-.preference-row-main{display:grid;grid-template-columns:46px minmax(0,1fr);align-items:center;gap:12px;min-width:0}
-.preference-icon{display:grid;place-items:center;width:46px;height:46px;border-radius:12px;font-size:19px;font-weight:950;letter-spacing:-2px}
-.preference-icon.tone-blue{background:linear-gradient(145deg,#edf5ff,#dceaff);color:#4384ee}.preference-icon.tone-violet{background:linear-gradient(145deg,#f1eaff,#e6dbff);color:#7750db}.preference-icon.tone-amber{background:linear-gradient(145deg,#fff7e6,#ffebbf);color:#e99a10}.preference-icon.tone-rose{background:linear-gradient(145deg,#fff0f4,#ffdce7);color:#ef4f79}.preference-icon.tone-sky{background:linear-gradient(145deg,#eaf8ff,#d8efff);color:#3294dc}.preference-icon.tone-mint{background:linear-gradient(145deg,#eafbf4,#d7f5e7);color:#26a66d}
-.interaction-pref-copy{display:grid;gap:3px;min-width:0}
-.interaction-pref-copy strong{color:#172b53;font-size:17px;font-weight:950;line-height:1.25}
-.interaction-pref-copy span{color:#62718d;font-size:13px;font-weight:750;line-height:1.35}
-.ai-prediction-strip{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:14px;padding:10px 12px;border:1px solid #dfe5f5;border-radius:13px;background:linear-gradient(100deg,#fbfcff,#f7f9ff)}
-.ai-prediction-title{display:flex;align-items:center;gap:10px;padding-right:14px;border-right:1px solid #dce3f2}
-.ai-prediction-title>div{display:grid;gap:2px}
-.ai-prediction-title strong{color:#5668df;font-size:15px;font-weight:950;white-space:nowrap}
-.ai-prediction-title small{color:#8490a8;font-size:10.5px;font-weight:750;white-space:nowrap}
-.ai-spark{display:grid;place-items:center;width:28px;height:28px;color:#5268ef;font-size:26px;line-height:1;text-shadow:0 5px 12px rgba(82,104,239,.2)}
-.ai-spark.small{width:25px;height:25px;font-size:22px}
-.prediction-items{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.prediction-item{display:flex;align-items:center;justify-content:center;gap:5px;min-width:0;color:#4e5d79;font-size:11px;font-weight:800;white-space:nowrap}
-.prediction-item i{width:9px;height:9px;border-radius:3px;background:#8d9aae}.prediction-item strong{font-size:11px;font-weight:950}
-.prediction-item.tone-violet i{background:#d853cb}.prediction-item.tone-violet strong{color:#ac43a8}.prediction-item.tone-mint i{background:#57c899}.prediction-item.tone-mint strong{color:#2c956d}.prediction-item.tone-purple i{background:#7a63de}.prediction-item.tone-purple strong{color:#6955c9}
-.natural-pref-command{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px 10px;border:1px solid #e1e6f4;border-radius:12px;background:#f9faff}
-.natural-pref-command input{min-width:0;height:34px;padding:0 10px;border:1px solid #dfe5f0;border-radius:9px;background:#fff;color:#2d4168;font:inherit;font-size:11.5px;font-weight:700;outline:none}
-.natural-pref-command input:focus{border-color:#8797ef;box-shadow:0 0 0 3px rgba(99,119,232,.08)}
-.natural-pref-command button{height:34px;padding:0 12px;border:1px solid #6477eb;border-radius:9px;background:#6074e9;color:#fff;font-size:11.5px;font-weight:900;cursor:pointer}
-.natural-pref-command button:disabled,.natural-pref-command input:disabled{opacity:.55;cursor:not-allowed}
-.auto-adjust-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:14px;padding:11px 13px;border:1px solid #dfe5f4;border-radius:13px;background:#fff}
-.auto-adjust-copy{display:flex;align-items:flex-start;gap:10px;min-width:0}
-.auto-adjust-copy>div{display:grid;gap:2px;min-width:0}
-.auto-adjust-copy strong{color:#5567df;font-size:15px;font-weight:950}
-.auto-adjust-copy span{color:#6b7890;font-size:11.5px;font-weight:750;line-height:1.4}
-.auto-adjust-copy small{color:#30a16e;font-size:10.5px;font-weight:900}
-.auto-toggle{position:relative;width:48px;height:28px;padding:0;border:0;border-radius:999px;background:#c9d1df;cursor:pointer;transition:.18s ease;box-shadow:inset 0 1px 3px rgba(38,53,89,.12)}
-.auto-toggle i{position:absolute;top:4px;left:4px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 2px 7px rgba(38,53,89,.2);transition:.18s ease}
-.auto-toggle.active{background:linear-gradient(90deg,#5570ef,#657cff)}.auto-toggle.active i{left:24px}.auto-toggle:disabled{cursor:not-allowed;opacity:.55}
-.interaction-preferences.embedded{padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
-.interaction-preferences.compact{gap:9px;padding:14px 12px;border-radius:17px}
-.interaction-preferences.compact.embedded{padding:0}
-.interaction-preferences.compact .preference-heading strong{font-size:21px}
-.interaction-preferences.compact .preference-heading span{font-size:12.5px;line-height:1.4}
-.interaction-preferences.compact .smart-badge{min-height:32px;padding:0 9px;font-size:11px}
-.interaction-preferences.compact .smart-badge i{width:8px;height:8px}
-.interaction-preferences.compact .preference-list{gap:6px}
-.interaction-preferences.compact .preference-row{grid-template-columns:minmax(132px,42%) minmax(0,1fr);gap:10px;padding:8px 9px;border-radius:11px}
-.interaction-preferences.compact .preference-row-main{grid-template-columns:36px minmax(0,1fr);gap:8px}
-.interaction-preferences.compact .preference-icon{width:36px;height:36px;border-radius:10px;font-size:15px}
-.interaction-preferences.compact .interaction-pref-copy{gap:1px}
-.interaction-preferences.compact .interaction-pref-copy strong{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.interaction-preferences.compact .interaction-pref-copy span{font-size:10.5px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.interaction-preferences.compact .ai-prediction-strip{grid-template-columns:1fr;gap:8px;padding:9px 10px}
-.interaction-preferences.compact .ai-prediction-title{padding-right:0;padding-bottom:7px;border-right:0;border-bottom:1px solid #e4e8f3}
-.interaction-preferences.compact .ai-prediction-title small{white-space:normal}
-.interaction-preferences.compact .prediction-items{gap:4px}
-.interaction-preferences.compact .prediction-item{display:grid;grid-template-columns:8px 1fr;justify-content:start;gap:1px 5px;font-size:9.5px;white-space:normal}
-.interaction-preferences.compact .prediction-item i{grid-row:1 / span 2;align-self:center;width:7px;height:7px}
-.interaction-preferences.compact .prediction-item strong{grid-column:2;font-size:10px}
-.interaction-preferences.compact .auto-adjust-row{padding:9px 10px}
-.interaction-preferences.compact .auto-adjust-copy{gap:7px}
-.interaction-preferences.compact .auto-adjust-copy strong{font-size:13px}
-.interaction-preferences.compact .auto-adjust-copy span{font-size:10.5px}
-.interaction-preferences.compact .auto-toggle{width:44px;height:26px}.interaction-preferences.compact .auto-toggle i{width:18px;height:18px}.interaction-preferences.compact .auto-toggle.active i{left:22px}
-@media (max-width:760px){
-  .interaction-preferences{padding:14px;border-radius:16px}
-  .preference-header{grid-template-columns:1fr}.smart-badge{justify-self:start}
-  .preference-row{grid-template-columns:1fr;gap:9px}
-  .ai-prediction-strip{grid-template-columns:1fr}.ai-prediction-title{padding:0 0 8px;border-right:0;border-bottom:1px solid #e2e7f2}
-  .prediction-items{grid-template-columns:1fr}
-}
+.interaction-preferences{display:grid;gap:14px;min-width:0;color:#26354f;font-size:16px;line-height:1.5}header,.master>div,.copy{display:grid;gap:4px;min-width:0}header strong{font-size:20px}header span,footer{color:#64748b}.master{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px;border:1px solid #dce2ff;border-radius:16px;background:linear-gradient(115deg,#f1f3ff,#fafbff)}.master strong{font-size:18px}.master>div span,.copy span{color:#61718b}.list{display:grid;gap:10px}.row{display:grid;grid-template-columns:minmax(150px,1fr) auto;gap:10px 16px;align-items:center;padding:16px;border:1px solid #e3e8f2;border-radius:14px;background:white}.copy strong{font-size:17px}.actions{display:flex;align-items:center;gap:18px}.interval{display:flex;align-items:center;gap:8px;white-space:nowrap;color:#52627d}.interval input{width:88px;min-height:42px;box-sizing:border-box;border:1px solid #cad3e5;border-radius:9px;padding:8px;color:#28364e;background:#fff;font:inherit;text-align:center}.interval input:focus{outline:2px solid #8a81ff;outline-offset:2px}.interval input[aria-invalid=true]:not(:disabled){border-color:#d56565}.switch{display:flex;align-items:center;gap:7px;flex:none;min-height:42px;min-width:76px;border:0;border-radius:24px;padding:7px 10px;background:#dbe2ec;color:#44536a;font:inherit;font-weight:700;cursor:pointer}.switch i{display:block;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0002}.switch[aria-checked=true]{background:#6554ef;color:white;flex-direction:row-reverse}.switch:focus-visible{outline:3px solid #a49aff;outline-offset:3px}.switch:disabled{cursor:not-allowed;opacity:.55}.master-off .row,.row.off{background:#f6f7fa;color:#788399}.master-off .copy,.off .copy{opacity:.65}.interval input:disabled{background:#eaeef4;color:#8a95a7}.hint{grid-column:1/-1;margin:0;color:#657695}.hint.warning{color:#9a6520}.fixed{min-width:206px;text-align:right;color:#79859b}.message{padding:12px 14px;border-radius:10px;overflow-wrap:anywhere}.error{background:#fff0f0;color:#a23944}.success{background:#edf9f4;color:#27785b}.message button{padding:5px 9px;border:1px solid currentColor;border-radius:7px;background:transparent;color:inherit;font:inherit;cursor:pointer}footer{padding:0 3px}.compact .row{grid-template-columns:1fr;padding:14px}.compact .actions{justify-content:space-between}.compact .master{padding:14px}@media(max-width:680px){.row{grid-template-columns:1fr}.actions{justify-content:space-between;gap:10px}.interval{gap:6px}.interval input{width:78px}.master{padding:14px}.fixed{min-width:0}}
 </style>

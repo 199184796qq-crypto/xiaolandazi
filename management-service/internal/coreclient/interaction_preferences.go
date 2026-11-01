@@ -15,9 +15,10 @@ import (
 // record. Keep this boundary explicit: Core rejects unknown JSON fields.
 type roomInteractionPreferencesPayload struct {
 	model.RoomInteractionPreferencesInput
-	TenantID  int64     `json:"tenant_id"`
-	RoomID    int64     `json:"room_id"`
-	UpdatedAt time.Time `json:"updated_at"`
+	TenantID   int64             `json:"tenant_id"`
+	RoomID     int64             `json:"room_id"`
+	UpdatedAt  time.Time         `json:"updated_at"`
+	DisabledAt map[string]uint64 `json:"interaction_disabled_revisions,omitempty"`
 }
 
 func (c *Client) PutRoomInteractionPreferences(ctx context.Context, item model.RoomInteractionPreferences) (*http.Response, error) {
@@ -26,6 +27,7 @@ func (c *Client) PutRoomInteractionPreferences(ctx context.Context, item model.R
 	}
 	payload := roomInteractionPreferencesPayload{
 		RoomInteractionPreferencesInput: model.RoomInteractionPreferencesInput{
+			InteractionActive: item.InteractionActive, Switches: item.Switches, Cooldowns: item.Cooldowns, ControlsRevision: &item.ControlsRevision,
 			Schedule:             item.Schedule,
 			OverallInteraction:   item.OverallInteraction,
 			QuestionPreference:   item.QuestionPreference,
@@ -35,7 +37,7 @@ func (c *Client) PutRoomInteractionPreferences(ctx context.Context, item model.R
 			ConversionPreference: item.ConversionPreference,
 			AutoHeat:             item.AutoHeat,
 		},
-		TenantID: item.TenantID, RoomID: item.RoomID, UpdatedAt: item.UpdatedAt,
+		TenantID: item.TenantID, RoomID: item.RoomID, UpdatedAt: item.UpdatedAt, DisabledAt: item.ControlsDisabledAt,
 	}
 	query := url.Values{"tenant_id": {strconv.FormatInt(item.TenantID, 10)}}
 	return c.DoRoom(ctx, item.TenantID, item.RoomID, http.MethodPut,

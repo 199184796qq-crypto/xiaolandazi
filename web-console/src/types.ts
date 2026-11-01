@@ -703,7 +703,14 @@ export interface InteractionSchedule {
   events: Record<string, InteractionEventRule>
 }
 
+export type InteractionControlKind = 'welcome' | 'like' | 'follow' | 'order' | 'guide' | 'semantic' | 'urgent' | 'time_report' | 'dialogue'
+
 export interface RoomInteractionPreferences {
+  interaction_active?: boolean
+  interaction_switches?: Partial<Record<InteractionControlKind, boolean>>
+  interaction_cooldowns?: Partial<Record<InteractionControlKind, number>>
+  interaction_controls_revision?: number
+
   schedule?: InteractionSchedule
   tenant_id: number
   room_id: number
@@ -719,6 +726,11 @@ export interface RoomInteractionPreferences {
 }
 
 export interface RoomInteractionPreferencesInput {
+  interaction_active?: boolean
+  interaction_switches?: Partial<Record<InteractionControlKind, boolean>>
+  interaction_cooldowns?: Partial<Record<InteractionControlKind, number>>
+  interaction_controls_revision?: number
+
   schedule?: InteractionSchedule
   overall_interaction: InteractionPreferenceScore
   question_preference: InteractionPreferenceScore

@@ -213,6 +213,15 @@ type LiveAgentSettingsInput struct {
 }
 
 type RoomInteractionPreferences struct {
+	ControlsDisabledAt map[string]uint64 `json:"-"`
+	InteractionActive  *bool             `json:"interaction_active,omitempty"`
+	Switches           map[string]bool   `json:"interaction_switches,omitempty"`
+	Cooldowns          map[string]int    `json:"interaction_cooldowns,omitempty"`
+
+	ControlsRevision        uint64    `json:"interaction_controls_revision"`
+	ControlsUpdatedAt       time.Time `json:"interaction_controls_updated_at,omitempty"`
+	ControlsUpdatedByUserID *int64    `json:"interaction_controls_updated_by_user_id,omitempty"`
+
 	Schedule             *InteractionSchedule `json:"schedule,omitempty"`
 	TenantID             int64                `json:"tenant_id"`
 	RoomID               int64                `json:"room_id"`
@@ -228,6 +237,12 @@ type RoomInteractionPreferences struct {
 }
 
 type RoomInteractionPreferencesInput struct {
+	InteractionActive *bool           `json:"interaction_active,omitempty"`
+	Switches          map[string]bool `json:"interaction_switches,omitempty"`
+	Cooldowns         map[string]int  `json:"interaction_cooldowns,omitempty"`
+
+	ControlsRevision *uint64 `json:"interaction_controls_revision,omitempty"`
+
 	Schedule             *InteractionSchedule `json:"schedule,omitempty"`
 	OverallInteraction   int                  `json:"overall_interaction"`
 	QuestionPreference   int                  `json:"question_preference"`

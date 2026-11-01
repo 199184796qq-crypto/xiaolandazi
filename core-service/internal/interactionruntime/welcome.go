@@ -194,7 +194,7 @@ func (e *Engine) prepareWelcome(r *room, now time.Time) {
 		return
 	}
 	if !w.Pending {
-		if !w.LastStart.IsZero() && now.Before(w.LastStart.Add(w.Interval)) {
+		if !w.LastStart.IsZero() && now.Before(w.LastStart.Add(max(w.Interval, configuredInterval(r, "welcome")))) {
 			return
 		}
 		w.Pending = true

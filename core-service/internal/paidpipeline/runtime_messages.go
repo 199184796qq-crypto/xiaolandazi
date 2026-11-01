@@ -26,6 +26,9 @@ func (p *Processor) SetMessageCaptain(c *messagecaptain.Captain) {
 }
 func (p *Processor) handleRuntimeMessage(_ context.Context, m messagecaptain.Message) error {
 	switch m.Kind {
+	case "interaction.controls.updated":
+		p.ApplyInteractionControls(m.RoomID)
+		return nil
 	case "interaction.v2.welcome-ready":
 		return p.readyWelcomeV2(m)
 	case "interaction.v2.reserve-audio":

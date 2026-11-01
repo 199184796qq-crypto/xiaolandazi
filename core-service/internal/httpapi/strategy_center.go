@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"livecompanion/core/internal/messagecaptain"
 	"log"
 	"net/http"
 	"strconv"
@@ -68,9 +69,21 @@ func (s *Server) roomInteractionPreferences(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
+	if err := strategycenter.ValidateInteractionControls(input); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
 	input.TenantID = tenantID
 	input.RoomID = roomID
-	item := s.strategyPolicies.PutRoomInteractionPreferences(roomID, input)
+	item, applied := s.strategyPolicies.PutRoomInteractionPreferencesChecked(roomID, input)
+	if !applied {
+		writeError(w, 409, "互动控制版本已更新")
+		return
+	}
+	if s.messages != nil {
+		s.messages.Publish(r.Context(), messagecaptain.Message{Kind: "interaction.controls.updated", RoomID: roomID})
+	}
+	s.pruneDisabledInteractions(roomID)
 	log.Printf(
 		"room interaction preferences updated room=%d tenant=%d overall=%d question=%d welcome=%d engagement=%d chat=%d conversion=%d",
 		roomID,
