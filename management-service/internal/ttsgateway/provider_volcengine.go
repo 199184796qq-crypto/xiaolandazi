@@ -29,10 +29,13 @@ var volcengineSpeaker = regexp.MustCompile(`^S_[A-Za-z0-9_-]{1,128}$`)
 func ValidVolcengineVoiceID(id string) bool { return volcengineSpeaker.MatchString(id) }
 
 type VolcengineConfig struct {
-	APIKey   string
-	Endpoint string
-	Client   *http.Client
-	Publish  func(context.Context, []byte) (string, error)
+	APIKey           string
+	Endpoint         string
+	Client           *http.Client
+	Publish          func(context.Context, []byte) (string, error)
+	LongEndpoint     string
+	LongPollInterval time.Duration
+	LongMaxWait      time.Duration
 }
 type volcengineProvider struct{ config VolcengineConfig }
 
@@ -64,6 +67,9 @@ func (p *volcengineProvider) withAccountKey(key string) Provider {
 // Official V3 HTTP Chunked contract: JSON audio frames followed by code=20000000.
 // https://docs.volcengine.com/docs/doubao-voice/http-chunked-sse-unidirectional-streaming-v3
 func (p *volcengineProvider) SynthesizeURL(ctx context.Context, r SynthesizeRequest) (out SynthesizeResponse, err error) {
+	if r.LongText != nil {
+		return p.synthesizeLongText(ctx, r)
+	}
 	out = SynthesizeResponse{Provider: ProviderVolcengine, Model: r.Model, VoiceID: r.VoiceID, Rate: r.Rate}
 	if r.Model != VolcengineICL2 || !ValidVolcengineVoiceID(r.VoiceID) {
 		return out, notSent(errors.New("火山声音复刻2.0需要seed-icl-2.0模型及对应的S_音色ID"))

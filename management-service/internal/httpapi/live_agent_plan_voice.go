@@ -900,6 +900,9 @@ func (s *Server) archiveVoiceBundle(
 		return result, fmt.Errorf("写入字幕时间轴: %w", err)
 	}
 	safePoints := buildFullShowSafePoints(timeline)
+	if _, ok := ctx.Value(volcengineArchiveInfoKey{}).(int); ok {
+		safePoints = volcengineSemanticSafePoints(timeline)
+	}
 	if len(safePoints) == 0 {
 		_ = assetStore.Delete(ctx, objectKey)
 		_ = assetStore.Delete(ctx, subtitleObjectKey)
@@ -932,6 +935,7 @@ func (s *Server) archiveVoiceBundle(
 		"sentences":         timeline,
 		"safe_points":       safePoints,
 	}
+	applyVolcengineArchiveInfo(ctx, timelinePayload)
 	timelineRaw, _ := json.MarshalIndent(timelinePayload, "", "  ")
 	safePointsRaw, _ := json.MarshalIndent(map[string]any{
 		"version":     "safe-points-v3",
@@ -962,6 +966,7 @@ func (s *Server) archiveVoiceBundle(
 	if voiceRate > 0 {
 		manifest["voice_rate"] = voiceRate
 	}
+	applyVolcengineArchiveInfo(ctx, manifest)
 	manifestRaw, _ := json.MarshalIndent(manifest, "", "  ")
 	putSidecar := func(key string, raw []byte, contentType string) error {
 		if err := assetStore.Put(ctx, key, bytes.NewReader(raw), contentType); err != nil {
@@ -1001,6 +1006,7 @@ func (s *Server) archiveVoiceBundle(
 		"segment_head_ms":        generatedVoiceSegmentHeadMS,
 		"segment_tail_ms":        generatedVoiceSegmentTailMS,
 	}
+	applyVolcengineArchiveInfo(ctx, metadata)
 	if previewOnly {
 		metadata["purpose"] = "anchor_cycle_voice_preview"
 		metadata["published"] = false

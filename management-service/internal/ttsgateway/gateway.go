@@ -21,6 +21,9 @@ type SynthesizeRequest struct {
 	Text        string
 	Rate        float64
 	Instruction string
+	// LongText is internal to the script-first Volcengine producer. Interactive
+	// speech and other providers retain the existing short synthesis contract.
+	LongText *LongTextJob
 }
 
 type SynthesizeResponse struct {
@@ -35,6 +38,8 @@ type SynthesizeResponse struct {
 	// A completed synthesis remains usable if accounting could not be persisted.
 	// Callers must retain this audio instead of synthesizing it again.
 	AccountingPending bool
+	AudioFile         string
+	Subtitles         []SpeechSubtitle
 }
 
 type CloneRequest struct {
@@ -155,6 +160,9 @@ func (g *Gateway) SynthesizeURL(ctx context.Context, request SynthesizeRequest) 
 		return SynthesizeResponse{}, notSent(errors.New("火山模型与合成服务不匹配"))
 	}
 	request.Provider = canonical
+	if request.LongText != nil && canonical != ProviderVolcengine {
+		return SynthesizeResponse{}, notSent(errors.New("长段合成只支持高仿真语音池"))
+	}
 	return g.scheduledSynthesis(ctx, p, request)
 }
 

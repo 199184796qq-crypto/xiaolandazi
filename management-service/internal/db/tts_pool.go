@@ -365,7 +365,7 @@ func expireTTSJobs(ctx context.Context, tx *sql.Tx, now time.Time) error {
 	return err
 }
 func (s *Store) EnqueueTTS(ctx context.Context, w ttsscheduler.Work) error {
-	if w.TTL <= 0 || w.ID == "" || w.Model == "" || len(w.ID) > 64 || len(w.Model) > 160 || len(w.VoiceID) > 200 || len(w.Provider) > 32 {
+	if w.TTL <= 0 || w.ID == "" || w.Model == "" || len(w.ID) > 64 || len(w.Model) > 160 || len(w.VoiceID) > 200 || len(w.Provider) > 32 || len(w.RequiredAccountID) > 64 {
 		return ttsscheduler.ErrExpired
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
@@ -393,7 +393,7 @@ func (s *Store) EnqueueTTS(ctx context.Context, w ttsscheduler.Work) error {
 	if count >= ttsscheduler.MaxQueue {
 		return ttsscheduler.ErrQueueFull
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO mgmt_tts_pool_jobs(id,model,provider,voice_id,tenant_id,room_id,session_id,status,queued_at,expires_at,heartbeat_at) VALUES(?,?,?,?,?,?,?,'queued',?,?,?)`, w.ID, w.Model, w.Provider, w.VoiceID, w.TenantID, w.RoomID, w.SessionID, now, now.Add(min(w.TTL, 5*time.Minute)), now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO mgmt_tts_pool_jobs(id,model,provider,voice_id,tenant_id,room_id,session_id,account_id,status,queued_at,expires_at,heartbeat_at) VALUES(?,?,?,?,?,?,?,?,'queued',?,?,?)`, w.ID, w.Model, w.Provider, w.VoiceID, w.TenantID, w.RoomID, w.SessionID, w.RequiredAccountID, now, now.Add(min(w.TTL, 5*time.Minute)), now)
 	if err != nil {
 		return err
 	}
@@ -486,10 +486,10 @@ func (s *Store) ClaimTTS(ctx context.Context, id string) (out ttsscheduler.Claim
 	if err = expireTTSJobs(ctx, tx, now); err != nil {
 		return out, err
 	}
-	var status, model, voice, provider string
+	var status, model, voice, provider, requiredAccount string
 	var tenant, room int64
 	var seq uint64
-	if err = tx.QueryRowContext(ctx, `SELECT status,model,voice_id,seq,provider,tenant_id,room_id FROM mgmt_tts_pool_jobs WHERE id=?`, id).Scan(&status, &model, &voice, &seq, &provider, &tenant, &room); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT status,model,voice_id,seq,provider,tenant_id,room_id,COALESCE(account_id,'') FROM mgmt_tts_pool_jobs WHERE id=?`, id).Scan(&status, &model, &voice, &seq, &provider, &tenant, &room, &requiredAccount); err != nil {
 		return out, err
 	}
 	if status != "queued" {
@@ -516,15 +516,15 @@ func (s *Store) ClaimTTS(ctx context.Context, id string) (out ttsscheduler.Claim
 		return out, err
 	}
 	// FIFO per compatible account. An unavailable voice cannot block other rooms.
-	type earlier struct{ model, voice, provider string }
+	type earlier struct{ model, voice, provider, account string }
 	var prior []earlier
-	rows, err := tx.QueryContext(ctx, `SELECT j.model,j.voice_id,j.provider FROM mgmt_tts_pool_jobs j LEFT JOIN live_runtime_sessions r ON r.id=j.session_id WHERE j.status='queued' AND j.seq<? AND (j.session_id=0 OR r.status='running') ORDER BY j.seq`, seq)
+	rows, err := tx.QueryContext(ctx, `SELECT j.model,j.voice_id,j.provider,COALESCE(j.account_id,'') FROM mgmt_tts_pool_jobs j LEFT JOIN live_runtime_sessions r ON r.id=j.session_id WHERE j.status='queued' AND j.seq<? AND (j.session_id=0 OR r.status='running') ORDER BY j.seq`, seq)
 	if err != nil {
 		return out, err
 	}
 	for rows.Next() {
 		var p earlier
-		if err = rows.Scan(&p.model, &p.voice, &p.provider); err != nil {
+		if err = rows.Scan(&p.model, &p.voice, &p.provider, &p.account); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -536,6 +536,9 @@ func (s *Store) ClaimTTS(ctx context.Context, id string) (out ttsscheduler.Claim
 		return out, err
 	}
 	for _, a := range accounts {
+		if requiredAccount != "" && requiredAccount != a.ID {
+			continue
+		}
 		if !ttsscheduler.CompatibleProvider(a.Provider, provider) {
 			continue
 		}
@@ -545,7 +548,7 @@ func (s *Store) ClaimTTS(ctx context.Context, id string) (out ttsscheduler.Claim
 		}
 		blocked := false
 		for _, p := range prior {
-			if _, ok := ttsMappedVoice(a, p.model, p.voice); ok && ttsscheduler.CompatibleProvider(a.Provider, p.provider) {
+			if _, ok := ttsMappedVoice(a, p.model, p.voice); ok && (p.account == "" || p.account == a.ID) && ttsscheduler.CompatibleProvider(a.Provider, p.provider) {
 				blocked = true
 				break
 			}

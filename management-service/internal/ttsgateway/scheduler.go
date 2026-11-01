@@ -50,7 +50,13 @@ func WithSynthesisTimeout(ctx context.Context, timeout time.Duration) context.Co
 func (g *Gateway) scheduledSynthesis(ctx context.Context, p Provider, request SynthesizeRequest) (result SynthesizeResponse, err error) {
 	if g.scheduler != nil && (request.Provider == ProviderQwen || request.Provider == ProviderCosyVoice || request.Provider == ProviderVolcengine) {
 		scope, _ := ctx.Value(queueScopeKey{}).(ttsscheduler.Scope)
-		permit, claimErr := g.scheduler.Acquire(ctx, ttsscheduler.Work{Model: request.Model, Provider: request.Provider, VoiceID: request.VoiceID, Scope: scope})
+		required := ""
+		if request.LongText != nil {
+			if state, e := readLongTextState(request.LongText.StatePath); e == nil {
+				required = state.AccountID
+			}
+		}
+		permit, claimErr := g.scheduler.Acquire(ctx, ttsscheduler.Work{Model: request.Model, Provider: request.Provider, VoiceID: request.VoiceID, Scope: scope, RequiredAccountID: required})
 		if claimErr != nil {
 			return result, notSent(claimErr)
 		}
@@ -71,6 +77,11 @@ func (g *Gateway) scheduledSynthesis(ctx context.Context, p Provider, request Sy
 		if permit.VoiceID != "" {
 			request.VoiceID = permit.VoiceID
 		}
+		if request.LongText != nil {
+			job := *request.LongText
+			job.AccountID = permit.AccountID
+			request.LongText = &job
+		}
 	}
 	if err = ctx.Err(); err != nil {
 		return result, notSent(err)
@@ -79,6 +90,16 @@ func (g *Gateway) scheduledSynthesis(ctx context.Context, p Provider, request Sy
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
+	}
+	if request.LongText != nil {
+		if _, e := readLongTextState(request.LongText.StatePath); e == nil {
+			// Querying an accepted task is not another paid synthesis. Retain
+			// the original conservative/unknown ledger entry for reconciliation.
+			result, err = p.SynthesizeURL(ctx, request)
+			result.UsageSource = synthesisUsageSource(result.Usage)
+			result.AccountingPending = true
+			return result, err
+		}
 	}
 	return observeSynthesis(ctx, p, request)
 }

@@ -120,6 +120,9 @@ func recordingUpdatePercent(totalRunes int) int {
 }
 
 func (s *Server) runRecordingStreamProducer(ctx context.Context, tenant, room, runtimeID int64, version model.LiveAgentPlanVersion) error {
+	if usesVolcengineParagraphs(version) {
+		return s.runVolcengineScriptProducer(ctx, tenant, room, runtimeID, version)
+	}
 	if err := waitLiveLeasePermit(ctx); err != nil {
 		return err
 	}

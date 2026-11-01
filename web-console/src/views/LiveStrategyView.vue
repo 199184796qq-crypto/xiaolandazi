@@ -6260,6 +6260,9 @@ onBeforeUnmount(() => {
                     placeholder="粘贴或输入这一段话术…"
                     @input="onRecordingTabInput"
                   ></textarea>
+                  <p v-if="recordingVoiceMode === 'stream_clone' && voicePoolID(planVoiceIdentity) === 'high_fidelity'" class="strategy-script-notice strategy-volcengine-notice">
+                    用 ==== 分隔独立段落；剩余不足40秒补料，排队复用缓存。首轮生成后跨标签随机循环，语速0.90—1.10，字幕同步。
+                  </p>
                   <p class="strategy-script-counts">
                     <span>当前字数 {{ recordingTabCharCount }} / {{ recordingTabTextLimit }}</span>
                     <span>话术标签 {{ recordingTabs.length }} / 20</span>
@@ -7343,6 +7346,7 @@ onBeforeUnmount(() => {
 .strategy-v2-empty span { max-width:620px; line-height:1.6; }
 .strategy-script-counts{display:flex;gap:18px;margin:6px 0 0;font-size:14px;color:#6b7280}
 .strategy-script-notice { padding:11px 14px; border:1px solid #d8e5fb; border-radius:12px; background:#f1f6ff; color:#52648f; font-size:13px; }
+.strategy-volcengine-notice { font-size:16px; line-height:1.6; overflow-wrap:anywhere; }
 .strategy-analysis-progress { display:grid; gap:10px; padding:14px 16px; border:1px solid #d7e1fb; border-radius:14px; background:linear-gradient(135deg,#f4f7ff,#eef3ff); box-shadow:0 8px 22px rgba(74,91,189,.06); }
 .strategy-analysis-progress-head { display:flex; align-items:center; justify-content:space-between; gap:14px; }
 .strategy-analysis-progress-head strong { color:#52628d; font-size:14px; }

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"sync"
 	"time"
 )
 
@@ -26,10 +27,12 @@ type Scope struct {
 	SessionID int64 `json:"session_id"`
 }
 type Work struct {
-	ID       string `json:"id"`
-	Model    string `json:"model"`
-	Provider string `json:"provider"`
-	VoiceID  string `json:"voice_id"`
+	// Recovery queries must return to the original cloud account.
+	RequiredAccountID string `json:"-"`
+	ID                string `json:"id"`
+	Model             string `json:"model"`
+	Provider          string `json:"provider"`
+	VoiceID           string `json:"voice_id"`
 	Scope
 	TTL time.Duration `json:"-"`
 }
@@ -115,7 +118,7 @@ func (s *Service) Acquire(parent context.Context, work Work) (Permit, error) {
 				return Permit{}, err
 			}
 			granted = true
-			return Permit{Credential: claim.Credential, Finish: finish}, nil
+			return Permit{Credential: claim.Credential, Finish: s.renewRunningLease(parent, work.ID, finish)}, nil
 		}
 		if hook, ok := parent.Value(waitHookKey{}).(func(context.Context)); ok && time.Since(lastHook) >= time.Second {
 			lastHook = time.Now()
@@ -132,6 +135,37 @@ func (s *Service) Acquire(parent context.Context, work Work) (Permit, error) {
 		case <-timer.C:
 		}
 	}
+}
+
+// Async synthesis can outlive both the old two-minute lease and the caller's
+// live session. Keep its account occupied until Finish, including while the
+// provider drains a task after cancellation. Shutdown still expires the lease.
+func (s *Service) renewRunningLease(parent context.Context, id string, finish func(string)) func(string) {
+	renewer, ok := s.repo.(interface {
+		RenewTTS(context.Context, string) error
+	})
+	if !ok {
+		return finish
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-s.ctx.Done():
+				return
+			case <-ticker.C:
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+				_ = renewer.RenewTTS(ctx, id)
+				cancel()
+			}
+		}
+	}()
+	return func(status string) { once.Do(func() { close(done); finish(status) }) }
 }
 
 // WaitForQuota computes both sliding windows and smooths starts. In-flight
