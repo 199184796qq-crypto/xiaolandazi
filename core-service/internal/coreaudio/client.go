@@ -1145,7 +1145,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 			}
 			c.roomAudio.SetInterruptTimeline(input.RoomID, captions)
 		} else {
-			c.roomAudio.SetInterruptTranscriptTimeline(input.RoomID, roomAudioInteractionTimeline(input.Text, durationMS))
+			c.roomAudio.SetInterruptCurrentText(input.RoomID, roomAudioInteractionTimeline(input.Text, durationMS), input.Text, durationMS)
 		}
 		if _, err := c.roomAudio.StartInterrupt(input.RoomID); err == nil {
 			c.startRoomAudioInterruptMirror(input.RoomID, strings.TrimSpace(input.AudioURL), interaction.ID, len(timeline) > 0)

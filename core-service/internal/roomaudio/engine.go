@@ -126,6 +126,7 @@ type roomState struct {
 	mainlineTimeline         []SpeechSegment
 	interruptTimeline        []SpeechSegment
 	interruptTranscriptOnly  map[string]bool
+	interruptCurrentText     *SpeechSegment
 	updatedAt                time.Time
 	subscribers              map[chan Frame]struct{}
 }
@@ -228,7 +229,22 @@ func (e *Engine) SetInterruptTranscriptTimeline(roomID int64, timeline []SpeechS
 	e.setInterruptTimeline(roomID, timeline, true)
 }
 
+// SetInterruptCurrentText retains the internal spoken observer's segments but
+// displays one complete, known TTS utterance only within its playback window.
+// This is current speech text, not invented per-word/subsentence timestamps.
+func (e *Engine) SetInterruptCurrentText(roomID int64, timeline []SpeechSegment, text string, durationMS int) {
+	var caption *SpeechSegment
+	if text = strings.TrimSpace(text); text != "" && durationMS > 0 {
+		caption = &SpeechSegment{SegmentID: "interrupt-current-text", StartMS: VoiceGuardHeadMS, EndMS: VoiceGuardHeadMS + durationMS, Text: text}
+	}
+	e.setInterruptTimelineWithCaption(roomID, timeline, true, caption)
+}
+
 func (e *Engine) setInterruptTimeline(roomID int64, timeline []SpeechSegment, transcriptOnly bool) {
+	e.setInterruptTimelineWithCaption(roomID, timeline, transcriptOnly, nil)
+}
+
+func (e *Engine) setInterruptTimelineWithCaption(roomID int64, timeline []SpeechSegment, transcriptOnly bool, caption *SpeechSegment) {
 	if e == nil || roomID <= 0 {
 		return
 	}
@@ -239,6 +255,7 @@ func (e *Engine) setInterruptTimeline(roomID int64, timeline []SpeechSegment, tr
 	}
 	state := e.ensureRoomLocked(roomID)
 	state.interruptTimeline = cloneSpeechTimeline(timeline)
+	state.interruptCurrentText = caption
 	state.interruptTranscriptOnly = make(map[string]bool)
 	if transcriptOnly {
 		for _, segment := range state.interruptTimeline {
@@ -636,6 +653,15 @@ func speechFeedLocked(state *roomState) SpeechFeedSnapshot {
 	}
 
 	if state.activeSource == SourceInterrupt || state.phase == PhaseInterrupt || state.phase == PhasePreparingResume {
+		if caption := state.interruptCurrentText; caption != nil {
+			// The cursor points past the accepted frame. Match the frame that
+			// was actually sent, so the last guard frame cannot show text early.
+			cursorMS := state.interruptCursorMS - FrameDurationMS
+			if state.activeSource == SourceInterrupt && state.phase == PhaseInterrupt && cursorMS >= caption.StartMS && cursorMS < caption.EndMS {
+				feed.Current = speechFeedItem(state, *caption, SpeechToneInterrupt)
+			}
+			return feed
+		}
 		index := speechSegmentIndex(state.interruptTimeline, state.currentSegmentID)
 		if state.interruptTranscriptOnly[state.currentSegmentID] {
 			return feed
