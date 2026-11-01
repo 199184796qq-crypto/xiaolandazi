@@ -53,9 +53,14 @@ func deliverScriptFirstSilence(ctx context.Context, session int64, cursor *volce
 			Label: "静音垫片", AudioURL: url, DurationMS: scriptFirstSilenceBlockMS,
 			AllowConsecutiveRepeat: true, UntimedTranscript: true,
 		}
-		if err := save(); err != nil {
-			return err
-		}
+	}
+	// A previous failed save may have left PendingSilence only in memory.
+	// Retrying that request must also establish durability before any send.
+	if err := save(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := deliver(ctx, *cursor.PendingSilence); err != nil {
 		return err

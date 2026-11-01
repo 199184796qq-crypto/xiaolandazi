@@ -114,6 +114,41 @@ func TestSilenceDoesNotDeliverBeforeCheckpointOrAfterStop(t *testing.T) {
 	}
 }
 
+func TestSilenceRetriesFailedCheckpointBeforeDelivering(t *testing.T) {
+	cursor := volcengineScriptCursor{}
+	fail := true
+	durable := false
+	calls := 0
+	save := func() error {
+		if fail {
+			return errors.New("disk full")
+		}
+		durable = true
+		return nil
+	}
+	deliver := func(context.Context, coreclient.ProgramRefreshTrack) error {
+		if !durable {
+			t.Fatal("silence was sent before its checkpoint became durable")
+		}
+		calls++
+		return nil
+	}
+	for i := 0; i < 2; i++ {
+		if err := deliverScriptFirstSilence(t.Context(), 1, &cursor, "same-url", save, deliver); err == nil || calls != 0 || cursor.SilenceBlocks != 0 {
+			t.Fatal("failed checkpoint retried unsafely", err)
+		}
+	}
+	fail = false
+	if err := deliverScriptFirstSilence(t.Context(), 1, &cursor, "same-url", save, deliver); err != nil || calls != 1 || cursor.Sequence != 1 || cursor.SilenceBlocks != 1 {
+		t.Fatal(cursor, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	other := volcengineScriptCursor{}
+	if err := deliverScriptFirstSilence(ctx, 1, &other, "url", func() error { cancel(); return nil }, deliver); !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatal("sent after cancellation during checkpoint", err)
+	}
+}
+
 // 复用段是现成的，不能因为字数把余量抬高。
 func TestScriptFirstSupplyLeadReuseUsesFloor(t *testing.T) {
 	units := []volcengineScriptUnit{unitOfRunes(2000)}
