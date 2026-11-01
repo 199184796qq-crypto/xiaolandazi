@@ -51,6 +51,7 @@ type InsertInteractionInput struct {
 	Label                  string
 	AudioURL               string
 	Text                   string
+	Timeline               []ProgramTimelineSegment
 	CallbackURL            string
 	ResumeOffsetMS         *int
 	SwitchAtMS             *int

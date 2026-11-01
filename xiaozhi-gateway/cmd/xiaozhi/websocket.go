@@ -439,6 +439,7 @@ func (g *gateway) streamRoomText(ctx context.Context, writer *lockedConn, roomID
 
 	lastSegmentID := ""
 	lastText := ""
+	haveCaptionState := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -460,24 +461,25 @@ func (g *gateway) streamRoomText(ctx context.Context, writer *lockedConn, roomID
 			continue
 		}
 		var snapshot coreAudioEngineSnapshot
+		valid := false
 		if resp.StatusCode == http.StatusOK {
-			_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&snapshot)
+			valid = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&snapshot) == nil
 		}
 		_ = resp.Body.Close()
 		cancel()
+		if !valid {
+			continue
+		}
 
 		current := snapshot.SpeechFeed.Current
-		if current == nil {
-			lastSegmentID = ""
-			lastText = ""
-			continue
+		segmentID, text := "", ""
+		if current != nil {
+			segmentID, text = strings.TrimSpace(current.SegmentID), strings.TrimSpace(current.Text)
+			if segmentID == "" || text == "" {
+				segmentID, text = "", ""
+			}
 		}
-		segmentID := strings.TrimSpace(current.SegmentID)
-		text := strings.TrimSpace(current.Text)
-		if segmentID == "" || text == "" {
-			continue
-		}
-		if segmentID == lastSegmentID && text == lastText {
+		if haveCaptionState && segmentID == lastSegmentID && text == lastText {
 			continue
 		}
 		if err := writer.json(map[string]any{
@@ -490,6 +492,7 @@ func (g *gateway) streamRoomText(ctx context.Context, writer *lockedConn, roomID
 		}
 		lastSegmentID = segmentID
 		lastText = text
+		haveCaptionState = true
 	}
 }
 

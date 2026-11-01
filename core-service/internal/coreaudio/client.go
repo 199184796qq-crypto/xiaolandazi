@@ -869,8 +869,9 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	if err != nil {
 		return audioout.RoomProgramSnapshot{}, err
 	}
-	if c.roomAudio != nil {
-		c.roomAudio.SetInterruptTimeline(input.RoomID, roomAudioInteractionTimeline(input.Text, durationMS))
+	timeline, err := normalizeProgramTimeline(input.Timeline, durationMS)
+	if err != nil {
+		return audioout.RoomProgramSnapshot{}, err
 	}
 
 	c.mu.RLock()
@@ -1136,8 +1137,18 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	c.mu.Unlock()
 
 	if c.roomAudio != nil {
+		if len(timeline) > 0 {
+			captions := roomAudioSpeechTimeline(timeline)
+			for index := range captions {
+				captions[index].StartMS += roomaudio.VoiceGuardHeadMS
+				captions[index].EndMS += roomaudio.VoiceGuardHeadMS
+			}
+			c.roomAudio.SetInterruptTimeline(input.RoomID, captions)
+		} else {
+			c.roomAudio.SetInterruptTranscriptTimeline(input.RoomID, roomAudioInteractionTimeline(input.Text, durationMS))
+		}
 		if _, err := c.roomAudio.StartInterrupt(input.RoomID); err == nil {
-			c.startRoomAudioInterruptMirror(input.RoomID, strings.TrimSpace(input.AudioURL), interaction.ID)
+			c.startRoomAudioInterruptMirror(input.RoomID, strings.TrimSpace(input.AudioURL), interaction.ID, len(timeline) > 0)
 		} else {
 			log.Printf("room audio interrupt phase room=%d task=%s failed: %v", input.RoomID, interaction.ID, err)
 		}
@@ -1738,10 +1749,8 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 	segmentID := roomAudioSegmentAt(track.Timeline, startOffsetMS)
 	captionTimeline := roomAudioSpeechTimeline(track.Timeline)
 	fallbackCaptionID := ""
-	if !track.UntimedTranscript && len(captionTimeline) == 0 && strings.TrimSpace(track.Text) != "" && track.DurationMS > 0 {
-		fallbackCaptionID = taskID + "-caption"
-		segmentID = fallbackCaptionID
-		captionTimeline = []roomaudio.SpeechSegment{{SegmentID: fallbackCaptionID, StartMS: 0, EndMS: track.DurationMS, Text: track.Text}}
+	if track.UntimedTranscript {
+		captionTimeline = nil
 	}
 	c.roomAudio.SetMainlineTimeline(program.RoomID, captionTimeline)
 	resumePhase := c.roomAudio.Snapshot(program.RoomID).Phase == roomaudio.PhaseResume
@@ -1857,7 +1866,7 @@ func (c *Client) startRoomAudioMainlineMirror(program *programState, trackIndex 
 	}()
 }
 
-func (c *Client) startRoomAudioInterruptMirror(roomID int64, audioURL, taskID string) {
+func (c *Client) startRoomAudioInterruptMirror(roomID int64, audioURL, taskID string, timedCaptions bool) {
 	if c == nil || c.roomAudio == nil || roomID <= 0 || strings.TrimSpace(audioURL) == "" {
 		return
 	}
@@ -1952,6 +1961,10 @@ func (c *Client) startRoomAudioInterruptMirror(roomID int64, audioURL, taskID st
 			return
 		}
 		leadingMS := roomaudio.LeadingSilenceMS(audioData)
+		if timedCaptions {
+			// Real provider offsets refer to the original audio, including silence.
+			leadingMS = 0
+		}
 		if leadingMS > 0 {
 			log.Printf("room audio interrupt mirror trim leading silence room=%d task=%s ms=%d", roomID, taskID, leadingMS)
 		}
@@ -1983,7 +1996,7 @@ func (c *Client) startRoomAudioInterruptMirror(roomID int64, audioURL, taskID st
 					runID = program.ID
 				}
 				c.mu.RUnlock()
-				c.roomAudio.AppendInterruptSpeechSegment(roomID, roomaudio.SpeechSegment{SegmentID: taskID + "-bridge", StartMS: nextCursorMS, EndMS: nextCursorMS + len(pcm)/roomaudio.PCMBytesPerFrame*roomaudio.FrameDurationMS, Text: bridge})
+				c.roomAudio.AppendInterruptTranscriptSegment(roomID, roomaudio.SpeechSegment{SegmentID: taskID + "-bridge", StartMS: nextCursorMS, EndMS: nextCursorMS + len(pcm)/roomaudio.PCMBytesPerFrame*roomaudio.FrameDurationMS, Text: bridge})
 				for at := 0; at < len(pcm); at += roomaudio.PCMBytesPerFrame {
 					if err = publishFrame(pcm[at:at+roomaudio.PCMBytesPerFrame], nextCursorMS); err != nil {
 						break

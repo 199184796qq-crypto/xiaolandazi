@@ -6,7 +6,7 @@ import {createServer} from 'vite'
 const {chromium}=createRequire(new URL('../../collector-worker/package.json',import.meta.url))('playwright-core')
 const source=await readFile(new URL('../src/views/RoomDetailView.vue',import.meta.url),'utf8')
 const computed=source.slice(source.indexOf('const publicSpeechCaptionRows = computed('),source.indexOf('const speechWaveBars ='))
-const template=source.slice(source.indexOf('<div class="speech-mainline-live-caption" v-if="publicSpeechCaptionRows.length">'),source.indexOf('<p v-else class="speech-runtime-unified-mainline">'))
+const template=source.slice(source.indexOf('<div class="speech-mainline-live-caption" v-if="publicSpeechCaptionRows.length">'),source.indexOf('<div class="speech-runtime-unified-wave"'))
 assert.ok(computed.includes('speech_feed'));assert.ok(template.includes('row.text'))
 const fixture=`<script setup lang="ts">
 import {computed,ref,nextTick} from 'vue'
@@ -43,9 +43,9 @@ try{
  await set({current:item('main-1','新场第一句')});assert.equal(await page.locator('.speech-mainline-caption-row').count(),1);checks.push('停止清空与新场只有当前一句，不继承上一场节点')
  for(let n=0;n<8;n++){
   await page.evaluate(async n=>window.caption.fallback(['previous','current','next'].map(role=>({segment:{segment_id:'recycled',text:role+n},role,transition:''}))),n)
-  assert.deepEqual(await page.locator('.speech-mainline-caption-row').allTextContents(),['previous'+n,'current'+n,'next'+n])
+  assert.deepEqual(await page.locator('.speech-mainline-caption-row').allTextContents(),[],'Core无当前字幕时不能从主线原文/旧时间轴补字幕')
  }
- await set({current:item('main-1','Core恢复后的当前句')});assert.deepEqual(await page.locator('.speech-mainline-caption-row').allTextContents(),['Core恢复后的当前句']);checks.push('主线后备字幕重复编号与Core字幕恢复同样不留旧节点')
+ await set({current:item('main-1','Core恢复后的当前句')});assert.deepEqual(await page.locator('.speech-mainline-caption-row').allTextContents(),['Core恢复后的当前句']);checks.push('无Core字幕不回退原文；Core字幕恢复正常')
  assert.deepEqual(errors,[]);assert.deepEqual(warnings,[])
  const output=process.env.CAPTION_TEST_OUTPUT
  if(output){await mkdir(output,{recursive:true});await writeFile(output+'/checks.json',JSON.stringify({checks,errors,warnings},null,2))}

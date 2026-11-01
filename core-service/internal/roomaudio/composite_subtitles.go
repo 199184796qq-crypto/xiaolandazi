@@ -6,11 +6,12 @@ import (
 )
 
 type CompositeCue struct {
-	SegmentID string `json:"segment_id"`
-	Source    Source `json:"source"`
-	Text      string `json:"text"`
-	StartMS   int64  `json:"start_ms"`
-	EndMS     int64  `json:"end_ms"`
+	SegmentID      string `json:"segment_id"`
+	Source         Source `json:"source"`
+	Text           string `json:"text"`
+	StartMS        int64  `json:"start_ms"`
+	EndMS          int64  `json:"end_ms"`
+	transcriptOnly bool
 }
 
 // Only PCM frames that entered the single output stream advance subtitle time.
@@ -31,17 +32,27 @@ func recordCompositeCue(state *roomState, frame Frame, cursor int) {
 	n := len(state.compositeCues)
 	if n > 0 {
 		last := &state.compositeCues[n-1]
-		if last.SegmentID == segment.SegmentID && last.Source == frame.Source && last.Text == segment.Text && last.EndMS == frame.PTSMS {
+		if last.SegmentID == segment.SegmentID && last.Source == frame.Source && last.Text == segment.Text && last.EndMS == frame.PTSMS &&
+			last.transcriptOnly == (frame.Source == SourceInterrupt && state.interruptTranscriptOnly[segment.SegmentID]) {
 			last.EndMS = end
 			return
 		}
 	}
-	state.compositeCues = append(state.compositeCues, CompositeCue{segment.SegmentID, frame.Source, segment.Text, frame.PTSMS, end})
+	state.compositeCues = append(state.compositeCues, CompositeCue{segment.SegmentID, frame.Source, segment.Text, frame.PTSMS, end,
+		frame.Source == SourceInterrupt && state.interruptTranscriptOnly[segment.SegmentID]})
 }
 
 // A bridge is part of the active interrupt stream and gets its own caption segment.
 // Appending never resets the existing media cursor or the mainline resume position.
 func (e *Engine) AppendInterruptSpeechSegment(roomID int64, segment SpeechSegment) {
+	e.appendInterruptSegment(roomID, segment, false)
+}
+
+func (e *Engine) AppendInterruptTranscriptSegment(roomID int64, segment SpeechSegment) {
+	e.appendInterruptSegment(roomID, segment, true)
+}
+
+func (e *Engine) appendInterruptSegment(roomID int64, segment SpeechSegment, transcriptOnly bool) {
 	if e == nil || roomID <= 0 || len(cloneSpeechTimeline([]SpeechSegment{segment})) != 1 {
 		return
 	}
@@ -60,6 +71,10 @@ func (e *Engine) AppendInterruptSpeechSegment(roomID int64, segment SpeechSegmen
 		}
 	}
 	state.interruptTimeline = append(cloneSpeechTimeline(state.interruptTimeline), segment)
+	if state.interruptTranscriptOnly == nil {
+		state.interruptTranscriptOnly = make(map[string]bool)
+	}
+	state.interruptTranscriptOnly[segment.SegmentID] = transcriptOnly
 	state.updatedAt = e.now().UTC()
 }
 func (e *Engine) CompositeCues(roomID int64) []CompositeCue {
@@ -69,9 +84,19 @@ func (e *Engine) CompositeCues(roomID int64) []CompositeCue {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if state := e.rooms[roomID]; state != nil && (state.phase != PhaseIdle || len(state.compositeCues) > 0) {
-		return append([]CompositeCue(nil), state.compositeCues...)
+		return captionCues(state.compositeCues)
 	}
-	return append([]CompositeCue(nil), e.lastCompositeCues[roomID]...)
+	return captionCues(e.lastCompositeCues[roomID])
+}
+
+func captionCues(cues []CompositeCue) []CompositeCue {
+	var result []CompositeCue
+	for _, cue := range cues {
+		if !cue.transcriptOnly {
+			result = append(result, cue)
+		}
+	}
+	return result
 }
 func (e *Engine) CompositeSRT(roomID int64) string {
 	var b strings.Builder

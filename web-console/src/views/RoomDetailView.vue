@@ -841,96 +841,14 @@ const interruptSpeechDisplay = computed(() => {
   }
 })
 const mainlineProgram = computed(() => speechRuntime.value?.program || null)
-const mainlineProgramSegment = computed(() => {
-  const program = mainlineProgram.value
-  const engineSegmentID = String(roomAudioEngine.value?.current_segment_id || '').trim()
-  if (program?.timeline?.length && engineSegmentID) {
-    const engineSegment = program.timeline.find((segment) => segment.segment_id === engineSegmentID)
-    if (engineSegment) return engineSegment
-  }
-  if (program?.current_segment) return program.current_segment
-  const timeline = program?.timeline || []
-  if (!timeline.length) return null
-  const currentMS = Math.max(0, Number(program?.current_ms || 0))
-  const matched = timeline.find((segment) => currentMS >= Number(segment.start_ms || 0) && currentMS < Number(segment.end_ms || 0))
-  if (matched) return matched
-  if (currentMS >= Number(timeline[timeline.length - 1]?.end_ms || 0)) return timeline[timeline.length - 1]
-  return timeline[0]
-})
 const speechTrackFocus = ref<'auto' | 'mainline' | 'interrupt'>('auto')
 function toggleSpeechTrackFocus(track: 'mainline' | 'interrupt') {
   speechTrackFocus.value = speechTrackFocus.value === track ? 'auto' : track
 }
-const mainlineProgramText = computed(() =>
-  mainlineProgramSegment.value?.text ||
-  mainlineProgram.value?.track_text ||
-  mainlineSpeech.value.text ||
-  '',
-)
-const mainlineProgramDurationMS = computed(() => {
-  const taskDuration = Number(mainlineProgram.value?.task?.duration_ms || 0)
-  if (taskDuration > 0) return taskDuration
-  const timeline = mainlineProgram.value?.timeline || []
-  return Number(timeline[timeline.length - 1]?.end_ms || 0)
-})
-const mainlineFallbackPreview = computed(() => {
-  const text = String(mainlineProgramText.value || '').trim()
-  if (!text) return ''
-  const chars = Array.from(text)
-  const limit = speechTrackFocus.value === 'mainline' ? 82 : 60
-  if (chars.length <= limit) return text
-  const durationMS = Math.max(1, mainlineProgramDurationMS.value)
-  const currentMS = Math.max(0, Number(mainlineProgram.value?.current_ms || 0))
-  const ratio = Math.min(1, Math.max(0, currentMS / durationMS))
-  const center = Math.min(chars.length - 1, Math.max(0, Math.floor(ratio * chars.length)))
-  const before = speechTrackFocus.value === 'mainline' ? 32 : 24
-  const after = limit - before
-  const start = Math.max(0, center - before)
-  const end = Math.min(chars.length, center + after)
-  return (start > 0 ? '…' : '') + chars.slice(start, end).join('') + (end < chars.length ? '…' : '')
-})
-const mainlineTransitionCutMS = computed(() => {
-  const engineCutID = String(roomAudioEngine.value?.planned_cut_segment_id || '').trim()
-  if (engineCutID) {
-    const matched = mainlineProgram.value?.timeline?.find((segment) => segment.segment_id === engineCutID)
-    if (matched) return Number(matched.end_ms || 0)
-  }
-  const scheduled = Number(interruptSpeech.value.switch_at_ms || 0)
-  if (scheduled > 0) return scheduled
-  return Number(mainlineProgram.value?.resume_offset_ms || 0)
-})
-const mainlineCaptionRows = computed(() => {
-  const timeline = mainlineProgram.value?.timeline || []
-  const current = mainlineProgramSegment.value
-  if (!timeline.length || !current) return []
-  const currentIndex = timeline.findIndex((item) => item.segment_id === current.segment_id)
-  if (currentIndex < 0) return []
-  const engineStopID = String(roomAudioEngine.value?.planned_cut_segment_id || '').trim()
-  const engineResumeID = String(roomAudioEngine.value?.resume_segment_id || '').trim()
-  const cutMS = mainlineTransitionCutMS.value
-  const stopIndex = engineStopID
-    ? timeline.findIndex((item) => item.segment_id === engineStopID)
-    : cutMS > 0
-      ? timeline.findIndex((item) => Number(item.end_ms || 0) === cutMS)
-      : -1
-  const resumeIndex = engineResumeID
-    ? timeline.findIndex((item) => item.segment_id === engineResumeID)
-    : stopIndex >= 0 && stopIndex + 1 < timeline.length
-      ? stopIndex + 1
-      : -1
-  return [currentIndex - 1, currentIndex, currentIndex + 1]
-    .filter((index) => index >= 0 && index < timeline.length)
-    .map((index) => ({
-      segment: timeline[index],
-      role: index < currentIndex ? 'previous' : index > currentIndex ? 'next' : 'current',
-      transition: index === stopIndex ? 'stop' : index === resumeIndex ? 'resume' : '',
-    }))
-})
-
 const publicSpeechCaptionRows = computed(() => {
   const feed = roomAudioEngine.value?.speech_feed
   const current = feed?.current
-  if (current) {
+  if (current && String(current.text || '').trim() && String(current.segment_id || '').trim()) {
     const toneToTransition = (tone: RoomAudioSpeechFeedItem['tone']) => {
       if (tone === 'cut') return 'stop'
       if (tone === 'interrupt') return 'interrupt'
@@ -942,7 +860,7 @@ const publicSpeechCaptionRows = computed(() => {
       { item: current, role: 'current' as const },
       feed?.next ? { item: feed.next, role: 'next' as const } : null,
     ]
-      .filter((row): row is { item: RoomAudioSpeechFeedItem; role: 'previous' | 'current' | 'next' } => Boolean(row))
+      .filter((row): row is { item: RoomAudioSpeechFeedItem; role: 'previous' | 'current' | 'next' } => Boolean(row && String(row.item.text || '').trim() && String(row.item.segment_id || '').trim()))
       .map(({ item, role }) => ({
         // Slots own their DOM nodes: upstream segment IDs can be recycled.
         key: 'feed-' + role,
@@ -952,12 +870,9 @@ const publicSpeechCaptionRows = computed(() => {
       }))
   }
 
-  return mainlineCaptionRows.value.map((row) => ({
-    key: 'fallback-' + row.role,
-    text: row.segment.text,
-    role: row.role,
-    transition: row.transition,
-  }))
+  // Core's current output feed is authoritative. Prepared track text and
+  // estimated transcript offsets are never a fallback for missing subtitles.
+  return []
 })
 const speechWaveBars = [
   7, 11, 16, 22, 13, 9, 17, 27, 18, 11, 8, 14, 24, 31, 20, 12,
@@ -5091,7 +5006,7 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
-            <p v-else class="speech-runtime-unified-mainline">{{ mainlineFallbackPreview || '等待主播文案' }}</p>
+
             <div class="speech-runtime-unified-wave" :class="{ active: displayMainlineStatus === 'playing' || (interruptSpeech.status || '') === 'playing' }" aria-hidden="true">
               <i v-for="(height, index) in speechWaveBars" :key="index" :style="{ '--wave-height': height + 'px', '--wave-delay': (index * 37) + 'ms' }"></i>
             </div>
@@ -5114,22 +5029,22 @@ onBeforeUnmount(() => {
               class="speech-track-card speech-mainline-card"
               :class="['status-' + displayMainlineStatus, { 'cut-imminent': mainlineSafeCutImminent }]"
             >
-            <div v-if="mainlineCaptionRows.length" class="speech-mainline-live-caption">
+            <div v-if="publicSpeechCaptionRows.length" class="speech-mainline-live-caption">
               <div class="speech-mainline-caption-stack">
                 <div
-                  v-for="row in mainlineCaptionRows"
-                  :key="row.segment.segment_id"
+                  v-for="row in publicSpeechCaptionRows"
+                  :key="row.key"
                   class="speech-mainline-caption-row"
                   :class="[
                     'role-' + row.role,
                     row.transition ? 'transition-' + row.transition : '',
                   ]"
                 >
-                  <span>{{ row.segment.text }}</span>
+                  <span>{{ row.text }}</span>
                 </div>
               </div>
             </div>
-            <p v-else :class="{ 'speech-empty-copy': !mainlineFallbackPreview }">{{ mainlineFallbackPreview || '等待主播文案' }}</p>
+
             <div
               class="speech-mainline-waveform"
               :class="{ active: displayMainlineStatus === 'playing' }"

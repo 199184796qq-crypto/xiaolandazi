@@ -125,6 +125,7 @@ type roomState struct {
 	pausedFrom               Phase
 	mainlineTimeline         []SpeechSegment
 	interruptTimeline        []SpeechSegment
+	interruptTranscriptOnly  map[string]bool
 	updatedAt                time.Time
 	subscribers              map[chan Frame]struct{}
 }
@@ -218,6 +219,16 @@ func (e *Engine) SetMainlineTimeline(roomID int64, timeline []SpeechSegment) {
 }
 
 func (e *Engine) SetInterruptTimeline(roomID int64, timeline []SpeechSegment) {
+	e.setInterruptTimeline(roomID, timeline, false)
+}
+
+// Estimated positions still support the internal spoken observer, but are not
+// timed subtitles and must never be exported to viewers or terminals.
+func (e *Engine) SetInterruptTranscriptTimeline(roomID int64, timeline []SpeechSegment) {
+	e.setInterruptTimeline(roomID, timeline, true)
+}
+
+func (e *Engine) setInterruptTimeline(roomID int64, timeline []SpeechSegment, transcriptOnly bool) {
 	if e == nil || roomID <= 0 {
 		return
 	}
@@ -228,6 +239,12 @@ func (e *Engine) SetInterruptTimeline(roomID int64, timeline []SpeechSegment) {
 	}
 	state := e.ensureRoomLocked(roomID)
 	state.interruptTimeline = cloneSpeechTimeline(timeline)
+	state.interruptTranscriptOnly = make(map[string]bool)
+	if transcriptOnly {
+		for _, segment := range state.interruptTimeline {
+			state.interruptTranscriptOnly[segment.SegmentID] = true
+		}
+	}
 	state.interruptCursorMS = 0
 	state.updatedAt = e.now().UTC()
 	e.mu.Unlock()
@@ -406,11 +423,14 @@ func (e *Engine) PublishPCMAt(roomID int64, source Source, pcm []byte, segmentID
 	}
 	if source == SourceInterrupt && sourceCursorMS >= 0 {
 		state.interruptCursorMS = sourceCursorMS + FrameDurationMS
-		if value := speechSegmentAt(state.interruptTimeline, sourceCursorMS); value != "" {
-			state.currentSegmentID = value
-		}
 	}
-	if value := strings.TrimSpace(segmentID); value != "" {
+	if sourceCursorMS >= 0 {
+		timeline := state.mainlineTimeline
+		if source == SourceInterrupt {
+			timeline = state.interruptTimeline
+		}
+		state.currentSegmentID = speechSegmentAt(timeline, sourceCursorMS)
+	} else if value := strings.TrimSpace(segmentID); value != "" {
 		state.currentSegmentID = value
 	}
 	if source == SourceMainline && state.resumeHighlightSegmentID != "" && state.currentSegmentID != state.resumeHighlightSegmentID {
@@ -572,9 +592,6 @@ func speechSegmentAt(timeline []SpeechSegment, cursorMS int) string {
 			return segment.SegmentID
 		}
 	}
-	if len(timeline) > 0 && cursorMS >= timeline[len(timeline)-1].EndMS {
-		return timeline[len(timeline)-1].SegmentID
-	}
 	return ""
 }
 
@@ -620,17 +637,17 @@ func speechFeedLocked(state *roomState) SpeechFeedSnapshot {
 
 	if state.activeSource == SourceInterrupt || state.phase == PhaseInterrupt || state.phase == PhasePreparingResume {
 		index := speechSegmentIndex(state.interruptTimeline, state.currentSegmentID)
-		if index < 0 && len(state.interruptTimeline) > 0 {
-			index = 0
+		if state.interruptTranscriptOnly[state.currentSegmentID] {
+			return feed
 		}
 		if index >= 0 && index < len(state.interruptTimeline) {
 			feed.Current = speechFeedItem(state, state.interruptTimeline[index], SpeechToneInterrupt)
-			if index > 0 {
+			if index > 0 && !state.interruptTranscriptOnly[state.interruptTimeline[index-1].SegmentID] {
 				feed.Previous = speechFeedItem(state, state.interruptTimeline[index-1], SpeechToneInterrupt)
 			} else if cutIndex := speechSegmentIndex(state.mainlineTimeline, state.plannedCutSegmentID); cutIndex >= 0 {
 				feed.Previous = speechFeedItem(state, state.mainlineTimeline[cutIndex], SpeechToneCut)
 			}
-			if index+1 < len(state.interruptTimeline) {
+			if index+1 < len(state.interruptTimeline) && !state.interruptTranscriptOnly[state.interruptTimeline[index+1].SegmentID] {
 				feed.Next = speechFeedItem(state, state.interruptTimeline[index+1], SpeechToneInterrupt)
 			} else if resumeIndex := speechSegmentIndex(state.mainlineTimeline, state.resumeSegmentID); resumeIndex >= 0 {
 				feed.Next = speechFeedItem(state, state.mainlineTimeline[resumeIndex], SpeechToneResume)
@@ -644,12 +661,12 @@ func speechFeedLocked(state *roomState) SpeechFeedSnapshot {
 		return feed
 	}
 	feed.Current = speechFeedItem(state, state.mainlineTimeline[mainIndex], mainlineTone(state, state.currentSegmentID))
-	if state.currentSegmentID == state.resumeHighlightSegmentID && len(state.interruptTimeline) > 0 {
+	if state.currentSegmentID == state.resumeHighlightSegmentID && len(state.interruptTimeline) > 0 && !state.interruptTranscriptOnly[state.interruptTimeline[len(state.interruptTimeline)-1].SegmentID] {
 		feed.Previous = speechFeedItem(state, state.interruptTimeline[len(state.interruptTimeline)-1], SpeechToneInterrupt)
 	} else if mainIndex > 0 {
 		feed.Previous = speechFeedItem(state, state.mainlineTimeline[mainIndex-1], SpeechToneNormal)
 	}
-	if state.currentSegmentID == state.plannedCutSegmentID && len(state.interruptTimeline) > 0 &&
+	if state.currentSegmentID == state.plannedCutSegmentID && len(state.interruptTimeline) > 0 && !state.interruptTranscriptOnly[state.interruptTimeline[0].SegmentID] &&
 		(state.phase == PhasePreparingInterrupt || state.phase == PhaseArmed) {
 		feed.Next = speechFeedItem(state, state.interruptTimeline[0], SpeechToneInterrupt)
 	} else if mainIndex+1 < len(state.mainlineTimeline) {

@@ -77,7 +77,7 @@ func TestDeferredBridgeSharesTaskAndReturnsWithoutWaiting(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer unsubscribe()
-			start, err := client.StartProgram(context.Background(), audioout.StartProgramInput{RoomID: 92, Sequential: true, Tracks: []audioout.ProgramTrack{{ID: "a", AudioURL: server.URL + "/a", Text: "切点前完整内容。", DurationMS: 400}, {ID: "b", AudioURL: server.URL + "/b", Text: c.entry, DurationMS: 2000}}})
+			start, err := client.StartProgram(context.Background(), audioout.StartProgramInput{RoomID: 92, Sequential: true, Tracks: []audioout.ProgramTrack{{ID: "a", AudioURL: server.URL + "/a", Text: "切点前完整内容。", DurationMS: 400, Timeline: []audioout.ProgramTimelineSegment{{SegmentID: "a-caption", Index: 1, StartMS: 0, EndMS: 400, Text: "切点前完整内容。", SafeCut: true}}}, {ID: "b", AudioURL: server.URL + "/b", Text: c.entry, DurationMS: 2000, Timeline: []audioout.ProgramTimelineSegment{{SegmentID: "b-caption", Index: 1, StartMS: 0, EndMS: 2000, Text: c.entry, SafeCut: true}}}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -85,7 +85,7 @@ func TestDeferredBridgeSharesTaskAndReturnsWithoutWaiting(t *testing.T) {
 			cut := 400
 			done := make(chan error, 1)
 			go func() {
-				_, err := client.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{RoomID: 92, ExpectedTaskID: start.Task.ID, DecisionID: "d1", DeferredReturn: true, AllowConsecutiveRepeat: c.allowRepeat, AudioURL: server.URL + "/answer", Text: "完整的核心互动回答。", SwitchAtMS: &cut, ResumeOffsetMS: &cut})
+				_, err := client.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{RoomID: 92, ExpectedTaskID: start.Task.ID, DecisionID: "d1", DeferredReturn: true, AllowConsecutiveRepeat: c.allowRepeat, AudioURL: server.URL + "/answer", Text: "完整的核心互动回答。", Timeline: []audioout.ProgramTimelineSegment{{SegmentID: "answer-caption", Index: 1, StartMS: 0, EndMS: 1400, Text: "完整的核心互动回答。"}}, SwitchAtMS: &cut, ResumeOffsetMS: &cut})
 				done <- err
 			}()
 			var plan audioout.InteractionReturnSnapshot
@@ -155,9 +155,7 @@ func TestDeferredBridgeSharesTaskAndReturnsWithoutWaiting(t *testing.T) {
 			}
 			if c.bridgeText == c.entry {
 				want := 1
-				if c.wantBridge {
-					want = 2
-				}
+
 				if strings.Count(srt, c.entry) != want {
 					t.Fatalf("duplicate PCM/SRT mismatch want=%d srt=%s", want, srt)
 				}
@@ -173,7 +171,7 @@ func TestDeferredBridgeSharesTaskAndReturnsWithoutWaiting(t *testing.T) {
 					bridgeMS += cue.EndMS - cue.StartMS
 				}
 			}
-			if c.wantBridge && bridgeMS != 200 {
+			if c.bridgeText != c.entry && bridgeMS != 0 {
 				t.Fatal("bridge subtitle not aligned with PCM duration", bridgeMS)
 			}
 			if _, err := client.InteractionReturnSnapshot(context.Background(), 92, plan.TaskID); err == nil {
