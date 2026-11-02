@@ -31,12 +31,13 @@ func recordingCurrentCacheIdentity(version model.LiveAgentPlanVersion, texts []s
 	}
 	if script, ok := recordingScriptFromContext(version.GenerationContext); ok {
 		type tabContent struct {
-			ID   string
-			Text string
+			ID      string
+			Text    string
+			Entries []recordingScriptEntry `json:",omitempty"`
 		}
 		tabs := make([]tabContent, 0, len(script.Tabs))
 		for _, tab := range script.Tabs {
-			tabs = append(tabs, tabContent{tab.TabID, tab.Text})
+			tabs = append(tabs, tabContent{ID: tab.TabID, Text: tab.Text, Entries: tab.Entries})
 		}
 		sort.Slice(tabs, func(i, j int) bool { return tabs[i].ID < tabs[j].ID })
 		// Title, pinned position and visual ordering cannot change facts/audio.
@@ -53,7 +54,11 @@ func recordingStableTabIDs(version model.LiveAgentPlanVersion, texts []string) [
 	ids := make([]string, 0, len(texts))
 	if script, ok := recordingScriptFromContext(version.GenerationContext); ok {
 		for _, tab := range script.Tabs {
-			if strings.TrimSpace(tab.Text) != "" {
+			if script.Version == 2 {
+				for _, entry := range tab.Entries {
+					ids = append(ids, tab.TabID+":"+entry.EntryID)
+				}
+			} else if strings.TrimSpace(tab.Text) != "" {
 				ids = append(ids, tab.TabID)
 			}
 		}

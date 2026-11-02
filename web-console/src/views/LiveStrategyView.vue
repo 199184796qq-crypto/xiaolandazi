@@ -27,6 +27,8 @@ import { usePlanBusinessMode } from '../usePlanBusinessMode'
 import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
 import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import RecordingScriptTabs from '../components/RecordingScriptTabs.vue'
+import RecordingScriptEntries from '../components/RecordingScriptEntries.vue'
+import { groupedScriptForSave, scriptEntries, scriptGroupsError, type ScriptEntry } from '../recordingScriptGroups'
 import RecordingOriginalMedia from '../components/RecordingOriginalMedia.vue'
 import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
 import PlanCreateDialog from '../components/PlanCreateDialog.vue'
@@ -1052,7 +1054,7 @@ const customMainlineUploadProgress = ref(0)
 const customMainlineStage = ref<'idle' | 'uploading' | 'analyzing' | 'ready' | 'saving' | 'failed'>('idle')
 const customMainlineDraft = ref<LiveAgentCustomMainlineResponse | null>(null)
 const customMainlineTimeline = ref<LiveAgentPlanTimelineSegment[]>([])
-type RecordingScriptTab = { id: string; title: string; text: string; audioAssetIds: number[]; pinned: boolean }
+type RecordingScriptTab = { id: string; title: string; text: string; entries?: ScriptEntry[]; audioAssetIds: number[]; pinned: boolean }
 // 话术优先可以有多段话术：一个标签 = 一个文本框；一个声音对应一个文本框，不合并。
 // 只有一段时就是原来的单文本框，保存与播放行为不变。
 const recordingTabs = ref<RecordingScriptTab[]>([{ id: 't1', title: '开场', text: '', audioAssetIds: [], pinned: false }])
@@ -1063,6 +1065,12 @@ const recordingTabDrafts = ref<Record<string, LiveAgentCustomMainlineResponse>>(
 const activeRecordingTab = computed<RecordingScriptTab | null>(
   () => recordingTabs.value.find((item) => item.id === activeRecordingTabId.value) || recordingTabs.value[0] || null,
 )
+const activeRecordingEntries = computed(() => activeRecordingTab.value ? scriptEntries(activeRecordingTab.value) : [])
+const recordingGroupsError = computed(() => scriptGroupsError(recordingTabs.value))
+function updateRecordingEntries(entries: ScriptEntry[]): void {
+  if (!activeRecordingTab.value || fullShowVersionSaving.value) return
+  activeRecordingTab.value.entries = entries
+}
 function recordingOriginalForTab(tab: RecordingScriptTab | null): LiveAgentCustomMainlineResponse | null {
   if (!tab) return null
   const draft = recordingTabDrafts.value[tab.id]
@@ -1087,7 +1095,7 @@ const activeRecordingTabText = computed<string>({
 })
 // 播放与 SRT 仍吃一份完整正文：按标签顺序拼接，空标签跳过。
 const customMainlineTranscript = computed<string>(() =>
-  recordingTabs.value.map((tab) => tab.text.trim()).filter(Boolean).join('\n'),
+  recordingTabs.value.flatMap(tab => recordingVoiceMode.value === 'stream_clone' ? scriptEntries(tab).map(entry => entry.text) : [tab.text]).map(text => text.trim()).filter(Boolean).join('\n'),
 )
 // 显式按「当前标签」写入：切标签时不会把上一个标签的文本带进新标签。
 const recordingTabCharCount = computed(() =>
@@ -1151,7 +1159,8 @@ watch(activeRecordingOriginal, (draft) => {
   customMainlineSaveNotice.value = ''
 }, { flush: 'sync' })
 // 落库形态：1..20 个文本框，每框最多 1 段声音，标签唯一。
-function recordingScriptForSave() {
+function recordingScriptForSave(grouped = false) {
+  if (grouped) return groupedScriptForSave(recordingTabs.value, activeRecordingTabId.value)
   return {
     tabs: recordingTabs.value.map((tab, index) => ({
       tab_id: tab.id,
@@ -1170,12 +1179,13 @@ function restoreRecordingScript(context: Record<string, unknown> | undefined): v
   const tabs = Array.isArray(raw?.tabs) ? raw.tabs : []
   const restored: RecordingScriptTab[] = []
   tabs.forEach((item, index) => {
-    const tab = item as { tab_id?: string; title?: string; text?: string; audio_asset_ids?: unknown[]; pinned?: boolean }
+    const tab = item as { tab_id?: string; title?: string; text?: string; entries?: { entry_id: string; text: string }[]; audio_asset_ids?: unknown[]; pinned?: boolean }
     const id = String(tab?.tab_id || `t${index + 1}`)
     restored.push({
       id,
       title: String(tab?.title || `话术${index + 1}`),
       text: String(tab?.text || ''),
+      ...(Array.isArray(tab?.entries) ? { entries: tab.entries.map(entry => ({ id: entry.entry_id, text: entry.text })) } : {}),
       audioAssetIds: Array.isArray(tab?.audio_asset_ids) ? tab!.audio_asset_ids!.map(Number).filter((value) => value > 0) : [],
       pinned: Boolean(tab?.pinned),
     })
@@ -1190,7 +1200,7 @@ const customMainlineSaveNotice = ref('')
 const customMainlineError = useFeedbackErrorRef()
 const customMainlineCloneBusy = ref(false)
 const recordingVoiceMode = ref<'original' | 'stream_clone'>('original')
-const recordingScriptHasText = computed(() => recordingTabs.value.some(tab => Boolean(tab.text.trim())))
+const recordingScriptHasText = computed(() => recordingTabs.value.some(tab => scriptEntries(tab).some(entry => Boolean(entry.text.trim()))))
 const recordingScriptOnlySave = computed(() => isUserAudioContentMode.value && recordingVoiceMode.value === 'stream_clone' && recordingScriptHasText.value)
 const showRecordingOriginalMedia = computed(() => recordingVoiceMode.value === 'original' && Boolean(activeRecordingOriginal.value))
 const recordingOriginalBusy = computed(() => fullShowVersionSaving.value || ['uploading', 'analyzing', 'saving'].includes(customMainlineStage.value))
@@ -1284,7 +1294,7 @@ const fullShowSaveBlockedReason = computed(() => {
     if (readyRecordingOriginal.value) return ''
     if (!hasCustomMainlineResult.value) return '还差一段主线录音哦～去“生成智能体”上传并完成处理，就能保存啦。'
   }
-  if (isUserAudioContentMode.value && recordingVoiceMode.value === 'stream_clone' && !recordingScriptHasText.value) return '先在文本框里写入话术，就能用 AI 声音保存啦～'
+  if (isUserAudioContentMode.value && recordingVoiceMode.value === 'stream_clone' && recordingGroupsError.value) return recordingGroupsError.value
   if (recordingScriptOnlySave.value) return ''
   if (!fullShowResult.value) return '先去“生成智能体”生成并核对文稿，再来保存吧～'
   if (!fullShowFormalVariantKeys.value.length) return '选好至少一套正式稿，我们就能保存啦～'
@@ -3328,7 +3338,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       generation_context: {
         content_mode: contentModeAtSave,
         ...(contentModeAtSave === 'user_audio' ? { recording_voice_mode: recordingVoiceMode.value } : {}),
-        ...(contentModeAtSave === 'user_audio' ? { recording_script: recordingScriptForSave() } : {}),
+        ...(contentModeAtSave === 'user_audio' ? { recording_script: recordingScriptForSave(recordingVoiceMode.value === 'stream_clone') } : {}),
         ...(contentModeAtSave === 'user_audio' ? { recording_original_sources: recordingOriginalSources } : {}),
         ...(realtimeOptionsAtSave ? { anchor_generation_options: realtimeOptionsAtSave } : {}),
         duration_minutes: Math.round(Number(fullShowDuration.value || 0)),
@@ -3357,6 +3367,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       throw new Error('服务端未返回当前方案的新版本保存回执，请刷新核对；本次不显示保存成功。')
     }
     if (!current()) return saved
+    if (contentModeAtSave === 'user_audio') restoreRecordingScript(saved.generation_context)
     fullShowSaveReceipt.value = saved
     fullShowSavedVersion.value = saved
     if (realtimeOptionsAtSave) {
@@ -6248,25 +6259,35 @@ onBeforeUnmount(() => {
                     @toggle-pin="toggleRecordingTabPin"
                   />
                   <label v-if="activeRecordingTab" class="strategy-script-tab-title">
-                    <span>标题</span>
-                    <input v-model="activeRecordingTab.title" type="text" maxlength="30" placeholder="例如：开场、XX床介绍、XX套餐介绍" />
+                    <span>{{ recordingVoiceMode === 'stream_clone' ? '组名' : '标题' }}</span>
+                    <input v-model="activeRecordingTab.title" :disabled="fullShowVersionSaving" type="text" maxlength="30" placeholder="例如：开场、XX床介绍、XX套餐介绍" />
                   </label>
                   <textarea
+                    v-if="recordingVoiceMode === 'original'"
                     class="strategy-original-transcript-editor"
                     :value="activeRecordingTab?.text || ''"
+                    :disabled="fullShowVersionSaving"
                     rows="16"
                     :maxlength="recordingTabTextLimit"
                     spellcheck="false"
                     placeholder="粘贴或输入这一段话术…"
                     @input="onRecordingTabInput"
                   ></textarea>
-                  <p v-if="recordingVoiceMode === 'stream_clone' && voicePoolID(planVoiceIdentity) === 'high_fidelity'" class="strategy-script-notice strategy-volcengine-notice">
-                    用 ==== 分隔独立段落；剩余不足40秒补料，排队复用缓存。首轮生成后跨标签随机循环，语速0.90—1.10，字幕同步。
+                  <RecordingScriptEntries
+                    v-if="recordingVoiceMode === 'stream_clone' && activeRecordingTab"
+                    :key="activeRecordingTab.id"
+                    :entries="activeRecordingEntries"
+                    :disabled="recordingOriginalBusy"
+                    @update="updateRecordingEntries"
+                  />
+                  <p v-if="recordingVoiceMode === 'stream_clone'" class="strategy-script-notice">
+                    每个标签是一个话术组，各条话术独立保存。保存后预生成全方案最短的一条，开播优先复用。
                   </p>
-                  <p class="strategy-script-counts">
+                  <p v-if="recordingVoiceMode === 'original'" class="strategy-script-counts">
                     <span>当前字数 {{ recordingTabCharCount }} / {{ recordingTabTextLimit }}</span>
                     <span>话术标签 {{ recordingTabs.length }} / 20</span>
                   </p>
+                  <p v-if="recordingVoiceMode === 'stream_clone' && recordingGroupsError" class="strategy-script-group-error" role="alert">{{ recordingGroupsError }}</p>
                   <p v-if="customMainlineSaveNotice" class="strategy-script-notice">{{ customMainlineSaveNotice }}</p>
                 </section>
 
@@ -9438,3 +9459,5 @@ label.plan-save-error{display:grid;gap:8px;min-width:0}.plan-save-error select{m
 
 <style scoped src="../styles/formalFactsPanel.css">.interaction-strategy-head h3{font-size:20px}
 </style>
+
+<style scoped src="../styles/recordingScriptGroups.css"></style>

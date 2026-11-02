@@ -1,0 +1,9 @@
+.strategy-fullshow-output-grid.is-recording-mainline,
+.strategy-fullshow-output-grid.is-recording-mainline :deep(*) {
+  font-size: 20px !important;
+}
+.strategy-script-group-error {
+  color: #c42c3b;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}

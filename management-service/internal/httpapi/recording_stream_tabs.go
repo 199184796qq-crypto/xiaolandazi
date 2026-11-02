@@ -33,8 +33,10 @@ func recordingStreamTexts(version model.LiveAgentPlanVersion) []string {
 	if script, ok := recordingScriptFromContext(version.GenerationContext); ok {
 		texts := make([]string, 0, len(script.Tabs))
 		for _, tab := range script.Tabs {
-			if text := strings.TrimSpace(tab.Text); text != "" {
-				texts = append(texts, text)
+			for _, text := range tab.texts() {
+				if strings.TrimSpace(text) != "" {
+					texts = append(texts, text)
+				}
 			}
 		}
 		if len(texts) > 0 {
@@ -57,8 +59,10 @@ func recordingStreamPinned(version model.LiveAgentPlanVersion) []bool {
 	}
 	pinned := make([]bool, 0, len(script.Tabs))
 	for _, tab := range script.Tabs {
-		if strings.TrimSpace(tab.Text) != "" {
-			pinned = append(pinned, tab.Pinned)
+		for _, text := range tab.texts() {
+			if strings.TrimSpace(text) != "" {
+				pinned = append(pinned, tab.Pinned)
+			}
 		}
 	}
 	return pinned

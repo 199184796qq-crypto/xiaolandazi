@@ -23,7 +23,7 @@ const fixture = `<script setup lang="ts">
 import {computed,ref} from 'vue'
 import RecordingScriptTabs from '/src/components/RecordingScriptTabs.vue'
 import '/src/style.css'
-type RecordingScriptTab={id:string;title:string;text:string;audioAssetIds:number[]}
+type RecordingScriptTab={id:string;title:string;text:string;audioAssetIds:number[];pinned:boolean}
 type LiveAgentCustomMainlineResponse=Record<string,unknown>
 const recordingTabs=ref<RecordingScriptTab[]>([]),activeRecordingTabId=ref('t1')
 const recordingTabDrafts=ref<Record<string,LiveAgentCustomMainlineResponse>>({})
@@ -36,10 +36,10 @@ const showTabs=ref(true),outsideClicks=ref(0)
 const customMainlineStage=ref('idle')
 ${parentFunctions}
 const initial=[
- {id:'t1',title:'开场',text:'开场正文，仅属于第一项',audioAssetIds:[101]},
- {id:'t2',title:'塑品',text:'塑品正文，仅属于第二项',audioAssetIds:[202]},
- {id:'t3',title:'痛点',text:'痛点正文，仅属于第三项',audioAssetIds:[303]},
- {id:'t4',title:'功能',text:'功能正文，仅属于第四项',audioAssetIds:[404]},
+ {id:'t1',title:'开场',text:'开场正文，仅属于第一项',audioAssetIds:[101],pinned:false},
+ {id:'t2',title:'塑品',text:'塑品正文，仅属于第二项',audioAssetIds:[202],pinned:false},
+ {id:'t3',title:'痛点',text:'痛点正文，仅属于第三项',audioAssetIds:[303],pinned:false},
+ {id:'t4',title:'功能',text:'功能正文，仅属于第四项',audioAssetIds:[404],pinned:false},
 ]
 const copy=value=>JSON.parse(JSON.stringify(value))
 function setState(value={}){

@@ -86,6 +86,27 @@ func scriptFirstParagraphKey(v model.LiveAgentPlanVersion, text string) string {
 
 func scriptFirstUnits(v model.LiveAgentPlanVersion, dir string) ([]volcengineScriptUnit, error) {
 	texts := recordingStreamTexts(v)
+	if hasGroupedRecordingScript(v) {
+		var units []volcengineScriptUnit
+		for _, text := range texts {
+			key := scriptFirstParagraphKey(v, text)
+			units = append(units, volcengineScriptUnit{Text: text, Key: key, Dir: filepath.Join(dir, key)})
+		}
+		// Save-time prewarm and live start share this ordering. Keep the UI and
+		// persisted group order; only move the shortest independent entry first.
+		shortest := 0
+		for i := range units {
+			if utf8.RuneCountInString(units[i].Text) < utf8.RuneCountInString(units[shortest].Text) {
+				shortest = i
+			}
+		}
+		if shortest > 0 {
+			first := units[shortest]
+			copy(units[1:shortest+1], units[:shortest])
+			units[0] = first
+		}
+		return units, nil
+	}
 	if err := validateScriptFirstTexts(texts); err != nil {
 		return nil, err
 	}
@@ -97,6 +118,11 @@ func scriptFirstUnits(v model.LiveAgentPlanVersion, dir string) ([]volcengineScr
 		}
 	}
 	return units, nil
+}
+
+func hasGroupedRecordingScript(v model.LiveAgentPlanVersion) bool {
+	script, ok := recordingScriptFromContext(v.GenerationContext)
+	return ok && script.Version == 2
 }
 
 // IDs are per playback instance; source paragraph identity survives child

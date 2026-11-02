@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
-// 话术优先模式（原「录音主线」）可以有多份话术，每份是一个独立单元：
-// 一个标签头 + 一个标题 + 一段正文，可选绑定一段上传的原始声音。
+// 话术优先第2版：标签是组名，组内保存多条独立话术；每条400–4000字符，
+// 一组合计最多4000字符。旧版单框及上传原音的正文/声音绑定继续兼容读取。
 //
 // 只有一个文本框时就是 N=1 的退化情况，和改造前完全等价；
 // 旧方案快照没有 recording_script 字段时按单框读，不要求重新保存。
@@ -25,17 +26,35 @@ const (
 var recordingScriptTabIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 
 type recordingScriptTab struct {
-	TabID  string `json:"tab_id"`
-	Title  string `json:"title"`
-	Order  int    `json:"order"`
-	Text   string `json:"text"`
-	Pinned bool   `json:"pinned,omitempty"`
+	TabID   string                 `json:"tab_id"`
+	Title   string                 `json:"title"`
+	Order   int                    `json:"order"`
+	Text    string                 `json:"text,omitempty"` // Legacy/original-audio transcript only.
+	Pinned  bool                   `json:"pinned,omitempty"`
+	Entries []recordingScriptEntry `json:"entries,omitempty"`
 	// 一个声音对应一个文本框，不合并；这里保留数组是为了将来能挂多轨字幕，
 	// 当前上限 1 段，多传一段就多一个文本框。
 	AudioAssetIDs []int64 `json:"audio_asset_ids,omitempty"`
 }
 
+type recordingScriptEntry struct {
+	EntryID string `json:"entry_id"`
+	Text    string `json:"text"`
+}
+
+func (t recordingScriptTab) texts() []string {
+	if t.Entries != nil {
+		texts := make([]string, len(t.Entries))
+		for i, entry := range t.Entries {
+			texts[i] = entry.Text
+		}
+		return texts
+	}
+	return []string{t.Text}
+}
+
 type recordingScript struct {
+	Version       int                  `json:"version,omitempty"`
 	Tabs          []recordingScriptTab `json:"tabs"`
 	ActiveTabID   string               `json:"active_tab_id,omitempty"`
 	PlaybackOrder []string             `json:"playback_order,omitempty"`
@@ -88,6 +107,9 @@ func recordingScriptFromContext(context map[string]any) (recordingScript, bool) 
 }
 
 func (s recordingScript) validate() error {
+	if s.Version != 0 && s.Version != 2 {
+		return errors.New("话术组版本不支持")
+	}
 	if len(s.Tabs) == 0 {
 		return errors.New("话术分组至少要有一个文本框")
 	}
@@ -112,6 +134,32 @@ func (s recordingScript) validate() error {
 			return fmt.Errorf("第 %d 个文本框的标题须在 %d 字以内", index+1, recordingScriptMaxTitleRunes)
 		}
 		textRunes := len([]rune(strings.TrimSpace(tab.Text)))
+		if s.Version == 2 {
+			if tab.Text != "" {
+				return fmt.Errorf("第%d个话术组须单独保存各条话术，不能同时提交旧正文", index+1)
+			}
+			if len(tab.Entries) == 0 || len(tab.Entries) > 10 {
+				return fmt.Errorf("第%d个话术组须有1到10条独立话术", index+1)
+			}
+			entryIDs := make(map[string]bool, len(tab.Entries))
+			textRunes = 0
+			for i, entry := range tab.Entries {
+				if !recordingScriptTabIDPattern.MatchString(entry.EntryID) || entryIDs[entry.EntryID] {
+					return fmt.Errorf("第%d组第%d条话术标识无效或重复", index+1, i+1)
+				}
+				entryIDs[entry.EntryID] = true
+				n := utf8.RuneCountInString(entry.Text)
+				if strings.TrimSpace(entry.Text) == "" || n < 400 || n > 4000 {
+					return fmt.Errorf("第%d组第%d条话术为%d字符，每条须为400到4000字符", index+1, i+1, n)
+				}
+				textRunes += n
+			}
+			if textRunes > 4000 {
+				return fmt.Errorf("第%d个话术组共%d字符，所有话术合计不能超过4000字符", index+1, textRunes)
+			}
+		} else if tab.Entries != nil {
+			return errors.New("独立话术须使用第2版话术组格式")
+		}
 		// A long uploaded recording still maps to one tab/one audio asset. Keep
 		// the existing total cap; do not truncate ASR or split its audio binding.
 		maxTextRunes := recordingScriptMaxTextRunes
@@ -206,8 +254,10 @@ func (s recordingScript) scriptedText() string {
 	}
 	parts := make([]string, 0, len(ordered))
 	for _, tab := range ordered {
-		if text := strings.TrimSpace(tab.Text); text != "" {
-			parts = append(parts, text)
+		for _, text := range tab.texts() {
+			if text = strings.TrimSpace(text); text != "" {
+				parts = append(parts, text)
+			}
 		}
 	}
 	return strings.Join(parts, "\n")

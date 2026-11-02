@@ -109,6 +109,19 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 		t.Fatal("long original recording fixture required")
 	}
 	v := input.Variants[0]
+	groups := groupedScriptFixture()
+	groups.Tabs[0].AudioAssetIDs = []int64{v.AudioAssetID}
+	input.GenerationContext["recording_script"] = groups
+	checkGroups := func(version *model.LiveAgentPlanVersion) {
+		t.Helper()
+		if version == nil {
+			t.Fatal("missing grouped script version")
+		}
+		script, ok := recordingScriptFromContext(version.GenerationContext)
+		if !ok || script.Version != 2 || len(script.Tabs) != 2 || len(script.Tabs[0].Entries) != 2 || len(script.Tabs[1].Entries) != 1 || script.Tabs[0].Entries[1].Text != groups.Tabs[0].Entries[1].Text || script.Tabs[0].Text != "" || !script.Tabs[0].Pinned || script.ActiveTabID != "product" || len(script.Tabs[0].AudioAssetIDs) != 1 || script.Tabs[0].AudioAssetIDs[0] != v.AudioAssetID {
+			t.Fatalf("independent entries/ownership not restored: %#v", script)
+		}
+	}
 	exec(`INSERT INTO media_assets(id,tenant_id,asset_type,original_name,storage_driver,object_key,mime_type,size_bytes,duration_ms,checksum_sha256,status,metadata_json) VALUES(?,14,'audio','fixture.wav','local','fixture/original.wav','audio/wav',100,?,'fixture','active','{"purpose":"live_agent_custom_mainline_audio"}')`, v.AudioAssetID, v.AudioDurationMS)
 	exec(`INSERT INTO voice_profiles(id,tenant_id,name,provider,voice_id,clone_status,config_json) VALUES(12,14,'失效声音','qwen_audio','fixture-clone-20','ready','{}'),(13,14,'新互动声音','qwen_audio','fixture-clone-21','ready','{}')`)
 	exec(`INSERT INTO voice_model_bindings(id,tenant_id,profile_id,sample_asset_id,provider,model,voice_id,status,config_json) VALUES(21,14,13,1,'qwen_audio','qwen-audio-3.1-tts-flash','fixture-clone-21','ready','{}'),(20,14,12,1,'qwen_audio','qwen-audio-3.1-tts-flash','fixture-clone-20','disabled','{}')`)
@@ -163,6 +176,7 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 	if !planSaveAnalysisPaused(saved.GenerationContext) {
 		t.Fatal("saved version did not retain the paused-analysis contract")
 	}
+	checkGroups(&saved)
 	for _, key := range []string{"derived_safety", "atomic_facts", "domain_card"} {
 		if _, exists := saved.GenerationContext[key]; exists {
 			t.Fatalf("recording save still produced analysis: %s", key)
@@ -199,6 +213,7 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 	if workspace.Version == nil || workspace.Version.ID != saved.ID || workspace.Version.VoiceIdentity.VoiceID != "101030" {
 		t.Fatal("saved default voice not restored")
 	}
+	checkGroups(workspace.Version)
 	// The workspace reader and the room-start reader are different queries.
 	// Exercise the exact authenticated GET used before the big-screen Start.
 	exec(`INSERT INTO live_agent_room_plan_selections(tenant_id,room_id,plan_id) VALUES(14,29,7),(14,26,7)`)
@@ -212,6 +227,7 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 		if effective.Version == nil || effective.Version.ID != saved.ID || effective.Version.RoomID != room || effective.Version.Variants[0].AudioAssetID != v.AudioAssetID || len(effective.Version.Variants[0].Timeline) != 251 || len(effective.Version.Variants[0].SafePoints) != 251 {
 			t.Fatal("room-start GET lost the saved original recording")
 		}
+		checkGroups(effective.Version)
 	}
 	// The original upload may reference a disabled old clone in its archive;
 	// explicitly selecting that clone for interaction must still be refused.

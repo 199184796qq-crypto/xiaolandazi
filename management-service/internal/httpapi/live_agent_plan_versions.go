@@ -116,8 +116,10 @@ func recordingScriptOnlyContext(context map[string]any) bool {
 		return false
 	}
 	for _, tab := range script.Tabs {
-		if strings.TrimSpace(tab.Text) != "" {
-			return true
+		for _, text := range tab.texts() {
+			if strings.TrimSpace(text) != "" {
+				return true
+			}
 		}
 	}
 	return false
@@ -370,7 +372,7 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	paragraphVersion := model.LiveAgentPlanVersion{GenerationContext: input.GenerationContext, VoiceIdentity: input.VoiceIdentity, Variants: input.Variants}
-	if usesScriptFirstParagraphs(paragraphVersion) {
+	if usesScriptFirstParagraphs(paragraphVersion) && !hasGroupedRecordingScript(paragraphVersion) {
 		if err := validateScriptFirstTexts(recordingStreamTexts(paragraphVersion)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
