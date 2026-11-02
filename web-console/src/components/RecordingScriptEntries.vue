@@ -1,14 +1,25 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { scriptCharacters, scriptEntryErrors, type ScriptEntry } from '../recordingScriptGroups'
 
 const props = defineProps<{ entries: readonly ScriptEntry[]; disabled?: boolean }>()
 const emit = defineEmits<{ update: [entries: ScriptEntry[]] }>()
 const root = ref<HTMLElement | null>(null)
 const addError = ref('')
+const pendingDeleteID = ref<string | null>(null)
+const cancelledDeleteTarget = ref<HTMLElement | null>(null)
 const total = computed(() => props.entries.reduce((sum, entry) => sum + scriptCharacters(entry.text), 0))
 const errors = computed(() => scriptEntryErrors(props.entries))
-watch(() => props.entries, () => { addError.value = '' }, { deep: true })
+function cancelPendingDelete() {
+  pendingDeleteID.value = null
+}
+watch(() => props.entries, () => {
+  addError.value = ''
+  if (pendingDeleteID.value && !props.entries.some(entry => entry.id === pendingDeleteID.value)) cancelPendingDelete()
+}, { deep: true })
+watch(() => props.disabled, disabled => {
+  if (disabled) cancelPendingDelete()
+})
 function input(index: number, event: Event) {
   if (props.disabled) return
   emit('update', props.entries.map((entry, i) => i === index ? { ...entry, text: (event.target as HTMLTextAreaElement).value } : entry))
@@ -30,19 +41,49 @@ async function add() {
   const editors = root.value?.querySelectorAll('textarea')
   editors?.[editors.length - 1]?.focus()
 }
-function remove(index: number) {
-  if (!props.disabled && props.entries.length > 1) emit('update', props.entries.filter((_, i) => i !== index))
+function remove(entry: ScriptEntry, index: number, event: MouseEvent) {
+  if (props.disabled || props.entries.length <= 1) return
+  if (cancelledDeleteTarget.value === event.currentTarget) {
+    cancelledDeleteTarget.value = null
+    return
+  }
+  if (pendingDeleteID.value === entry.id) {
+    cancelPendingDelete()
+    emit('update', props.entries.filter((_, i) => i !== index))
+    return
+  }
+  pendingDeleteID.value = entry.id
 }
+function cancelDeleteFromOutside(event: PointerEvent) {
+  if (!pendingDeleteID.value || !(event.target instanceof Element)) return
+  const confirmation = root.value?.querySelector<HTMLElement>('[data-delete-confirmation="true"]')
+  if (confirmation?.contains(event.target)) return
+  cancelPendingDelete()
+  cancelledDeleteTarget.value = event.target.closest<HTMLElement>('[data-delete-entry]')
+}
+onMounted(() => document.addEventListener('pointerdown', cancelDeleteFromOutside, true))
+onBeforeUnmount(() => document.removeEventListener('pointerdown', cancelDeleteFromOutside, true))
 </script>
 
 <template>
-  <div ref="root" class="recording-script-entries">
+  <div ref="root" class="recording-script-entries" @keydown.esc="cancelPendingDelete">
     <p class="recording-script-group-total">本组合计 {{ total }} / 4000 字符 · 每条至少 400 字符</p>
     <section v-for="(entry, index) in entries" :key="entry.id" class="recording-script-entry">
       <header>
         <label :for="`script-entry-${entry.id}`">话术 {{ index + 1 }}</label>
         <span>{{ scriptCharacters(entry.text) }} 字符</span>
-        <button v-if="entries.length > 1" type="button" :disabled="disabled" :aria-label="`删除话术 ${index + 1}`" @click="remove(index)">删除话术</button>
+        <button
+          v-if="entries.length > 1"
+          type="button"
+          class="recording-script-entry-remove"
+          :class="{ 'is-confirming': pendingDeleteID === entry.id }"
+          :data-delete-entry="entry.id"
+          :data-delete-confirmation="pendingDeleteID === entry.id ? 'true' : undefined"
+          :disabled="disabled"
+          :aria-label="pendingDeleteID === entry.id ? `确认删除话术 ${index + 1}` : `删除话术 ${index + 1}`"
+          :title="pendingDeleteID === entry.id ? '再次点击确认删除；点击其它位置取消' : `删除话术 ${index + 1}`"
+          @click.stop="remove(entry, index, $event)"
+        >{{ pendingDeleteID === entry.id ? '确认删除' : '删除话术' }}</button>
       </header>
       <p v-if="errors[index]" :id="`script-error-${entry.id}`" class="recording-script-entry-error" role="alert">{{ errors[index] }}</p>
       <p v-if="addError && index === entries.length - 1" class="recording-script-entry-error" role="alert">{{ addError }}</p>
@@ -72,6 +113,8 @@ function remove(index: number) {
 .recording-script-entry-error { margin: 8px 0; color: #c42c3b; line-height: 1.6; overflow-wrap: anywhere; }
 .recording-script-group-total { margin: 18px 0 12px; line-height: 1.6; color: #65748b; }
 .recording-script-entries button { min-height: 44px; padding: 10px 18px; border: 1px solid #dddff4; border-radius: 12px; background: #f6f5ff; color: #4e45d7; cursor: pointer; }
+.recording-script-entry header .recording-script-entry-remove.is-confirming { border-color: #d93842; background: #d93842; color: #fff; box-shadow: 0 5px 14px #d9384233; }
+.recording-script-entry header .recording-script-entry-remove.is-confirming:hover { background: #c72f39; }
 .recording-script-entries button:disabled { opacity: .55; cursor: default; }
 .recording-script-entry-add { width: 100%; }
 @media(max-width: 600px) { .recording-script-entry textarea { padding: 12px; } }
