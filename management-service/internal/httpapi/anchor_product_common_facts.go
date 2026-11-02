@@ -164,6 +164,9 @@ func (s *Server) resolveProductCommonFacts(ctx context.Context, tenant, plan int
 		if !errors.Is(err, appdb.ErrPlanAnalysisAssetNotFound) {
 			return nil, err
 		}
+		if planSaveCacheOnly(ctx) {
+			return nil, errors.New("保存时的资料分析已暂停，尚无对应商品归属缓存；请先完成初始化，再保存方案")
+		}
 		if profile == "" {
 			settings, e := s.store.AnchorGenerationSettings(ctx)
 			if e != nil {
@@ -197,6 +200,9 @@ func (s *Server) resolveProductCommonFacts(ctx context.Context, tenant, plan int
 	}
 	if err = validateProductFactSnapshot(facts, &anchorcycle.ProductFocus{Products: products, Facts: result}); err != nil {
 		return nil, err
+	}
+	if planSaveCacheOnly(ctx) {
+		return result, nil
 	}
 	encoded, _ := json.Marshal(result)
 	if err = s.store.SavePlanAnalysisAsset(ctx, tenant, plan, "product_common_facts", key, string(encoded)); err != nil {

@@ -24,7 +24,7 @@ import (
 	"livecompanion/management/internal/model"
 )
 
-// Actual authenticated save, derived safety, version transaction and workspace
+// Actual authenticated save, paused analysis, version transaction and workspace
 // read-back in an isolated database. No live room, external provider or customer
 // data is used. The long original recording remains independent of its old clone.
 func TestPlanVoiceFullSaveMySQL(t *testing.T) {
@@ -110,6 +110,7 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 	}
 	v := input.Variants[0]
 	exec(`INSERT INTO media_assets(id,tenant_id,asset_type,original_name,storage_driver,object_key,mime_type,size_bytes,duration_ms,checksum_sha256,status,metadata_json) VALUES(?,14,'audio','fixture.wav','local','fixture/original.wav','audio/wav',100,?,'fixture','active','{"purpose":"live_agent_custom_mainline_audio"}')`, v.AudioAssetID, v.AudioDurationMS)
+	exec(`INSERT INTO voice_profiles(id,tenant_id,name,provider,voice_id,clone_status,config_json) VALUES(12,14,'失效声音','qwen_audio','fixture-clone-20','ready','{}'),(13,14,'新互动声音','qwen_audio','fixture-clone-21','ready','{}')`)
 	exec(`INSERT INTO voice_model_bindings(id,tenant_id,profile_id,sample_asset_id,provider,model,voice_id,status,config_json) VALUES(21,14,13,1,'qwen_audio','qwen-audio-3.1-tts-flash','fixture-clone-21','ready','{}'),(20,14,12,1,'qwen_audio','qwen-audio-3.1-tts-flash','fixture-clone-20','disabled','{}')`)
 	t.Setenv("TENCENT_TTS_APP_ID", "1")
 	t.Setenv("TENCENT_TTS_SECRET_ID", "fixture")
@@ -158,6 +159,33 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 	}
 	if saved.ID <= 0 || saved.VersionNo != 1 || saved.RoomID != 0 || saved.VoiceIdentity.VoiceID != "101030" || saved.VoiceIdentity.Rate != 1.2 || saved.Variants[0].AudioAssetID != v.AudioAssetID || saved.Variants[0].Text != v.Text || saved.Variants[0].SRT != v.SRT || len(saved.Variants[0].Timeline) != 251 {
 		t.Fatal("full saved recording/voice receipt changed")
+	}
+	if !planSaveAnalysisPaused(saved.GenerationContext) {
+		t.Fatal("saved version did not retain the paused-analysis contract")
+	}
+	for _, key := range []string{"derived_safety", "atomic_facts", "domain_card"} {
+		if _, exists := saved.GenerationContext[key]; exists {
+			t.Fatalf("recording save still produced analysis: %s", key)
+		}
+	}
+	for _, table := range []string{"live_derived_safety_assets", "live_fact_risk_reviews"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("save created paused analysis records in %s: count=%d error=%v", table, count, err)
+		}
+	}
+	if _, err := s.existingSafetyForPlanSave(context.Background(), 14, 7); err == nil || !strings.Contains(err.Error(), "已暂停") {
+		t.Fatalf("missing prepared safety did not stop without rebuilding: %v", err)
+	}
+	cacheOnly := context.WithValue(context.Background(), planSaveCacheOnlyKey{}, true)
+	if _, err := s.resolveProductCommonFacts(cacheOnly, 14, 7, "- [事实] 仅测试现有商品归属缓存", nil, ""); err == nil || !strings.Contains(err.Error(), "已暂停") {
+		t.Fatalf("cache miss did not stop before implicit classification: %v", err)
+	}
+	for _, table := range []string{"live_derived_safety_assets", "live_fact_risk_reviews", "live_plan_analysis_assets"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("cache-only checks wrote %s: count=%d error=%v", table, count, err)
+		}
 	}
 	var workspace struct {
 		Version *model.LiveAgentPlanVersion `json:"version"`

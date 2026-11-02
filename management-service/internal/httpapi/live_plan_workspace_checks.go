@@ -106,6 +106,9 @@ func (s *Server) liveAgentPlanWorkspaceChecks(ctx context.Context, tenant, plan 
 	ref := asSupportMap(version.GenerationContext["derived_safety"])
 	hash, _ := ref["source_sha256"].(string)
 	if hash == "" {
+		if planSaveAnalysisPaused(version.GenerationContext) && !isRealtimeScheme(version.GenerationContext) {
+			return checks
+		}
 		return []livePlanWorkspaceCheck{{"saved_snapshot_missing", "该历史方案尚无安全事实快照，请核对并保存方案。"}}
 	}
 	safety, err := s.store.GetLiveDerivedSafety(ctx, tenant, plan, hash)

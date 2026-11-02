@@ -28,6 +28,9 @@ func (s *Server) refreshVersionDerivedSafety(ctx context.Context, tenant, plan, 
 	// Changing only voice/emotion must carry the same immutable content version.
 	ref := asSupportMap(snapshot["derived_safety"])
 	hash, _ := ref["source_sha256"].(string)
+	if hash == "" && planSaveAnalysisPaused(snapshot) && !isRealtimeScheme(snapshot) {
+		return nil
+	}
 	if _, err = s.store.GetLiveDerivedSafety(ctx, tenant, plan, hash); err != nil {
 		return err
 	}

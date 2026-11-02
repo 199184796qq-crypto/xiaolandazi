@@ -415,51 +415,11 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 			"industry":   strings.TrimSpace(settings.Industries[settings.BizDomain]),
 		}
 	}
-	var safety model.LiveDerivedSafetyAsset
-	var safetyErr error
-	if isRealtimeScheme(input.GenerationContext) {
-		// 【事实驱动新链路】不再固定「内容池文案 + 角度钩子」中间层，改为：
-		// 正式事实包(derived_safety) + 卖点轮盘×角度(含 tier) + 商品讲解范围(ProductFocus)。
-		// 开播时 createLiveAnchorRun 走 ProductFocus 分支，正文用「卖点×角度 + 侧面筛事实」。
-		reportAnchorAnalysis(r.Context(), 30, "正在核对事实依据与商品讲解范围")
-		safety, safetyErr = s.prepareDerivedSafety(r.Context(), tenantID, planID, actor.UserID)
-		if safetyErr != nil {
-			writeError(w, http.StatusConflict, safetyErr.Error())
-			return
-		}
-		input.GenerationContext["derived_safety"] = derivedSafetyRef(safety)
-		if captureErr := s.captureRealtimeProductFocus(r.Context(), tenantID, planID, &input, safety); captureErr != nil {
-			writeError(w, http.StatusConflict, captureErr.Error())
-			return
-		}
-	} else {
-		if set, ok, readyErr := s.latestSavedContentPoolSet(r.Context(), tenantID, planID); readyErr == nil && ok {
-			input.GenerationContext["content_pools"] = contentPoolRef(set)
-		}
-		// Saving is the activation point for the next live. Never inherit a
-		// content-pool SafetyID here: facts may have changed since that pool was
-		// saved, and the published version must carry a fresh fact snapshot.
-		reportAnchorAnalysis(r.Context(), 30, "正在核对事实依据")
-		safety, safetyErr = s.prepareDerivedSafety(r.Context(), tenantID, planID, actor.UserID)
-		if safetyErr != nil {
-			writeError(w, http.StatusConflict, safetyErr.Error())
-			return
-		}
-		input.GenerationContext["derived_safety"] = derivedSafetyRef(safety)
-	}
-	// Build the invisible per-plan domain card from the same fact snapshot that
-	// this version will publish. Failure is non-fatal: retrieval falls back to
-	// the old fact path rather than blocking a save.
-	// The answer path uses one-attribute facts; the mainline keeps SafeFacts.
-	// Building atomic facts here means the card, intent context and answer all
-	// reference the same IDs.
-	atomicText := s.buildAtomicFacts(r.Context(), safety.SafeFacts)
-	if strings.TrimSpace(atomicText) == "" {
-		atomicText = safety.SafeFacts
-	}
-	input.GenerationContext["atomic_facts"] = atomicText
-	if card := s.buildPlanDomainCard(r.Context(), safety, atomicText); card != nil {
-		input.GenerationContext["domain_card"] = card
+	// 自动资料整理和互动资料生成已暂停：只保存用户输入，实时模式
+	// 仅引用来源一致的已准备缓存，不在缓存缺失时偷偷调用模型。
+	if err := s.capturePlanSaveWithoutAnalysis(r.Context(), tenantID, planID, &input); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
 	}
 	// 保存只做基础校验与资产生成；方案级匹配核对（validateRealtimeScheme）不卡保存入口，
 	// 其存在性检查仍由内容策略/工作区检查/派生安全三处链路承担。
