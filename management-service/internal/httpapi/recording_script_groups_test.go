@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -20,13 +21,14 @@ func groupedScriptFixture() recordingScript {
 
 func TestRecordingScriptGroupsSaveAndReadBack(t *testing.T) {
 	script := groupedScriptFixture()
-	// New entries keep exact original whitespace/punctuation and literal ====;
-	// those characters no longer define paragraph boundaries.
+	// Saving compacts hard line breaks, while punctuation, word spaces and
+	// literal ==== remain part of this one independent entry.
 	script.Tabs[0].Entries[0].Text = "价格 87.6元。\n====\n" + strings.Repeat("甲", 580)
 	ctx := map[string]any{"recording_script": script}
 	if err := normalizeRecordingScript(ctx); err != nil {
 		t.Fatal(err)
 	}
+	script.Tabs[0].Entries[0].Text = "价格 87.6元。====" + strings.Repeat("甲", 580)
 	raw, err := json.Marshal(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -40,6 +42,61 @@ func TestRecordingScriptGroupsSaveAndReadBack(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `"text":"","`) {
 		t.Fatal("new schema should not synthesize a combined legacy body")
+	}
+}
+
+func TestRecordingScriptGroupsCompactOnSaveOnly(t *testing.T) {
+	for _, lineBreak := range []string{"\n", "\r\n", "\r", "\v", "\f", "\u0085", "\u2028", "\u2029"} {
+		t.Run(fmt.Sprintf("linebreak-%x", []rune(lineBreak)), func(t *testing.T) {
+			script := groupedScriptFixture()
+			script.Tabs[0].Entries[0].Text = "  English words。" + lineBreak + lineBreak + "\u3000甲====乙😀\t  " + strings.Repeat("甲", 400) + lineBreak + "  最后。  "
+			original := script.Tabs[0].Entries[0].Text
+			// Reading the old snapshot must not alter text or cache identity.
+			read, ok := recordingScriptFromContext(map[string]any{"recording_script": script})
+			if !ok || read.Tabs[0].Entries[0].Text != original {
+				t.Fatal("historical read compacted saved text")
+			}
+			ctx := map[string]any{"recording_script": script}
+			if err := normalizeRecordingScript(ctx); err != nil {
+				t.Fatal(err)
+			}
+			got := ctx["recording_script"].(recordingScript)
+			want := "English words。甲====乙😀\t  " + strings.Repeat("甲", 400) + "最后。"
+			if got.Tabs[0].Entries[0].Text != want || len(got.Tabs) != 2 || len(got.Tabs[0].Entries) != 2 || got.Tabs[0].Entries[1].Text != script.Tabs[0].Entries[1].Text {
+				t.Fatal("independent entries or internal word spaces changed")
+			}
+			if err := normalizeRecordingScript(ctx); err != nil || !reflect.DeepEqual(got, ctx["recording_script"]) {
+				t.Fatal("save normalization is not idempotent")
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name  string
+		texts []string
+		valid bool
+	}{
+		{"newlines-cannot-pad-minimum", []string{strings.Repeat("甲", 399) + strings.Repeat("\n", 10)}, false},
+		{"minimum-after-cleanup", []string{"  " + strings.Repeat("。", 200) + "\r\n\r\n　" + strings.Repeat("甲", 200)}, true},
+		{"group-limit-after-cleanup", []string{strings.Repeat("甲", 3600) + "\n\n", strings.Repeat("乙", 400)}, true},
+		{"still-over-limit", []string{strings.Repeat("甲", 3601) + "\n", strings.Repeat("乙", 400)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := groupedScriptFixture()
+			script.Tabs = script.Tabs[:1]
+			script.ActiveTabID = "intro"
+			script.Tabs[0].Entries = nil
+			for i, text := range tc.texts {
+				script.Tabs[0].Entries = append(script.Tabs[0].Entries, recordingScriptEntry{EntryID: fmt.Sprintf("s%d", i+1), Text: text})
+			}
+			if err := normalizeRecordingScript(map[string]any{"recording_script": script}); (err == nil) != tc.valid {
+				t.Fatalf("valid=%v error=%v", tc.valid, err)
+			}
+		})
+	}
+	legacy := recordingScript{Tabs: []recordingScriptTab{{TabID: "t1", Text: "  原录音。\n\n第二句 English words。  ", AudioAssetIDs: []int64{123}}}, ActiveTabID: "t1"}
+	ctx := map[string]any{"recording_script": legacy}
+	if err := normalizeRecordingScript(ctx); err != nil || ctx["recording_script"].(recordingScript).Tabs[0].Text != strings.TrimSpace(legacy.Tabs[0].Text) {
+		t.Fatal("original recording transcript changed")
 	}
 }
 

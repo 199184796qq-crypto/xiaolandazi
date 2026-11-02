@@ -77,12 +77,33 @@ func normalizeRecordingScript(context map[string]any) error {
 	if err := decoder.Decode(&script); err != nil {
 		return errors.New("话术分组格式错误，只接受标签、标题、正文与绑定声音")
 	}
+	// Compact only newly submitted independent scripts. Historical reads and
+	// recording transcripts keep their original text and paid-cache identity.
+	if script.Version == 2 {
+		for ti := range script.Tabs {
+			for ei := range script.Tabs[ti].Entries {
+				entry := &script.Tabs[ti].Entries[ei]
+				entry.Text = singleParagraphRecordingScriptEntry(entry.Text)
+			}
+		}
+	}
 	if err := script.validate(); err != nil {
 		return err
 	}
 	script.normalize()
 	context["recording_script"] = script
 	return nil
+}
+
+func singleParagraphRecordingScriptEntry(text string) string {
+	lines := strings.FieldsFunc(text, func(r rune) bool {
+		return r == '\r' || r == '\n' || r == '\v' || r == '\f' || r == '\u0085' || r == '\u2028' || r == '\u2029'
+	})
+	var result strings.Builder
+	for _, line := range lines {
+		result.WriteString(strings.TrimSpace(line))
+	}
+	return result.String()
 }
 
 // recordingScriptFromContext 读取话术组；缺失或损坏时返回 false，由调用方按单框处理。

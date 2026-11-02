@@ -110,6 +110,7 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 	}
 	v := input.Variants[0]
 	groups := groupedScriptFixture()
+	groups.Tabs[0].Entries[0].Text = "  " + strings.Repeat("甲", 300) + "\r\n\r\n　" + strings.Repeat("乙", 300) + "  "
 	groups.Tabs[0].AudioAssetIDs = []int64{v.AudioAssetID}
 	input.GenerationContext["recording_script"] = groups
 	checkGroups := func(version *model.LiveAgentPlanVersion) {
@@ -118,6 +119,9 @@ func TestPlanVoiceFullSaveMySQL(t *testing.T) {
 			t.Fatal("missing grouped script version")
 		}
 		script, ok := recordingScriptFromContext(version.GenerationContext)
+		if !ok || script.Tabs[0].Entries[0].Text != strings.Repeat("甲", 300)+strings.Repeat("乙", 300) {
+			t.Fatal("save/workspace/room-start receipt did not return the compacted entry")
+		}
 		if !ok || script.Version != 2 || len(script.Tabs) != 2 || len(script.Tabs[0].Entries) != 2 || len(script.Tabs[1].Entries) != 1 || script.Tabs[0].Entries[1].Text != groups.Tabs[0].Entries[1].Text || script.Tabs[0].Text != "" || !script.Tabs[0].Pinned || script.ActiveTabID != "product" || len(script.Tabs[0].AudioAssetIDs) != 1 || script.Tabs[0].AudioAssetIDs[0] != v.AudioAssetID {
 			t.Fatalf("independent entries/ownership not restored: %#v", script)
 		}

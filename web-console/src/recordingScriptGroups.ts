@@ -1,7 +1,13 @@
 export type ScriptEntry = { id: string; text: string }
 export type ScriptGroup = { id: string; title: string; text: string; entries?: ScriptEntry[]; audioAssetIds: number[]; pinned: boolean }
 
-export const scriptCharacters = (text: string): number => Array.from(text).length
+// Preview the text that Save will persist without rewriting an editor draft.
+export const normalizeScriptEntryText = (text: string): string => text
+  .split(/[\r\n\v\f\u0085\u2028\u2029]+/u)
+  .map(line => line.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ''))
+  .join('')
+
+export const scriptCharacters = (text: string): number => Array.from(normalizeScriptEntryText(text)).length
 
 // Legacy separators are interpreted only when loading an old text box into
 // this editor. A new entry's text is never split or joined by a delimiter.
@@ -16,7 +22,7 @@ export function scriptEntryErrors(entries: readonly ScriptEntry[]): string[] {
   return entries.map(entry => {
     const count = scriptCharacters(entry.text)
     const errors = []
-    if (!entry.text.trim() && count >= 400) errors.push('话术不能只包含空格或换行')
+    if (!normalizeScriptEntryText(entry.text)) errors.push('话术不能只包含空格或换行')
     else if (count < 400) errors.push(`当前 ${count} 字符，至少需要 400 字符`)
     if (count > 4000) errors.push(`当前 ${count} 字符，单条不能超过 4000 字符`)
     if (total > 4000) errors.push(`本组合计 ${total} 字符，所有话术合计不能超过 4000 字符`)
@@ -39,7 +45,7 @@ export function groupedScriptForSave(groups: readonly ScriptGroup[], active: str
     version: 2,
     tabs: groups.map((group, order) => ({
       tab_id: group.id, title: group.title.trim(), order,
-      entries: scriptEntries(group).map(entry => ({ entry_id: entry.id, text: entry.text })),
+      entries: scriptEntries(group).map(entry => ({ entry_id: entry.id, text: normalizeScriptEntryText(entry.text) })),
       audio_asset_ids: group.audioAssetIds, pinned: group.pinned,
     })),
     active_tab_id: active,
