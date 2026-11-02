@@ -37,6 +37,7 @@ function remove(index: number) {
 
 <template>
   <div ref="root" class="recording-script-entries">
+    <p class="recording-script-group-total">本组合计 {{ total }} / 4000 字符 · 每条至少 400 字符</p>
     <section v-for="(entry, index) in entries" :key="entry.id" class="recording-script-entry">
       <header>
         <label :for="`script-entry-${entry.id}`">话术 {{ index + 1 }}</label>

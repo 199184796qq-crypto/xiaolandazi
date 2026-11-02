@@ -38,19 +38,17 @@ import { reviewsForArea, pendingForArea, riskSources, sourceArea, type RiskArea,
 import { sortFormalFactsByScope, type FactScopeSortOrder } from '../formalFactScopeSort'
 import { factCategoryDefinition, factCategoryGroups, factCategoryState, loadFactCategories } from '../factCategories'
 import { useFactNameSuggestion } from '../factNameSuggestion'
-import RealtimeAnchorPreviewPanel from '../components/RealtimeAnchorPreviewPanel.vue'
 import LivePlanVersionBadge from '../components/LivePlanVersionBadge.vue'
 import { latestSavedPlanVersion } from '../livePlanVersionStatus'
 import { getCurrentAnchor } from '../anchorRecommendations';
-import RealtimeGenerationOptionsPanel from '../components/RealtimeGenerationOptionsPanel.vue'
-import { defaultSelfReference, realtimeOptionsFromVersion, realtimeGenerationOptionsError, validatedRealtimeOptions, type RealtimeGenerationOptions } from '../realtimeGenerationOptions'
+import { realtimeOptionsFromVersion, realtimeGenerationOptionsError, validatedRealtimeOptions, type RealtimeGenerationOptions } from '../realtimeGenerationOptions'
 import { request } from '../api'
 import { activateLiveAgentConfigVersion, adoptLiveAgentPlanBenefits, adoptLiveAgentPlanFacts, adoptLiveAgentPlanProductLinks, copyLiveAgentPlanProductLink, copyLiveAgentPlanBenefit, archiveLiveAgentPlan, cloneLiveVoiceProfile, createLiveAgentPlanVersion, createLiveAgentPlanScript, createLiveAgentPlan, createLiveAgentPlanProductAttribute, getLiveAgentPlanWorkspace, getLiveAgentPlanVersions, getLiveAgentPlans, getLiveAgentPlanBenefits, getLiveAgentPlanFacts, getLiveAgentPlanProductLinks, getLiveAgentPlanPrompt, saveLiveAgentPlanPrompt, getLiveAgentPlanScripts, getLiveVoiceModelBindings, createLiveAgentConfigDraft, getLiveAgentConfigVersions, getLiveAddressingStrategy, getLiveAgentSettings, getUserUIPreferences, getLiveRoomPolicyContext, getRooms, getRoom, deleteLiveAgentPlanBenefit, deleteLiveAgentPlanProductLink, deleteLiveAgentPlanProductAttribute, publishLiveRoomPolicyVersion, auditLiveAgentFullShowPreview, regenerateLiveAgentFullShowVariant, generateLiveAgentFullShowVariantVoice, rebuildLiveAgentFullShowVariantSubtitles, rebuildLiveAgentCustomMainline, getLiveAgentPlanStyleOverlays, getAnchorStylePluginCatalog, getAnchorStyleWorkbenchContext, testLiveAgentAnchorStyle, previewAnalyzeLiveAgentAnchorStyle, listLiveAnchorStyles, getLiveAnchorStyle, listLiveAnchorStyleSamples, getLiveAnchorAnalysisVersions, previewAnalyzeLiveAgentPlanScript, previewGenerateLiveAgentFullShow, previewRecognizeLiveAgentPlanImage, updateLiveAgentPlan, updateLiveAgentPlanBenefit, updateLiveAgentPlanProductLink, updateLiveAgentPlanProductAttribute, saveLiveAgentPlanProductLinkFrequencyWeight, saveLiveAgentPlanProductSellingPoints, updateLiveAgentPlanScript, updateLiveAgentSettings, updateUserUIPreferences, uploadLiveAgentCustomMainline, uploadLiveMediaAsset } from '../api';
 import { session } from '../session'
 import '../styles/workflow-guidance.css'
 import { beginLiveSupportScope, liveSupportMediaPlaybackURL } from '../liveSupportAccess'
 import { getPlanContentMode, setPlanContentMode } from '../api'
-import { canSelectLiveContentMode, liveContentModeLabels, visibleLiveContentModes, type LiveContentMode, type LiveContentModeAccess } from '../liveContentModeOptions'
+import { canSelectLiveContentMode, type LiveContentModeAccess } from '../liveContentModeOptions'
 import type { LiveAgentConfigInput, LiveAgentPlan, LiveAgentPlanBenefit, LiveAgentPlanBenefitCandidate, LiveAgentPlanFact, LiveAgentPlanFactCandidate, LiveAgentPlanProductLink, LiveAgentPlanProductLinkCandidate, LiveAgentPlanProductAttribute, LiveAgentPlanScript, LiveAgentPlanScriptAnalysis, LiveAnchorStyle, LiveAnchorStyleSample, LiveAnchorAnalysisState, LiveAnchorStyleAnalysisQC, LiveAgentPlanStyleOverlayProfile, LiveAnchorStyleOverlayItem, AnchorStylePluginCatalog, AnchorStyleSellingPointWheelResponse, LiveAgentFullShowGenerationContext, LiveAgentFullShowPreviewResponse, LiveAgentFullShowVariant, LiveAgentCustomMainlineResponse, LiveAgentPlanVersion, LiveAgentPlanTimelineSegment, LiveAgentPlanSafePoint, LiveAgentVoiceIdentity, LiveAgentConfigVersion, LiveAgentSettings, LiveAgentSettingsInput, LiveAddressingStrategy, LiveRoomPolicyContext, Room } from '../types';
 
 const props = withDefaults(defineProps<{
@@ -975,13 +973,11 @@ const contentModeAccess = ref<LiveContentModeAccess | null>(null)
 const contentModeLoading = ref(false)
 const contentModeSaving = ref(false)
 const contentModeError = useFeedbackErrorRef()
-const contentModeNotice = ref('')
-const visibleContentModes = computed(() => visibleLiveContentModes(contentModeAccess.value))
 const isUserAudioContentMode = computed(() => contentModeAccess.value?.content_mode === 'user_audio')
 const isFixedGeneratedContentMode = computed(() => contentModeAccess.value?.content_mode === 'ai_pregenerated')
 const isRealtimeVoiceContentMode = computed(() => contentModeAccess.value?.content_mode === 'ai_dynamic')
 const hasCustomMainlineResult = computed(() => Boolean(fullShowResult.value?.variants.some((item) => item.variant_key === 'CUSTOM')))
-const contentModeReady = computed(() => Boolean(contentModeAccess.value && canSelectLiveContentMode(contentModeAccess.value, contentModeAccess.value.content_mode)))
+const contentModeReady = computed(() => canSelectLiveContentMode(contentModeAccess.value, 'user_audio'))
 let contentModeLoadNo = 0
 let contentModeRefreshTimer: number | undefined
 let contentModeDisposed = false
@@ -997,45 +993,36 @@ async function refreshContentMode(reset = false) {
   try {
     const value = await getPlanContentMode(roomId, planTenantId.value)
     if (token !== contentModeLoadNo || currentRoomPlanId.value !== roomId) return
-    const previousMode = contentModeAccess.value?.content_mode
-    contentModeAccess.value = value
-    if (previousMode !== value.content_mode) {
-      fullShowOutputMode.value = value.content_mode === 'user_audio' ? 'custom' : 'generated'
-    }
+    // The editor has one workflow. Reading a legacy mode must not mutate the plan.
+    contentModeAccess.value = { ...value, content_mode: 'user_audio' }
+    fullShowOutputMode.value = 'custom'
   } catch (err) {
     if (token !== contentModeLoadNo) return
     contentModeAccess.value = null
-    contentModeError.value = err instanceof Error ? err.message : '读取直播模式失败'
+    contentModeError.value = err instanceof Error ? err.message : '读取话术设置失败'
   } finally {
     if (token === contentModeLoadNo) contentModeLoading.value = false
   }
 }
 
-async function chooseContentMode(mode: LiveContentMode) {
-  const roomId = currentRoomPlanId.value
-  if (!roomId || contentModeLoading.value || contentModeSaving.value || fullShowGenerating.value) return
-  if (!canSelectLiveContentMode(contentModeAccess.value, mode)) return
-  if (contentModeAccess.value?.content_mode === mode) return
-  const token = ++contentModeLoadNo
-  contentModeSaving.value = true
-  contentModeError.value = ''
-  contentModeNotice.value = ''
-  try {
-    const value = await setPlanContentMode(roomId, mode, planTenantId.value)
-    if (token !== contentModeLoadNo || roomId !== currentRoomPlanId.value) return
-    contentModeAccess.value = value
-    fullShowOutputMode.value = mode === 'user_audio' ? 'custom' : 'generated'
-    selectFullShowOutputMode(value.content_mode === 'user_audio' ? 'custom' : 'generated')
-    await loadFullShowWorkspace()
-    await refreshFullShowVersionHistory()
-    contentModeNotice.value = `已激活“${liveContentModeLabels[value.content_mode].title}”；其它模式的内容仍保留在当前智能体方案中。`
-  } catch (err) {
-    if (token !== contentModeLoadNo) return
-    contentModeError.value = err instanceof Error ? err.message : '切换直播模式失败'
-    contentModeAccess.value = null
-  } finally {
-    if (token === contentModeLoadNo) contentModeSaving.value = false
+// Persist the single supported workflow only as part of an explicit Save.
+// Capture the owner so delayed requests cannot update another plan's editor.
+async function ensureScriptGenerationMode(planId: number, tenantId: number, isCurrent: () => boolean) {
+  const assertCurrent = () => {
+    if (contentModeDisposed || !isCurrent() || currentRoomPlanId.value !== planId || planTenantId.value !== tenantId) {
+      throw new Error('保存期间账号或方案已变化，本次保存已取消。')
+    }
   }
+  assertCurrent()
+  let access = await getPlanContentMode(planId, tenantId)
+  assertCurrent()
+  if (!canSelectLiveContentMode(access, 'user_audio')) throw new Error('当前方案暂不能保存话术，请重新读取后重试。')
+  if (access.content_mode !== 'user_audio') {
+    access = await setPlanContentMode(planId, 'user_audio', tenantId)
+    assertCurrent()
+  }
+  if (access.content_mode !== 'user_audio') throw new Error('话术设置未保存成功，请重试。')
+  contentModeAccess.value = access
 }
 
 function handleContentPolicyUpdated(event: Event) {
@@ -1279,7 +1266,7 @@ const fullShowSaveBlockedReason = computed(() => {
   if (planVoiceRate.loading.value || planVoiceRate.busy.value || !planVoiceRate.ready.value) return '请先在“声音”中读取或保存方案语速'
   if (fullShowVersionSaving.value) return '正在把方案收好，稍等一下哦～'
   if (contentModeLoading.value || contentModeSaving.value || fullShowWorkspaceLoading.value || fullShowWorkspaceHydrating.value) return '正在准备当前方案，稍等一下就好啦～'
-  if (contentModeError.value || !contentModeReady.value) return '直播模式还没准备好，去“生成智能体”重新读取一下吧～'
+  if (contentModeError.value || !contentModeReady.value) return '话术设置还没准备好，去“话术生成”重新读取一下吧～'
   if (fullShowError.value) return '方案还没成功恢复，去“生成智能体”看看提示再试吧～'
   if (isRealtimeVoiceContentMode.value) {
     if (realtimeOptionsLoading.value) return '正在读取实时声音参数，马上就好啦～'
@@ -1386,18 +1373,6 @@ const currentVoiceIdentity = computed<LiveAgentVoiceIdentity>(
 )
 const realtimeGenerationOptions = ref<RealtimeGenerationOptions | null>(null)
 const realtimeOptionsLoading = ref(false), realtimeOptionsLoadError = useFeedbackErrorRef(), realtimeOptionsChanged = ref(false)
-function updateRealtimeOptions(options: RealtimeGenerationOptions) {
-  realtimeGenerationOptions.value = { ...options }
-  realtimeOptionsChanged.value = true
-  fullShowSavedVersion.value = null
-  fullShowVersionError.value = ''
-}
-// 自家称呼单独输入：它是文字不是数值，不能走 updateRealtimeOptions 的数值更新。
-function updateSelfReference(event: Event) {
-  const value = (event.target as HTMLInputElement).value
-  if (!realtimeGenerationOptions.value) return
-  updateRealtimeOptions({ ...realtimeGenerationOptions.value, self_reference: value })
-}
 async function loadRealtimeOptionsDefaults() {
   const planId = currentRoomPlanId.value, room = planTenantId.value ? { id: 0, tenant_id: planTenantId.value, name: currentPlan.value?.name || '方案' } : null, token = fullShowWorkspaceLoadToken
   if (!planId || !room) return
@@ -1860,9 +1835,6 @@ function selectFullShowOutputMode(mode: 'generated' | 'custom') {
   if (mode === 'generated' && selectedFullShowVariantKey.value === 'CUSTOM') {
     selectedFullShowVariantKey.value = aiFullShowVariants.value[0]?.variant_key || 'A'
   }
-  if (mode === 'generated' && isUserAudioContentMode.value && !contentModeSaving.value) {
-    void chooseContentMode('ai_pregenerated')
-  }
   customMainlineError.value = ''
 }
 
@@ -2011,7 +1983,6 @@ async function handleCustomMainlineFile(event: Event) {
 
 async function uploadCustomMainline() {
   if (recordingOriginalBusy.value || customMainlineCloneBusy.value) return
-  if (contentModeAccess.value?.content_mode !== 'user_audio') await chooseContentMode('user_audio')
   selectFullShowOutputMode('custom')
   if (!contentModeReady.value || !isUserAudioContentMode.value) {
     customMainlineError.value = '当前方案暂不能使用原始音，请刷新页面后重试。'
@@ -2230,7 +2201,6 @@ async function retryCustomMainlineClone() {
 }
 
 async function applyCustomMainlineAsFormal(originalForSave?: LiveAgentCustomMainlineResponse) {
-  if (contentModeAccess.value?.content_mode !== 'user_audio') await chooseContentMode('user_audio')
   selectFullShowOutputMode('custom')
   if (!contentModeReady.value || !isUserAudioContentMode.value) return
   const draft = originalForSave || customMainlineDraft.value
@@ -3360,6 +3330,8 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
         `当前版本保存数据为 ${Math.ceil(payloadBytes / 1024)}KB，超过接口可安全接收的 960KB（上限 1024KB）。请减少正式话术数量或缩短话术后再保存；原始声音不会被删除。`,
       )
     }
+    await ensureScriptGenerationMode(planId, room.tenant_id, current)
+    assertCurrent()
     const saved = await createLiveAgentPlanVersion(planId, payload, (event) => {
       if (event.type === 'progress' && current()) fullShowNotice.value = event.message
     })
@@ -3450,11 +3422,11 @@ async function savePlanOneClick() {
   planPromptPartialSaveNotice.value = ''
   savePlanOneClickBusy.value = true
   try {
-    if (!current()) throw new Error('页面范围或直播模式已变化，本次保存已取消')
+    if (!current()) throw new Error('页面范围或话术设置已变化，本次保存已取消')
     savePlanOneClickStage.value = '保存中…'
     // Capture page originals at the click, before saving/refreshing other assets.
     const promptOriginals = await planPromptOriginalsForSave(planId)
-    if (!current()) throw new Error('页面范围或直播模式已变化，本次保存已取消')
+    if (!current()) throw new Error('页面范围或话术设置已变化，本次保存已取消')
     const saved = await saveFullShowVersion()
     if (!saved) {
       if (current()) throw new Error(fullShowVersionError.value || '本次未完成正式版本保存，请查看提示后重试；原版本保持不变。')
@@ -3679,7 +3651,6 @@ function failFullShowGenerationProgress(detail: string) {
 
 async function generateFullShowPreview() {
   if (fullShowGenerating.value) return
-  if (contentModeAccess.value?.content_mode === 'user_audio') await chooseContentMode('ai_pregenerated')
   selectFullShowOutputMode('generated')
   if (!contentModeReady.value || contentModeLoading.value || contentModeSaving.value || isUserAudioContentMode.value) {
     fullShowError.value = '当前方案暂不能切换到 AI 话术模式，请刷新后重试。'
@@ -5800,46 +5771,6 @@ onBeforeUnmount(() => {
           <div v-if="contentModeError" class="inline-error strategy-content-mode-inline-error">
             {{ contentModeError }} <button type="button" @click="refreshContentMode(true)">重新读取</button>
           </div>
-          <div class="strategy-room-convention">
-            <div class="strategy-room-convention-head">
-              <strong>直播间规范</strong>
-              <span>主播怎么称呼自己家，会写进每一段话术的硬约束。</span>
-            </div>
-            <label class="strategy-room-convention-field">
-              <b>自家称呼</b>
-              <input
-                :value="realtimeGenerationOptions?.self_reference || ''"
-                :placeholder="defaultSelfReference"
-                :disabled="fullShowWorkspaceLoading || fullShowVersionSaving || !realtimeGenerationOptions"
-                maxlength="20"
-                aria-label="自家称呼"
-                @input="updateSelfReference"
-              />
-              <small>留空按「{{ defaultSelfReference }}」，不会出现「这家店」「该店」这种旁人口吻。代播场景可填「他们家」，反过来会禁止冒充店家。</small>
-            </label>
-          </div>
-          <section v-if="contentModeAccess" class="strategy-content-mode-workflow">
-            <div class="strategy-content-mode-cards">
-              <button v-for="(mode, index) in visibleContentModes" :key="mode" type="button" :class="{ active: contentModeAccess.content_mode === mode }" :aria-pressed="contentModeAccess.content_mode === mode" :disabled="contentModeSaving" @click="chooseContentMode(mode)">
-                <i>{{ String(index + 1).padStart(2, '0') }}</i>
-                <span class="strategy-content-mode-icon" :class="'is-' + mode" aria-hidden="true">
-                  <svg v-if="mode === 'user_audio'" viewBox="0 0 36 36"><path d="M8 15v6M13 10v16M18 6v24M23 11v14M28 15v6" /></svg>
-                  <svg v-else viewBox="0 0 36 36"><path d="M21 4 9 20h9l-3 12 12-17h-9z" /></svg>
-                </span>
-                <div class="strategy-content-mode-card-copy">
-                  <strong>{{ liveContentModeLabels[mode].title }}</strong>
-                  <span>{{ liveContentModeLabels[mode].description }}</span>
-                </div>
-                <b>{{ contentModeAccess.content_mode === mode ? '✓ 已激活' : '选择' }}</b>
-              </button>
-            </div>
-          </section>
-
-          <section v-if="isRealtimeVoiceContentMode" class="strategy-realtime-voice-page">
-            <RealtimeAnchorPreviewPanel :plan-id="currentRoomPlanId || 0" :tenant-id="planTenantId"  :generation-options="realtimeGenerationOptions" />
-            <RealtimeGenerationOptionsPanel :model-value="realtimeGenerationOptions" :loading="fullShowWorkspaceLoading || realtimeOptionsLoading" :disabled="fullShowVersionSaving" :load-error="realtimeOptionsLoadError" :changed="realtimeOptionsChanged" @update:model-value="updateRealtimeOptions" @retry="loadRealtimeOptionsDefaults" />
-          </section>
-
           <div v-if="isFixedGeneratedContentMode" class="strategy-v2-section-head strategy-fullshow-head strategy-fullshow-generation-hero">
             <div class="strategy-fullshow-title-block">
               <h3>固定生成</h3>
@@ -6132,14 +6063,14 @@ onBeforeUnmount(() => {
             :class="{ 'is-recording-mainline': isUserAudioContentMode }"
           >
             <section class="strategy-fullshow-panel strategy-fullshow-output">
-              <header>
+              <header v-if="!isUserAudioContentMode">
                 <div class="strategy-fullshow-output-title">
                   <span v-if="isUserAudioContentMode" class="strategy-recording-title-icon" aria-hidden="true">
                     <svg viewBox="0 0 36 36"><rect x="13" y="5" width="10" height="18" rx="5" /><path d="M9 17v1a9 9 0 0 0 18 0v-1M18 27v5M13 32h10" /></svg>
                   </span>
                   <span v-else>S3</span>
                   <div class="strategy-fullshow-output-heading-copy">
-                    <strong class="strategy-fullshow-output-section-name">{{ isUserAudioContentMode ? '话术优先处理' : '固定生成话术' }}</strong>
+                    <strong class="strategy-fullshow-output-section-name">固定生成话术</strong>
                   </div>
                 </div>
                 <div
@@ -6155,6 +6086,28 @@ onBeforeUnmount(() => {
                 </div>
               </header>
               <section v-if="isUserAudioContentMode" class="strategy-custom-mainline-inline">
+                <div class="strategy-recording-voice-settings">
+                  <strong>主线声音</strong>
+                  <fieldset class="strategy-recording-voice-choice" :disabled="recordingOriginalBusy || customMainlineCloneBusy">
+                    <legend>直播间主线声音</legend>
+                    <label>
+                      <input v-model="recordingVoiceMode" type="radio" value="original" name="recording-voice-mode" />
+                      <svg class="strategy-recording-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+                        <path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" />
+                      </svg>
+                      <span>原始声音</span>
+                    </label>
+                    <label>
+                      <input v-model="recordingVoiceMode" type="radio" value="stream_clone" name="recording-voice-mode" />
+                      <svg class="strategy-recording-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                        <path d="M4 10v4m4-7v10m4-13v16m4-13v10m4-7v4" />
+                      </svg>
+                      <span>AI 声音</span>
+                    </label>
+                  </fieldset>
+                </div>
+
                 <!-- 原始声音模式显示录音上传入口，AI 声音模式隐藏原音素材。 -->
                 <div v-if="recordingVoiceMode === 'original'" class="strategy-custom-mainline-upload">
                   <label>
@@ -6210,28 +6163,6 @@ onBeforeUnmount(() => {
                   {{ customMainlineError }}
                 </div>
 
-                <div class="strategy-recording-voice-settings">
-                  <strong>主线声音</strong>
-                  <fieldset class="strategy-recording-voice-choice" :disabled="recordingOriginalBusy || customMainlineCloneBusy">
-                    <legend>直播间主线声音</legend>
-                    <label>
-                      <input v-model="recordingVoiceMode" type="radio" value="original" name="recording-voice-mode" />
-                      <svg class="strategy-recording-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M11 5 6 9H3v6h3l5 4V5Z" />
-                        <path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" />
-                      </svg>
-                      <span>原始声音</span>
-                    </label>
-                    <label>
-                      <input v-model="recordingVoiceMode" type="radio" value="stream_clone" name="recording-voice-mode" />
-                      <svg class="strategy-recording-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-                        <path d="M4 10v4m4-7v10m4-13v16m4-13v10m4-7v4" />
-                      </svg>
-                      <span>AI 声音</span>
-                    </label>
-                  </fieldset>
-                </div>
-
                 <section class="strategy-custom-mainline-segments">
                   <header>
                     <i class="strategy-custom-mainline-editor-icon" aria-hidden="true">↗</i>
@@ -6281,7 +6212,7 @@ onBeforeUnmount(() => {
                     @update="updateRecordingEntries"
                   />
                   <p v-if="recordingVoiceMode === 'stream_clone'" class="strategy-script-notice">
-                    每个标签是一个话术组，各条话术独立保存。保存后预生成全方案最短的一条，开播优先复用。
+                    每个标签是一个话术组，各条话术独立保存。
                   </p>
                   <p v-if="recordingVoiceMode === 'original'" class="strategy-script-counts">
                     <span>当前字数 {{ recordingTabCharCount }} / {{ recordingTabTextLimit }}</span>

@@ -19,7 +19,7 @@ const sections: { key: PlanConfigurationSection; label: string; icon?: string }[
   { key: 'facts', label: '商品与事实' },
   { key: 'reading', label: '读写规则' },
   { key: 'voice', label: '声音' },
-  { key: 'live', label: '直播模式', icon: 'preview' },
+  { key: 'live', label: '话术生成', icon: 'preview' },
 ]
 const factTabs: { mode: PlanConfigurationMode; label: string }[] = [
   { mode: 'products', label: '商品资料' },
