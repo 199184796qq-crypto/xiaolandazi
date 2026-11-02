@@ -1,6 +1,7 @@
-﻿package httpapi
+package httpapi
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -51,10 +52,10 @@ func TestCopyDirKeepsOnlyAudioAndMetadata(t *testing.T) {
 	source := t.TempDir()
 	target := filepath.Join(t.TempDir(), "unit")
 	for name, body := range map[string]string{
-		"paragraph.wav":       "wav",
-		"paragraph-job.json":  "{}",
-		"notes.tmp":           "junk",
-		"cache.json":          "{}",
+		"paragraph.wav":      "wav",
+		"paragraph-job.json": "{}",
+		"notes.tmp":          "junk",
+		"cache.json":         "{}",
 	} {
 		if err := os.WriteFile(filepath.Join(source, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -91,8 +92,8 @@ func TestCopyDirAtomicLeavesNoTemporary(t *testing.T) {
 	}
 }
 
-// 目标已存在时整目录替换，不残留上一次的文件。
-func TestCopyDirAtomicReplacesStaleTarget(t *testing.T) {
+// 已有目录属于原房间恢复路径，连未确认的付费状态也不能被覆盖。
+func TestCopyDirAtomicPreservesExistingTarget(t *testing.T) {
 	source := t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "paragraph.wav"), []byte("new"), 0o644); err != nil {
 		t.Fatal(err)
@@ -104,11 +105,14 @@ func TestCopyDirAtomicReplacesStaleTarget(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "stale.json"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := copyDirAtomic(source, target); err != nil {
-		t.Fatal(err)
+	if err := copyDirAtomic(source, target); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected existing-target refusal, got %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(target, "stale.json")); err == nil {
-		t.Fatal("旧文件应被替换掉")
+	if data, err := os.ReadFile(filepath.Join(target, "stale.json")); err != nil || string(data) != "old" {
+		t.Fatal("existing room state changed", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "paragraph.wav")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("source overwrote existing target")
 	}
 }
 
@@ -116,4 +120,3 @@ func hasPrefix(path, prefix string) bool {
 	rel, err := filepath.Rel(prefix, path)
 	return err == nil && !filepath.IsAbs(rel) && rel != ".." && len(rel) > 0 && rel[0] != '.'
 }
-
