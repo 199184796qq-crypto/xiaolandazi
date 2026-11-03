@@ -12,15 +12,16 @@ import (
 // planScriptRewrite 用方案专属的改写元提示词，把一条样本话术改写成新话术。
 //
 // 流程：读方案保存时生成的改写提示词母版 → 把本次样本填进 {{样本话术}}
-// → 调模型 → 解析「话术骨架 / 话术内容」两个字段返回。
+// → 注入上次写作记录 → 调模型 → 分离骨架、上下文、正文，保存记录后返回。
 type planScriptRewriteInput struct {
 	Text string `json:"text"`
 }
 
 type planScriptRewriteOutput struct {
-	Skeleton string `json:"skeleton"`
-	Script   string `json:"script"`
-	Model    string `json:"model,omitempty"`
+	Skeleton string           `json:"skeleton"`
+	Context  string           `json:"context"`
+	Script   string           `json:"script"`
+	Model    string           `json:"model,omitempty"`
 	Usage    map[string]int64 `json:"usage,omitempty"`
 }
 
@@ -65,25 +66,40 @@ func (s *Server) planScriptRewrite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	prompt := strings.ReplaceAll(promptMD, "{{样本话术}}", sample)
+	turn, err := beginScriptRewriteTurn(r.Context(), recordingCacheMediaRoot(), newScriptRewriteContextScope(tenantID, planID, sample, document.Sections.FactsMD))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取上次改写记录失败，本次未生成")
+		return
+	}
+	defer turn.Close()
+	prompt, err := renderScriptRewriteRequest(promptMD, sample, "", "", turn.Previous)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取改写上下文模板失败，本次未生成")
+		return
+	}
 	result, err := s.speechGateway().Complete(r.Context(), agentgateway.Request{
-		Stage:      "script_rewrite",
-		Messages:   []agentgateway.Message{{Role: "user", Content: prompt}},
-		MaxTokens:  2400,
-		Timeout:    180 * time.Second,
+		Stage:     "script_rewrite",
+		Messages:  []agentgateway.Message{{Role: "user", Content: prompt}},
+		MaxTokens: 2400,
+		Timeout:   180 * time.Second,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "改写请求失败，请稍后重试")
 		return
 	}
-	skeleton, script := parseRewriteOutput(result.Text)
-	if strings.TrimSpace(script) == "" {
-		writeError(w, http.StatusBadGateway, "改写结果没有返回正文，请重试")
+	parsed, err := parseScriptRewriteOutput(result.Text)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "改写结果字段不完整，未保存或合成")
+		return
+	}
+	if err := turn.Save(parsed); err != nil {
+		writeError(w, http.StatusInternalServerError, "改写已返回但上下文保存失败，请检查服务存储")
 		return
 	}
 	writeJSON(w, http.StatusOK, planScriptRewriteOutput{
-		Skeleton: skeleton,
-		Script:   script,
+		Skeleton: parsed.Skeleton,
+		Context:  parsed.Context,
+		Script:   parsed.Script,
 		Model:    result.Model,
 		Usage: map[string]int64{
 			"prompt_tokens":     result.InputTokens,
@@ -91,30 +107,6 @@ func (s *Server) planScriptRewrite(w http.ResponseWriter, r *http.Request) {
 			"total_tokens":      result.TotalTokens,
 		},
 	})
-}
-
-// parseRewriteOutput 按约定的 KV 格式切出骨架和正文。
-//
-// 模型偶尔会带引号或多余空行，这里只做最小清洗，不做自由发挥。
-func parseRewriteOutput(raw string) (skeleton, script string) {
-	text := strings.ReplaceAll(raw, "\r\n", "\n")
-	if idx := strings.Index(text, "话术内容"); idx >= 0 {
-		head := text[:idx]
-		body := text[idx:]
-		if start, width, ok := findColon(body); ok {
-			body = body[start+width:]
-		}
-		script = strings.TrimSpace(body)
-		if idx := strings.Index(head, "话术骨架"); idx >= 0 {
-			rest := head[idx:]
-			if start, width, ok := findColon(rest); ok {
-				rest = rest[start+width:]
-			}
-			skeleton = strings.TrimSpace(rest)
-		}
-		return skeleton, script
-	}
-	return "", strings.TrimSpace(text)
 }
 
 // findColon 找到第一个中文冒号或英文冒号，并返回它的字节长度。

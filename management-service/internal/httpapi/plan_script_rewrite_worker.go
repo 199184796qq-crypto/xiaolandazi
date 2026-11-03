@@ -126,7 +126,17 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	}
 	openings := scriptUsedOpenings(pool, voiceID)
 	kind := pickOpeningKind(rand.New(rand.NewSource(time.Now().UnixNano())), nil)
-	prompt, err := s.scriptRewritePrompt(ctx, tenant, v, unit.Text, openings, kind)
+	document, err := s.loadScriptRewriteSnapshot(ctx, tenant, v)
+	if err != nil || strings.TrimSpace(document.Prompt) == "" {
+		return
+	}
+	turn, err := beginScriptRewriteTurn(ctx, recordingCacheMediaRoot(), newScriptRewriteContextScope(tenant, v.PlanID, unit.Text, document.Facts))
+	if err != nil {
+		log.Printf("script rewrite context unavailable plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
+		return
+	}
+	defer turn.Close()
+	prompt, err := renderBackgroundScriptRewritePrompt(document.Prompt, unit.Text, openings, kind, turn.Previous)
 	if err != nil || strings.TrimSpace(prompt) == "" {
 		return
 	}
@@ -142,11 +152,12 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		log.Printf("script rewrite failed plan=%d piece=%s: %v", v.PlanID, shortKey(unit.Key), err)
 		return
 	}
-	_, script := parseRewriteOutput(result.Text)
-	script = strings.TrimSpace(script)
-	if script == "" {
+	parsed, err := parseScriptRewriteOutput(result.Text)
+	if err != nil {
+		log.Printf("script rewrite output rejected plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
 		return
 	}
+	script := strings.TrimSpace(parsed.Script)
 	// P0 命中时只改命中的那几句：先让模型改写，改不好就删掉这句，不整段丢掉。
 	script = s.repairRewriteViolations(work, v, script)
 	// 删句之后可能不足 400 字：先试着用事实补写；补不上也照用，不丢弃。
@@ -165,6 +176,12 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		log.Printf("script shared text save failed plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
 		return
 	}
+	parsed.Script = script
+	if err := turn.Save(parsed); err != nil {
+		log.Printf("script rewrite context save failed plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
+		return
+	}
+	turn.Close() // Context survives a later TTS failure; audio never holds this lock.
 	// 改写正文合成成新音频：键里带文本，天然和原文缓存分开。
 	dir := unit.Dir
 	if cut := strings.LastIndex(dir, string(filepath.Separator)); cut > 0 {
@@ -219,13 +236,18 @@ func (s *Server) scriptRewritePrompt(ctx context.Context, tenant int64, v model.
 	if err != nil {
 		return "", err
 	}
-	prompt := strings.TrimSpace(document.Prompt)
+	return renderBackgroundScriptRewritePrompt(document.Prompt, sample, openings, openingKind, scriptRewriteOutput{})
+}
+
+func renderBackgroundScriptRewritePrompt(template, sample, openings, openingKind string, previous scriptRewriteOutput) (string, error) {
+	prompt := strings.TrimSpace(template)
 	if prompt == "" {
 		return "", nil
 	}
-	prompt = strings.ReplaceAll(prompt, "{{样本话术}}", strings.TrimSpace(sample))
-	prompt = strings.ReplaceAll(prompt, "{{已有开场}}", strings.TrimSpace(openings))
-	prompt = strings.ReplaceAll(prompt, "{{开场方式}}", strings.TrimSpace(openingKind))
+	prompt, err := renderScriptRewriteRequest(prompt, sample, openings, openingKind, previous)
+	if err != nil {
+		return "", err
+	}
 	// 存下来的可能是旧版提示词（占位符已被替换成空），补一段保证开场指令一定送到。
 	if !strings.Contains(prompt, scriptOpeningBlockMarker) {
 		prompt += scriptOpeningBlock(openings, openingKind)

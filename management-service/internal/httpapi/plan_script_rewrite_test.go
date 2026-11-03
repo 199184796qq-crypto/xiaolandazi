@@ -48,3 +48,44 @@ func TestParseRewriteOutputSplitsKV(t *testing.T) {
 		t.Fatalf("正文解析失败: %q", script)
 	}
 }
+
+func TestParseScriptRewriteThreeKVAndLegacy(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw string
+		want      scriptRewriteOutput
+	}{
+		{"three fields", "话术骨架：入口 | 讲重点 | 50%\n一句话上下文：围绕送礼，先讲包装。\n改写内容：这是正文，价格是：八十七元六角。", scriptRewriteOutput{"入口 | 讲重点 | 50%", "围绕送礼，先讲包装。", "这是正文，价格是：八十七元六角。"}},
+		{"CRLF BOM blanks", "\ufeff\r\n话术骨架:\r\n1. 包装 | 礼品 | 100%\r\n\r\n一句话上下文: 重点：包装。\r\n\r\n改写内容:\r\n这一条只讲包装。\r\n", scriptRewriteOutput{"1. 包装 | 礼品 | 100%", "重点：包装。", "这一条只讲包装。"}},
+		{"legacy two", "话术骨架：\n甲\n乙\n话术内容：\n保留旧正文。", scriptRewriteOutput{"甲\n乙", "", "保留旧正文。"}},
+		{"legacy body", "原来只返回可念的正文。正文中提到话术内容也不能被截断。", scriptRewriteOutput{Script: "原来只返回可念的正文。正文中提到话术内容也不能被截断。"}},
+		{"body colon", "话术骨架：结构\n一句话上下文：物流\n改写内容：快递：按地址确认。", scriptRewriteOutput{"结构", "物流", "快递：按地址确认。"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseScriptRewriteOutput(tc.raw)
+			if err != nil || got != tc.want {
+				t.Fatalf("got %#v, %v; want %#v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseScriptRewriteMalformedMetadataNeverBecomesSpeech(t *testing.T) {
+	for _, raw := range []string{
+		"", "话术骨架：仅有骨架", "话术骨架：结构\n一句话上下文：只有简介",
+		"话术骨架：结构\n一句话上下文：\n改写内容：正文。",
+		"话术骨架：结构\n改写内容：漏上下文。",
+		"一句话上下文：简介\n话术内容：正文。",
+		"话术骨架：结构\n一句话上下文：简介\n改写内容：",
+		"话术骨架：结构\n一句话上下文：简介\n改写内容：一\n改写内容：二",
+		"话术骨架：结构\n一句话上下文：简介\n改写内容：一\n话术内容：二",
+		"解释文字\n话术骨架：结构\n一句话上下文：简介\n改写内容：正文。",
+		"话术骨架\n仅有断开的标签", "{\"改写内容\":\"不能将 JSON 当口播\"}", "```\n话术内容：正文。\n```",
+	} {
+		if got, err := parseScriptRewriteOutput(raw); err == nil || got.Script != "" {
+			t.Errorf("malformed output accepted: %q => %#v, %v", raw, got, err)
+		}
+		if _, body := parseRewriteOutput(raw); body != "" {
+			t.Errorf("legacy wrapper leaked metadata: %q", body)
+		}
+	}
+}
