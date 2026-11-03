@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -289,7 +290,7 @@ func TestStartAndResumeRejectHistoricalFakeOnlineBeforeBilling(t *testing.T) {
 	}
 }
 
-func TestNoHardwareStartAndResumeKeepExistingBillingPath(t *testing.T) {
+func TestNoHardwareStartAndResumeRejectedBeforeBilling(t *testing.T) {
 	for _, resume := range []bool{false, true} {
 		s, c := newDeviceControlStore(t)
 		var err error
@@ -298,8 +299,49 @@ func TestNoHardwareStartAndResumeKeepExistingBillingPath(t *testing.T) {
 		} else {
 			_, err = s.StartLiveRuntimeSession(context.Background(), 14, 26, 28, nil, "dev", time.Now().UTC())
 		}
-		if !errors.Is(err, deviceControlQuotaReached) || c.writes != 0 {
+		if !errors.Is(err, ErrLiveDeviceNotBound) || c.writes != 0 || c.commits != 0 {
 			t.Fatal(resume, err, c)
+		}
+	}
+}
+
+func TestPrimaryHardwareGatePrecedesEveryPaidOperation(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, status, meta string
+			age                time.Duration
+			device             int64
+			want               error
+		}{
+			{"offline", "offline", "", 0, 7, ErrLiveDeviceOffline},
+			{"stale", "online", "", 21 * time.Second, 7, ErrLiveDeviceOffline},
+			{"future heartbeat", "online", "", -5 * time.Second, 7, ErrLiveDeviceOffline},
+			{"fake browser", "online", `{"transport":"development_control"}`, 0, 7, ErrLiveDeviceOffline},
+			{"old disconnected socket", "online", `{"transport":"xiaozhi_websocket_proven","gateway_connection_id":"old-socket-123","last_transport_phase":"disconnect"}`, 0, 7, ErrLiveDeviceOffline},
+			{"other device", "online", "", 0, 8, ErrLiveDeviceNotBound},
+			{"current hardware", "online", "", 2 * time.Second, 7, deviceControlQuotaReached},
+		} {
+			if resume && tc.device != 7 {
+				continue // Wrong explicit target is a Start-only input.
+			}
+			t.Run(fmt.Sprintf("resume=%t/%s", resume, tc.name), func(t *testing.T) {
+				s, c := newDeviceControlStore(t)
+				c.pausedDevice = true
+				c.status, c.heartbeat = tc.status, time.Now().UTC().Add(-tc.age)
+				if tc.meta != "" {
+					c.metadata = tc.meta
+				}
+				var err error
+				if resume {
+					_, err = s.ResumeLiveRuntimeSessionIfCurrent(context.Background(), 14, 26, 28, time.Now().UTC(), 487, 1)
+				} else {
+					id := tc.device
+					_, err = s.StartLiveRuntimeSession(context.Background(), 14, 26, 28, &id, "prod", time.Now().UTC())
+				}
+				if !errors.Is(err, tc.want) || c.writes != 0 || c.commits != 0 {
+					t.Fatal(err, c)
+				}
+			})
 		}
 	}
 }

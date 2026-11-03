@@ -28,7 +28,7 @@ type adapterCostStore struct {
 	afterReserve                  func()
 }
 
-func (s *adapterCostStore) ReserveLiveCost(_ context.Context, r livecost.Request, _ livecost.Policy, _ time.Time) (livecost.Reservation, error) {
+func (s *adapterCostStore) ReserveLiveCost(_ context.Context, r livecost.Request, p livecost.Policy, _ time.Time) (livecost.Reservation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.failReserve {
@@ -44,6 +44,19 @@ func (s *adapterCostStore) ReserveLiveCost(_ context.Context, r livecost.Request
 		return livecost.Reservation{Existing: true, Status: old.Status}, nil
 	}
 	s.requests = append(s.requests, r)
+	if p.RoomBudget != nil {
+		summary := livecost.Summary{}
+		for _, entry := range s.entries {
+			if entry.Request.TenantID == r.TenantID && entry.Request.RoomID == r.RoomID {
+				if err := summary.AddBudgetEntry(entry, false); err != nil {
+					return livecost.Reservation{}, err
+				}
+			}
+		}
+		if !p.RoomBudget.Allows(r, summary) {
+			return livecost.Reservation{Status: livecost.StatusDeclined, OverBudget: true}, nil
+		}
+	}
 	if (s.deny || (s.limitMicros > 0 && r.EstimatedMicros > s.limitMicros)) && r.Priority == livecost.PriorityOptional {
 		return livecost.Reservation{Allowed: false, Status: livecost.StatusDeclined}, nil
 	}

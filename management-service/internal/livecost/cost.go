@@ -61,6 +61,8 @@ type Request struct {
 	CharacterRule      string           `json:"character_rule,omitempty"`
 	Attribution        *Attribution     `json:"attribution,omitempty"`
 	PricingSnapshot    *PricingSnapshot `json:"pricing_snapshot,omitempty"`
+	BudgetClass        string           `json:"budget_class,omitempty"`
+	BudgetPool         string           `json:"budget_pool,omitempty"`
 }
 
 // Attribution locates paid work without retaining its text or media URL. Round
@@ -101,6 +103,7 @@ type Policy struct {
 	OptionalLimitMicros  int64
 	TotalTargetMicros    int64
 	SpoolDir             string
+	RoomBudget           *RoomBudget
 }
 
 func DefaultPolicy() Policy {
@@ -141,6 +144,9 @@ type Summary struct {
 	AgedUnresolvedRequests int64 `json:"aged_unresolved_requests"`
 	SettledRequests        int64 `json:"settled_requests"`
 	TotalMicros            int64 `json:"total_micros"`
+	MainlineMicros         int64 `json:"mainline_micros,omitempty"`
+	InteractionMicros      int64 `json:"interaction_micros,omitempty"`
+	RewriteMicros          int64 `json:"rewrite_micros,omitempty"`
 }
 
 type Store interface {
@@ -167,14 +173,20 @@ func (c *Controller) Begin(ctx context.Context, request Request) (Reservation, e
 		return Reservation{}, err
 	}
 	policy, policyErr := c.policyForContext(ctx)
+	if override, ok := ctx.Value(policyContextKey{}).(Policy); policyErr != nil && ((ok && override.RoomBudget != nil) || r.BudgetPool != "" || (c != nil && c.policy.RoomBudget != nil)) {
+		return Reservation{Key: r.Key, AccountingUnavailable: true}, fmt.Errorf("%w: %v", ErrAccountingUnavailable, policyErr)
+	}
 	if policyErr != nil {
 		err = policyErr
+	}
+	if r.BudgetPool != "" && (policy.RoomBudget == nil || policy.RoomBudget.Pool != r.BudgetPool) {
+		return Reservation{Key: r.Key, AccountingUnavailable: true}, fmt.Errorf("%w: 房间费用语音池与策略不匹配", ErrAccountingUnavailable)
 	}
 	var claimErr error
 	if c != nil {
 		exists, e := c.hasSpoolBegin(r)
 		if e != nil {
-			if r.Priority != PriorityNecessary {
+			if r.Priority != PriorityNecessary || policy.RoomBudget != nil {
 				return Reservation{AccountingUnavailable: true}, fmt.Errorf("%w: %v", ErrAccountingUnavailable, e)
 			}
 			claimErr = e
@@ -184,7 +196,7 @@ func (c *Controller) Begin(ctx context.Context, request Request) (Reservation, e
 		}
 	}
 	claimed := false
-	if c != nil && r.Priority == PriorityNecessary && c.policy.SpoolDir != "" && claimErr == nil {
+	if c != nil && r.Priority == PriorityNecessary && policy.RoomBudget == nil && c.policy.SpoolDir != "" && claimErr == nil {
 		claimErr = c.writeSpool(spoolEvent{Request: &r})
 		claimed = claimErr == nil
 		if errors.Is(claimErr, os.ErrExist) {
@@ -201,9 +213,9 @@ func (c *Controller) Begin(ctx context.Context, request Request) (Reservation, e
 	if errors.Is(err, ErrRequestConflict) || errors.Is(err, ErrReceiptConflict) {
 		return Reservation{}, err
 	}
-	// Necessary supply is permitted to continue, but the caller must durably log
-	// degraded accounting and must not describe its price as supplier-confirmed.
-	reservation := Reservation{Key: r.Key, Allowed: r.Priority == PriorityNecessary, Status: StatusUnknown, AccountingUnavailable: true, EstimatedMicros: r.EstimatedMicros}
+	// Legacy necessary supply may continue with durable degraded accounting.
+	// A strict room budget never permits paid work without the database gate.
+	reservation := Reservation{Key: r.Key, Allowed: r.Priority == PriorityNecessary && policy.RoomBudget == nil, Status: StatusUnknown, AccountingUnavailable: true, EstimatedMicros: r.EstimatedMicros}
 	if reservation.Allowed && c != nil {
 		spoolErr := claimErr
 		if !claimed && spoolErr == nil {
@@ -259,6 +271,12 @@ func (c *Controller) Summary(ctx context.Context, scope Scope) (Summary, error) 
 }
 
 func NormalizeRequest(r Request) (Request, error) {
+	if r.BudgetClass != "" && r.BudgetClass != BudgetMainline && r.BudgetClass != BudgetInteraction && r.BudgetClass != BudgetRewrite {
+		return r, errors.New("费用请求分类无效")
+	}
+	if r.BudgetPool != "" && r.BudgetPool != "standard" && r.BudgetPool != "high_fidelity" {
+		return r, errors.New("费用请求语音池无效")
+	}
 	r.Key = strings.TrimSpace(r.Key)
 	r.Provider = strings.TrimSpace(r.Provider)
 	r.Priority = strings.TrimSpace(r.Priority)

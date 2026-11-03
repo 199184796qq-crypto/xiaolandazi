@@ -17,6 +17,7 @@ import (
 	"livecompanion/management/internal/coreclient"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
+	"livecompanion/management/internal/voicebatch"
 )
 
 const volcengineSupplyThresholdMS int64 = 40000
@@ -52,6 +53,7 @@ type volcengineScriptCursor struct {
 	Delivered            []scriptDeliveredTrack          `json:"delivered,omitempty"`
 	ActiveVoice          string                          `json:"active_voice,omitempty"`
 	ActiveModel          string                          `json:"active_model,omitempty"`
+	VoiceBatch           uint64                          `json:"voice_batch,omitempty"`
 	VoiceBlockLeft       int                             `json:"voice_block_left,omitempty"`
 	UnitSelections       []int                           `json:"unit_selections,omitempty"`
 	VersionID            int64                           `json:"version_id"`
@@ -304,6 +306,9 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		if e = s.confirmScriptPlayback(ctx, tenant, room, session, v, units, &cursor, p, save); e != nil {
 			return p, e
 		}
+		if _, e = s.observeScriptVoiceBatch(ctx, tenant, room, session, v, units, &cursor, p); e != nil {
+			return p, e
+		}
 		return p, nil
 	}
 	publish := func(c context.Context) error {
@@ -360,7 +365,7 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 				}
 			}
 			if !found {
-				cursor.Delivered = append(cursor.Delivered, scriptDeliveredTrack{Unit: pending.Unit, TrackID: id, InstanceID: pending.ID, AssetID: pending.Audio.AssetID, VoiceID: pending.Audio.VoiceID, Model: cursor.ActiveModel, Block: block})
+				cursor.Delivered = append(cursor.Delivered, scriptDeliveredTrack{Unit: pending.Unit, TrackID: id, InstanceID: pending.ID, AssetID: pending.Audio.AssetID, VoiceID: pending.Audio.VoiceID, Model: cursor.ActiveModel, Batch: cursor.VoiceBatch, TotalBlocks: len(blocks), Block: block})
 			}
 			s.archiveTTSCacheReplay(c, tenant, room, session, cursor.ProgramID, track)
 			return nil
@@ -442,36 +447,35 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		return nil
 	}
 	retryAttempt := 0
-	// 音色轮换：按方案选中的音色列表走块，一块至少 min_voice_block 轮。
-	// 目标音色没备齐就继续用当前音色，也就是"准备中"状态。
 	voices := scriptVoicesForPlayback(v)
-	voiceIdx := 0
-	// Begin with the already-authorized formal voice, not an arbitrary list item.
-	for i, voice := range voices {
-		if voice.VoiceID == v.VoiceIdentity.VoiceID && (voice.Model == "" || voice.Model == v.VoiceIdentity.Model) {
-			voiceIdx = i
-		}
+	initialBatch, e := s.updateScriptVoiceBatch(ctx, tenant, room, session, v, func(state *voicebatch.State) { state.ObservedAt = time.Now().UTC() })
+	if e != nil {
+		return e
 	}
-	if cursor.ActiveVoice != "" {
-		for i, voice := range voices {
-			if voice.VoiceID == cursor.ActiveVoice && (voice.Model == "" || voice.Model == cursor.ActiveModel) {
-				voiceIdx = i
-			}
-		}
+	initialIdentity := initialBatch.Active
+	cursor.VoiceBatch = initialBatch.Batch
+	if initialBatch.Pending != nil {
+		initialIdentity = *initialBatch.Pending
+		cursor.VoiceBatch++
 	}
-	activeV := scriptVersionForVoice(v, voices[voiceIdx])
+	activeV := scriptVersionForVoice(v, recordingScriptVoice{Identity: &initialIdentity, VoiceID: initialIdentity.VoiceID, Model: initialIdentity.Model})
+	cursor.ActiveVoice, cursor.ActiveModel = initialIdentity.VoiceID, initialIdentity.Model
 	for i, audio := range known {
-		if audio.VoiceID != activeV.VoiceIdentity.VoiceID {
+		if audio.VoiceID != initialIdentity.VoiceID {
 			delete(known, i)
 		}
 	}
-	restoringVoice := cursor.ActiveVoice != ""
-	cursor.ActiveVoice = activeV.VoiceIdentity.VoiceID
-	cursor.ActiveModel = activeV.VoiceIdentity.Model
-	if !restoringVoice && cursor.VoiceBlockLeft <= 0 {
-		cursor.VoiceBlockLeft = scriptVoiceBlockLength(activeV, units)
+	for i, unit := range units {
+		if known[i].AssetID > 0 {
+			continue
+		}
+		for _, entry := range scriptCompatiblePool(recordingCacheMediaRoot(), activeV, unit).Versions {
+			if audio, ok := scriptVersionAudio(recordingCacheMediaRoot(), unit, activeV, entry); ok {
+				known[i] = audio
+				break
+			}
+		}
 	}
-	lastVoicePreparation := ""
 	for {
 		if err = ctx.Err(); err != nil {
 			return err
@@ -500,25 +504,6 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			cursor.Round++
 			cursor.Position = 0
 
-			// At block end, keep retrying readiness each round rather than resetting
-			// another four rounds while the target voice is still being prepared.
-			cursor.VoiceBlockLeft = max(0, cursor.VoiceBlockLeft-1)
-			if cursor.VoiceBlockLeft == 0 {
-				if next, ready := scriptNextPlaybackVoice(voices, voiceIdx, v, units); ready {
-					target := scriptVersionForVoice(v, voices[next])
-					identity := target.VoiceIdentity
-					if e := s.validatePlanVoiceIdentity(ctx, tenant, &identity); e != nil {
-						log.Printf("script voice switch unavailable tenant=%d room=%d session=%d: %v", tenant, room, session, e)
-					} else {
-						voiceIdx, activeV = next, target
-						cursor.ActiveVoice, cursor.ActiveModel = activeV.VoiceIdentity.VoiceID, activeV.VoiceIdentity.Model
-						cursor.VoiceBlockLeft = scriptVoiceBlockLength(activeV, units)
-						known = map[int]volcengineCachedAudio{}
-					}
-				} else if len(voices) == 1 {
-					cursor.VoiceBlockLeft = scriptVoiceBlockLength(activeV, units)
-				}
-			}
 			// 按话术标签分组排下一轮：固定标签锁位，其余随机。
 			previousOrder := cursor.Order
 			cursor.Order = scriptPlayRoundOrder(v, units, cursor.Round, cursor.Previous, previousOrder, rng)
@@ -556,55 +541,34 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			continue
 		}
 		index := cursor.Order[cursor.Position]
-		// Secondary preparation uses the same producer, account pool, budget and
-		// durable paid checkpoints. Admit only below 40s, near the next voice block,
-		// and with this voice's next piece already paid, so current supply takes priority.
-		preparation := fmt.Sprintf("%d:%d", cursor.Round, cursor.Position)
-		if len(voices) > 1 && scriptVoicePreparationDue(cursor, p, lastVoicePreparation, len(scriptCompatiblePool(recordingCacheMediaRoot(), activeV, units[index]).Versions) > 0) {
-			if target, unit, needed := scriptNextVoicePreparation(voices, voiceIdx, v, units); needed {
-				lastVoicePreparation = preparation
-				identity := target.VoiceIdentity
-				prepareErr := s.validatePlanVoiceIdentity(ctx, tenant, &identity)
-				if prepareErr == nil {
-					prepareErr = s.store.CheckTTSRoomPool(ctx, tenant, room, identity.Provider)
-				}
-				if prepareErr == nil {
-					var prepared volcengineCachedAudio
-					prepared, prepareErr = awaitVolcengineParagraph(ctx, 500*time.Millisecond, func(c context.Context) (volcengineCachedAudio, error) {
-						if e := checkOwner(c); e != nil {
-							return volcengineCachedAudio{}, e
-						}
-						return s.ensureScriptFirstParagraph(c, tenant, room, session, target, unit, true)
-					}, keepPlaying)
-					if prepareErr == nil {
-						recordScriptVoiceVersion(recordingCacheMediaRoot(), v.PlanID, unit, target, prepared)
-					}
-				}
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				if errors.Is(prepareErr, anchorcycle.ErrStale) {
-					return prepareErr
-				}
-				if prepareErr != nil {
-					log.Printf("script next voice preparation deferred tenant=%d room=%d session=%d: %v", tenant, room, session, prepareErr)
-				}
-			}
+		// A whole host batch stays on one voice. Switch only at a complete
+		// paragraph boundary, after full-pool coverage / two hours / a live command.
+		state, batchErr := s.store.RuntimeVoiceBatch(ctx, tenant, room, session, v.ID)
+		if batchErr != nil {
+			return batchErr
+		}
+		generationVersion := activeV
+		if target, ok := scriptVoiceBatchTarget(state, voices, activeV, v); ok {
+			generationVersion = target
 		}
 		// 循环变速已关闭：跨轮固定 1.0 倍率，直接复用首轮原速音频。
 		// 关闭原因是每轮每段一次 ffmpeg atempo 渲染对机器压力明显（2026-11-01）。
 		// This check is the sole paid lookahead gate: no next submission until
 		// buffered mainline reaches its length-based lead. One paragraph is in flight.
 		work, done := context.WithCancel(ctx)
+		if !voicebatch.Same(generationVersion.VoiceIdentity, state.Active) {
+			// Switching hosts is optional production: keep the current host's
+			// cache playing if the existing cost admission defers this purchase.
+			work = withLiveCostScope(work, liveCostCallScope{TenantID: tenant, RoomID: room, SessionID: session, PlanID: v.PlanID, Priority: "optional", Reason: "主播切换声音准备", Key: fmt.Sprintf("voice-switch:%d:%s", session, scriptFirstParagraphKey(generationVersion, units[index].Text))})
+		}
 		// Only canonical, authorized selected identities may purchase missing audio.
-		allowSynthesis := voices[voiceIdx].Identity != nil || (activeV.VoiceIdentity.VoiceID == v.VoiceIdentity.VoiceID && activeV.VoiceIdentity.Model == v.VoiceIdentity.Model)
-		voiceUnit := scriptUnitForVoice(activeV, units[index])
-		audio, playedText, fromPool := scriptCompatiblePoolAudio(recordingCacheMediaRoot(), activeV, voiceUnit, fmt.Sprintf("%d-%d-%d", tenant, room, session), rng)
+		allowSynthesis := scriptAuthorizedPlaybackVoice(generationVersion, voices) || voicebatch.Same(generationVersion.VoiceIdentity, v.VoiceIdentity)
+		voiceUnit := scriptUnitForVoice(generationVersion, units[index])
+		audio, playedText, fromPool := scriptCompatiblePoolAudio(recordingCacheMediaRoot(), generationVersion, voiceUnit, fmt.Sprintf("%d-%d-%d", tenant, room, session), rng)
 		if fromPool && strings.TrimSpace(playedText) != "" {
 			audio.Text = playedText
 		}
 		if !fromPool {
-			generationVersion := activeV
 			audio, e = awaitVolcengineParagraph(work, 500*time.Millisecond, func(c context.Context) (volcengineCachedAudio, error) {
 				return s.ensureScriptFirstParagraph(c, tenant, room, session, generationVersion, voiceUnit, allowSynthesis)
 			}, keepPlaying)
@@ -632,6 +596,29 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			continue
 		}
 		retryAttempt = 0
+		if !voicebatch.Same(activeV.VoiceIdentity, generationVersion.VoiceIdentity) {
+			identity := generationVersion.VoiceIdentity
+			if e := s.validatePlanVoiceIdentity(ctx, tenant, &identity); e != nil {
+				return e
+			}
+			if e := s.store.CheckTTSRoomPool(ctx, tenant, room, identity.Provider); e != nil {
+				return e
+			}
+			instance := fmt.Sprintf("long-%d-%d", session, cursor.Sequence+1)
+			staged, e := s.updateScriptVoiceBatch(ctx, tenant, room, session, v, func(state *voicebatch.State) {
+				stageScriptHostVoice(state, voices, activeV, v, generationVersion, instance)
+			})
+			if e != nil {
+				return e
+			}
+			if staged.Pending == nil || staged.PendingInstance != instance || !voicebatch.Same(*staged.Pending, identity) {
+				continue // A newer choice won; retain paid audio, do not enqueue it.
+			}
+			activeV = generationVersion
+			cursor.ActiveVoice, cursor.ActiveModel = identity.VoiceID, identity.Model
+			cursor.VoiceBatch = staged.Batch + 1
+			known = map[int]volcengineCachedAudio{}
+		}
 		known[index] = audio
 		// 把这次合成结果登记进片段版本池：音色、模型、音量、指纹与实际音频。
 		// 现在生成器只返回原文，所以登记的一定是原始版本；改写接入后自动记改写。

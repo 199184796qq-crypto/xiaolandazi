@@ -2637,6 +2637,22 @@ export function getLiveRuntime(roomId: number) {
   return request<LiveRuntimeSnapshot>('/api/v1/rooms/' + roomId + '/runtime')
 }
 
+export interface LiveHostVoiceSnapshot {
+  state: {
+    session_id: number; version_id: number; revision: number; elapsed_ms: number; batch: number;
+    active: { voice_id: string; model: string };
+    requested?: { voice_id: string; model: string };
+    pending?: { voice_id: string; model: string };
+  };
+  voices: { voice_id: string; model: string; name: string }[];
+}
+export function getLiveHostVoice(roomId: number) {
+  return request<LiveHostVoiceSnapshot>('/api/v1/rooms/' + roomId + '/runtime/voice')
+}
+export function setLiveHostVoice(roomId: number, input: { session_id: number; version_id: number; voice_id: string; model: string }) {
+  return request<LiveHostVoiceSnapshot>('/api/v1/rooms/' + roomId + '/runtime/voice', { method: 'POST', body: JSON.stringify(input) })
+}
+
 export function setLiveRuntimeMode(roomId: number, mode: 'control' | 'anchor') {
   return request<{ room_id: number; state: string; mode: 'control' | 'anchor'; working_seconds: number }>(
     '/api/v1/rooms/' + roomId + '/runtime/mode',

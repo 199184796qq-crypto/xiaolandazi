@@ -2,14 +2,67 @@ package liveruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
+	"livecompanion/management/internal/coreclient"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
+
+func TestDeviceLessSessionCannotBorrowALaterBinding(t *testing.T) {
+	// No store is installed: looking up a later binding would panic. A legacy
+	// nil-device session must instead be classified for immediate closure.
+	r := &Reconciler{}
+	presence, device, err := r.runtimeDevicePresence(context.Background(), model.LiveRuntimeSession{TenantID: 14, RoomID: 29})
+	if err != nil || device != nil || presence.Exists {
+		t.Fatal(presence, device, err)
+	}
+}
+
+func TestTerminalProtectionRetriesOnlyStopNeverStart(t *testing.T) {
+	for _, reason := range []string{"device_offline", "device_shutdown", "device_not_bound", "audio_stalled"} {
+		t.Run(reason, func(t *testing.T) {
+			calls, cleanups := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				calls++
+				var body struct {
+					Command string `json:"command"`
+					Reason  string `json:"stop_reason"`
+				}
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil || req.Method != http.MethodPut || req.URL.Path != "/internal/v1/rooms/29/agent-runtime" || req.URL.Query().Get("tenant_id") != "14" || body.Command != "stop" || body.Reason != reason {
+					t.Error("protection sent an unexpected control", req.URL, body, err)
+				}
+				if calls == 1 {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				_, _ = w.Write([]byte(`{"state":"stopped"}`))
+			}))
+			defer server.Close()
+			r := &Reconciler{core: coreclient.New(server.URL, "test")}
+			r.SetDeviceStopCleanup(func(context.Context, int64, int64) error { cleanups++; return nil })
+			now := time.Now()
+			s := model.LiveRuntimeSession{ID: 1, TenantID: 14, RoomID: 29, Status: "stopped", StopReason: reason, EndedAt: &now}
+			r.retryDeviceOfflineCoreStop(context.Background(), s, coreRoomState{AgentState: "working"})
+			r.retryDeviceOfflineCoreStop(context.Background(), s, coreRoomState{AgentState: "working"})
+			r.retryDeviceOfflineCoreStop(context.Background(), s, coreRoomState{AgentState: "stopped"})
+			if calls != 2 || cleanups != 1 {
+				t.Fatal(calls, cleanups)
+			}
+		})
+	}
+	for _, reason := range []string{"manual_stop", "", "core_restart"} {
+		if requiresRuntimeStopRetry(reason) {
+			t.Fatal("unrelated stop gained protection retries", reason)
+		}
+	}
+}
 
 func TestDeviceCleanupDoesNotRepeatSuccessfulOrHistoricalStops(t *testing.T) {
 	calls := 0

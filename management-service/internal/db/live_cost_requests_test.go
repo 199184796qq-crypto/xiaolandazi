@@ -25,9 +25,10 @@ type costSQLState struct {
 	locks      int
 }
 type costSQLRow struct {
-	entry livecost.Entry
-	at    time.Time
-	over  bool
+	entry     livecost.Entry
+	at        time.Time
+	over      bool
+	updatedAt time.Time
 }
 type costSQLConnector struct{ state *costSQLState }
 
@@ -118,6 +119,23 @@ func (c *costSQLConn) ExecContext(_ context.Context, query string, named []drive
 		return driver.RowsAffected(1), nil
 	}
 	if strings.Contains(query, "UPDATE live_cost_requests SET") {
+		if strings.Contains(query, "receipt_json=NULL") {
+			key := costSQLKey(args[8], args[9], args[10])
+			row := c.state.rows[key]
+			if row.entry.Status != livecost.StatusDeclined && row.entry.Status != livecost.StatusReleased {
+				return nil, errors.New("paid request cannot be readmitted")
+			}
+			var request livecost.Request
+			if err := json.Unmarshal([]byte(args[3].(string)), &request); err != nil {
+				return nil, err
+			}
+			row.entry = livecost.Entry{Request: request, Status: livecost.StatusReserved, ReservedMicros: args[5].(int64)}
+			row.at = args[6].(time.Time)
+			row.updatedAt = args[7].(time.Time)
+			row.over = false
+			c.staged[key] = row
+			return driver.RowsAffected(1), nil
+		}
 		if c.state.failUpdate {
 			return nil, errors.New("injected update failure")
 		}
@@ -127,6 +145,7 @@ func (c *costSQLConn) ExecContext(_ context.Context, query string, named []drive
 		row.entry.ReservedMicros = args[1].(int64)
 		row.entry.ChargedMicros = args[2].(int64)
 		row.entry.UsageSource = args[3].(string)
+		row.updatedAt = args[6].(time.Time)
 		if err := json.Unmarshal([]byte(args[5].(string)), &row.entry.Receipt); err != nil {
 			return nil, err
 		}
@@ -150,7 +169,7 @@ func (c *costSQLConn) QueryContext(_ context.Context, query string, named []driv
 		c.state.mu.Lock()
 		defer c.state.mu.Unlock()
 	}
-	if strings.Contains(query, "SELECT request_json,") {
+	if strings.Contains(query, "SELECT request_json,receipt_json") {
 		if !c.transaction || !c.locked || !strings.Contains(query, "FOR UPDATE") || len(args) != 3 {
 			return nil, errors.New("unscoped entry read")
 		}
@@ -162,6 +181,29 @@ func (c *costSQLConn) QueryContext(_ context.Context, query string, named []driv
 			out.values = append(out.values, []driver.Value{string(request), string(receipt), row.entry.Status, row.entry.ReservedMicros, row.entry.ChargedMicros, row.entry.UsageSource, row.over})
 		}
 		return out, nil
+	}
+	if strings.Contains(query, "SELECT request_json,status,reserved_micros") {
+		if len(args) != 6 || !strings.Contains(query, "updated_at>=?") || !strings.Contains(query, "OR status IN ('reserved','unknown')") {
+			return nil, errors.New("strict summary must include late and unresolved requests")
+		}
+		rows := &costSQLRows{columns: []string{"request_json", "status", "reserved_micros", "charged_micros", "usage_source", "requested_at", "updated_at"}}
+		for _, row := range c.state.rows {
+			r := row.entry.Request
+			if r.TenantID != args[0].(int64) || r.RoomID != args[1].(int64) {
+				continue
+			}
+			updated := row.updatedAt
+			if updated.IsZero() {
+				updated = row.at
+			}
+			within := func(at time.Time) bool { return !at.Before(args[2].(time.Time)) && !at.After(args[3].(time.Time)) }
+			if !within(row.at) && !within(updated) && row.entry.Status != livecost.StatusReserved && row.entry.Status != livecost.StatusUnknown {
+				continue
+			}
+			raw, _ := json.Marshal(r)
+			rows.values = append(rows.values, []driver.Value{string(raw), row.entry.Status, row.entry.ReservedMicros, row.entry.ChargedMicros, row.entry.UsageSource, row.at, updated})
+		}
+		return rows, nil
 	}
 	if strings.Contains(query, "COALESCE(SUM(") {
 		if len(args) != 7 || !strings.Contains(query, "OR status IN ('reserved','unknown')") || !strings.Contains(query, "WHEN in_window AND status") || !strings.Contains(query, "WHEN is_aged AND status") ||

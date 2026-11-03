@@ -91,6 +91,7 @@ type Server struct {
 	liveCostPrices         []liveCostPriceRule
 	liveCostConfig         *livecost.Settings
 	liveCostConfigLoader   func(context.Context) (livecost.Settings, error)
+	liveRoomBudgetLoader   func(context.Context, int64, int64, int64, int64) (string, error)
 	liveCostConfigWarned   bool
 	liveModelCostTickets   map[int64]liveModelCostAttempt
 	liveModelCostSequence  int64
@@ -757,6 +758,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live/devices/{deviceID}/heartbeat", s.liveDeviceHeartbeat)
 	mux.HandleFunc("POST /api/v1/live/devices/{deviceID}/control", s.liveDeviceControl)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/runtime", s.liveRuntimeStatus)
+	mux.HandleFunc("GET /api/v1/rooms/{roomID}/runtime/voice", s.liveRuntimeVoice)
+	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/voice", s.liveRuntimeVoice)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/mode", s.liveRuntimeMode)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/plan", s.liveRuntimePlan)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/runtime/start", s.liveRuntimeStart)

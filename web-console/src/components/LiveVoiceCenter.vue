@@ -555,8 +555,8 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
       </div>
     </div>
 
-    <div v-if="multiple && selectedVoices.length" class="voice-selection" aria-label="已选声音">
-      <p>已选 {{ selectedVoices.length }} / 8 个声音，按选择顺序轮换；第一个声音用于首播和互动。</p>
+    <div v-if="multiple && selectedVoices.length" class="voice-selection" aria-label="主播音色队列">
+      <p>主播音色队列 {{ selectedVoices.length }} / 8；第一个音色用于开播，主线与互动统一使用当前上线主播音色，直播时可在大屏切换。</p>
       <div class="voice-selection-list">
         <span v-for="(voice, index) in selectedVoices" :key="playbackVoiceKey(voice)" class="voice-selection-item" :class="{ unavailable: unavailableSelection(voice) }">
           {{ index + 1 }}. {{ selectedVoiceLabel(voice) }}{{ unavailableSelection(voice) ? '（不可用，请重新选择）' : '' }}

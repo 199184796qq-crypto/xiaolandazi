@@ -17,6 +17,20 @@ let pollTimer: number | undefined
 let recoveryTimer: number | undefined
 let watchKey = ''
 let pollBusy = false
+let watchGeneration = 0
+let unavailableSince: number | undefined
+const transientFailureGraceMS = 6000
+
+function observeUnavailable() {
+  // A failed status request is not a command to stop a healthy PCM listener.
+  // Confirm sustained loss before changing the phase that tears it down.
+  unavailableSince ??= Date.now()
+  if ((coreRuntime.phase === 'online' || coreRuntime.phase === 'recovering') &&
+      Date.now() - unavailableSince < transientFailureGraceMS) return
+  clearRecoveryTimer()
+  coreRuntime.available = false
+  coreRuntime.phase = 'offline'
+}
 
 function clearRecoveryTimer() {
   if (recoveryTimer !== undefined) {
@@ -38,8 +52,15 @@ function scheduleRecoveryComplete(bootId: string) {
 export async function refreshCoreRuntimeStatus() {
   if (pollBusy) return
   pollBusy = true
+  const generation = watchGeneration
   try {
     const next = await getCoreRuntimeStatus()
+    if (generation !== watchGeneration) return
+    if (!next.available) {
+      observeUnavailable()
+      return
+    }
+    unavailableSince = undefined
     const previousPhase = coreRuntime.phase
     const previousBootId = coreRuntime.bootId
     const bootChanged =
@@ -53,12 +74,6 @@ export async function refreshCoreRuntimeStatus() {
     coreRuntime.checkedAt = next.checked_at || ''
     coreRuntime.lastTransitionAt = next.last_transition_at || ''
 
-    if (!next.available) {
-      clearRecoveryTimer()
-      coreRuntime.phase = 'offline'
-      return
-    }
-
     if (previousPhase === 'offline' || bootChanged) {
       coreRuntime.phase = 'recovering'
       coreRuntime.recoverySerial += 1
@@ -71,11 +86,9 @@ export async function refreshCoreRuntimeStatus() {
     }
     coreRuntime.phase = 'online'
   } catch {
-    clearRecoveryTimer()
-    coreRuntime.available = false
-    coreRuntime.phase = 'offline'
+    if (generation === watchGeneration) observeUnavailable()
   } finally {
-    pollBusy = false
+    if (generation === watchGeneration) pollBusy = false
   }
 }
 
@@ -96,6 +109,8 @@ export function startCoreRuntimeWatch(key: string) {
 }
 
 export function stopCoreRuntimeWatch() {
+  watchGeneration += 1
+  unavailableSince = undefined
   if (pollTimer !== undefined) {
     window.clearInterval(pollTimer)
     pollTimer = undefined

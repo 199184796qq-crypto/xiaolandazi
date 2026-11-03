@@ -26,23 +26,25 @@ var scriptVoicePoolMu sync.Mutex
 
 // scriptVoiceVersion 是磁盘上的版本记录。
 type scriptVoiceVersion struct {
-	ID           string   `json:"id"`
-	PieceID      string   `json:"piece_id"`
-	Fingerprint  string   `json:"fingerprint"`
-	VoiceID      string   `json:"voice_id"`
-	Model        string   `json:"model"`
-	Volume       int      `json:"volume,omitempty"`
-	Kind         string   `json:"kind"`
-	Seq          int      `json:"seq"`
-	AudioRef     string   `json:"audio_ref"`
-	PlayCount    int      `json:"play_count,omitempty"`
-	LastPlayedAt string   `json:"last_played_at,omitempty"`
-	Text         string   `json:"text,omitempty"`
-	DurationMS   int64    `json:"duration_ms,omitempty"`
-	SourcePath   string   `json:"source_path,omitempty"`
-	CreatedAt    string   `json:"created_at,omitempty"`
-	PlayedTracks []string `json:"played_tracks,omitempty"`
-	FactsKey     string   `json:"facts_key,omitempty"`
+	ID              string   `json:"id"`
+	PieceID         string   `json:"piece_id"`
+	Fingerprint     string   `json:"fingerprint"`
+	VoiceID         string   `json:"voice_id"`
+	Model           string   `json:"model"`
+	Volume          int      `json:"volume,omitempty"`
+	Kind            string   `json:"kind"`
+	Seq             int      `json:"seq"`
+	AudioRef        string   `json:"audio_ref"`
+	PlayCount       int      `json:"play_count,omitempty"`
+	LastPlayedAt    string   `json:"last_played_at,omitempty"`
+	Text            string   `json:"text,omitempty"`
+	DurationMS      int64    `json:"duration_ms,omitempty"`
+	SourcePath      string   `json:"source_path,omitempty"`
+	CreatedAt       string   `json:"created_at,omitempty"`
+	PlayedTracks    []string `json:"played_tracks,omitempty"`
+	FactsKey        string   `json:"facts_key,omitempty"`
+	CompleteCount   int      `json:"complete_count,omitempty"`
+	CompletedTracks []string `json:"completed_tracks,omitempty"`
 }
 
 type scriptVoicePoolFile struct {
@@ -101,7 +103,7 @@ func loadScriptVoicePoolLocked(root string, planID int64, pieceID string) (scrip
 			Text:         v.Text,
 			DurationMS:   v.DurationMS,
 			SourcePath:   v.SourcePath,
-			CreatedAt:    v.CreatedAt, PlayedTracks: v.PlayedTracks, FactsKey: v.FactsKey,
+			CreatedAt:    v.CreatedAt, PlayedTracks: v.PlayedTracks, FactsKey: v.FactsKey, CompleteCount: v.CompleteCount, CompletedTracks: v.CompletedTracks,
 		})
 	}
 	return pool, nil
@@ -136,7 +138,7 @@ func saveScriptVoicePoolLocked(root string, planID int64, pieceID string, pool s
 			Text:         v.Text,
 			DurationMS:   v.DurationMS,
 			SourcePath:   v.SourcePath,
-			CreatedAt:    v.CreatedAt, PlayedTracks: v.PlayedTracks, FactsKey: v.FactsKey,
+			CreatedAt:    v.CreatedAt, PlayedTracks: v.PlayedTracks, FactsKey: v.FactsKey, CompleteCount: v.CompleteCount, CompletedTracks: v.CompletedTracks,
 		})
 	}
 	raw, err := json.Marshal(file)

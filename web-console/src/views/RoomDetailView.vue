@@ -2,6 +2,7 @@
 import { openPlanPicker } from '../planAssets'
 import LivePlanVersionBadge from '../components/LivePlanVersionBadge.vue'
 import LiveSessionDownloads from '../components/LiveSessionDownloads.vue'
+import LiveHostVoiceQueue from '../components/LiveHostVoiceQueue.vue'
 import { confirmAction, useFeedbackErrorRef, showAlert } from '../uiFeedback'
 import { isNewLiveRuntimeFailure, liveRuntimeFailureMessage } from '../liveRuntimeFailure'
 import { advanceStartupStage, startupMilestones, type StartupStage } from '../liveStartupProgress'
@@ -1134,6 +1135,12 @@ watch(() => runtimeSnapshot.value, (snapshot) => {
   initialVoiceStage.value = advanceStartupStage(initialVoiceStage.value, snapshot)
 })
 const boundDevice = computed(() => runtimeSnapshot.value?.device || null)
+const runtimeDeviceError = computed(() => {
+  const device = boundDevice.value
+  if (!device || device.room_id !== roomId || device.binding_role !== 'primary') return '请先给直播间绑定主盒子'
+  if (device.connection_status !== 'online') return '主盒子离线或正在重连，请联网后再开始或继续'
+  return ''
+})
 type DeviceVisualState = 'working' | 'standby' | 'paused' | 'disabled' | 'reconnecting' | 'offline'
 const deviceControlBusy = ref(false)
 const deviceControlError = useFeedbackErrorRef()
@@ -2012,13 +2019,17 @@ function runtimeEventKind(code: string) {
   return '记录'
 }
 
+let runtimeRefreshEpoch = 0
 async function refreshRuntime() {
+  const epoch = ++runtimeRefreshEpoch, scope = accountPlanScope()
+  const current = () => !pageUnmounted && epoch === runtimeRefreshEpoch && scope === accountPlanScope()
   try {
     const [snapshot, runtimeEvents, roomData] = await Promise.all([
       getLiveRuntime(roomId),
       getLiveRuntimeEvents(roomId, 30),
       getRoom(roomId),
     ])
+    if (!current()) return
     updatePreservingPageBottom(() => {
       const newFailure = isNewLiveRuntimeFailure(runtimeSnapshot.value, snapshot)
       if (newFailure && snapshot.session) observedRuntimeFailureSessions.add(snapshot.session.id)
@@ -2055,6 +2066,7 @@ async function refreshRuntime() {
       }
     })
   } catch (err) {
+    if (!current()) return
     updatePreservingPageBottom(() => {
       runtimeError.value = err instanceof Error ? err.message : '读取AI运行状态失败'
     })
@@ -3283,6 +3295,10 @@ async function connectLocalAudioReceiver() {
 async function startCompanionRuntime() {
   if (!coreActionsAvailable.value || agentPlanBusy.value || runtimeControlBusy.value || firstVoiceStartPending.value || aiActive.value) return
   closeRuntimeActionError()
+  if (runtimeDeviceError.value) {
+    openRuntimeActionError('无法启动直播搭子', runtimeDeviceError.value, runtimeDeviceError.value)
+    return
+  }
   if (aiRuntimeMode.value === 'anchor' && !selectedLiveAgentPlanId.value) {
     agentPlanError.value = '请先选择一个方案'
     openPlanPicker(livePlanPicker.value)
@@ -3364,14 +3380,15 @@ async function pauseCompanionRuntime() {
 async function resumeCompanionRuntime() {
   if (!coreActionsAvailable.value || runtimeControlBusy.value || !aiPaused.value) return
   closeRuntimeActionError()
-  if (!(await ensureLocalAudioUnlocked())) {
-    openRuntimeActionError('无法继续直播搭子', localAudioError.value, '浏览器没有允许声音播放，请再次点击继续')
+  if (runtimeDeviceError.value) {
+    openRuntimeActionError('无法继续直播搭子', runtimeDeviceError.value, runtimeDeviceError.value)
     return
   }
-  await connectLocalAudioReceiver()
   runtimeControlBusy.value = true
   runtimeError.value = ''
   try {
+    if (!(await ensureLocalAudioUnlocked())) throw new Error(localAudioError.value || '浏览器没有允许声音播放，请再次点击继续')
+    await connectLocalAudioReceiver()
     await resumeLiveRuntime(roomId)
     await Promise.all([refreshRuntime(), refreshSpeechRuntime(), refreshAgentDecisions()])
   } catch (err) {
@@ -4746,7 +4763,8 @@ onBeforeUnmount(() => {
             <button
               v-if="!aiActive"
               type="button"
-              :disabled="!coreActionsAvailable || runtimeControlBusy || firstVoiceStartPending || (aiRuntimeMode === 'anchor' && !selectedLiveAgentPlanId)"
+              :disabled="!coreActionsAvailable || runtimeControlBusy || firstVoiceStartPending || !!runtimeDeviceError || (aiRuntimeMode === 'anchor' && !selectedLiveAgentPlanId)"
+              :title="runtimeDeviceError"
               @click="startCompanionRuntime"
             >{{ runtimeControlBusy ? '开始中…' : firstVoiceStartPending ? '等待声音…' : '开始' }}</button>
             <template v-else>
@@ -4761,7 +4779,8 @@ onBeforeUnmount(() => {
                 v-else-if="aiPaused"
                 type="button"
                 class="resume"
-                :disabled="!coreActionsAvailable || runtimeControlBusy"
+                :disabled="!coreActionsAvailable || runtimeControlBusy || !!runtimeDeviceError"
+                :title="runtimeDeviceError"
                 @click="resumeCompanionRuntime"
               >{{ runtimeControlBusy ? '继续中…' : '继续' }}</button>
               <button
@@ -4772,6 +4791,7 @@ onBeforeUnmount(() => {
               >停止</button>
             </template>
           </div>
+          <p v-if="runtimeDeviceError && !aiRunning" class="runtime-device-hint">{{ runtimeDeviceError }}</p>
         </article>
         <article class="live-room-dashboard" :class="'heat-' + roomHeatLevel">
           <div class="live-room-dashboard-head">
@@ -5093,6 +5113,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="speech-runtime-footer-tools">
+          <LiveHostVoiceQueue v-if="aiActive && aiRuntimeMode === 'anchor' && publishedSpeechVersion?.generation_context?.recording_voice_mode === 'stream_clone'" :key="roomId + ':' + (runtimeSnapshot?.session?.id || 0)" :room-id="roomId" :session-id="runtimeSnapshot?.session?.id || 0" :can-change="canConfigureRoomStrategy" />
           <label v-if="canConfigureRoomStrategy" class="speech-rate-control">
             <span>语速</span>
             <select aria-label="声音语速" v-model.number="liveSpeechRate" :disabled="liveSpeechRateBusy || planVoiceRate.loading.value || !planVoiceRate.ready.value" @change="changeLiveSpeechRate">
@@ -8341,6 +8362,8 @@ onBeforeUnmount(() => {
   letter-spacing: .02em;
   transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, filter .16s ease;
 }
+
+.runtime-device-hint { margin: 8px 0 0; color: #b42332; font-size: 16px; }
 
 .companion-control-buttons button:first-child {
   border-color: rgba(93, 94, 238, 0.42);

@@ -49,6 +49,15 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 	if err != nil {
 		return out, err
 	}
+	if policy.RoomBudget != nil {
+		policy, err = livecost.NormalizePolicy(policy)
+		if err != nil {
+			return out, err
+		}
+	}
+	if r.BudgetPool != "" && (policy.RoomBudget == nil || policy.RoomBudget.Pool != r.BudgetPool) {
+		return out, livecost.ErrAccountingUnavailable
+	}
 	if s == nil || s.db == nil {
 		return out, livecost.ErrAccountingUnavailable
 	}
@@ -66,10 +75,12 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 		if !livecost.SameRequestIdentity(existing.Request, r) {
 			return out, livecost.ErrRequestConflict
 		}
-		out = livecost.Reservation{Key: r.Key, Existing: true, Status: existing.Status, OverBudget: over, EstimatedMicros: existing.Request.EstimatedMicros}
-		return out, tx.Commit()
+		if policy.RoomBudget == nil || (existing.Status != livecost.StatusDeclined && existing.Status != livecost.StatusReleased) {
+			out = livecost.Reservation{Key: r.Key, Existing: true, Status: existing.Status, OverBudget: over, EstimatedMicros: existing.Request.EstimatedMicros}
+			return out, tx.Commit()
+		}
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return out, err
 	}
 	summary, err := liveCostSummary(ctx, tx, scope, policy, at)
@@ -92,7 +103,18 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 	over = summary.TotalMicros >= target || r.EstimatedMicros > target-summary.TotalMicros
 	status := livecost.StatusReserved
 	reserved := r.EstimatedMicros
-	if r.Priority == livecost.PriorityOptional && (optionalOver || over) {
+	if policy.RoomBudget != nil {
+		if err := policy.RoomBudget.Validate(); err != nil {
+			return out, err
+		}
+		over = !policy.RoomBudget.Allows(r, summary)
+		if over {
+			// No supplier call occurred. Do not permanently fence this key when
+			// a later rolling window may have budget for the same paragraph.
+			return livecost.Reservation{Key: r.Key, Status: livecost.StatusDeclined, OverBudget: true, EstimatedMicros: r.EstimatedMicros}, tx.Commit()
+		}
+	}
+	if policy.RoomBudget == nil && r.Priority == livecost.PriorityOptional && (optionalOver || over) {
 		status = livecost.StatusDeclined
 		reserved = 0
 	}
@@ -100,7 +122,19 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 	if err != nil {
 		return out, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO live_cost_requests(tenant_id,room_id,request_key,kind,provider,priority,status,request_json,estimated_micros,reserved_micros,over_budget,requested_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.TenantID, r.RoomID, r.Key, r.Kind, r.Provider, r.Priority, status, string(encoded), r.EstimatedMicros, reserved, over, at.UTC(), at.UTC())
+	if policy.RoomBudget != nil && existing.Status != "" {
+		var result sql.Result
+		result, err = tx.ExecContext(ctx, `UPDATE live_cost_requests SET kind=?,provider=?,priority=?,status='reserved',request_json=?,receipt_json=NULL,estimated_micros=?,reserved_micros=?,charged_micros=0,usage_source='',provider_request_id='',over_budget=0,requested_at=?,updated_at=? WHERE tenant_id=? AND room_id=? AND request_key=? AND status IN ('declined','released')`, r.Kind, r.Provider, r.Priority, string(encoded), r.EstimatedMicros, reserved, at.UTC(), at.UTC(), r.TenantID, r.RoomID, r.Key)
+		if err == nil {
+			var changed int64
+			changed, err = result.RowsAffected()
+			if err == nil && changed != 1 {
+				err = livecost.ErrRequestConflict
+			}
+		}
+	} else {
+		_, err = tx.ExecContext(ctx, `INSERT INTO live_cost_requests(tenant_id,room_id,request_key,kind,provider,priority,status,request_json,estimated_micros,reserved_micros,over_budget,requested_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.TenantID, r.RoomID, r.Key, r.Kind, r.Provider, r.Priority, status, string(encoded), r.EstimatedMicros, reserved, over, at.UTC(), at.UTC())
+	}
 	if err != nil {
 		return out, err
 	}
@@ -183,6 +217,13 @@ func (s *Store) LiveCostSummary(ctx context.Context, scope livecost.Scope, polic
 	return liveCostSummary(ctx, s.db, scope, policy, at)
 }
 func liveCostSummary(ctx context.Context, q costQuery, scope livecost.Scope, policy livecost.Policy, at time.Time) (livecost.Summary, error) {
+	if policy.RoomBudget != nil {
+		rows, ok := q.(costRowsQuery)
+		if !ok {
+			return livecost.Summary{}, livecost.ErrAccountingUnavailable
+		}
+		return strictLiveCostSummary(ctx, rows, scope, policy, at)
+	}
 	window := policy.Window
 	if window <= 0 {
 		window = time.Hour

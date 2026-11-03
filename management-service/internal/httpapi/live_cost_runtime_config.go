@@ -21,8 +21,8 @@ func (s *Server) withLiveCostSettingsSnapshot(ctx context.Context, cfg livecost.
 
 // Read for every new paid request or planning pass, so another process's save
 // is visible without a restart. No price revision participates in media/key
-// identity. A failure retains the last verified positive price for necessary
-// supply, while callers must defer optional work when valid is false.
+// identity. A failure retains the last verified positive price for legacy
+// diagnostics; strict live callers defer all paid work when valid is false.
 func (s *Server) liveCostSettingsSnapshot(ctx context.Context) (livecost.Settings, bool) {
 	if value, ok := ctx.Value(liveCostSettingsContextKey{}).(liveCostSettingsContext); ok {
 		return value.Settings.Clone(), value.Valid
@@ -54,7 +54,7 @@ func (s *Server) liveCostSettingsSnapshot(ctx context.Context) (livecost.Setting
 		return s.liveCostConfig.Clone(), true
 	}
 	if !s.liveCostConfigWarned {
-		log.Printf("[live-cost] 费用配置暂不可读取，可选更新暂缓；必要供料沿用最后有效价格并继续留痕")
+		log.Printf("[live-cost] 费用配置暂不可读取，严格直播费用闸门暂停新付费请求；保留最后有效价格供核对")
 		s.liveCostConfigWarned = true
 	}
 	if s.liveCostConfig != nil {

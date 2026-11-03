@@ -16,6 +16,7 @@ import (
 	"livecompanion/management/internal/contentguard"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/scriptplay"
+	"livecompanion/management/internal/voicebatch"
 )
 
 const (
@@ -46,7 +47,9 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		return
 	}
 	voiceID := v.VoiceIdentity.VoiceID
-	poolKey := fmt.Sprintf("%d|%d|%s|%s|%s", tenant, v.PlanID, unit.poolID(), v.VoiceIdentity.Model, voiceID)
+	// All voices share text: serialize by piece, not by person, so two rooms
+	// cannot purchase the same new rewrite concurrently for different voices.
+	poolKey := fmt.Sprintf("%d|%d|%s", tenant, v.PlanID, unit.poolID())
 	rewriteWorker.Lock()
 	if rewriteWorker.inFlight[poolKey] {
 		rewriteWorker.Unlock()
@@ -57,24 +60,23 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		rewriteWorker.Unlock()
 		return
 	}
-	// 槽位满了：每次播放只有 40% 的机会刷新一条（播的还这条，后台换掉一条旧的）。
+	// 满池并完整播足后，冻结一批 30% 的改写槽位逐个替换。
 	cap := cachedScriptVersionCap(v)
 	if script, ok := recordingScriptFromContext(v.GenerationContext); ok && script.VersionCap > 0 {
-		cap = min(script.VersionCap, scriptVersionTotalMax/max(1, len(recordingStreamTexts(v))))
+		cap = min(script.VersionCap, max(1, scriptVersionTotalMax/max(1, len(recordingStreamTexts(v)))))
 	}
 	full := !pool.CanGenerate(voiceID, cap)
+	retireRef := ""
 	if full {
-		// 满池后不是立刻换新：每条版本至少被播过 rewriteRetireAfterPlays 次，
-		// 才有资格被淘汰，避免刚生成的版本还没被听到就被换掉。
-		if !hasRetirableVersion(pool, voiceID, rewriteRetireAfterPlays) {
+		var allowed bool
+		var err error
+		retireRef, allowed, err = scriptRefreshRetire(recordingCacheMediaRoot(), v, unit, pool, cap)
+		if err != nil || !allowed {
 			rewriteWorker.Unlock()
 			return
 		}
 	}
-	if full && !refreshRoll(rand.Float64()) {
-		rewriteWorker.Unlock()
-		return
-	}
+
 	rewriteWorker.inFlight[poolKey] = true
 	rewriteWorker.Unlock()
 	defer func() {
@@ -102,10 +104,24 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		if err != nil || paused {
 			return
 		}
+		state, err := s.store.RuntimeVoiceBatch(ctx, tenant, room, runtime, v.ID)
+		if err != nil || state.Pending != nil || !voicebatch.Same(state.Active, v.VoiceIdentity) {
+			return
+		}
 	}
 	ctx = withLiveCostScope(ctx, liveCostCallScope{TenantID: tenant, RoomID: room, PlanID: v.PlanID, Priority: "optional", Reason: "话术后台改写", Key: fmt.Sprintf("script-rewrite:%d:%s:%d", v.PlanID, unit.poolID(), time.Now().UnixNano())})
+	ctx = withScriptModelCostSteps(ctx)
 	pool = scriptCompatiblePool(recordingCacheMediaRoot(), v, unit)
 	if !pool.HasOriginal(voiceID) || (!full && !pool.CanGenerate(voiceID, cap)) {
+		return
+	}
+	if shared, found, err := scriptMissingSharedText(recordingCacheMediaRoot(), v, unit); err != nil {
+		log.Printf("script shared text unavailable plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
+		return
+	} else if found {
+		if err := s.synthesizeSharedScriptText(ctx, tenant, room, v, unit, shared.Text, cap, full, retireRef); err != nil {
+			log.Printf("script shared text tts deferred plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
+		}
 		return
 	}
 	openings := scriptUsedOpenings(pool, voiceID)
@@ -116,7 +132,7 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	}
 	work, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
-	result, err := s.speechGateway().Complete(work, agentgateway.Request{
+	result, err := s.completePaidScriptModel(work, agentgateway.Request{
 		Stage:     "script_rewrite",
 		Messages:  []agentgateway.Message{{Role: "user", Content: prompt}},
 		MaxTokens: 2400,
@@ -145,6 +161,10 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		log.Printf("script rewrite rejected plan=%d piece=%s runes=%d", v.PlanID, shortKey(unit.Key), utf8.RuneCountInString(script))
 		return
 	}
+	if err := saveScriptSharedText(recordingCacheMediaRoot(), v, unit, script); err != nil {
+		log.Printf("script shared text save failed plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
+		return
+	}
 	// 改写正文合成成新音频：键里带文本，天然和原文缓存分开。
 	dir := unit.Dir
 	if cut := strings.LastIndex(dir, string(filepath.Separator)); cut > 0 {
@@ -154,6 +174,10 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	if runtime := agentgateway.ContextRoomModelScope(work).RuntimeID; runtime > 0 {
 		paused, err := s.checkLiveAnchorOwner(work, tenant, room, runtime, v.ID)
 		if err != nil || paused {
+			return
+		}
+		state, err := s.store.RuntimeVoiceBatch(work, tenant, room, runtime, v.ID)
+		if err != nil || state.Pending != nil || !voicebatch.Same(state.Active, v.VoiceIdentity) {
 			return
 		}
 	}
@@ -174,11 +198,14 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		DurationMS:  audio.DurationMS,
 		SourcePath:  rewriteUnit.Dir,
 	}
-	if added, err := commitScriptRewriteVersion(recordingCacheMediaRoot(), v, unit, version, cap, full); err != nil {
+	if added, err := commitScriptRewriteVersion(recordingCacheMediaRoot(), v, unit, version, cap, full, retireRef); err != nil {
 		log.Printf("script rewrite register failed plan=%d piece=%s: %v", v.PlanID, shortKey(unit.Key), err)
 		return
 	} else if !added {
 		return
+	}
+	if err := markScriptSharedTextRendered(recordingCacheMediaRoot(), v, unit, script); err != nil {
+		log.Printf("script shared text receipt failed: %v", err)
 	}
 	if hits := scriptHasTimeDrift(script); len(hits) > 0 {
 		log.Printf("script rewrite time drift plan=%d piece=%s words=%v", v.PlanID, shortKey(unit.Key), hits)
@@ -326,7 +353,7 @@ func pickViolatingSentences(sentences, hits []string) []string {
 func (s *Server) askRewriteSentences(ctx context.Context, v model.LiveAgentPlanVersion, targets []string) ([]string, bool) {
 	prompt := "把下面这几句里的违规说法改掉，其他内容不要动：事实、价格、数字、规格、时效一律保持原样；" +
 		"不要加新信息；一行一句，只输出改好的句子，不要编号、不要解释。\n\n" + strings.Join(targets, "\n")
-	result, err := s.speechGateway().Complete(ctx, agentgateway.Request{
+	result, err := s.completePaidScriptModel(ctx, agentgateway.Request{
 		Stage:     "script_rewrite_repair",
 		Messages:  []agentgateway.Message{{Role: "user", Content: prompt}},
 		MaxTokens: 800,
@@ -395,7 +422,7 @@ func (s *Server) extendRewriteScript(ctx context.Context, v model.LiveAgentPlanV
 		"保持原来的说法和顺序，只把没讲透的地方讲开；" +
 		"直接输出补好后的完整话术，一段连续文字，不要解释、不要小标题。\n\n" +
 		"【现有话术】\n" + strings.TrimSpace(script) + "\n\n【事实依据】\n" + facts
-	result, err := s.speechGateway().Complete(ctx, agentgateway.Request{
+	result, err := s.completePaidScriptModel(ctx, agentgateway.Request{
 		Stage:     "script_rewrite_extend",
 		Messages:  []agentgateway.Message{{Role: "user", Content: prompt}},
 		MaxTokens: 2000,
@@ -517,7 +544,7 @@ func (s *Server) askRewriteOpening(ctx context.Context, script string) (string, 
 	prompt := "只改下面这段话术的第一句：换一个完全不同的切入角度，" +
 		"不要打招呼、不要自我介绍、不要叫观众称呼，直接落在具体内容上；" +
 		"其余部分原样保留，事实和数字一律不动；直接输出完整话术，不要解释。\n\n" + script
-	result, err := s.speechGateway().Complete(ctx, agentgateway.Request{
+	result, err := s.completePaidScriptModel(ctx, agentgateway.Request{
 		Stage:     "script_rewrite_opening",
 		Messages:  []agentgateway.Message{{Role: "user", Content: prompt}},
 		MaxTokens: 2000,

@@ -168,9 +168,9 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 			return empty, err
 		}
 		scope := liveCostCallScope{TenantID: tenant, RoomID: room, SessionID: session, PlanID: version.PlanID, Priority: "necessary", Reason: "高仿真话术原文长段首次合成", Key: fmt.Sprintf("volcengine-long:%d:%s", session, unit.Key)}
-		if liveCostScope(ctx).Reason == "话术后台改写" {
+		if parent := liveCostScope(ctx); parent.Priority == "optional" {
 			scope.Priority = "optional"
-			scope.Reason = "话术后台改写"
+			scope.Reason = parent.Reason
 		}
 		release := func(bool) {}
 		// Existing jobs are resumed by the provider, not purchased again.

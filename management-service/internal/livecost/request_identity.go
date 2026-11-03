@@ -9,5 +9,8 @@ func SameRequestIdentity(left, right Request) bool {
 	left.PricingSnapshot, right.PricingSnapshot = nil, nil
 	left.EstimatedMicros, right.EstimatedMicros = 0, 0
 	left.Reason, right.Reason = "", ""
+	// Budget attribution is an admission/audit property, never new supplier work.
+	left.BudgetClass, right.BudgetClass = "", ""
+	left.BudgetPool, right.BudgetPool = "", ""
 	return reflect.DeepEqual(left, right)
 }

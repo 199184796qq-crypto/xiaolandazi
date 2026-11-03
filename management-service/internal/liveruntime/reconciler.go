@@ -2,7 +2,6 @@ package liveruntime
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -303,15 +302,8 @@ func (r *Reconciler) runtimeDevicePresence(
 ) (appdb.LiveDevicePresence, *int64, error) {
 	deviceID := session.DeviceID
 	if deviceID == nil {
-		device, err := r.store.GetBoundLiveDeviceByRoom(ctx, session.TenantID, session.RoomID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return appdb.LiveDevicePresence{}, nil, nil
-		}
-		if err != nil {
-			return appdb.LiveDevicePresence{}, nil, err
-		}
-		value := device.ID
-		deviceID = &value
+		// A later binding cannot authorize an old device-less paid session.
+		return appdb.LiveDevicePresence{}, nil, nil
 	}
 	presence, err := r.store.GetLiveDevicePresence(ctx, session.TenantID, *deviceID)
 	return presence, deviceID, err
@@ -332,23 +324,26 @@ func (r *Reconciler) stopForDeviceOffline(
 		log.Printf("billing manager device presence tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, session.ID, err)
 		return false
 	}
-	if deviceID == nil {
-		return false
-	}
 	deadline, due := deviceOfflineStopDeadline(session.StartedAt, presence, now)
+	reason := "device_offline"
+	deviceNumber := int64(0)
+	if deviceID == nil {
+		reason, deadline, due = "device_not_bound", now, true
+	} else {
+		deviceNumber = *deviceID
+	}
 	if !due {
 		return false
 	}
 
 	finalSeconds := state.AgentWorkingSeconds
 	coreBootID := state.CoreBootID
-	reason := "device_offline"
 	if presence.StopReason == "device_shutdown" {
 		reason = "device_shutdown"
 	}
 	stopped, stopErr := r.stopCoreAgentRuntime(ctx, session.TenantID, session.RoomID, reason)
 	if stopErr != nil {
-		log.Printf("billing manager device-offline core stop deferred tenant=%d room=%d device=%d session=%d: %v", session.TenantID, session.RoomID, *deviceID, session.ID, stopErr)
+		log.Printf("billing manager device-offline core stop deferred tenant=%d room=%d device=%d session=%d: %v", session.TenantID, session.RoomID, deviceNumber, session.ID, stopErr)
 	} else {
 		coreBootID = stopped.BootID
 		if stopped.WorkingSeconds > finalSeconds {
@@ -364,14 +359,14 @@ func (r *Reconciler) stopForDeviceOffline(
 		now,
 	)
 	if settleErr != nil {
-		log.Printf("billing manager device-offline settle tenant=%d room=%d device=%d session=%d: %v", session.TenantID, session.RoomID, *deviceID, session.ID, settleErr)
+		log.Printf("billing manager device-offline settle tenant=%d room=%d device=%d session=%d: %v", session.TenantID, session.RoomID, deviceNumber, session.ID, settleErr)
 		return false
 	}
 	log.Printf(
 		"billing manager hard stop tenant=%d room=%d device=%d session=%d reason=%s deadline=%s billed=%d core_stop_ok=%t",
 		session.TenantID,
 		session.RoomID,
-		*deviceID,
+		deviceNumber,
 		session.ID,
 		reason,
 		deadline.UTC().Format(time.RFC3339),
@@ -390,7 +385,7 @@ func (r *Reconciler) retryDeviceOfflineCoreStop(
 	session model.LiveRuntimeSession,
 	state coreRoomState,
 ) {
-	if session.StopReason != "device_offline" && session.StopReason != "device_shutdown" {
+	if !requiresRuntimeStopRetry(session.StopReason) {
 		return
 	}
 	if err := r.cleanupDeviceRoom(ctx, session); err != nil {
@@ -402,6 +397,15 @@ func (r *Reconciler) retryDeviceOfflineCoreStop(
 	}
 	if _, err := r.stopCoreAgentRuntime(ctx, session.TenantID, session.RoomID, session.StopReason); err != nil {
 		log.Printf("billing manager retry device-offline core stop tenant=%d room=%d session=%d: %v", session.TenantID, session.RoomID, session.ID, err)
+	}
+}
+
+func requiresRuntimeStopRetry(reason string) bool {
+	switch reason {
+	case "device_offline", "device_shutdown", "device_not_bound", "audio_stalled":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -503,6 +507,11 @@ func (r *Reconciler) stopForAudioStall(ctx context.Context, session model.LiveRu
 	delete(r.audioStallPTS, key)
 	r.audioStallMu.Unlock()
 	r.recordSystemAudit(ctx, session, "audio.stall.auto_stop", "audio_stalled", state.CoreBootID, state.AgentWorkingSeconds)
+	// Metering has stopped. Also close the actual Agent/program and pending
+	// supply; otherwise the browser still sees a working Agent and hears audio
+	// resume even though this durable session has already ended. The latest
+	// stopped row stays in the reconcile set to retry transient Core failures.
+	r.retryDeviceOfflineCoreStop(ctx, stopped, state)
 	log.Printf(
 		"billing manager audio stall stopped tenant=%d room=%d session=%d phase=%s source=%s pts=%d billed=%d",
 		session.TenantID, session.RoomID, session.ID, state.AudioPhase, state.AudioActiveSource, state.AudioOutputPTSMS, stopped.TotalBilledSeconds,

@@ -30,11 +30,13 @@ type Version struct {
 	// Text 是这条音频实际对应的文本（原文或改写后），便于排查重复与审计。
 	Text string
 	// DurationMS 与 SourcePath 让播放侧能直接复用这条音频，不必再查段落缓存。
-	DurationMS   int64
-	SourcePath   string
-	CreatedAt    string
-	FactsKey     string
-	PlayedTracks []string
+	DurationMS      int64
+	SourcePath      string
+	CreatedAt       string
+	FactsKey        string
+	PlayedTracks    []string
+	CompleteCount   int
+	CompletedTracks []string
 }
 
 // Pool 是某个片段在所有音色下的版本集合。

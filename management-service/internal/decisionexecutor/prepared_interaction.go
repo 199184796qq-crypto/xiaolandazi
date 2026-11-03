@@ -52,7 +52,14 @@ func (w *Worker) interactionContentScope(ctx context.Context, session model.Live
 			// identity. Preserve already synthesized audio during cut retries.
 			e.ExpiresAt = time.Time{}
 		}
-		return interactionDigest([]any{e, item.Nicknames, w.readingRulesFor(ctx, session)}), nil
+		voice, ready, err := w.readyVoice(ctx, session.TenantID, session.RoomID)
+		if err != nil {
+			return "", err
+		}
+		if !ready {
+			return "", fmt.Errorf("本场主播声音未就绪")
+		}
+		return interactionDigest([]any{e, voice, item.Nicknames, w.readingRulesFor(ctx, session)}), nil
 	}
 	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
 	if err != nil {

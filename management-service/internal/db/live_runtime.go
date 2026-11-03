@@ -503,10 +503,11 @@ func (s *Store) resumeLiveRuntimeSession(ctx context.Context, tenantID, roomID, 
 	if expectedSessionID > 0 && (session.ID != expectedSessionID || session.Version != expectedVersion) {
 		return model.LiveRuntimeSession{}, ErrLiveRuntimeResumeConflict
 	}
-	if session.DeviceID != nil {
-		if err := requireLiveDeviceConnectionTx(ctx, tx, tenantID, roomID, *session.DeviceID); err != nil {
-			return model.LiveRuntimeSession{}, err
-		}
+	if session.DeviceID == nil {
+		return model.LiveRuntimeSession{}, ErrLiveDeviceNotBound
+	}
+	if err := requireLiveDeviceConnectionTx(ctx, tx, tenantID, roomID, *session.DeviceID); err != nil {
+		return model.LiveRuntimeSession{}, err
 	}
 	buckets, err := ensureLiveQuotaAvailableTx(ctx, tx, tenantID, 1, now)
 	if err != nil {
@@ -1561,13 +1562,13 @@ func (s *Store) StartLiveRuntimeSession(
 		return model.LiveRuntimeSession{}, err
 	}
 
-	// Rooms without a selected hardware endpoint keep their web/mobile path.
-	// A selected box must have a current, recently confirmed gateway lease;
-	// browser controls and historical development state cannot satisfy startup.
-	if deviceID != nil {
-		if err := requireLiveDeviceConnectionTx(ctx, tx, tenantID, roomID, *deviceID); err != nil {
-			return model.LiveRuntimeSession{}, err
-		}
+	// Every paid runtime needs a bound, physically connected primary box.
+	// Web/mobile listening is an observer, never an alternative device gate.
+	if deviceID == nil {
+		return model.LiveRuntimeSession{}, ErrLiveDeviceNotBound
+	}
+	if err := requireLiveDeviceConnectionTx(ctx, tx, tenantID, roomID, *deviceID); err != nil {
+		return model.LiveRuntimeSession{}, err
 	}
 
 	buckets, err := ensureLiveQuotaAvailableTx(ctx, tx, tenantID, 1, now)
@@ -1809,7 +1810,7 @@ func (s *Store) ListLiveRuntimeReconcileSessions(ctx context.Context) ([]model.L
 		WHERE s.status IN ('running','paused')
 		   OR (
 			s.status='stopped'
-			AND s.stop_reason IN ('core_restart','core_runtime_reset','device_offline','device_shutdown')
+			AND s.stop_reason IN ('core_restart','core_runtime_reset','device_offline','device_shutdown','device_not_bound','audio_stalled')
 			AND s.ended_at IS NOT NULL
 			AND s.ended_at >= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 15 MINUTE)
 			AND s.id=(

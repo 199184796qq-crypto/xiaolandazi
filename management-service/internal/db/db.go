@@ -61,6 +61,11 @@ func (s *Store) Close() error {
 
 func (s *Store) Migrate(ctx context.Context) error {
 	statements := []string{
+		`CREATE TABLE IF NOT EXISTS live_runtime_voice_batches (
+		 tenant_id BIGINT NOT NULL, room_id BIGINT NOT NULL, session_id BIGINT NOT NULL, version_id BIGINT NOT NULL,
+		 revision BIGINT NOT NULL, state_json MEDIUMTEXT NOT NULL,
+		 PRIMARY KEY(tenant_id,room_id,session_id), KEY idx_voice_batch_session(session_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS mgmt_tenants (
 			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 			code VARCHAR(64) NOT NULL,

@@ -2496,7 +2496,11 @@ func (w *Worker) emotionEnabledForRoom(ctx context.Context, tenantID, roomID int
 		}
 		return false, err
 	}
-	return published.VoiceIdentity.EmotionEnabled != nil && *published.VoiceIdentity.EmotionEnabled, nil
+	identity, err := w.currentRuntimeVoice(ctx, tenantID, roomID, published)
+	if err != nil {
+		return false, err
+	}
+	return identity.EmotionEnabled != nil && *identity.EmotionEnabled, nil
 }
 
 type planVoiceRateSource interface {
@@ -2504,11 +2508,13 @@ type planVoiceRateSource interface {
 }
 
 func (w *Worker) readyVoice(ctx context.Context, tenantID, roomID int64) (model.VoiceProfile, bool, error) {
-	// The published live-agent version is the immutable contract for realtime
-	// interaction audio. Pre-recorded/generated mainline audio is an independent
-	// playable asset and does not need to share the same voice model or voice id.
+	// A live host overrides the saved default. Mainline and interactions share
+	// that identity; pending switches defer interaction audio until PCM confirms it.
 	if published, publishedErr := w.store.GetPublishedLiveAgentPlanVersionForRoom(ctx, tenantID, roomID); publishedErr == nil {
-		identity := published.VoiceIdentity
+		identity, runtimeVoiceErr := w.currentRuntimeVoice(ctx, tenantID, roomID, published)
+		if runtimeVoiceErr != nil {
+			return model.VoiceProfile{}, false, runtimeVoiceErr
+		}
 		if strings.TrimSpace(identity.VoiceID) == "" || strings.TrimSpace(identity.Model) == "" {
 			return model.VoiceProfile{}, false, fmt.Errorf("已发布智能体版本缺少可用声音身份")
 		}

@@ -110,7 +110,7 @@ func scriptPlaybackBefore(a, b string) bool {
 
 // Commit replacement atomically. An identical model reply can reuse a paid
 // original; that is not a newly added version and must not retire anything.
-func commitScriptRewriteVersion(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, version scriptplay.Version, cap int, refresh bool) (bool, error) {
+func commitScriptRewriteVersion(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, version scriptplay.Version, cap int, refresh bool, retireRef ...string) (bool, error) {
 	scriptVoicePoolMu.Lock()
 	defer scriptVoicePoolMu.Unlock()
 	pool, err := loadScriptVoicePoolLocked(root, v.PlanID, unit.poolID())
@@ -133,6 +133,12 @@ func commitScriptRewriteVersion(root string, v model.LiveAgentPlanVersion, unit 
 		}
 		for _, i := range compatible {
 			old := pool.Versions[i]
+			if len(retireRef) > 0 && old.AudioRef != retireRef[0] {
+				continue
+			}
+			if len(retireRef) > 0 && old.CompleteCount < rewriteRetireAfterPlays {
+				continue
+			}
 			if old.Kind == scriptplay.KindRewrite && old.PlayCount >= rewriteRetireAfterPlays && (retire < 0 || scriptPlaybackBefore(old.LastPlayedAt, pool.Versions[retire].LastPlayedAt)) {
 				retire = i
 			}

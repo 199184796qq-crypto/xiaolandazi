@@ -127,9 +127,9 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 			return ttsgateway.SynthesizeResponse{}, scriptBudgetAdmissionError{err}
 		}
 		scope := liveCostCallScope{TenantID: tenant, RoomID: room, SessionID: session, PlanID: v.PlanID, Priority: "necessary", Reason: "话术原文整段首次合成", Key: fmt.Sprintf("script-paragraph:%d:%s", session, unit.Key)}
-		if liveCostScope(c).Reason == "话术后台改写" {
+		if parent := liveCostScope(c); parent.Priority == "optional" {
 			scope.Priority = "optional"
-			scope.Reason = "话术后台改写"
+			scope.Reason = parent.Reason
 		}
 		out, err := ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(c, scope), request)
 		release(ttsgateway.DefinitelyNotSent(err))

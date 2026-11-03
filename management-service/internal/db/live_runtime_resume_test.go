@@ -85,13 +85,13 @@ func TestResumeIfCurrentRejectsReplacementBeforeAnyQuotaPoolOrEventOperation(t *
 	}
 }
 
-func TestResumeIfCurrentMatchingRowMayReachExistingQuotaTransaction(t *testing.T) {
+func TestResumeIfCurrentMatchingDeviceLessRowRejectsBeforeQuota(t *testing.T) {
 	quotaReached := errors.New("injected quota failure after identity lock")
 	conn := &resumeFenceConn{pausedID: 387, version: 7, quotaReached: quotaReached}
 	database := sql.OpenDB(resumeFenceConnector{conn})
 	defer database.Close()
 	_, err := (&Store{db: database}).ResumeLiveRuntimeSessionIfCurrent(context.Background(), 14, 29, 28, time.Now().UTC(), 387, 7)
-	if !errors.Is(err, quotaReached) || !conn.rolled || conn.committed || conn.queries+conn.writes < 2 {
+	if !errors.Is(err, ErrLiveDeviceNotBound) || !conn.rolled || conn.committed || conn.queries != 1 || conn.writes != 0 {
 		t.Fatal(err, conn)
 	}
 }

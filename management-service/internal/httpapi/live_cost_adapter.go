@@ -203,7 +203,16 @@ func (s *Server) reserveLiveCost(ctx context.Context, request livecost.Request) 
 	if controller == nil {
 		return nil
 	}
+	var budgetErr error
+	ctx, budgetErr = s.withRoomCostBudget(ctx, liveCostCallScope{TenantID: request.TenantID, RoomID: request.RoomID, PlanID: request.PlanID, SessionID: request.SessionID})
+	if budgetErr != nil {
+		return budgetErr
+	}
+	budget := roomBudgetInContext(ctx)
 	cfg, valid := s.liveCostSettingsSnapshot(ctx)
+	if !valid && budget != nil {
+		return livecost.ErrAccountingUnavailable
+	}
 	if !valid && request.Priority == livecost.PriorityOptional {
 		if events := liveCostScope(ctx).Events; events != nil {
 			events.AccountingUnavailable.Store(true)
@@ -211,7 +220,18 @@ func (s *Server) reserveLiveCost(ctx context.Context, request livecost.Request) 
 		}
 		return errLiveCostOptionalDeclined
 	}
-	ctx = livecost.WithPolicy(ctx, cfg.Policy())
+	if valid && request.Priority == livecost.PriorityOptional && cfg.OptionalHourlyMicros == 0 {
+		if events := liveCostScope(ctx).Events; events != nil {
+			events.OptionalDeclined.Store(true)
+		}
+		return errLiveCostOptionalDeclined
+	}
+	if budget == nil {
+		ctx = livecost.WithPolicy(ctx, cfg.Policy())
+	} else {
+		request.BudgetClass = livecost.BudgetClass(request)
+		request.BudgetPool = budget.Pool
+	}
 	s.replayLiveCostSpool(ctx, controller)
 	reservation, err := controller.Begin(ctx, request)
 	if reservation.Existing {
@@ -227,6 +247,16 @@ func (s *Server) reserveLiveCost(ctx context.Context, request livecost.Request) 
 			log.Printf("[live-cost] 必要供料按业务优先执行，费用预留或超用已留痕 tenant=%d room=%d request=%s", request.TenantID, request.RoomID, request.Key)
 		}
 		return nil
+	}
+	if budget != nil {
+		if events := liveCostScope(ctx).Events; events != nil {
+			events.OptionalDeclined.Store(true)
+			events.AccountingUnavailable.Store(reservation.AccountingUnavailable)
+		}
+		if err != nil {
+			return fmt.Errorf("直播费用预留失败，未发送：%w", err)
+		}
+		return livecost.ErrRoomBudget
 	}
 	if request.Priority == livecost.PriorityOptional {
 		if events := liveCostScope(ctx).Events; events != nil {
@@ -260,6 +290,7 @@ type liveTTSObserver struct {
 type liveTTSCostAttempt struct {
 	pricing         livecost.PricingSnapshot
 	estimatedMicros int64
+	strict          bool
 }
 
 func (s *Server) withLiveCostTTS(ctx context.Context, scope liveCostCallScope) context.Context {
@@ -279,7 +310,15 @@ func (o *liveTTSObserver) BeforeSynthesis(ctx context.Context, attempt ttsgatewa
 	if strings.TrimSpace(o.scope.Key) == "" {
 		return "", errors.New("声音费用请求缺少稳定标识")
 	}
+	var err error
+	ctx, err = o.s.withRoomCostBudget(ctx, o.scope)
+	if err != nil {
+		return "", err
+	}
 	pricing, valid := o.s.liveCostPricingSnapshot(ctx, attempt.Provider, attempt.Model)
+	if !valid && roomBudgetInContext(ctx) != nil {
+		return "", livecost.ErrAccountingUnavailable
+	}
 	if err := liveCostInvalidOptionalConfig(ctx, o.scope.Priority, valid); err != nil {
 		return "", err
 	}
@@ -289,6 +328,12 @@ func (o *liveTTSObserver) BeforeSynthesis(ctx context.Context, attempt ttsgatewa
 	}
 	if estimate <= 0 {
 		estimate = 1
+	}
+	if roomBudgetInContext(ctx) != nil {
+		estimate, err = strictLiveTTSQuote(attempt, pricing, estimate)
+		if err != nil {
+			return "", err
+		}
 	}
 	key := liveCostKey(livecost.KindTTS, o.scope.Key)
 	fingerprint := liveCostDigest(struct {
@@ -303,7 +348,7 @@ func (o *liveTTSObserver) BeforeSynthesis(ctx context.Context, attempt ttsgatewa
 	if o.attempts == nil {
 		o.attempts = make(map[string]liveTTSCostAttempt)
 	}
-	o.attempts[key] = liveTTSCostAttempt{pricing: pricing, estimatedMicros: estimate}
+	o.attempts[key] = liveTTSCostAttempt{pricing: pricing, estimatedMicros: estimate, strict: roomBudgetInContext(ctx) != nil}
 	o.mu.Unlock()
 	return key, nil
 }
@@ -386,7 +431,10 @@ func (o *liveTTSObserver) AfterSynthesis(ctx context.Context, r ttsgateway.Synth
 		// Successful API work is payable before download, archive, approval or
 		// playback. An unmatched supplier character unit must never replace the
 		// user's actual sent-text weighted estimate, even when it reports zero.
-		if estimate, err := livecost.EstimateTTSPer10K(r.BillableCharacters, attempt.pricing.TTSPriceMicrosPer10K); err == nil {
+		if attempt.strict {
+			estimate := attempt.estimatedMicros
+			receipt.EstimatedMicros = &estimate
+		} else if estimate, err := livecost.EstimateTTSPer10K(r.BillableCharacters, attempt.pricing.TTSPriceMicrosPer10K); err == nil {
 			receipt.EstimatedMicros = &estimate
 		}
 	}
@@ -397,6 +445,10 @@ func (o *liveTTSObserver) AfterSynthesis(ctx context.Context, r ttsgateway.Synth
 		if r.Usage.Characters != nil && *r.Usage.Characters > 0 {
 			if rule := attempt.pricing.Contract; rule != nil && rule.Provider == r.Provider && rule.Model == r.Model && rule.Kind == livecost.KindTTS && rule.Unit == "characters" {
 				amount, err = livecost.EstimateTTS(*r.Usage.Characters, rule.CharacterMicros)
+				known = err == nil
+			}
+			if !known && attempt.strict && r.Provider == ttsgateway.ProviderVolcengine && r.Model == ttsgateway.VolcengineICL2 {
+				amount, err = livecost.EstimateTTS(*r.Usage.Characters, 300)
 				known = err == nil
 			}
 		}
@@ -453,11 +505,22 @@ func actualLiveModelRequest(request any) (agentgateway.Request, bool) {
 
 func (s *Server) beginLiveModelCost(ctx context.Context, id int64, stage, profile string, request any) error {
 	r, ok := actualLiveModelRequest(request)
-	if !ok || strings.EqualFold(strings.TrimSpace(stage), "mainline_tts") {
+	if strings.EqualFold(strings.TrimSpace(stage), "mainline_tts") {
 		return nil
 	}
 	scope := liveCostScope(ctx)
 	if scope.TenantID <= 0 || scope.RoomID <= 0 || s.liveCostController() == nil {
+		return nil
+	}
+	var budgetErr error
+	ctx, budgetErr = s.withRoomCostBudget(ctx, scope)
+	if budgetErr != nil {
+		return budgetErr
+	}
+	if !ok {
+		if roomBudgetInContext(ctx) != nil {
+			return errors.New("直播模型请求缺少可核对的计价结构，未发送")
+		}
 		return nil
 	}
 	provider := strings.TrimSpace(r.Provider)
@@ -479,8 +542,17 @@ func (s *Server) beginLiveModelCost(ctx context.Context, id int64, stage, profil
 		}
 	}
 	var input int64
+	images := 0
 	for _, message := range r.Messages {
-		input += int64(utf8.RuneCountInString(message.Content) + 16 + len(message.ImageURLs)*1024)
+		images += len(message.ImageURLs)
+		if roomBudgetInContext(ctx) != nil {
+			input += int64(len(message.Content) + 128)
+		} else {
+			input += int64(utf8.RuneCountInString(message.Content) + 16 + len(message.ImageURLs)*1024)
+		}
+	}
+	if err := requireStrictModelBound(ctx, r.MaxTokens, images); err != nil {
+		return err
 	}
 	if input == 0 {
 		input = 1
@@ -490,6 +562,9 @@ func (s *Server) beginLiveModelCost(ctx context.Context, id int64, stage, profil
 		output = 500
 	}
 	pricing, valid := s.liveCostPricingSnapshot(ctx, provider, model)
+	if !valid && roomBudgetInContext(ctx) != nil {
+		return livecost.ErrAccountingUnavailable
+	}
 	if err := liveCostInvalidOptionalConfig(ctx, scope.Priority, valid); err != nil {
 		return err
 	}
@@ -508,6 +583,12 @@ func (s *Server) beginLiveModelCost(ctx context.Context, id int64, stage, profil
 	// Random prompt changes do not create a new paid attempt after an unknown
 	// receipt. A legitimate follow-up requires an explicit new logical key.
 	key := liveCostKey(livecost.KindModel, logical+"\x00"+stage)
+	if scope.Attribution == nil && roomBudgetInContext(ctx) != nil {
+		stageName := strings.ToLower(stage)
+		if !strings.Contains(stageName, "interaction") && (strings.Contains(stageName, "rewrite") || strings.Contains(stageName, "mainline") || strings.Contains(stageName, "script") || strings.HasPrefix(stageName, "anchor_")) {
+			scope.Attribution = &livecost.Attribution{Source: "script_rewrite"}
+		}
+	}
 	if err = s.reserveLiveCost(ctx, livecost.Request{Key: key, TenantID: scope.TenantID, RoomID: scope.RoomID, PlanID: scope.PlanID, SessionID: scope.SessionID, RunID: scope.RunID, Kind: livecost.KindModel, Provider: provider, Model: model, Priority: scope.Priority, Reason: scope.Reason, Fingerprint: fingerprint, EstimatedMicros: estimate, InputTokens: input, OutputTokens: output, Attribution: scope.Attribution, PricingSnapshot: &pricing}); err != nil {
 		return err
 	}

@@ -12,14 +12,17 @@ import (
 )
 
 type scriptDeliveredTrack struct {
-	Unit       int                    `json:"unit"`
-	TrackID    string                 `json:"track_id"`
-	InstanceID string                 `json:"instance_id"`
-	AssetID    int64                  `json:"asset_id"`
-	VoiceID    string                 `json:"voice_id"`
-	Model      string                 `json:"model"`
-	Block      scriptFirstCachedBlock `json:"block"`
-	Confirmed  bool                   `json:"confirmed,omitempty"`
+	Unit        int                    `json:"unit"`
+	TrackID     string                 `json:"track_id"`
+	InstanceID  string                 `json:"instance_id"`
+	AssetID     int64                  `json:"asset_id"`
+	VoiceID     string                 `json:"voice_id"`
+	Model       string                 `json:"model"`
+	Batch       uint64                 `json:"batch,omitempty"`
+	Completed   bool                   `json:"completed,omitempty"`
+	TotalBlocks int                    `json:"total_blocks,omitempty"`
+	Block       scriptFirstCachedBlock `json:"block"`
+	Confirmed   bool                   `json:"confirmed,omitempty"`
 }
 
 func scriptSupplyCheckpointPath(tenant, room, session int64) string {
@@ -74,6 +77,38 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 		}
 	}
 	changed := false
+	for _, receipt := range snapshot.PlaybackReceipts {
+		if !receipt.Complete {
+			continue
+		}
+		for i := range cursor.Delivered {
+			if cursor.Delivered[i].TrackID == receipt.TrackID && !cursor.Delivered[i].Completed {
+				cursor.Delivered[i].Completed = true
+				changed = true
+			}
+		}
+	}
+	instances := map[string][]scriptDeliveredTrack{}
+	for _, track := range cursor.Delivered {
+		instances[track.InstanceID] = append(instances[track.InstanceID], track)
+	}
+	for _, tracks := range instances {
+		first := tracks[0]
+		if first.Unit < 0 || first.Unit >= len(units) || len(tracks) < max(1, first.TotalBlocks) {
+			continue
+		}
+		complete := true
+		for _, track := range tracks {
+			if !track.Completed {
+				complete = false
+			}
+		}
+		if complete {
+			if err := markScriptVersionCompletedOnce(recordingCacheMediaRoot(), v.PlanID, units[first.Unit].poolID(), strconv.FormatInt(first.AssetID, 10), first.InstanceID); err != nil {
+				return err
+			}
+		}
+	}
 	for i := range cursor.Delivered {
 		track := &cursor.Delivered[i]
 		if track.Confirmed || !played[track.TrackID] || track.Unit < 0 || track.Unit >= len(units) {
@@ -95,15 +130,48 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 	}
 	if changed {
 		if len(cursor.Delivered) > 128 {
+			incomplete := map[string]bool{}
+			for _, track := range cursor.Delivered {
+				if !track.Completed {
+					incomplete[track.InstanceID] = true
+				}
+			}
 			var retained []scriptDeliveredTrack
 			for i, track := range cursor.Delivered {
-				if !track.Confirmed || i >= len(cursor.Delivered)-128 {
+				if incomplete[track.InstanceID] || !track.Confirmed || i >= len(cursor.Delivered)-128 {
 					retained = append(retained, track)
 				}
 			}
 			cursor.Delivered = retained
 		}
 		return save()
+	}
+	return nil
+}
+
+func markScriptVersionCompletedOnce(root string, plan int64, piece, asset, instance string) error {
+	scriptVoicePoolMu.Lock()
+	defer scriptVoicePoolMu.Unlock()
+	pool, err := loadScriptVoicePoolLocked(root, plan, piece)
+	if err != nil {
+		return err
+	}
+	for i := range pool.Versions {
+		v := &pool.Versions[i]
+		if v.AudioRef != asset {
+			continue
+		}
+		for _, seen := range v.CompletedTracks {
+			if seen == instance {
+				return nil
+			}
+		}
+		v.CompleteCount++
+		v.CompletedTracks = append(v.CompletedTracks, instance)
+		if len(v.CompletedTracks) > 256 {
+			v.CompletedTracks = v.CompletedTracks[len(v.CompletedTracks)-256:]
+		}
+		return saveScriptVoicePoolLocked(root, plan, piece, pool)
 	}
 	return nil
 }

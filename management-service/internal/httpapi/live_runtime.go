@@ -615,6 +615,26 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Validate hardware before replacing any paused/stale runtime. The store
+	// checks the binding and gateway lease again under its transaction lock.
+	device, deviceErr := s.store.GetBoundLiveDeviceByRoom(r.Context(), tenantID, roomID)
+	if errors.Is(deviceErr, sql.ErrNoRows) {
+		writeError(w, http.StatusConflict, "请先给直播间绑定主盒子，再开始直播")
+		return
+	}
+	if deviceErr != nil {
+		writeError(w, http.StatusInternalServerError, "读取直播间绑定设备失败")
+		return
+	}
+	if input.DeviceID != nil && *input.DeviceID != device.ID {
+		writeError(w, http.StatusConflict, "所选盒子不是当前直播间绑定的主盒子")
+		return
+	}
+	if device.ConnectionStatus != "online" {
+		writeError(w, http.StatusConflict, "绑定盒子当前离线或正在重连，请联网后再开始直播")
+		return
+	}
+	runtimeDeviceID := &device.ID
 	s.cancelLiveResumeRecovery(tenantID, roomID)
 
 	room, err := s.getCoreRoomState(r.Context(), tenantID, roomID)
@@ -675,6 +695,10 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 	if existing, existingErr := s.store.GetLiveRuntimeByRoom(r.Context(), tenantID, roomID); existingErr == nil {
 		switch existing.Status {
 		case "running":
+			if existing.DeviceID == nil || *existing.DeviceID != *runtimeDeviceID {
+				writeError(w, http.StatusConflict, "当前运行会话未关联本房间主盒子，请先停止后重新开始")
+				return
+			}
 			if agentRuntime.State == "working" && agentRuntime.BootID != "" {
 				if !existing.BelongsToExecutionRealm(s.executionRealm) {
 					adopted, adoptErr := s.store.SetLiveRuntimeExecutionRealm(
@@ -717,24 +741,6 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 	} else if !errors.Is(existingErr, sql.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "读取AI运行状态失败")
 		return
-	}
-
-	// Web and mobile clients do not need to repeat the device id. When a room has
-	// an active hardware binding, attach it to the durable runtime automatically
-	// so disconnect protection and billing shutdown always have a device target.
-	runtimeDeviceID := input.DeviceID
-	if runtimeDeviceID == nil {
-		device, deviceErr := s.store.GetBoundLiveDeviceByRoom(r.Context(), tenantID, roomID)
-		switch {
-		case deviceErr == nil:
-			value := device.ID
-			runtimeDeviceID = &value
-		case errors.Is(deviceErr, sql.ErrNoRows):
-			// Rooms without a hardware binding may still run through web/mobile audio.
-		default:
-			writeError(w, http.StatusInternalServerError, "读取直播间绑定设备失败")
-			return
-		}
 	}
 
 	session, err := s.store.StartLiveRuntimeSession(
