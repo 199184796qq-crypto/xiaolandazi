@@ -4,7 +4,6 @@ import (
 	"errors"
 	"math"
 	"strings"
-	"time"
 )
 
 const (
@@ -13,10 +12,10 @@ const (
 	BudgetRewrite     = "rewrite"
 )
 
-var ErrRoomBudget = errors.New("本直播间滚动小时费用额度不足，暂停付费生成并继续复用已有内容")
+var ErrRoomBudget = errors.New("本直播间主线滚动小时费用额度不足，暂停主线付费生成并继续复用已有内容")
 
-// Amounts are micro-CNY. The safety reserve absorbs quote/usage differences;
-// it is never available for new purchases or borrowed by another category.
+// RoomBudget retains the historical shape for compatibility. Its amount fields
+// are retired; only the TTS pool identity remains relevant for live accounting.
 type RoomBudget struct {
 	Pool                                          string
 	Total, Mainline, Interaction, Rewrite, Safety int64
@@ -25,30 +24,24 @@ type RoomBudget struct {
 func RoomBudgetForPool(pool string) (RoomBudget, error) {
 	switch pool {
 	case "standard":
-		return RoomBudget{pool, 1_300_000, 800_000, 350_000, 50_000, 100_000}, nil
+		return RoomBudget{Pool: pool}, nil
 	case "high_fidelity":
-		return RoomBudget{pool, 3_000_000, 2_100_000, 600_000, 100_000, 200_000}, nil
+		return RoomBudget{Pool: pool}, nil
 	}
 	return RoomBudget{}, errors.New("当前语音池缺少房间费用限额")
 }
 
 func (b RoomBudget) Validate() error {
-	for _, amount := range []int64{b.Mainline, b.Interaction, b.Rewrite, b.Safety} {
-		if amount < 0 || amount > MaxConfiguredMicros {
-			return errors.New("房间费用分类越界")
-		}
-	}
 	if b.Pool != "standard" && b.Pool != "high_fidelity" {
 		return errors.New("房间费用语音池无效")
-	}
-	if b.Total <= 0 || b.Total > MaxConfiguredMicros || b.Mainline < 0 || b.Interaction < 0 || b.Rewrite < 0 || b.Safety < 0 || b.Mainline+b.Interaction+b.Rewrite+b.Safety != b.Total {
-		return errors.New("房间费用分类与总额不一致")
 	}
 	return nil
 }
 
 func (b RoomBudget) Policy() Policy {
-	return Policy{Configured: true, Window: time.Hour, MainlineTargetMicros: b.Mainline, OptionalLimitMicros: b.Total - b.Safety, TotalTargetMicros: b.Total, RoomBudget: &b}
+	p := AccountingPolicy()
+	p.RoomBudget = &b
+	return p
 }
 
 // Classify old records as well as new ones. Model+TTS interaction stages share
@@ -74,25 +67,28 @@ func BudgetClass(r Request) string {
 }
 
 func (b RoomBudget) Allows(r Request, s Summary) bool {
-	if b.Validate() != nil || r.EstimatedMicros <= 0 || s.TotalMicros < 0 {
+	if b.Validate() != nil || r.EstimatedMicros <= 0 {
 		return false
 	}
-	spendable := b.Total - b.Safety
-	if s.TotalMicros > spendable || r.EstimatedMicros > spendable-s.TotalMicros {
-		return false
-	}
-	var used, limit int64
 	switch BudgetClass(r) {
-	case BudgetMainline:
-		used, limit = s.MainlineMicros, b.Mainline
-	case BudgetInteraction:
-		used, limit = s.InteractionMicros, b.Interaction
-	case BudgetRewrite:
-		used, limit = s.RewriteMicros, b.Rewrite
+	case BudgetInteraction, BudgetMainline, BudgetRewrite:
+		return true
 	default:
 		return false
 	}
-	return used >= 0 && used <= limit && r.EstimatedMicros <= limit-used
+}
+
+// MainlineBudgetMicros excludes interaction, including its historical unknown
+// reservations. Category totals are disjoint; TotalMicros remains all expenses
+// for reporting and must not be used as a mainline admission limit.
+func (s Summary) MainlineBudgetMicros() (int64, error) {
+	var used int64
+	for _, amount := range []int64{s.MainlineMicros, s.RewriteMicros} {
+		if err := addBudgetAmount(&used, amount); err != nil {
+			return 0, err
+		}
+	}
+	return used, nil
 }
 
 func addBudgetAmount(total *int64, amount int64) error {

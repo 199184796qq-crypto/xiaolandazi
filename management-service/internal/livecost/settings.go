@@ -6,7 +6,6 @@ import (
 	"io"
 	"math/big"
 	"strings"
-	"time"
 	"unicode"
 )
 
@@ -71,7 +70,6 @@ func DefaultSettings() Settings {
 			{MaxInputTokens: 256_000, InputMicrosPerMillion: 600_000, CachedInputMicrosPerMillion: 120_000, OutputMicrosPerMillion: 2_400_000},
 			{InputMicrosPerMillion: 1_200_000, CachedInputMicrosPerMillion: 240_000, OutputMicrosPerMillion: 4_800_000},
 		}}},
-		MainlineHourlyMicros: 1_000_000, OptionalHourlyMicros: 1_200_000, TotalHourlyMicros: 1_300_000,
 	}
 }
 
@@ -94,7 +92,7 @@ func DecodeSettings(raw string) (Settings, error) {
 	if json.Unmarshal([]byte(raw), &fields) != nil || fields == nil {
 		return settings, errors.New("计费配置必须是完整对象")
 	}
-	for _, key := range []string{"version", "revision", "tts_price_micros_per_10k", "default_model_rates", "model_prices", "mainline_hourly_micros", "optional_hourly_micros", "total_hourly_micros"} {
+	for _, key := range []string{"version", "revision", "tts_price_micros_per_10k", "default_model_rates", "model_prices"} {
 		if value, ok := fields[key]; !ok || string(value) == "null" {
 			return settings, errors.New("计费配置字段不完整，请重新读取后保存")
 		}
@@ -198,9 +196,8 @@ func (settings Settings) Validate() error {
 	if settings.TTSPriceMicrosPer10K <= 0 || settings.TTSPriceMicrosPer10K > MaxConfiguredMicros {
 		return errors.New("语音单价必须大于零且不超过允许上限")
 	}
-	if settings.MainlineHourlyMicros < 0 || settings.OptionalHourlyMicros < settings.MainlineHourlyMicros || settings.TotalHourlyMicros < settings.OptionalHourlyMicros || settings.TotalHourlyMicros <= 0 || settings.TotalHourlyMicros > MaxConfiguredMicros {
-		return errors.New("小时预算须满足主线目标不大于可选软线，可选软线不大于总目标，且总目标大于零")
-	}
+	// Legacy hourly fields are accepted for old clients and frozen receipts,
+	// but neither their values nor their ordering control prices or admission.
 	if err := validateTokenTiers(settings.DefaultModelRates); err != nil {
 		return err
 	}
@@ -250,7 +247,7 @@ func validateTokenTiers(tiers []TokenTier) error {
 }
 
 func (settings Settings) Policy() Policy {
-	return Policy{Configured: true, Window: time.Hour, MainlineTargetMicros: settings.MainlineHourlyMicros, OptionalLimitMicros: settings.OptionalHourlyMicros, TotalTargetMicros: settings.TotalHourlyMicros}
+	return AccountingPolicy()
 }
 
 func (settings Settings) Clone() Settings {

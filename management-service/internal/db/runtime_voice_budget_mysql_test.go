@@ -89,6 +89,9 @@ func TestRuntimeVoiceBudgetMigrationMySQL(t *testing.T) {
 			r.EstimatedMicros = 100_000
 			r.BudgetPool = b.Pool
 			r.BudgetClass = livecost.BudgetMainline
+			if i%2 == 0 {
+				r.Kind, r.BudgetClass = livecost.KindModel, livecost.BudgetRewrite
+			}
 			out, err := s.ReserveLiveCost(ctx, r, b.Policy(), now)
 			if err != nil {
 				t.Error(err)
@@ -100,20 +103,20 @@ func TestRuntimeVoiceBudgetMigrationMySQL(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	if accepted.Load() != 8 {
+	if accepted.Load() != 64 {
 		t.Fatal("concurrent mainline exceeded category", accepted.Load())
 	}
 	r := sqlCostRequest("mysql-interaction")
 	r.BudgetPool = b.Pool
 	r.BudgetClass = livecost.BudgetInteraction
-	r.EstimatedMicros = b.Interaction
+	r.EstimatedMicros = 2_600_000
 	if out, err := s.ReserveLiveCost(ctx, r, b.Policy(), now); err != nil || !out.Allowed {
 		t.Fatal(out, err)
 	}
 	r.Key = "mysql-rewrite"
 	r.Kind = livecost.KindModel
 	r.BudgetClass = livecost.BudgetRewrite
-	r.EstimatedMicros = b.Rewrite
+	r.EstimatedMicros = 1
 	if out, err := s.ReserveLiveCost(ctx, r, b.Policy(), now); err != nil || !out.Allowed {
 		t.Fatal(out, err)
 	}
@@ -121,11 +124,11 @@ func TestRuntimeVoiceBudgetMigrationMySQL(t *testing.T) {
 	r.SessionID = 999
 	r.EstimatedMicros = 1
 	r.BudgetClass = livecost.BudgetMainline
-	if out, err := s.ReserveLiveCost(ctx, r, b.Policy(), now.Add(2*time.Hour)); err != nil || out.Allowed {
+	if out, err := s.ReserveLiveCost(ctx, r, b.Policy(), now.Add(2*time.Hour)); err != nil || !out.Allowed {
 		t.Fatal("unknown reservation expired", out, err)
 	}
 	summary, err := s.LiveCostSummary(ctx, livecost.Scope{TenantID: 14, RoomID: 29}, b.Policy(), now)
-	if err != nil || summary.TotalMicros != 1_200_000 {
+	if err != nil || summary.TotalMicros != 9_000_002 {
 		t.Fatal(summary, err)
 	}
 }

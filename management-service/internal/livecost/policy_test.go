@@ -185,7 +185,6 @@ func TestNormalizeRequestValidatesPriceSnapshotAndKeepsLegacyRequests(t *testing
 		func(snapshot *PricingSnapshot) { snapshot.Revision++ },
 		func(snapshot *PricingSnapshot) { snapshot.TTSPriceMicrosPer10K = 0 },
 		func(snapshot *PricingSnapshot) { snapshot.ModelTiers = nil },
-		func(snapshot *PricingSnapshot) { snapshot.Config.OptionalHourlyMicros = -1 },
 	} {
 		request := costRequest("invalid-price-snapshot")
 		pricing := DefaultSettings().Snapshot(request.Provider, request.Model)

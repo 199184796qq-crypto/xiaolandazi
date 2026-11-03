@@ -97,6 +97,8 @@ type Receipt struct {
 }
 
 type Policy struct {
+	// AccountingOnly records actual costs without any hourly spending limits.
+	AccountingOnly       bool
 	Configured           bool
 	Window               time.Duration
 	MainlineTargetMicros int64

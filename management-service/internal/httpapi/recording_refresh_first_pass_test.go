@@ -79,8 +79,8 @@ func TestRecordingRefreshFirstPassResumesPersistedPartialBaseline(t *testing.T) 
 	tabs := states(next)
 	schedule, plans := server.prepareRecordingRefreshSchedule(t.Context(), 14, 29, version, policy, tabs,
 		candidates, &resumed, []string{"intro"}, "102:0", 0, true, nil)
-	if store.SummaryCalls != 1 || schedule.Paused || !plans[0].Selected[0] || len(schedule.Pending) != 1 ||
-		schedule.Pending[recordingRefreshPosition{0, 0}] <= 0 || schedule.ForecastDurationMS < 60_000 {
+	if store.SummaryCalls != 0 || schedule.Paused || !plans[0].Selected[0] || len(schedule.Pending) != 1 ||
+		!schedule.Budget.Unlimited || schedule.ForecastDurationMS < 60_000 {
 		t.Fatal("new-session first pass bypassed planning for the inherited warm source", schedule, plans[0], store)
 	}
 	if !tabs[0][0].UpdateEligible || tabs[0][0].VersionCount != 1 || tabs[0][1].UpdateEligible || tabs[0][2].UpdateEligible ||
@@ -119,7 +119,7 @@ func TestRecordingRefreshFirstPassResumesPersistedPartialBaseline(t *testing.T) 
 }
 
 func TestRecordingRefreshFirstPassWarmReuseWhenOptionalUnavailable(t *testing.T) {
-	for _, name := range []string{"budget_spent", "disabled", "accounting_unavailable", "pricing_unavailable"} {
+	for _, name := range []string{"pricing_unavailable"} {
 		t.Run(name, func(t *testing.T) {
 			server, version, quotePolicy := recordingRefreshQuoteFixture()
 			policy := incrementalPolicy(t)
@@ -129,6 +129,7 @@ func TestRecordingRefreshFirstPassWarmReuseWhenOptionalUnavailable(t *testing.T)
 			switch name {
 			case "budget_spent":
 				store.SummaryValue.TotalMicros = settings.Policy().TotalTargetMicros
+				store.SummaryValue.MainlineMicros = 1_300_000
 			case "disabled":
 				settings.MainlineHourlyMicros = 0
 			case "accounting_unavailable":
@@ -195,8 +196,8 @@ func TestRecordingRefreshFirstPassFindsWarmInventoryAcrossTabs(t *testing.T) {
 			schedule, plans := server.prepareRecordingRefreshSchedule(t.Context(), 14, 29, version, policy, tabs,
 				func(int, int) []recordingcache.Entry { reads++; return nil }, &recordingUpdatePlanner{},
 				[]string{"cold", "warm"}, "102:0", time.Second, true, nil)
-			if reads != 2 || store.SummaryCalls != 1 || schedule.Paused || plans[0].Selected[0] || !plans[1].Selected[0] ||
-				schedule.Pending[recordingRefreshPosition{1, 0}] <= 0 || tabs[1][0].VersionCount != count {
+			if reads != 2 || store.SummaryCalls != 0 || schedule.Paused || plans[0].Selected[0] || !plans[1].Selected[0] ||
+				!schedule.Budget.Unlimited || tabs[1][0].VersionCount != count {
 				t.Fatal("the first cold tab hid compatible warm audio or inventory was scanned twice", reads, schedule, plans, tabs)
 			}
 		})

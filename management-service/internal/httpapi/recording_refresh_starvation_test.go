@@ -39,7 +39,7 @@ func TestRecordingRefreshUnderfilledTailDoesNotStarveWarmRotation(t *testing.T) 
 		schedule, plans := server.prepareRecordingRefreshSchedule(context.Background(), 14, 29, version, policy, tabs,
 			func(int, int) []recordingcache.Entry { return nil }, planner, []string{"t1"}, fmt.Sprintf("481:%d", round), time.Hour, false, nil)
 		plan := plans[0]
-		if !schedule.InventoryFilling || schedule.Paused || schedule.Budget.RoundLimitMicros <= 0 {
+		if !schedule.InventoryFilling || schedule.Paused || !schedule.Budget.Unlimited {
 			t.Fatalf("round %d lost available refresh allowance: %+v", round, schedule)
 		}
 		if !tabs[0][1].UpdateEligible || len(schedule.Pending) < 2 || !plan.Selected[0] || plan.order[0] != 0 {

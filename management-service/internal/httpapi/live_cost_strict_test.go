@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/livecost"
-	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
 )
 
@@ -80,7 +78,7 @@ func TestStrictVolcenginePricesPunctuationWithoutHanDoubleCount(t *testing.T) {
 }
 
 func TestStrictNecessaryTTSStopsBeforeProviderWhenBudgetOrLedgerUnavailable(t *testing.T) {
-	for _, name := range []string{"budget", "ledger", "config", "session"} {
+	for _, name := range []string{"ledger", "config", "session"} {
 		t.Run(name, func(t *testing.T) {
 			store := &adapterCostStore{}
 			if name == "ledger" {
@@ -88,7 +86,7 @@ func TestStrictNecessaryTTSStopsBeforeProviderWhenBudgetOrLedgerUnavailable(t *t
 			}
 			if name == "budget" {
 				r := livecost.Request{Key: "already-paid", TenantID: 14, RoomID: 29, Kind: livecost.KindTTS, BudgetClass: livecost.BudgetMainline}
-				store.entries = map[string]livecost.Entry{"old": {Request: r, Status: livecost.StatusSettled, ChargedMicros: 800_000}}
+				store.entries = map[string]livecost.Entry{"old": {Request: r, Status: livecost.StatusSettled, ChargedMicros: 1_300_000}}
 			}
 			s := strictAdapterServer(t, store, "standard")
 			if name == "config" {
@@ -146,14 +144,8 @@ func TestStrictOptionalPauseAndRuntimeScopeInheritance(t *testing.T) {
 	g := ttsgateway.New(provider.Name(), "qwen-audio-3.1-tts-flash")
 	g.Register(provider)
 	_, err := g.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{VoiceID: "A", Text: "测试正文"})
-	if !errors.Is(err, errLiveCostOptionalDeclined) || provider.calls.Load() != 0 || len(store.requests) != 0 {
-		t.Fatal("optional zero setting was bypassed", err, provider.calls.Load(), store.requests)
-	}
-	cfg.OptionalHourlyMicros = livecost.DefaultSettings().OptionalHourlyMicros
-	cfg.MainlineHourlyMicros = livecost.DefaultSettings().MainlineHourlyMicros
-	cfg.Revision++
-	if _, err := g.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{VoiceID: "A", Text: "测试正文"}); err != nil {
-		t.Fatal(err)
+	if err != nil || provider.calls.Load() != 1 || len(store.requests) != 1 {
+		t.Fatal("retired zero setting blocked optional work", err, provider.calls.Load(), store.requests)
 	}
 	if len(store.requests) != 1 || store.requests[0].SessionID != 500 || store.requests[0].BudgetClass != livecost.BudgetMainline {
 		t.Fatal("rewrite TTS lost live identity/class", store.requests)
@@ -172,7 +164,7 @@ func TestStrictOptionalPauseAndRuntimeScopeInheritance(t *testing.T) {
 func TestStrictParagraphBudgetDeclineDoesNotPoisonPaidCache(t *testing.T) {
 	store := &adapterCostStore{entries: map[string]livecost.Entry{"old": {
 		Request: livecost.Request{TenantID: 14, RoomID: 29, Kind: livecost.KindTTS},
-		Status:  livecost.StatusSettled, ChargedMicros: 800_000,
+		Status:  livecost.StatusSettled, ChargedMicros: 1_300_000,
 	}}}
 	s := strictAdapterServer(t, store, "standard")
 	provider := &adapterTTSProvider{result: ttsgateway.SynthesizeResponse{AudioURL: "https://audio.invalid"}}
@@ -192,17 +184,13 @@ func TestStrictParagraphBudgetDeclineDoesNotPoisonPaidCache(t *testing.T) {
 		out.AudioFile = path
 		return out, nil
 	}
-	if _, err := prepareScriptFirstPaid(ctx, unit, generate); !errors.Is(err, livecost.ErrRoomBudget) || provider.calls.Load() != 0 {
+	if _, err := prepareScriptFirstPaid(ctx, unit, generate); err != nil || provider.calls.Load() != 1 {
 		t.Fatal(err, provider.calls.Load())
 	}
-	if _, err := os.Stat(filepath.Join(unit.Dir, "paragraph-job.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("unsent admission failure left a permanent purchase fence", err)
-	}
-	delete(store.entries, "old") // The test's rolling window now has headroom.
 	if _, err := prepareScriptFirstPaid(ctx, unit, generate); err != nil {
 		t.Fatal(err)
 	}
-	store.entries["old"] = livecost.Entry{Request: livecost.Request{TenantID: 14, RoomID: 29, Kind: livecost.KindTTS}, Status: livecost.StatusSettled, ChargedMicros: 800_000}
+	store.entries["old"] = livecost.Entry{Request: livecost.Request{TenantID: 14, RoomID: 29, Kind: livecost.KindTTS}, Status: livecost.StatusSettled, ChargedMicros: 1_300_000}
 	if _, err := prepareScriptFirstPaid(ctx, unit, generate); err != nil || provider.calls.Load() != 1 {
 		t.Fatal("cache playback purchased again", err, provider.calls.Load())
 	}
@@ -223,7 +211,7 @@ func (p *strictScriptModelProvider) Complete(_ context.Context, r agentgateway.R
 func TestStrictScriptWorkerModelsUseRewriteBudgetBeforeAnyTransport(t *testing.T) {
 	store := &adapterCostStore{entries: map[string]livecost.Entry{"old-rewrites": {
 		Request: livecost.Request{TenantID: 14, RoomID: 29, Kind: livecost.KindModel, BudgetClass: livecost.BudgetRewrite},
-		Status:  livecost.StatusSettled, ChargedMicros: 50_000,
+		Status:  livecost.StatusSettled, ChargedMicros: 1_300_000,
 	}}}
 	s := strictAdapterServer(t, store, "standard")
 	provider := &strictScriptModelProvider{}
@@ -232,22 +220,7 @@ func TestStrictScriptWorkerModelsUseRewriteBudgetBeforeAnyTransport(t *testing.T
 	ctx := agentgateway.WithRoomModelScope(t.Context(), agentgateway.RoomModelScope{TenantID: 14, RoomID: 29, RuntimeID: 500})
 	ctx = withLiveCostScope(ctx, liveCostCallScope{TenantID: 14, RoomID: 29, PlanID: 5, Priority: livecost.PriorityOptional, Reason: "话术后台改写", Key: "rewrite-task"})
 	ctx = withScriptModelCostSteps(ctx)
-	if _, ok := s.askRewriteSentences(ctx, model.LiveAgentPlanVersion{}, []string{"原句。"}); ok || provider.calls.Load() != 0 {
-		t.Fatal("sentence repair bypassed the paid gate")
-	}
-	if _, ok := s.askRewriteOpening(ctx, "原文。"); ok || provider.calls.Load() != 0 {
-		t.Fatal("opening repair bypassed the paid gate")
-	}
 	stages := []string{"script_rewrite", "script_rewrite_repair", "script_rewrite_extend", "script_rewrite_opening"}
-	for _, stage := range stages {
-		if _, err := s.completePaidScriptModel(ctx, agentgateway.Request{Stage: stage, MaxTokens: 800, Messages: []agentgateway.Message{{Role: "user", Content: "原提示词"}}}); !errors.Is(err, livecost.ErrRoomBudget) {
-			t.Fatal(stage, err)
-		}
-	}
-	if provider.calls.Load() != 0 || len(store.receipts) != 0 {
-		t.Fatal("rewrite model paid despite a full category", provider.calls.Load(), store.receipts)
-	}
-	delete(store.entries, "old-rewrites")
 	for _, stage := range stages {
 		if _, err := s.completePaidScriptModel(ctx, agentgateway.Request{Stage: stage, MaxTokens: 800, Messages: []agentgateway.Message{{Role: "user", Content: "原提示词"}}}); err != nil {
 			t.Fatal(stage, err)
@@ -256,7 +229,10 @@ func TestStrictScriptWorkerModelsUseRewriteBudgetBeforeAnyTransport(t *testing.T
 	if provider.calls.Load() != 4 || len(store.receipts) != 4 {
 		t.Fatal(provider.calls.Load(), store.receipts)
 	}
-	for _, r := range store.entries {
+	for key, r := range store.entries {
+		if key == "old-rewrites" {
+			continue
+		}
 		if r.Request.BudgetClass != livecost.BudgetRewrite || r.Request.SessionID != 500 || r.Status != livecost.StatusSettled {
 			t.Fatal("unaccounted rewrite model work", r)
 		}

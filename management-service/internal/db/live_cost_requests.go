@@ -75,7 +75,7 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 		if !livecost.SameRequestIdentity(existing.Request, r) {
 			return out, livecost.ErrRequestConflict
 		}
-		if policy.RoomBudget == nil || (existing.Status != livecost.StatusDeclined && existing.Status != livecost.StatusReleased) {
+		if (!policy.AccountingOnly && policy.RoomBudget == nil) || (existing.Status != livecost.StatusDeclined && existing.Status != livecost.StatusReleased) {
 			out = livecost.Reservation{Key: r.Key, Existing: true, Status: existing.Status, OverBudget: over, EstimatedMicros: existing.Request.EstimatedMicros}
 			return out, tx.Commit()
 		}
@@ -83,9 +83,15 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return out, err
 	}
-	summary, err := liveCostSummary(ctx, tx, scope, policy, at)
-	if err != nil {
-		return out, err
+	var summary livecost.Summary
+	// Interaction still reserves and settles its own request ledger, but has
+	// no monetary allowance to read. Old mainline/interaction reservations
+	// cannot block a new interaction or reset its same-key purchase fence.
+	if !policy.AccountingOnly && (policy.RoomBudget == nil || livecost.BudgetClass(r) != livecost.BudgetInteraction) {
+		summary, err = liveCostSummary(ctx, tx, scope, policy, at)
+		if err != nil {
+			return out, err
+		}
 	}
 	// Optional work shares its own model+TTS soft line, plus the total room
 	// target. Necessary supply never consumes the optional cohort's allowance,
@@ -103,7 +109,9 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 	over = summary.TotalMicros >= target || r.EstimatedMicros > target-summary.TotalMicros
 	status := livecost.StatusReserved
 	reserved := r.EstimatedMicros
-	if policy.RoomBudget != nil {
+	if policy.AccountingOnly {
+		over = false
+	} else if policy.RoomBudget != nil {
 		if err := policy.RoomBudget.Validate(); err != nil {
 			return out, err
 		}
@@ -114,7 +122,7 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 			return livecost.Reservation{Key: r.Key, Status: livecost.StatusDeclined, OverBudget: true, EstimatedMicros: r.EstimatedMicros}, tx.Commit()
 		}
 	}
-	if policy.RoomBudget == nil && r.Priority == livecost.PriorityOptional && (optionalOver || over) {
+	if !policy.AccountingOnly && policy.RoomBudget == nil && r.Priority == livecost.PriorityOptional && (optionalOver || over) {
 		status = livecost.StatusDeclined
 		reserved = 0
 	}
@@ -122,7 +130,7 @@ func (s *Store) ReserveLiveCost(ctx context.Context, r livecost.Request, policy 
 	if err != nil {
 		return out, err
 	}
-	if policy.RoomBudget != nil && existing.Status != "" {
+	if (policy.RoomBudget != nil || policy.AccountingOnly) && existing.Status != "" {
 		var result sql.Result
 		result, err = tx.ExecContext(ctx, `UPDATE live_cost_requests SET kind=?,provider=?,priority=?,status='reserved',request_json=?,receipt_json=NULL,estimated_micros=?,reserved_micros=?,charged_micros=0,usage_source='',provider_request_id='',over_budget=0,requested_at=?,updated_at=? WHERE tenant_id=? AND room_id=? AND request_key=? AND status IN ('declined','released')`, r.Kind, r.Provider, r.Priority, string(encoded), r.EstimatedMicros, reserved, at.UTC(), at.UTC(), r.TenantID, r.RoomID, r.Key)
 		if err == nil {

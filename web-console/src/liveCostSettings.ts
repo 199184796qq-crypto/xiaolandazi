@@ -17,9 +17,9 @@ export interface LiveCostSettings {
   tts_price_micros_per_10k: number
   default_model_rates: LiveCostTier[]
   model_prices: LiveCostModelPrice[]
-  mainline_hourly_micros: number
-  optional_hourly_micros: number
-  total_hourly_micros: number
+  mainline_hourly_micros?: number
+  optional_hourly_micros?: number
+  total_hourly_micros?: number
 }
 
 export interface LiveCostTierDraft {
@@ -38,9 +38,6 @@ export interface LiveCostModelDraft {
 export interface LiveCostDraft {
   revision: number
   tts: string
-  mainline: string
-  optional: string
-  total: string
   fallback: LiveCostTierDraft[]
   models: LiveCostModelDraft[]
 }
@@ -87,9 +84,6 @@ export function liveCostSettingsToDraft(config: LiveCostSettings): LiveCostDraft
   const draft: LiveCostDraft = {
     revision: config.revision,
     tts: liveCostMicrosToYuan(config.tts_price_micros_per_10k),
-    mainline: liveCostMicrosToYuan(config.mainline_hourly_micros),
-    optional: liveCostMicrosToYuan(config.optional_hourly_micros),
-    total: liveCostMicrosToYuan(config.total_hourly_micros),
     fallback: config.default_model_rates.map(tierDraft),
     models: config.model_prices.map(rule => ({ provider: rule.provider, model: rule.model, tiers: rule.tiers.map(tierDraft) })),
   }
@@ -121,12 +115,6 @@ function tiersFromDraft(tiers: LiveCostTierDraft[], label: string): LiveCostTier
 export function liveCostDraftToSettings(draft: LiveCostDraft): LiveCostSettings {
   if (!Number.isSafeInteger(draft.revision) || draft.revision < 0 || draft.revision >= liveCostAmountMax) throw new Error('配置版本无效，请重新读取')
   if (draft.models.length > 32) throw new Error('模型价格最多支持三十二条规则')
-  const mainline = liveCostYuanToMicros(draft.mainline, '主线更新小时目标', true)
-  const optional = liveCostYuanToMicros(draft.optional, '全部可选工作小时软线', true)
-  const total = liveCostYuanToMicros(draft.total, '直播间小时总目标')
-  if (mainline > optional || optional > total) {
-    throw new Error('小时预算须满足：主线更新目标不高于可选软线，可选软线不高于总目标')
-  }
   const seen = new Set<string>()
   const prices = draft.models.map((rule, index) => {
     const provider = rule.provider.trim()
@@ -147,7 +135,6 @@ export function liveCostDraftToSettings(draft: LiveCostDraft): LiveCostSettings 
     tts_price_micros_per_10k: liveCostYuanToMicros(draft.tts, '每万计费字符声音单价'),
     default_model_rates: tiersFromDraft(draft.fallback, '默认模型价格'),
     model_prices: prices,
-    mainline_hourly_micros: mainline, optional_hourly_micros: optional, total_hourly_micros: total,
   }
   if (new TextEncoder().encode(JSON.stringify(config)).length > 32_000) throw new Error('成本配置内容过长，请减少模型或价格档位')
   return config

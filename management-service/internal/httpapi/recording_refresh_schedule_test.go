@@ -420,9 +420,9 @@ func TestRecordingRefreshScheduleColdSourceDoesNotFreezeFullWarmRotation(t *test
 	planner := &recordingUpdatePlanner{}
 	schedule, plans := server.prepareRecordingRefreshSchedule(context.Background(), 14, 29, version, policy, tabs,
 		func(int, int) []recordingcache.Entry { return nil }, planner, []string{"mixed"}, "480:2", 0, false, nil)
-	if store.SummaryCalls != 1 || tabs[0][0].VersionCount != 0 || tabs[0][0].UpdateEligible ||
+	if store.SummaryCalls != 0 || tabs[0][0].VersionCount != 0 || tabs[0][0].UpdateEligible ||
 		tabs[0][1].VersionCount != recordingCacheMaxVersions || !tabs[0][1].UpdateEligible ||
-		plans[0].Selected[0] || !plans[0].Selected[1] || schedule.Pending[recordingRefreshPosition{0, 1}] <= 0 || schedule.Paused {
+		plans[0].Selected[0] || !plans[0].Selected[1] || !schedule.Budget.Unlimited || schedule.Paused {
 		t.Fatal("missing baseline audio froze the separate full warm pool's optional rotation", schedule, tabs, plans[0])
 	}
 }

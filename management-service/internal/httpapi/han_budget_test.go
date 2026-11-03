@@ -23,7 +23,7 @@ func TestBudgetUsesHanCount(t *testing.T) {
 	if !allowScriptVoiceSynthesis(planID, 10) {
 		t.Fatal("刚好用完应允许")
 	}
-	if allowScriptVoiceSynthesis(planID, 11) {
-		t.Fatal("超出应拒绝")
+	if !allowScriptVoiceSynthesis(planID, 11) {
+		t.Fatal("旧小时门槛不应再拦截")
 	}
 }

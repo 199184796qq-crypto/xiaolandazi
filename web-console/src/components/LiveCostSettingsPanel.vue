@@ -66,25 +66,16 @@ onMounted(load)
 <template>
   <section id="live-cost-settings" class="live-cost-settings" aria-labelledby="live-cost-title">
     <header class="cost-header">
-      <div><span class="cost-kicker">成本与更新</span><h2 id="live-cost-title">直播成本设置</h2><p>统一管理声音与文字模型单价，以及直播间每小时的更新预算。</p></div>
+      <div><span class="cost-kicker">成本与更新</span><h2 id="live-cost-title">直播成本设置</h2><p>统一管理声音与文字模型单价，查看费用时按实际请求统计。</p></div>
       <button type="button" class="secondary" :disabled="busy" @click="load">{{ loading ? '读取中…' : '重新读取成本设置' }}</button>
     </header>
     <p v-if="error" class="cost-alert error" role="alert">{{ error }}</p>
     <p v-if="notice" class="cost-alert success" role="status">{{ notice }}</p>
     <p v-if="!draft && loading" class="cost-loading">正在读取直播成本设置…</p>
     <form v-if="draft" @submit.prevent="save">
-      <p v-if="draft.revision === 0" class="cost-alert explanation">首次保存将统一启用本页全部价格，原环境中的单价将不再使用。只调整预算时，也请先核对本页单价。</p>
+      <p v-if="draft.revision === 0" class="cost-alert explanation">首次保存将统一启用本页全部价格，原环境中的单价将不再使用，请先核对本页单价。</p>
       <fieldset :disabled="busy || needsReload">
-        <section class="cost-block">
-          <div class="block-heading"><div><h3>每小时预算</h3><p>按直播间统计滚动一小时费用，停止重开不重置额度。</p></div><span class="unit-pill">人民币 · 元／小时</span></div>
-          <p class="explanation">房间付费限额：标准 1.3 元／小时（主线 0.8、互动 0.35、改写模型 0.05、差额预留 0.1）；高仿真 3 元／小时（主线 2.1、互动 0.6、改写模型 0.1、差额预留 0.2）。互动包含文字模型和声音。额度不足时暂停新的付费生成，已有缓存继续播放。</p>
-          <div class="budget-grid">
-            <label>主线更新目标<input v-model="draft.mainline" inputmode="decimal" autocomplete="off" aria-label="主线更新小时目标（元）" /><small>用于安排可选文案更新。</small></label>
-            <label>全部可选工作软线<input v-model="draft.optional" inputmode="decimal" autocomplete="off" aria-label="全部可选工作小时软线（元）" /><small>覆盖主线及其他可选工作。</small></label>
-            <label>直播间总目标<input v-model="draft.total" inputmode="decimal" autocomplete="off" aria-label="直播间小时总目标（元）" /><small>包含必要供料与全部可选工作。</small></label>
-          </div>
-          <p class="explanation">上述三个输入项用于内容更新的规划目标，须满足主线目标 ≤ 可选软线 ≤ 总目标。可选软线设为零时暂停可选更新；实际付费仍受语音池房间限额及分类额度约束，必要供料也不能绕过。按预估先预留，回执后校正，供应商实际账单可能存在单笔差异。</p>
-        </section>
+        <p class="explanation">已取消全部小时预算。主线、互动和改写费用按实际请求分别统计，不按小时金额或合成字数暂停生成。此页仅维护计费参考单价。</p>
 
         <section class="cost-block">
           <div class="block-heading"><div><h3>声音合成单价</h3><p>以下为通用字符模型的参考口径。Qwen 3.1 Flash 按输入／输出 Token 核算；高仿真使用独立字符单价，不能套用汉字双字符换算。</p></div></div>

@@ -8,6 +8,12 @@ import (
 
 type policyContextKey struct{}
 
+// AccountingPolicy is the application policy: hourly windows are retained for
+// reporting only. Saved legacy targets cannot reactivate monetary admission.
+func AccountingPolicy() Policy {
+	return Policy{Configured: true, AccountingOnly: true, Window: time.Hour}
+}
+
 // WithPolicy fixes the budget used by one scheduling read or request admission.
 // It never mutates a shared Controller. Invalid explicit settings fail closed
 // for optional work; only legacy necessary requests may degrade. Strict room
@@ -20,6 +26,19 @@ func WithPolicy(ctx context.Context, policy Policy) context.Context {
 // NormalizePolicy keeps zero-value legacy constructors compatible. Explicit
 // configured zeroes disable optional work instead of restoring default limits.
 func NormalizePolicy(policy Policy) (Policy, error) {
+	if policy.AccountingOnly {
+		if policy.Window <= 0 {
+			policy.Window = time.Hour
+		}
+		if policy.RoomBudget != nil {
+			if err := policy.RoomBudget.Validate(); err != nil {
+				return Policy{}, err
+			}
+			copy := *policy.RoomBudget
+			policy.RoomBudget = &copy
+		}
+		return policy, nil
+	}
 	if policy.RoomBudget != nil {
 		if err := policy.RoomBudget.Validate(); err != nil {
 			return Policy{}, err

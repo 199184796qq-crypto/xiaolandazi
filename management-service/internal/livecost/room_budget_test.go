@@ -7,22 +7,27 @@ import (
 	"time"
 )
 
-func TestRoomBudgetCategoriesProtectInteractionAndSafety(t *testing.T) {
+func TestRoomAccountingAllowsEveryClassWithoutHourlyLimit(t *testing.T) {
 	for _, pool := range []string{"standard", "high_fidelity"} {
 		b, err := RoomBudgetForPool(pool)
 		if err != nil {
 			t.Fatal(err)
 		}
-		s := Summary{TotalMicros: b.Mainline, MainlineMicros: b.Mainline}
-		if b.Allows(Request{BudgetClass: BudgetMainline, EstimatedMicros: 1}, s) {
-			t.Fatal("mainline borrowed interaction reserve")
+		if !b.Policy().AccountingOnly {
+			t.Fatal("room reactivated hourly budget")
 		}
-		if !b.Allows(Request{BudgetClass: BudgetInteraction, EstimatedMicros: b.Interaction}, s) {
-			t.Fatal("interaction reserve unavailable")
+		for _, class := range []string{BudgetMainline, BudgetInteraction, BudgetRewrite} {
+			if !b.Allows(Request{BudgetClass: class, EstimatedMicros: 20_000_000}, Summary{TotalMicros: 90_000_000, MainlineMicros: 40_000_000, RewriteMicros: 20_000_000, InteractionMicros: 30_000_000}) {
+				t.Fatal(pool, class)
+			}
 		}
-		s.TotalMicros = b.Total - b.Safety
-		if b.Allows(Request{BudgetClass: BudgetRewrite, EstimatedMicros: 1}, s) {
-			t.Fatal("new generation spent safety buffer")
+	}
+}
+
+func TestMainlineBudgetUsageRejectsNegativeAndOverflow(t *testing.T) {
+	for _, s := range []Summary{{MainlineMicros: -1}, {RewriteMicros: -1}, {MainlineMicros: 1<<63 - 1, RewriteMicros: 1}} {
+		if _, err := s.MainlineBudgetMicros(); err == nil {
+			t.Fatal("invalid mainline sum accepted", s)
 		}
 	}
 }
@@ -39,7 +44,7 @@ func TestStrictLedgerFailureNeverPermitsNecessaryDegradedSend(t *testing.T) {
 		t.Fatal(result, err)
 	}
 	// An invalid context must not lose its strict flag while normalizing.
-	p.TotalTargetMicros++
+	p.RoomBudget = &RoomBudget{Pool: "invalid"}
 	if result, err := c.Begin(WithPolicy(context.Background(), p), r); result.Allowed || err == nil {
 		t.Fatal(result, err)
 	}

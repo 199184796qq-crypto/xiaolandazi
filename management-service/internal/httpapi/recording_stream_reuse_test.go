@@ -37,7 +37,7 @@ func TestRecordingBudgetStopsOptionalUpdates(t *testing.T) {
 	if got := recordingBudgetPercent(recordingBudgetSoftCapMicros-1, 25); got != 25 {
 		t.Fatalf("under cap should keep optional updates, got %d", got)
 	}
-	if got := recordingBudgetPercent(recordingBudgetSoftCapMicros, 25); got != 0 {
+	if got := recordingBudgetPercent(recordingBudgetSoftCapMicros, 25); got != 25 {
 		t.Fatalf("at cap should stop optional updates, got %d", got)
 	}
 	if got := recordingBudgetPercent(recordingBudgetSoftCapMicros+1, 0); got != 0 {

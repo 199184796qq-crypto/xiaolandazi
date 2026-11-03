@@ -18,6 +18,7 @@ import (
 // This is a scheduling allowance, never a supplier charge or an alternative to
 // the transactional, shared-room reservation immediately before each request.
 type recordingRefreshBudget struct {
+	Unlimited        bool
 	Percent          int
 	HeadroomMicros   int64
 	RoundLimitMicros int64
@@ -49,7 +50,19 @@ func recordingDynamicRefreshBudgetForDurationWithPolicy(summary livecost.Summary
 // scheduling inputs on the same allocation and overflow-safe arithmetic path.
 func recordingDynamicRefreshBudgetForPeriod(summary livecost.Summary, fullQuoteMicros int64, elapsed time.Duration, round *big.Int, scale int64, policy livecost.Policy) recordingRefreshBudget {
 	var result recordingRefreshBudget
+	if policy.AccountingOnly {
+		return recordingRefreshBudget{Unlimited: true, Percent: 100}
+	}
 	policy, err := livecost.NormalizePolicy(policy)
+	if err == nil && policy.RoomBudget != nil {
+		used, costErr := summary.MainlineBudgetMicros()
+		if costErr != nil {
+			return result
+		}
+		// The mainline planning cohort includes necessary audio and rewrite
+		// models, and excludes every interaction charge/reservation.
+		summary.TotalMicros, summary.OptionalMicros, summary.MainlineOptionalMicros = used, used, used
+	}
 	if err != nil || policy.MainlineTargetMicros == 0 || summary.TotalMicros < 0 || summary.OptionalMicros < 0 || summary.MainlineOptionalMicros < 0 ||
 		summary.OptionalMicros > summary.TotalMicros || summary.MainlineOptionalMicros > summary.OptionalMicros ||
 		summary.OptionalMicros >= policy.OptionalLimitMicros || summary.TotalMicros >= policy.TotalTargetMicros {

@@ -13,6 +13,7 @@ import (
 	"livecompanion/management/internal/livecost"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/recordingcache"
+	"livecompanion/management/internal/ttsscheduler"
 )
 
 type recordingRefreshPosition struct{ Tab, Index int }
@@ -22,6 +23,7 @@ type recordingRefreshPosition struct{ Tab, Index int }
 // They are local scheduling reservations, never provider bill entries.
 type recordingRefreshSchedule struct {
 	Budget             recordingRefreshBudget
+	RoomBudget         *livecost.RoomBudget
 	Quotes             [][]int64
 	Pending            map[recordingRefreshPosition]int64
 	SpentMicros        int64
@@ -33,6 +35,16 @@ type recordingRefreshSchedule struct {
 
 func newRecordingRefreshSchedule(budget recordingRefreshBudget, quotes [][]int64, plans []*recordingUpdatePlan) *recordingRefreshSchedule {
 	s := &recordingRefreshSchedule{Budget: budget, Quotes: quotes, Pending: make(map[recordingRefreshPosition]int64)}
+	if budget.Unlimited {
+		for tab, plan := range plans {
+			for index, selected := range plan.Selected {
+				if selected {
+					s.Pending[recordingRefreshPosition{tab, index}] = 0
+				}
+			}
+		}
+		return s
+	}
 	// Round-robin across tabs preserves the per-tab due-work distribution while
 	// each tab's list already follows version-count and age priority.
 	lists := make([][]int, len(plans))
@@ -168,6 +180,10 @@ func (s *recordingRefreshSchedule) admitWithPolicy(tab, index int, current livec
 	if s.Paused {
 		return false
 	}
+	if s.Budget.Unlimited || policy.AccountingOnly {
+		_, selected := s.Pending[recordingRefreshPosition{tab, index}]
+		return selected
+	}
 	if err != nil {
 		s.pause("费用账务暂不可用")
 		return false
@@ -192,7 +208,13 @@ func (s *Server) admitRecordingRefresh(ctx context.Context, schedule *recordingR
 		schedule.pause("更新费用设置暂不可用")
 		return false
 	}
+	if schedule.Budget.Unlimited {
+		return schedule.admitWithPolicy(tab, index, livecost.Summary{}, nil, settings.Policy())
+	}
 	policy := settings.Policy()
+	if schedule.RoomBudget != nil {
+		policy = schedule.RoomBudget.Policy()
+	}
 	current, err := s.liveCostController().Summary(livecost.WithPolicy(ctx, policy), livecost.Scope{TenantID: tenant, RoomID: room})
 	return schedule.admitWithPolicy(tab, index, current, err, policy)
 }
@@ -211,7 +233,7 @@ func (s *recordingRefreshSchedule) complete(tab, index int, events *liveCostCall
 		s.pause("更新请求结果待核对")
 	case events.OptionalDeclined.Load():
 		s.pause("可选更新预算暂不足")
-	case s.SpentMicros >= s.Budget.RoundLimitMicros:
+	case !s.Budget.Unlimited && s.SpentMicros >= s.Budget.RoundLimitMicros:
 		s.pause("本轮可选更新额度已用完")
 	}
 }
@@ -223,6 +245,11 @@ func (s *recordingRefreshSchedule) replace(planner *recordingUpdatePlanner, plan
 	}
 	added := 0
 	for _, candidate := range planner.ReplaceFailed(plan, index, index+1) {
+		if s.Budget.Unlimited {
+			s.Pending[recordingRefreshPosition{tab, candidate}] = 0
+			added++
+			continue
+		}
 		quote := s.quote(tab, candidate)
 		if quote > 0 && quote <= s.Budget.RoundLimitMicros-s.SpentMicros-s.pendingMicros() {
 			s.Pending[recordingRefreshPosition{tab, candidate}] = quote
@@ -291,9 +318,24 @@ func (s *Server) prepareRecordingRefreshSchedule(ctx context.Context, tenant, ro
 		return withoutOptional("更新费用设置暂不可用")
 	}
 	budgetPolicy := settings.Policy()
-	if budgetPolicy.MainlineTargetMicros == 0 || budgetPolicy.OptionalLimitMicros == 0 {
-		return withoutOptional("当前可选更新额度不足")
+	if budgetPolicy.AccountingOnly {
+		snapshotInventory()
+		// Do not reduce a pass's due work using monetary headroom. Existing
+		// inventory eligibility, version order and retry bounds still apply.
+		percent := 100
+		plans := make([]*recordingUpdatePlan, len(tabs))
+		for tab := range tabs {
+			plans[tab] = planner.PlanBounded(tabIDs[tab], key, tabs[tab], percent, 100, rng)
+		}
+		result := newRecordingRefreshSchedule(recordingRefreshBudget{Unlimited: true, Percent: percent}, nil, plans)
+		result.ForecastDurationMS, result.InventoryFilling = forecast.Milliseconds(), !allFull
+		return result, plans
 	}
+	roomBudget, err := livecost.RoomBudgetForPool(ttsscheduler.PoolForProvider(version.VoiceIdentity.Provider))
+	if err != nil {
+		return withoutOptional("主线费用额度暂不可用")
+	}
+	budgetPolicy = roomBudget.Policy()
 	summary, summaryErr := s.liveCostController().Summary(livecost.WithPolicy(ctx, budgetPolicy), livecost.Scope{TenantID: tenant, RoomID: room})
 	if summaryErr != nil {
 		return withoutOptional("更新费用预估或账务暂不可用")
@@ -329,6 +371,7 @@ func (s *Server) prepareRecordingRefreshSchedule(ctx context.Context, tenant, ro
 		plans[tab] = planner.PlanBounded(tabIDs[tab], key, tabs[tab], budget.Percent, 100, rng)
 	}
 	result := newRecordingRefreshSchedule(budget, quotes, plans)
+	result.RoomBudget = budgetPolicy.RoomBudget
 	result.ForecastDurationMS = forecast.Milliseconds()
 	result.InventoryFilling = !allFull
 	if summaryErr != nil {

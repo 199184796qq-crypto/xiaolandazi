@@ -93,16 +93,17 @@ func TestRecordingRefreshPrepareReadsSettingsOnceAndAdmissionSeesNewZeroTarget(t
 	planner := &recordingUpdatePlanner{}
 	schedule, plans := server.prepareRecordingRefreshSchedule(t.Context(), 14, 29, version, policy, tabs,
 		func(int, int) []recordingcache.Entry { return nil }, planner, []string{"settings"}, "480:2", 0, false, nil)
-	if reads != 1 || schedule.Paused || len(schedule.Pending) != 2 || len(store.Policies) != 1 || store.Policies[0] != settings.Policy() {
-		t.Fatal("whole-pass planning did not share one validated configuration", reads, schedule, store.Policies)
+	if reads != 1 || schedule.Paused || len(schedule.Pending) != 2 || len(store.Policies) != 0 || !schedule.Budget.Unlimited {
+		t.Fatal(reads, schedule, store.Policies)
 	}
 	settings.Revision, settings.MainlineHourlyMicros = 2, 0
-	if server.admitRecordingRefresh(t.Context(), schedule, 14, 29, 0, 0) || reads != 2 || !schedule.Paused || plans[0].attempted[0] {
-		t.Fatal("an old planned quote bypassed a newly disabled mainline target", schedule, plans[0], reads)
+	if !server.admitRecordingRefresh(t.Context(), schedule, 14, 29, 0, 0) || reads != 2 || schedule.Paused || plans[0].attempted[0] {
+		t.Fatal("retired zero target blocked work", schedule, reads)
 	}
-	if store.Policies[len(store.Policies)-1] != settings.Policy() {
-		t.Fatal("execution summary silently used the old shared controller policy", store.Policies)
+	if len(store.Policies) != 0 {
+		t.Fatal("hourly summary consulted", store.Policies)
 	}
+
 }
 
 func TestRecordingRefreshUnavailableSettingsSkipsOptionalInventoryWithoutBlockingSupply(t *testing.T) {

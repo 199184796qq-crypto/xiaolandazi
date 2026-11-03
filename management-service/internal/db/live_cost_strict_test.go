@@ -11,7 +11,7 @@ import (
 	"livecompanion/management/internal/livecost"
 )
 
-func TestStrictRoomBudgetSerializesNecessaryCallsAndPreservesInteraction(t *testing.T) {
+func TestStrictRoomBudgetSerializesCombinedMainlineAndLeavesInteractionUncapped(t *testing.T) {
 	store, _ := newCostSQLStore(t)
 	b, _ := livecost.RoomBudgetForPool("standard")
 	p := b.Policy()
@@ -25,6 +25,9 @@ func TestStrictRoomBudgetSerializesNecessaryCallsAndPreservesInteraction(t *test
 			r := sqlCostRequest(fmt.Sprint("strict-", i))
 			r.EstimatedMicros = 100_000
 			r.BudgetClass = livecost.BudgetMainline
+			if i%2 == 0 {
+				r.Kind, r.BudgetClass = livecost.KindModel, livecost.BudgetRewrite
+			}
 			r.BudgetPool = "standard"
 			out, err := store.ReserveLiveCost(context.Background(), r, p, now)
 			if err != nil {
@@ -36,11 +39,11 @@ func TestStrictRoomBudgetSerializesNecessaryCallsAndPreservesInteraction(t *test
 		}(i)
 	}
 	wg.Wait()
-	if accepted.Load() != 8 {
-		t.Fatal("concurrent supply escaped 0.8-yuan sublimit", accepted.Load())
+	if accepted.Load() != 64 {
+		t.Fatal("accounting-only requests were capped", accepted.Load())
 	}
 	r := sqlCostRequest("interaction-reserve")
-	r.EstimatedMicros = b.Interaction
+	r.EstimatedMicros = 2_600_000
 	r.BudgetClass = livecost.BudgetInteraction
 	r.BudgetPool = b.Pool
 	if out, err := store.ReserveLiveCost(t.Context(), r, p, now); err != nil || !out.Allowed {
@@ -49,7 +52,7 @@ func TestStrictRoomBudgetSerializesNecessaryCallsAndPreservesInteraction(t *test
 	r.Key = "rewrite-reserve"
 	r.Kind = livecost.KindModel
 	r.BudgetClass = livecost.BudgetRewrite
-	r.EstimatedMicros = b.Rewrite
+	r.EstimatedMicros = 1
 	if out, err := store.ReserveLiveCost(t.Context(), r, p, now); err != nil || !out.Allowed {
 		t.Fatal(out, err)
 	}
@@ -57,11 +60,12 @@ func TestStrictRoomBudgetSerializesNecessaryCallsAndPreservesInteraction(t *test
 	r.SessionID = 999
 	r.BudgetClass = livecost.BudgetMainline
 	r.EstimatedMicros = 1
-	if out, err := store.ReserveLiveCost(t.Context(), r, p, now); err != nil || out.Allowed {
+	if out, err := store.ReserveLiveCost(t.Context(), r, p, now); err != nil || !out.Allowed {
 		t.Fatal("restart reset allowance", out, err)
 	}
 	summary, err := store.LiveCostSummary(t.Context(), livecost.Scope{TenantID: 14, RoomID: 29}, p, now)
-	if err != nil || summary.TotalMicros != 1_200_000 || summary.MainlineMicros != 800_000 || summary.InteractionMicros != 350_000 || summary.RewriteMicros != 50_000 {
+	used, usageErr := summary.MainlineBudgetMicros()
+	if err != nil || usageErr != nil || summary.TotalMicros != 9_000_002 || used != 6_400_002 || summary.InteractionMicros != 2_600_000 {
 		t.Fatal(summary, err)
 	}
 	r.RoomID = 30
@@ -79,7 +83,7 @@ func TestStrictBudgetKeepsUnknownAndLateSettlementsAcrossHour(t *testing.T) {
 	now := time.Now().UTC()
 	scope := livecost.Scope{TenantID: 14, RoomID: 29}
 	r := sqlCostRequest("late-audio")
-	r.EstimatedMicros = b.Mainline
+	r.EstimatedMicros = 3_000_000
 	r.BudgetClass = livecost.BudgetMainline
 	r.BudgetPool = b.Pool
 	if out, err := store.ReserveLiveCost(t.Context(), r, p, now); err != nil || !out.Allowed {
@@ -90,7 +94,7 @@ func TestStrictBudgetKeepsUnknownAndLateSettlementsAcrossHour(t *testing.T) {
 	}
 	future := now.Add(2 * time.Hour)
 	r.Key = "after-hour"
-	if out, err := store.ReserveLiveCost(t.Context(), r, p, future); err != nil || out.Allowed {
+	if out, err := store.ReserveLiveCost(t.Context(), r, p, future); err != nil || !out.Allowed {
 		t.Fatal("unknown reservation aged into free money", out, err)
 	}
 	amount := int64(1_000_000)
@@ -98,29 +102,29 @@ func TestStrictBudgetKeepsUnknownAndLateSettlementsAcrossHour(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary, err := store.LiveCostSummary(t.Context(), scope, p, future)
-	if err != nil || summary.TotalMicros != amount || summary.ReservedMicros != 0 {
+	if err != nil || summary.TotalMicros != amount+3_000_000 || summary.ReservedMicros != 3_000_000 {
 		t.Fatal("late paid result vanished immediately", summary, err)
 	}
 	summary, err = store.LiveCostSummary(t.Context(), scope, p, future.Add(time.Hour+time.Second))
-	if err != nil || summary.TotalMicros != 0 {
+	if err != nil || summary.TotalMicros != 3_000_000 {
 		t.Fatal("settled call never expired", summary, err)
 	}
 }
 
 func TestStrictBudgetDeferralAndKnownUnsentCanRetrySameOperation(t *testing.T) {
-	store, state := newCostSQLStore(t)
+	store, _ := newCostSQLStore(t)
 	b, _ := livecost.RoomBudgetForPool("standard")
 	p := b.Policy()
 	now := time.Now().UTC()
 	r := sqlCostRequest("same-piece")
 	r.BudgetClass = livecost.BudgetMainline
 	r.BudgetPool = b.Pool
-	r.EstimatedMicros = b.Mainline + 1
-	if out, err := store.ReserveLiveCost(t.Context(), r, p, now); err != nil || out.Allowed || out.Existing {
+	r.EstimatedMicros = 3_000_001
+	if out, err := store.ReserveLiveCost(t.Context(), r, p, now); err != nil || !out.Allowed {
 		t.Fatal(out, err)
 	}
-	if len(state.rows) != 0 {
-		t.Fatal("budget decline permanently fenced a never-sent piece")
+	if err := store.FinishLiveCost(t.Context(), livecost.Scope{TenantID: 14, RoomID: 29}, r.Key, livecost.Receipt{TenantID: 14, RoomID: 29, Status: livecost.ReceiptNotSent}, now); err != nil {
+		t.Fatal(err)
 	}
 	r.EstimatedMicros = 100_000
 	if out, err := store.ReserveLiveCost(t.Context(), r, p, now); err != nil || !out.Allowed {

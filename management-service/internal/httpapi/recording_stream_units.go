@@ -75,36 +75,11 @@ func splitRecordingSentences(text string) []string {
 const recordingBudgetSoftCapMicros int64 = 1_200_000
 
 func recordingBudgetPercent(costMicros int64, desired int) int {
-	if desired > 0 && costMicros >= recordingBudgetSoftCapMicros {
-		return 0
-	}
 	return desired
 }
 
 func (s *Server) recordingBudgetPercent(ctx context.Context, tenant, room int64, desired int) int {
-	if s == nil || s.store == nil || desired <= 0 {
-		return desired
-	}
-	settings, valid := s.liveCostSettingsSnapshot(ctx)
-	if !valid || settings.MainlineHourlyMicros == 0 {
-		return 0
-	}
-	policy := settings.Policy()
-	cost, err := s.liveCostController().Summary(livecost.WithPolicy(ctx, policy), livecost.Scope{TenantID: tenant, RoomID: room})
-	if err != nil {
-		log.Printf("recording stream budget unavailable tenant=%d room=%d error=%v; optional updates paused", tenant, room, err)
-		return 0
-	}
-	// The transactional request ledger includes pending/unknown attempts; media
-	// archival duration and a delayed cron snapshot cannot authorize paid work.
-	percent := desired
-	if cost.TotalMicros >= policy.TotalTargetMicros || cost.OptionalMicros >= policy.OptionalLimitMicros {
-		percent = 0
-	}
-	if percent == 0 && desired > 0 {
-		log.Printf("recording stream budget reuse-only tenant=%d room=%d cost_micros=%d target_micros=%d", tenant, room, cost.TotalMicros, policy.TotalTargetMicros)
-	}
-	return percent
+	return desired
 }
 
 func recordingUpdatePercent(totalRunes int) int {

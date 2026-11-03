@@ -36,61 +36,37 @@ func addReadyScriptFixture(t *testing.T, root string, v model.LiveAgentPlanVersi
 	return version
 }
 
-func TestScriptBudgetAdmissionIsAtomicAndReusesSamePurchase(t *testing.T) {
+func TestRetiredScriptBudgetDoesNotReadOrWriteOldUsage(t *testing.T) {
 	t.Setenv("MEDIA_ROOT", t.TempDir())
-	t.Setenv("XIAOLAN_SCRIPT_VOICE_HOURLY_CHARS", "100")
+	t.Setenv("XIAOLAN_SCRIPT_VOICE_HOURLY_CHARS", "1")
+	path := scriptVoiceBudgetPath(9)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	old := []byte("broken legacy budget")
+	if err := os.WriteFile(path, old, 0600); err != nil {
+		t.Fatal(err)
+	}
 	var successes atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if _, err := reserveScriptVoiceSynthesis(7, strconv.Itoa(i), 60); err == nil {
+			release, err := reserveScriptVoiceSynthesis(9, strconv.Itoa(i), 60_000)
+			if err == nil {
 				successes.Add(1)
+				release(false)
 			}
 		}(i)
 	}
 	wg.Wait()
-	if successes.Load() != 1 || scriptVoiceBudgetLeft(7) != 40 {
-		t.Fatal("concurrent requests overspent", successes.Load(), scriptVoiceBudgetLeft(7))
+	if successes.Load() != 16 {
+		t.Fatal("retired usage still blocked requests", successes.Load())
 	}
-	release, err := reserveScriptVoiceSynthesis(8, "paid-source", 60)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reserveScriptVoiceSynthesis(8, "paid-source", 60); err != nil || scriptVoiceBudgetLeft(8) != 40 {
-		t.Fatal("resume double-charged", err)
-	}
-	release(true)
-	if scriptVoiceBudgetLeft(8) != 100 {
-		t.Fatal("definite non-submission did not release")
-	}
-	release, err = reserveScriptVoiceSynthesis(8, "uncertain", 60)
-	if err != nil {
-		t.Fatal(err)
-	}
-	release(false)
-	if _, err := reserveScriptVoiceSynthesis(8, "next", 50); !errors.Is(err, errScriptVoiceBudget) {
-		t.Fatal("unknown supplier outcome must retain cost", err)
-	}
-}
-
-func TestScriptBudgetRollingWindowAndCorruption(t *testing.T) {
-	t.Setenv("MEDIA_ROOT", t.TempDir())
-	t.Setenv("XIAOLAN_SCRIPT_VOICE_HOURLY_CHARS", "100")
-	now := time.Now()
-	state := scriptVoiceBudgetState{WindowStart: now.Add(-2 * time.Hour).Format(time.RFC3339), Chars: 100, Purchases: map[string]scriptVoicePurchase{"old": {At: now.Add(-61 * time.Minute), Chars: 60}, "recent": {At: now.Add(-2 * time.Minute), Chars: 40}}}
-	if err := writeVolcengineJSON(scriptVoiceBudgetPath(9), state); err != nil {
-		t.Fatal(err)
-	}
-	if left := scriptVoiceBudgetLeft(9); left != 60 {
-		t.Fatal("rolling window reset recent purchases", left)
-	}
-	if err := os.WriteFile(scriptVoiceBudgetPath(9), []byte("broken"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reserveScriptVoiceSynthesis(9, "new", 1); err == nil {
-		t.Fatal("corrupt budget failed open")
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(old) {
+		t.Fatal("old budget file changed", err)
 	}
 }
 

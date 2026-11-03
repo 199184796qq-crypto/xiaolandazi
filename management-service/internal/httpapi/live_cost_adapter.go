@@ -131,7 +131,7 @@ func (s *Server) liveCostController() *livecost.Controller {
 		return nil
 	} // Isolated tests supply an explicit controller.
 	if !s.liveCostInitialized {
-		policy := livecost.DefaultPolicy()
+		policy := livecost.AccountingPolicy()
 		policy.SpoolDir = filepath.Join(recordingCacheMediaRoot(), "live-cost-spool")
 		s.liveCostRequests = livecost.New(s.store, policy)
 		s.liveCostInitialized = true
@@ -216,12 +216,6 @@ func (s *Server) reserveLiveCost(ctx context.Context, request livecost.Request) 
 	if !valid && request.Priority == livecost.PriorityOptional {
 		if events := liveCostScope(ctx).Events; events != nil {
 			events.AccountingUnavailable.Store(true)
-			events.OptionalDeclined.Store(true)
-		}
-		return errLiveCostOptionalDeclined
-	}
-	if valid && request.Priority == livecost.PriorityOptional && cfg.OptionalHourlyMicros == 0 {
-		if events := liveCostScope(ctx).Events; events != nil {
 			events.OptionalDeclined.Store(true)
 		}
 		return errLiveCostOptionalDeclined
