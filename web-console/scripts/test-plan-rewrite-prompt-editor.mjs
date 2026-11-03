@@ -9,6 +9,8 @@ await mkdir(output, { recursive: true })
 const source = (await readFile(new URL('./test-plan-prompt-editor.mjs', import.meta.url), 'utf8')).replace(/\r\n/g, '\n')
 let fixture = source.split('const fixture=String.raw`')[1].split('`\nconst server=')[0]
 const setup = String.raw`
+import {ref} from 'vue';
+import TemplateView from '/src/views/PlanPromptTemplatesView.vue';
 import {emptyPlanPromptSections,compilePlanPrompts,compilePlanRewritePrompt} from '/src/planPrompt.ts';
 const previousFetch=window.fetch;
 const bindings=[101,102].map((id,i)=>({id,tenant_id:14,profile_id:201+i,sample_asset_id:1,provider:'aliyun_qwen',model:'test-model',voice_id:'test-voice-'+id,rate:1,status:'ready'}));
@@ -16,8 +18,20 @@ const voice=id=>{const b=bindings[id===4?0:1];return {name:'声音'+id,version:'
 const versions=Object.fromEntries([4,5].map(id=>[id,{id:id*10,tenant_id:14,plan_id:id,version_no:1,lifecycle_status:'published',duration_minutes:90,round_minutes:7,voice_identity:voice(id),variants:[],generation_context:{content_mode:'user_audio',recording_voice_mode:'stream_clone',recording_script:{version:2,tabs:[{tab_id:'g1',title:'测试话术',pinned:true,entries:[{entry_id:'e1',text:'这是本地测试话术。'.repeat(50)}],audio_asset_ids:[]}],active_tab_id:'g1'},anchor_generation_options:{buffer_seconds:120,body_min:2,body_max:4,max_chars:300}}}]));
 const defaults=Object.fromEntries([4,5].map(id=>{const sections={...emptyPlanPromptSections(),persona_md:'方案'+id+'人设',facts_md:'方案'+id+'事实'};const planning='方案'+id+'现有规划正文\n{{已有开场}}';return [id,{sections,rewrite_planning_md:planning,rewrite_prompt_md:compilePlanRewritePrompt(sections,planning)}]}));
 Object.assign(window.fixture,{documents:JSON.parse(sessionStorage.getItem('rewrite-documents')||'null')||defaults,versions});
+window.fixture.showTemplates=ref(false);
+window.fixture.templates={persona_md:'母版人设',facts_md:'母版事实规则',red_lines_md:'母版红线',speech_requirements_md:'母版主线要求',interaction_requirements_md:'母版互动要求',rewrite_planning_md:'母版规划\n{{已有开场}}\n{{开场方式}}'};
+window.fixture.templateRevision='a'.repeat(64);
 window.fetch=async(url,init={})=>{
  const f=window.fixture,u=new URL(url,location.origin),p=u.pathname,method=init.method||'GET',body=init.body?JSON.parse(init.body):null,plan=Number(p.match(/live-agent-plans\/(\d+)/)?.[1]||0);
+ if(p==='/api/v1/system/plan-prompt-templates'){
+  f.calls.push({path:p,method,body});
+  if(method==='PUT'){
+   if(f.failTemplateSave){f.failTemplateSave=false;return Response.json({error:'母版保存失败'},{status:500})}
+   if(body.revision!==f.templateRevision)return Response.json({error:'母版已被其他人修改，请重新读取'},{status:409});
+   f.templates=structuredClone(body.templates);f.templateRevision='b'.repeat(64);
+  }
+  return Response.json({templates:structuredClone(f.templates),revision:f.templateRevision});
+ }
  if(!/\/(prompt(?:\/render)?|workspace|versions|official-voices|voice-model-bindings|voice-profiles|content-mode|save-check)$/.test(p))return previousFetch(url,init);
  f.calls.push({path:p,method,body});
  if(p.endsWith('/content-mode'))return Response.json({content_mode:'user_audio',available_modes:['user_audio'],dynamic_authorized:true});
@@ -35,7 +49,12 @@ window.fetch=async(url,init={})=>{
   }
   return Response.json({items:[versions[plan]]});
  }
- if(p.endsWith('/render'))return Response.json({sections:{persona:'重新生成的人设',facts:'重新生成的事实',speech:'新的话术要求',interaction:'新的回答要求'},facts_md:'重新生成的事实'});
+ if(p.endsWith('/render')){
+  if(f.failRender){f.failRender=false;return Response.json({error:'母版读取失败'},{status:500})}
+  const m=f.templates,rendered={sections:{persona:m.persona_md,facts:m.facts_md+'\n实际方案'+plan+'商品卡和正式事实',redlines:m.red_lines_md,speech:m.speech_requirements_md,interaction:m.interaction_requirements_md},rewrite_planning_md:m.rewrite_planning_md,facts_md:'当前方案事实'};
+  if(f.incompleteRender){f.incompleteRender=false;delete rendered.sections.redlines}
+  return Response.json(rendered);
+ }
  if(method==='PUT'){
   if(f.failPrompt){f.failPrompt=false;return Response.json({error:'提示词保存失败，请重试'},{status:500})}
   if(typeof body.rewrite_planning_md!=='string'||'rewrite_prompt_md' in body)throw Error('only original planning must be submitted');
@@ -48,6 +67,7 @@ window.fetch=async(url,init={})=>{
 };
 `
 fixture = fixture.replace('applySession(', setup + '\napplySession(')
+fixture = fixture.replace('render:()=>h(View)', 'render:()=>h(window.fixture.showTemplates.value?TemplateView:View)')
 const server = await createServer({ server: { host: '127.0.0.1', port: 55173 }, appType: 'custom', plugins: [{ name: 'rewrite-parent-inspect', enforce: 'pre', transform(code, id) {
   if (!id.endsWith('/src/views/LiveStrategyView.vue')) return
   return code.replace('</script>', 'window.fixture.view={plan:()=>currentRoomPlanId.value,setPlan:id=>handlePlanSwitch({target:{value:String(id)}}),loaded:()=>planPromptLoadedPlan.value,loading:()=>planPromptLoading.value,busy:()=>savePlanOneClickBusy.value,blocked:()=>fullShowSaveBlockedReason.value,hydrating:()=>fullShowWorkspaceHydrating.value,error:()=>fullShowError.value};</script>')
@@ -112,12 +132,19 @@ try {
   const beforePull = (await puts()).length
   const pull = page.getByRole('button', { name: '拉取提示词', exact: true })
   await pull.click()
-  await page.getByRole('dialog', { name: '拉取提示词并替换前五页？', exact: true }).waitFor()
+  await page.getByRole('dialog', { name: '拉取提示词并替换六页？', exact: true }).waitFor()
   await page.getByRole('button', { name: '取消', exact: true }).click(); assert.equal(await showRewrite(), failedDraft)
   await pull.click(); await page.getByRole('button', { name: '确认拉取', exact: true }).click()
-  await page.getByText(/已拉取提示词/).waitFor(); assert.equal(await showRewrite(), failedDraft)
+  await page.getByText(/已从母版拉取六份提示词/).waitFor(); assert.equal(await showRewrite(), '母版规划\n{{已有开场}}\n{{开场方式}}')
+  await tab('红线禁止').click(); assert.equal(await editor.inputValue(), '母版红线'); await showRewrite()
   assert.equal((await puts()).length, beforePull)
-  checks.push('拉取先确认、取消保留草稿；成功保留话术规划且不自动保存')
+  checks.push('拉取先确认、取消保留草稿；成功更新红线和规划在内的六页且不自动保存')
+  for(const flag of ['failRender','incompleteRender']){
+    await editor.fill('失败时保留规划');await page.evaluate(flag=>window.fixture[flag]=true,flag)
+    await pull.click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.getByText('拉取未完成',{exact:true}).waitFor();assert.equal(await showRewrite(),'失败时保留规划')
+    await tab('红线禁止').click();assert.equal(await editor.inputValue(),'母版红线');await showRewrite();assert.equal((await puts()).length,beforePull)
+  }
+  checks.push('拉取失败或六份返回缺项整体保留原草稿，避免只更新部分文本框')
   await editor.fill(''); await savePrompt(); await switchTo(5); await switchTo(4); assert.equal(await showRewrite(), '')
   checks.push('显式清空规划后仍保存空值，不复活上一份文本')
   await page.evaluate(() => { window.fixture.documents[4].rewrite_planning_md = '隐藏页读取的规划'; sessionStorage.setItem('rewrite-documents', JSON.stringify(window.fixture.documents)) })
@@ -127,6 +154,27 @@ try {
   await switchTo(5); await page.evaluate(() => window.fixture.holdRead = true); await page.evaluate(() => window.fixture.view.setPlan(4)); await page.waitForFunction(() => !!window.fixture.releaseRead)
   await switchTo(5); await page.evaluate(() => window.fixture.releaseRead()); await page.waitForFunction(() => !window.fixture.view.loading()); assert.equal(await showRewrite(), '方案5现有规划正文\n{{已有开场}}')
   checks.push('旧方案迟到读取不串写新方案规划')
+  await page.evaluate(()=>window.fixture.showTemplates.value=true)
+  await page.getByRole('heading',{name:'提示词维护',exact:true}).waitFor()
+  const templateEditor=page.locator('#prompt-template-content'), saveTemplates=page.getByRole('button',{name:'保存母版',exact:true})
+  await templateEditor.locator('xpath=self::*[not(@readonly)]').waitFor()
+  const updatedTemplates={persona_md:'  更新人设\n😀  ',facts_md:'更新后的事实规则',red_lines_md:'  更新红线  ',speech_requirements_md:'更新主线',interaction_requirements_md:'更新互动',rewrite_planning_md:'  更新规划\n{{已有开场}}\n{{开场方式}}  '}
+  const templateLabels={persona_md:'主播人设',facts_md:'事实依据',red_lines_md:'红线禁止',speech_requirements_md:'直播话术要求',interaction_requirements_md:'互动回答要求',rewrite_planning_md:'话术规划'}
+  for(const [key,value]of Object.entries(updatedTemplates)){await page.getByRole('button',{name:templateLabels[key],exact:true}).click();await templateEditor.fill(value);assert.equal(await templateEditor.evaluate(el=>getComputedStyle(el).fontSize),'20px')}
+  await page.evaluate(()=>window.fixture.failTemplateSave=true);await saveTemplates.click();await page.getByRole('alert').filter({hasText:'母版保存失败'}).waitFor();assert.equal(await templateEditor.inputValue(),updatedTemplates.rewrite_planning_md)
+  await saveTemplates.click();await page.getByRole('status').filter({hasText:'六份母版已保存'}).waitFor();assert.deepEqual(await page.evaluate(()=>window.fixture.templates),updatedTemplates)
+  await templateEditor.fill('并发失败草稿');await page.evaluate(()=>window.fixture.templateRevision='c'.repeat(64));await saveTemplates.click();await page.getByRole('alert').filter({hasText:'其他人修改'}).waitFor();assert.equal(await templateEditor.inputValue(),'并发失败草稿')
+  await page.getByRole('button',{name:'重新读取',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();assert.equal(await templateEditor.inputValue(),'并发失败草稿')
+  await page.getByRole('button',{name:'重新读取',exact:true}).click();await page.getByRole('button',{name:'确认读取',exact:true}).click();await templateEditor.locator('xpath=self::*[not(@readonly)]').waitFor();assert.equal(await templateEditor.inputValue(),updatedTemplates.rewrite_planning_md)
+  checks.push('维护六份母版逐字保存回显，20px；失败/并发冲突保留草稿，重新读取先确认')
+  await page.locator('.prompt-templates').screenshot({path:output+'/templates-desktop.png'})
+  await page.setViewportSize({width:390,height:900});const templateSize=await page.locator('.prompt-templates').evaluate(el=>({scroll:el.scrollWidth,client:el.clientWidth}));assert.ok(templateSize.scroll<=templateSize.client+1,JSON.stringify(templateSize));await page.locator('.prompt-templates').screenshot({path:output+'/templates-mobile.png'});await page.setViewportSize({width:1600,height:1100})
+  await page.evaluate(()=>window.fixture.showTemplates.value=false);await open();await ready();await switchTo(4)
+  const beforeAdopt=(await puts()).length
+  await page.getByRole('button',{name:'拉取提示词',exact:true}).click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.getByText(/已从母版拉取六份/).waitFor()
+  for(const[key,value]of Object.entries(updatedTemplates)){await tab(templateLabels[key]).click();assert.equal(await editor.inputValue(),key==='facts_md'?value+'\n实际方案4商品卡和正式事实':value)}
+  assert.equal((await puts()).length,beforeAdopt);await savePrompt();assert.equal((await puts()).at(-1).body.rewrite_planning_md,updatedTemplates.rewrite_planning_md)
+  checks.push('维护后返回方案显式拉取六份新母版，事实按方案填充，顶部保存才采用')
   await switchTo(4); await showRewrite()
   assert.equal(await editor.evaluate(el => getComputedStyle(el).fontSize), '20px')
   await page.locator('.plan-prompt-editor').screenshot({ path: output + '/desktop.png' })

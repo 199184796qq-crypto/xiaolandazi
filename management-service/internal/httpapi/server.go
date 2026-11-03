@@ -207,6 +207,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tenants", s.listTenants)
 	mux.HandleFunc("GET /api/v1/system/public-config", s.systemPublicConfig)
 	mux.HandleFunc("GET /api/v1/system/settings", s.systemSettingsDashboard)
+	mux.HandleFunc("GET /api/v1/system/plan-prompt-templates", s.planPromptTemplatesGet)
+	mux.HandleFunc("PUT /api/v1/system/plan-prompt-templates", s.planPromptTemplatesPut)
 	mux.HandleFunc("GET /api/v1/system/live-cost-settings", s.systemLiveCostSettingsGet)
 	mux.HandleFunc("GET /api/v1/system/anchor-voice-cache-policy", s.systemAnchorVoiceCachePolicyGet)
 	mux.HandleFunc("GET /api/v1/system/speech-library-policy", s.speechLibraryPolicyGet)

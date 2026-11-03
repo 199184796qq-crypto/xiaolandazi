@@ -280,6 +280,7 @@ const navSections = computed<NavSection[]>(() => {
       {
         label: '营销运维',
         items: [
+          navItem('提示词维护', '/operations/live/prompt-templates', '词', ['plan-prompt-templates']),
           navItem('直播运维', '/operations/live', '▣', ['live-hub', 'live-monitor', 'live-events', 'live-room-quotas', 'live-user-voice-cache', 'live-strategy', 'live-analysis-settings', 'live-devices', 'rooms', 'rooms-list', 'room-detail']),
           navItem('活动营销', '/operations/live/marketing', '营', ['live-activity-marketing', 'commercial-membership-plans', 'commercial-membership-simulator', 'commercial-ai-time', 'commercial-marketing', 'commercial-marketing-tools', 'commercial-marketing-channels', 'commercial-marketing-analytics', 'commercial-time-cards', 'commercial-device-products', 'commercial-beans', 'commercial-referrals', 'invitations']),
         ],
@@ -445,6 +446,10 @@ const navSections = computed<NavSection[]>(() => {
       !workItems.some((item) => item.to === '/system/settings')
     ) {
       workItems.push(navItem('系统设置', '/system/settings', '设', systemSettingsRouteNames))
+    }
+
+    if (hasStaffPermission('system.settings.liveops.manage')) {
+      workItems.push(navItem('提示词维护', '/operations/live/prompt-templates', '词', ['plan-prompt-templates']))
     }
 
     if (hasStaffPermission('finance.dashboard.view') && !workItems.some((item) => item.to === '/staff/finance/receipts')) {

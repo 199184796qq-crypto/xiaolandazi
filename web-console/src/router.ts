@@ -172,6 +172,7 @@ const departmentRouteOwners: Record<string, string> = {
   'commercial-ai-time': 'live_operations',
   'live-room-quotas': 'live_operations',
   'live-user-voice-cache': 'live_operations',
+  'plan-prompt-templates': 'live_operations',
   'live-monitor': 'live_operations',
   'live-events': 'live_operations',
   'live-strategy': 'live_operations',
@@ -581,6 +582,12 @@ export const router = createRouter({
       path: '/operations/live/user-voice-cache',
       name: 'live-user-voice-cache',
       component: () => import('./views/UserVoiceCacheSettingsView.vue'),
+      meta: { staffPermission: 'system.settings.liveops.manage' },
+    },
+    {
+      path: '/operations/live/prompt-templates',
+      name: 'plan-prompt-templates',
+      component: () => import('./views/PlanPromptTemplatesView.vue'),
       meta: { staffPermission: 'system.settings.liveops.manage' },
     },
     {

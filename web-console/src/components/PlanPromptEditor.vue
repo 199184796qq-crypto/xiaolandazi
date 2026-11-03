@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { renderLiveAgentPlanPrompt } from '../api'
 import { compilePlanPrompts, planPromptTabs, planPromptValidation, type PlanPromptSections } from '../planPrompt'
 
@@ -31,6 +31,13 @@ const unavailable = computed(() => !props.planId || !props.loaded || busy.value)
 let mounted = true
 let requestSequence = 0
 
+watch(() => props.saving, saving => {
+  if (saving) {
+    generationError.value = ''
+    generationNotice.value = ''
+  }
+})
+
 onBeforeUnmount(() => {
   mounted = false
   requestSequence++
@@ -56,22 +63,23 @@ async function generate() {
     const result = await renderLiveAgentPlanPrompt(planId)
     if (!current()) return
     const sections = result.sections
-    const filled: Partial<PlanPromptSections> = sections
-      ? {
-          persona_md: sections.persona ?? '',
-          facts_md: sections.facts ?? result.facts_md ?? '',
-          speech_requirements_md: sections.speech ?? '',
-          interaction_requirements_md: sections.interaction ?? '',
-        }
-      : { facts_md: result.facts_md }
-    if (!sections && typeof result.facts_md !== 'string') throw new Error('未返回提示词内容，当前内容已保留，请重试')
-    const next = { ...content.value, ...filled }
-    const error = planPromptValidation(next, rewritePlanning.value)
+    if (!sections || typeof sections.persona !== 'string' || typeof sections.facts !== 'string' ||
+        typeof sections.redlines !== 'string' || typeof sections.speech !== 'string' ||
+        typeof sections.interaction !== 'string' || typeof result.rewrite_planning_md !== 'string') {
+      throw new Error('未返回完整的六份提示词，当前内容已保留，请重试')
+    }
+    const next: PlanPromptSections = {
+      persona_md: sections.persona, facts_md: sections.facts, red_lines_md: sections.redlines,
+      speech_requirements_md: sections.speech, interaction_requirements_md: sections.interaction,
+    }
+    const planning = result.rewrite_planning_md
+    const error = planPromptValidation(next, planning)
     if (error) throw new Error(error)
     content.value = next
+    rewritePlanning.value = planning
     activeTab.value = 'persona_md'
     generationNotice.value = next.facts_md.trim() || next.persona_md.trim()
-      ? '已拉取提示词，话术规划已保留；检查后请点击顶部“保存方案”。'
+      ? '已从母版拉取六份提示词；检查后请点击顶部“保存方案”。'
       : '当前方案没有可用商品卡、福利或事实，事实依据已清空；检查后请点击顶部“保存方案”。'
   } catch (err) {
     if (current()) generationError.value = err instanceof Error ? err.message : '拉取提示词失败，请重试'
@@ -85,7 +93,7 @@ async function generate() {
 
 function requestRegeneration() {
   if (unavailable.value || confirmation.value?.open) return
-  if (!content.value.facts_md.trim()) { void generate(); return }
+  if (![...Object.values(content.value), rewritePlanning.value].some(text => text.trim())) { void generate(); return }
   confirmation.value?.showModal()
   cancelButton.value?.focus()
 }
@@ -119,7 +127,7 @@ function backdrop(event: MouseEvent) {
     <header class="plan-prompt-heading">
       <div>
         <h3 id="plan-prompt-heading">方案提示词</h3>
-        <p>五页原文与话术规划原样回显；拉取提示词仅更新前五页。修改后请点击顶部“保存方案”，保存时合成话术修改元提示词。</p>
+        <p>拉取六份母版到对应文本框，事实依据按当前方案资料填充。修改后请点击顶部“保存方案”。</p>
       </div>
       <div class="plan-prompt-actions">
           <button ref="regenerateButton" type="button" class="plan-prompt-primary" :disabled="unavailable" @click="requestRegeneration">{{ generating ? '拉取中…' : '拉取提示词' }}</button>
@@ -135,7 +143,7 @@ function backdrop(event: MouseEvent) {
     <p v-if="generationNotice || notice" class="plan-prompt-notice" role="status">{{ generationNotice || notice }}</p>
     <div v-if="loading" class="plan-prompt-skeleton" role="status">
       <p>正在读取当前方案提示词…</p>
-      <span v-for="index in 5" :key="index" aria-hidden="true"></span>
+      <span v-for="index in 6" :key="index" aria-hidden="true"></span>
     </div>
     <div v-else class="plan-prompt-content">
       <details v-if="legacyPrompt" class="plan-prompt-preview">
@@ -162,8 +170,8 @@ function backdrop(event: MouseEvent) {
 
     <Teleport to="body">
       <dialog ref="confirmation" class="plan-prompt-confirm" aria-labelledby="plan-prompt-confirm-heading" aria-describedby="plan-prompt-confirm-description" @cancel.prevent="cancelRegeneration" @click="backdrop">
-        <h2 id="plan-prompt-confirm-heading">拉取提示词并替换前五页？</h2>
-        <p id="plan-prompt-confirm-description">将根据当前方案资料更新前五页提示词。前五页未保存的修改都会被替换，话术规划保留当前内容；拉取后仍需点击顶部“保存方案”。</p>
+        <h2 id="plan-prompt-confirm-heading">拉取提示词并替换六页？</h2>
+        <p id="plan-prompt-confirm-description">六个文本框将分别从母版重新拉取，未保存的修改（包括话术规划）都会被替换。事实依据仍使用当前方案资料；拉取后需点击顶部“保存方案”。</p>
         <footer><button ref="cancelButton" type="button" class="plan-prompt-secondary" @click="cancelRegeneration">取消</button><button type="button" class="plan-prompt-primary" @click="confirmRegeneration">确认拉取</button></footer>
       </dialog>
     </Teleport>

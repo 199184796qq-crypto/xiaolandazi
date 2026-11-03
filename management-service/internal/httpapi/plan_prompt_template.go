@@ -1,15 +1,12 @@
 package httpapi
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
-	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 )
 
@@ -88,26 +85,26 @@ func (s *Server) liveAgentPlanPromptRender(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	master, err := interactionpolicy.Read("plan-prompt-master.md")
+	defaults, err := installedPlanPromptTemplates()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取提示词母版失败")
 		return
 	}
+	templates, err := s.store.GetPlanPromptTemplates(ctx, defaults)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取提示词母版失败，当前内容已保留")
+		return
+	}
 	data := planPromptRenderData{PlanName: plan.Name, Links: links, Benefits: benefits, Facts: facts}
-	text := renderPlanPrompt(string(master), data)
-	// 先用带标记的母版切分区，再把标记剥掉作为提示词正文：标记不能进模型输入。
-	sections := splitPlanPromptSections(text)
-	text = stripPlanPromptSectionMarkers(text)
-	sections = stripPlanPromptSectionMarkerValues(sections)
-	// 事实依据保留母版原文（商品卡、活动福利、事实依据、数据使用规则都在），
-	// 只把【事实依据】那一段的正文换成方案里的真实事实，规则一条都不删。
-	sections["facts"] = fillPlanPromptFactsBlock(sections["facts"], planFactBlock(data.Facts))
+	sections := renderPlanPromptTemplates(templates, data)
+	text := strings.Join([]string{sections["persona"], sections["facts"], sections["redlines"], sections["speech"], sections["interaction"]}, "\n\n")
 	factsDigest := renderPlanPromptFacts(data)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"prompt_md":     text,
-		"facts_md":      factsDigest,
-		"sections":      sections,
-		"master_sha256": fmt.Sprintf("%x", sha256.Sum256(master)),
+		"prompt_md":           text,
+		"facts_md":            factsDigest,
+		"sections":            sections,
+		"rewrite_planning_md": templates.RewritePlanningMD,
+		"master_sha256":       templates.Revision(),
 	})
 }
 
@@ -333,9 +330,9 @@ var planPromptSectionMarker = regexp.MustCompile(`^<!--\s*分区[:：]\s*(.+?)\s
 
 // planPromptSectionAliases 只在母版没有分区标记的旧版本里使用。
 var planPromptSectionAliases = map[string]string{
-	"主播人设":    "persona",
-	"事实依据":    "facts",
-	"红线禁止":    "redlines",
+	"主播人设":   "persona",
+	"事实依据":   "facts",
+	"红线禁止":   "redlines",
 	"直播话术要求": "speech",
 	"互动回答要求": "interaction",
 }
@@ -344,20 +341,20 @@ var planPromptSectionAliases = map[string]string{
 //
 // 母版是整篇的，但页面按四块编辑，所以按标题把渲染结果切回去。
 var planPromptSectionTitles = map[string]string{
-	"身份设定":       "persona",
-	"核心定位":       "persona",
-	"性格 & 语气设定":  "persona",
-	"直播目标":       "persona",
-	"商品卡":        "facts",
-	"活动福利":       "facts",
-	"事实依据":       "facts",
-	"数据使用规则":     "facts",
-	"称呼规则":       "speech",
-	"用词消歧":       "speech",
-	"话术规则":       "speech",
-	"互动约束":       "interaction",
-	"禁忌边界":       "redlines",
-	"输出格式要求":     "interaction",
+	"身份设定":      "persona",
+	"核心定位":      "persona",
+	"性格 & 语气设定": "persona",
+	"直播目标":      "persona",
+	"商品卡":       "facts",
+	"活动福利":      "facts",
+	"事实依据":      "facts",
+	"数据使用规则":    "facts",
+	"称呼规则":      "speech",
+	"用词消歧":      "speech",
+	"话术规则":      "speech",
+	"互动约束":      "interaction",
+	"禁忌边界":      "redlines",
+	"输出格式要求":    "interaction",
 }
 
 // splitPlanPromptSections 按【标题】把整篇提示词切成四块原文。

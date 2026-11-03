@@ -4465,15 +4465,29 @@ export function annotatePlanText(planId: number, text: string) {
 export type PlanPromptRenderSections = {
   persona?: string
   facts?: string
+  redlines?: string
   speech?: string
   interaction?: string
 }
 
 export function renderLiveAgentPlanPrompt(planId: number) {
-  return request<{ facts_md: string; prompt_md: string; sections?: PlanPromptRenderSections; master_sha256?: string }>(
+  return request<{ facts_md: string; prompt_md: string; sections?: PlanPromptRenderSections; rewrite_planning_md?: string; master_sha256?: string }>(
     '/api/v1/live-agent-plans/' + planId + '/prompt/render',
     { method: 'POST', body: JSON.stringify({}), suppressErrorDialog: true },
   )
+}
+
+export type PlanPromptTemplates = import('./planPrompt').PlanPromptSections & { rewrite_planning_md: string }
+export type PlanPromptTemplatesDocument = { templates: PlanPromptTemplates; revision: string }
+
+export function getPlanPromptTemplates() {
+  return request<PlanPromptTemplatesDocument>('/api/v1/system/plan-prompt-templates', { method: 'GET', suppressErrorDialog: true })
+}
+
+export function savePlanPromptTemplates(templates: PlanPromptTemplates, revision: string) {
+  return request<PlanPromptTemplatesDocument>('/api/v1/system/plan-prompt-templates', {
+    method: 'PUT', body: JSON.stringify({ templates, revision }), suppressErrorDialog: true,
+  })
 }
 
 export function guideSpeechMiner(
