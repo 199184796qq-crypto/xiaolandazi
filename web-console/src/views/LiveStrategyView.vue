@@ -208,41 +208,6 @@ async function loadPlanPrompt() {
     if (current()) planPromptLoading.value = false
   }
 }
-async function savePlanPrompt() {
-  const planId = Number(currentRoomPlanId.value || 0)
-  if (!planId) {
-    planPromptError.value = '请先选择直播方案'
-    return
-  }
-  if (planPromptLoadedPlan.value !== planId || planPromptLoading.value || planPromptSaving.value) return
-  if (planPromptLegacy.value && !Object.values(planPromptSections.value).some(text => text.trim())) {
-    planPromptError.value = '请先填写四页内容；旧版完整提示词仍单独保留。'
-    return
-  }
-  const validation = planPromptValidation(planPromptSections.value, planRewritePlanning.value)
-  if (validation) { planPromptError.value = validation; return }
-  const epoch = planAssetScopeEpoch
-  const promptEpoch = planPromptScopeEpoch
-  const current = () => epoch === planAssetScopeEpoch && promptEpoch === planPromptScopeEpoch && currentRoomPlanId.value === planId
-  planPromptSaving.value = true
-  planPromptError.value = ''
-  planPromptNotice.value = ''
-  try {
-    const original = readPlanPromptSections(planPromptSections.value)
-    const result = await saveLiveAgentPlanPrompt(planId, original, planRewritePlanning.value)
-    if (!current()) return
-    planPromptSections.value = readPlanPromptSections(result.sections)
-    planRewritePlanning.value = readPlanRewritePlanning(result.rewrite_planning_md)
-    planPromptLegacy.value = result.legacy_prompt_md || ''
-    planPromptLoadedPlan.value = planId
-    planPromptNotice.value = '方案提示词已保存，已生成主播互动元提示词和主播话术生成提示词'
-    planPromptPartialSaveNotice.value = ''
-  } catch (err) {
-    if (current()) planPromptError.value = err instanceof Error ? err.message : '方案提示词保存失败'
-  } finally {
-    if (current()) planPromptSaving.value = false
-  }
-}
 watch(currentRoomPlanId, () => {
   planPromptScopeEpoch++
   planPromptSequence++
@@ -3431,7 +3396,7 @@ async function persistPlanPromptIfAny(planId: number, original?: PlanPromptDraft
     planRewritePlanning.value = readPlanRewritePlanning(result.rewrite_planning_md)
     planPromptLegacy.value = result.legacy_prompt_md || ''
     planPromptLoadedPlan.value = planId
-    planPromptNotice.value = '方案提示词已保存，已生成主播互动元提示词和主播话术生成提示词'
+    planPromptNotice.value = '方案提示词已随方案保存，三份元提示词已更新'
     planPromptPartialSaveNotice.value = ''
   } finally {
     if (current()) planPromptSaving.value = false
@@ -3465,7 +3430,7 @@ async function savePlanOneClick() {
       } catch (err) {
         if (current()) {
           planPromptError.value = err instanceof Error ? err.message : '方案提示词保存失败'
-          planPromptPartialSaveNotice.value = `方案版本已保存，但方案提示词未保存：${planPromptError.value}。请到“方案提示词”重试保存。`
+          planPromptPartialSaveNotice.value = `方案版本已保存，但方案提示词未保存：${planPromptError.value}。草稿已保留，请重试顶部“保存方案”。`
           fullShowNotice.value = planPromptPartialSaveNotice.value
         }
       }
@@ -5664,7 +5629,6 @@ onBeforeUnmount(() => {
             :legacy-prompt="planPromptLegacy"
             :error="planPromptError"
             :notice="planPromptNotice"
-            @save="savePlanPrompt"
             @retry="loadPlanPrompt"
             @clear-feedback="planPromptError = ''; planPromptNotice = ''"
           />

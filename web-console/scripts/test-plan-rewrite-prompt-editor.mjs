@@ -71,8 +71,13 @@ try {
   const switchTo = async id => { await page.evaluate(id => window.fixture.view.setPlan(id), id); await page.waitForFunction(id => window.fixture.view.loaded() === id && !window.fixture.view.loading() && !window.fixture.view.hydrating(), id) }
   const puts = () => page.evaluate(() => window.fixture.calls.filter(c => c.method === 'PUT' && c.path.endsWith('/prompt')))
   const showRewrite = async () => { await tab('话术规划').click(); return editor.inputValue() }
-  const savePrompt = async () => { await page.getByRole('button', { name: '保存方案提示词', exact: true }).click(); await page.getByText('方案提示词已保存，已生成主播互动元提示词和主播话术生成提示词', { exact: true }).waitFor() }
+  const savePrompt = async () => { await ready(); await page.locator('#plan-save-button').click(); await page.getByText('方案提示词已随方案保存，三份元提示词已更新', { exact: true }).waitFor(); await ready() }
   await page.goto(server.resolvedUrls.local[0] + '__rewrite-editor'); await page.waitForFunction(() => window.fixture?.view?.plan() === 4); await open(); await ready()
+  assert.equal(await page.getByRole('button', { name: '保存方案提示词', exact: true }).count(), 0)
+  assert.equal(await page.getByRole('button', { name: '重新生成', exact: true }).count(), 0)
+  assert.equal(await page.locator('.plan-prompt-actions button').count(), 1)
+  await page.getByRole('button', { name: '拉取提示词', exact: true }).waitFor()
+  checks.push('只保留一个拉取提示词按钮，单独保存入口已移除')
   assert.deepEqual(await page.getByRole('tab').allTextContents(), ['主播人设','事实依据','红线禁止','直播话术要求','互动回答要求','话术规划'])
   assert.equal(await showRewrite(), '方案4现有规划正文\n{{已有开场}}')
   assert.ok(!(await editor.inputValue()).includes('【事实依据】')); checks.push('话术规划紧跟互动回答要求，只回显规划原文，完整元提示词不混进编辑框')
@@ -82,7 +87,7 @@ try {
   assert.equal((await puts()).at(-1).body.sections.interaction_requirements_md, '互动专用要求')
   await switchTo(5); assert.equal(await showRewrite(), '方案5现有规划正文\n{{已有开场}}'); await switchTo(4); assert.equal(await showRewrite(), draft)
   await page.reload(); await page.waitForFunction(() => window.fixture?.view?.plan() === 4); await open(); await ready(); assert.equal(await showRewrite(), draft)
-  checks.push('单独保存、切换方案和刷新均逐字回显：空白、换行、占位符和 Unicode 保持，另外两份提示词独立')
+  checks.push('顶部统一保存、切换方案和刷新均逐字回显：空白、换行、占位符和 Unicode 保持，另外两份提示词独立')
   await tab('事实依据').click(); await editor.fill('更新后的方案事实：八十七元六角'); await savePrompt(); assert.equal(await showRewrite(), draft)
   const compiledDoc = await page.evaluate(() => window.fixture.documents[4])
   assert.ok(compiledDoc.rewrite_prompt_md.startsWith('你是直播话术改写器。'))
@@ -104,10 +109,15 @@ try {
   const before = (await puts()).length
   await page.evaluate(() => window.fixture.failVersion = true); await page.locator('#plan-save-button').click(); await ready(); assert.equal((await puts()).length, before); assert.equal(await showRewrite(), failedDraft)
   checks.push('提示词保存失败保留草稿并可重试；正式版本失败不继续覆盖规划')
-  await page.getByRole('button', { name: '重新生成', exact: true }).click()
-  await page.getByRole('dialog', { name: '重新生成前五页文本框？', exact: true }).waitFor()
-  await page.getByRole('button', { name: '确认重新生成', exact: true }).click(); await page.getByText(/已按模板重新生成/).waitFor(); assert.equal(await showRewrite(), failedDraft)
-  checks.push('重新生成前五页保留手工话术规划，不用母版覆盖修改元提示词')
+  const beforePull = (await puts()).length
+  const pull = page.getByRole('button', { name: '拉取提示词', exact: true })
+  await pull.click()
+  await page.getByRole('dialog', { name: '拉取提示词并替换前五页？', exact: true }).waitFor()
+  await page.getByRole('button', { name: '取消', exact: true }).click(); assert.equal(await showRewrite(), failedDraft)
+  await pull.click(); await page.getByRole('button', { name: '确认拉取', exact: true }).click()
+  await page.getByText(/已拉取提示词/).waitFor(); assert.equal(await showRewrite(), failedDraft)
+  assert.equal((await puts()).length, beforePull)
+  checks.push('拉取先确认、取消保留草稿；成功保留话术规划且不自动保存')
   await editor.fill(''); await savePrompt(); await switchTo(5); await switchTo(4); assert.equal(await showRewrite(), '')
   checks.push('显式清空规划后仍保存空值，不复活上一份文本')
   await page.evaluate(() => { window.fixture.documents[4].rewrite_planning_md = '隐藏页读取的规划'; sessionStorage.setItem('rewrite-documents', JSON.stringify(window.fixture.documents)) })
