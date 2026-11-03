@@ -76,6 +76,8 @@ type scriptPolicyCycle struct {
 }
 type scriptRoomPolicy struct {
 	Tenant, Room, Plan int64
+	Session            int64                         `json:"session"`
+	SessionStartedAt   time.Time                     `json:"session_started_at"`
 	Cycles             map[string]*scriptPolicyCycle `json:"cycles"`
 	Progress           map[string]scriptPCMProgress  `json:"progress"`
 	Spans              []scriptPCMSpan               `json:"spans"`
@@ -83,6 +85,29 @@ type scriptRoomPolicy struct {
 	ForecastRate       float64                       `json:"forecast_rate"`
 	SupplyShortage     bool                          `json:"supply_shortage"`
 	UpdatedAt          int64                         `json:"updated_at"`
+}
+
+func beginScriptRoomPolicy(root string, tenant, room, plan, session int64) error {
+	path := scriptRoomPolicyPath(root, tenant, room, plan)
+	release, err := sharedfilelock.Lock(context.Background(), path+".lock")
+	if err != nil {
+		return err
+	}
+	defer release()
+	st, err := readScriptRoomPolicy(path, tenant, room, plan)
+	if err != nil {
+		return err
+	}
+	if st.Session == session {
+		return nil
+	}
+	st.Session = session
+	st.SessionStartedAt = time.Time{}
+	return writeVolcengineJSON(path, st)
+}
+func scriptPolicyRoomWarmup(root string, tenant, room, plan int64, now time.Time) bool {
+	st, err := readScriptRoomPolicy(scriptRoomPolicyPath(root, tenant, room, plan), tenant, room, plan)
+	return err == nil && st.Session > 0 && (st.SessionStartedAt.IsZero() || now.Sub(st.SessionStartedAt) < 90*time.Minute)
 }
 
 func scriptContentID(text string) string {
@@ -436,6 +461,9 @@ func recordScriptPolicyPCM(root string, tenant, room, plan int64, track scriptDe
 		st.Spans = append(st.Spans, span)
 	}
 	st.Progress[track.TrackID] = scriptPCMProgress{Played: played, Seen: now.UnixMilli()}
+	if st.Session > 0 && st.SessionStartedAt.IsZero() {
+		st.SessionStartedAt = time.UnixMilli(start).UTC()
+	}
 	for _, cycle := range st.Cycles {
 		if cycle.Pending[track.InstanceID] == content {
 			cycle.Used[content] = true

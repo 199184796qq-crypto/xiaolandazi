@@ -94,7 +94,7 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	if unitsErr != nil {
 		return
 	}
-	index, wanted, retired, policyErr := scriptPolicyGeneration(recordingCacheMediaRoot(), v, units, time.Now().UTC(), true)
+	index, wanted, retired, policyErr := scriptPolicyGeneration(recordingCacheMediaRoot(), v, units, time.Now().UTC(), true, scriptPolicyRoomWarmup(recordingCacheMediaRoot(), tenant, room, v.PlanID, time.Now().UTC()))
 	if policyErr != nil || index < 0 || units[index].poolID() != unit.poolID() {
 		return
 	}

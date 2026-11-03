@@ -98,7 +98,7 @@ func scriptPoolPolicyPath(root string, v model.LiveAgentPlanVersion) string {
 
 // One finite batch belongs to the whole plan/voice, not independently to every
 // piece. The caller holds a plan-wide generation lock through synthesis/commit.
-func scriptPolicyGeneration(root string, v model.LiveAgentPlanVersion, units []volcengineScriptUnit, now time.Time, attempt bool) (index, cap int, retire string, err error) {
+func scriptPolicyGeneration(root string, v model.LiveAgentPlanVersion, units []volcengineScriptUnit, now time.Time, attempt bool, reuseWarmup ...bool) (index, cap int, retire string, err error) {
 	index = -1
 	path := scriptPoolPolicyPath(root, v)
 	release, e := sharedfilelock.Lock(context.Background(), path+".lock")
@@ -128,6 +128,13 @@ func scriptPolicyGeneration(root string, v model.LiveAgentPlanVersion, units []v
 	}
 	if st.InitialAudioMS == 0 {
 		st.InitialAudioMS = inventory
+	}
+	// A fresh room reuses a sufficient warm pool even when aggregate historical
+	// play counts already qualify it for refresh. Other mature rooms may still
+	// service their shared batch; this room does not buy an unnecessary one.
+	if p.Full && len(reuseWarmup) > 0 && reuseWarmup[0] {
+		err = writeVolcengineJSON(path, st)
+		return
 	}
 	// Five minutes of initial runway; replenish gradually toward the 80-minute
 	// target in 75 minutes. Existing inventory is reused, not purchased again.
@@ -257,7 +264,7 @@ func (s *Server) tickScriptPoolPolicy(ctx context.Context, tenant, room int64, v
 	}
 	scriptPolicyPoll.last[key] = time.Now()
 	scriptPolicyPoll.Unlock()
-	index, _, _, err := scriptPolicyGeneration(recordingCacheMediaRoot(), v, units, time.Now().UTC(), false)
+	index, _, _, err := scriptPolicyGeneration(recordingCacheMediaRoot(), v, units, time.Now().UTC(), false, scriptPolicyRoomWarmup(recordingCacheMediaRoot(), tenant, room, v.PlanID, time.Now().UTC()))
 	if err != nil || index < 0 {
 		return
 	}

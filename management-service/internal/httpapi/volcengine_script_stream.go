@@ -254,6 +254,9 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		cursor.RewriteSnapshot = &frozen
 	}
 	v = withScriptRewriteSnapshot(v, *cursor.RewriteSnapshot)
+	if err = beginScriptRoomPolicy(recordingCacheMediaRoot(), tenant, room, v.PlanID, session); err != nil {
+		return err
+	}
 	save := func() error { return writeVolcengineJSON(checkpoint, cursor) }
 	if err = save(); err != nil {
 		return err

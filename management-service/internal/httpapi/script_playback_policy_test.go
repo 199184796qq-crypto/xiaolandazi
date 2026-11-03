@@ -442,3 +442,53 @@ func TestPolicySingleModeAllocatesByExposureAndForecastUsesQueue(t *testing.T) {
 		t.Fatal("buffered duplicate hidden", rate)
 	}
 }
+
+func TestPolicyNewSessionWarmPoolDoesNotPurchaseRefresh(t *testing.T) {
+	root := t.TempDir()
+	v := policyVersion()
+	u := volcengineScriptUnit{Pool: "p", Text: "原文"}
+	units := []volcengineScriptUnit{u}
+	at := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		text := fmt.Sprintf("旧缓存第%d版", i)
+		kind := scriptplay.KindRewrite
+		if i == 0 {
+			text = u.Text
+			kind = scriptplay.KindOriginal
+		}
+		policyFixture(t, root, v, u, int64(i+1), text, 16*60000, kind)
+	}
+	pool, _ := loadScriptVoicePool(root, 4, u.poolID())
+	for i := range pool.Versions {
+		pool.Versions[i].PlayCount = 4
+		pool.Versions[i].CompleteCount = 4
+	}
+	saveScriptVoicePool(root, 4, u.poolID(), pool)
+	if err := beginScriptRoomPolicy(root, 14, 29, 4, 99); err != nil {
+		t.Fatal(err)
+	}
+	if !scriptPolicyRoomWarmup(root, 14, 29, 4, at) {
+		t.Fatal("startup preparation counted as live time")
+	}
+	i, _, _, err := scriptPolicyGeneration(root, v, units, at, false, true)
+	if err != nil || i >= 0 {
+		t.Fatal("warm historical pool bought a new batch", i, err)
+	}
+	a, _ := scriptVersionAudio(root, u, v, pool.Versions[0])
+	policyConsume(t, root, v, a, 29, 99, 1, at)
+	if scriptPolicyRoomWarmup(root, 14, 29, 4, at.Add(91*time.Minute)) {
+		t.Fatal("warmup never ended")
+	}
+	i, _, _, err = scriptPolicyGeneration(root, v, units, at.Add(91*time.Minute), false, false)
+	if err != nil || i != 0 {
+		t.Fatal("mature refresh did not resume", i, err)
+	}
+	beginScriptRoomPolicy(root, 14, 29, 4, 100)
+	if !scriptPolicyRoomWarmup(root, 14, 29, 4, at.Add(92*time.Minute)) {
+		t.Fatal("new session inherited old warmup clock")
+	}
+	st, _ := readScriptRoomPolicy(scriptRoomPolicyPath(root, 14, 29, 4), 14, 29, 4)
+	if len(st.Spans) == 0 {
+		t.Fatal("new session erased rolling90 evidence")
+	}
+}
