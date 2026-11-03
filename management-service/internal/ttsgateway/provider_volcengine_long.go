@@ -23,7 +23,12 @@ import (
 
 // LongTextJob and the staging file are server-owned. No vendor URL or key is
 // persisted. Once submitted, retries query the same task, never submit again.
-type LongTextJob struct{ StatePath, SourceVoiceID, AccountID string }
+type LongTextJob struct {
+	StatePath, SourceVoiceID, AccountID string
+	// RecoveryWait bounds queries of an old unavailable task. A caller may
+	// retain its evidence and start a replacement after this attempt returns.
+	RecoveryWait time.Duration `json:"-"`
+}
 type SpeechWord struct {
 	Text  string  `json:"word"`
 	Start float64 `json:"startTime"`
@@ -175,6 +180,9 @@ func (p *volcengineProvider) synthesizeLongText(ctx context.Context, r Synthesiz
 	wait := p.config.LongMaxWait
 	if wait <= 0 {
 		wait = 30 * time.Minute
+	}
+	if !newTask && r.LongText.RecoveryWait > 0 && r.LongText.RecoveryWait < wait {
+		wait = r.LongText.RecoveryWait
 	}
 	// An accepted async task continues in the cloud after live cancellation.
 	// Drain it under the still-renewed account permit and retain the paid file;

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/sharedfilelock"
 	"livecompanion/management/internal/ttsgateway"
@@ -117,8 +118,8 @@ func applyVolcengineArchiveInfo(ctx context.Context, payload map[string]any) {
 	}
 }
 
-// The provider staging WAV is the paid immutable source. Even an OSS/archive
-// failure or stopping the live session cannot cause another submit for it.
+// Prefer the paid staging WAV/archive. An unrecoverable old task is retained
+// as evidence and replaced under the same paragraph lock, prioritizing supply.
 func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, session int64, version model.LiveAgentPlanVersion, unit volcengineScriptUnit, percent int, allowSynthesis bool) (volcengineCachedAudio, error) {
 	var empty volcengineCachedAudio
 	unlock, err := lockVolcengineParagraph(ctx, unit.Dir)
@@ -127,12 +128,12 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 	}
 	defer unlock()
 	indexPath := filepath.Join(unit.Dir, "cache.json")
-	cache, err := loadVolcengineParagraphCache(indexPath, unit.Key)
+	cache, err := loadRecoverableScriptCache(ctx, unit)
 	if err != nil {
 		return empty, err
 	}
 	if audio, ok := cache.Audio[percent]; ok {
-		if _, err = s.recordingStreamAssetURL(ctx, tenant, audio.AssetID); err == nil {
+		if _, err = s.recordingStreamAssetURL(ctx, tenant, audio.AssetID); err == nil && s.scriptAudioAvailable(ctx, tenant, audio.AssetID) {
 			return audio, nil
 		}
 		// Keep the index, but rebuild this missing archive from its paid source.
@@ -145,14 +146,15 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 		if base, exists := cache.Audio[100]; exists {
 			url, e := s.recordingStreamAssetURL(ctx, tenant, base.AssetID)
 			if e == nil {
-				path, e := downloadVolcengineCachedWAV(ctx, url, unit.Dir)
-				if e != nil {
-					return empty, e
+				work, finish := context.WithTimeout(ctx, scriptArchiveRecoveryTimeout)
+				path, e := downloadVolcengineCachedWAV(work, url, unit.Dir)
+				finish()
+				if e == nil {
+					defer os.Remove(path)
+					generated = ttsgateway.SynthesizeResponse{AudioFile: path, VoiceID: base.VoiceID}
+					ok = true
+					archivedSource = &base
 				}
-				defer os.Remove(path)
-				generated = ttsgateway.SynthesizeResponse{AudioFile: path, VoiceID: base.VoiceID}
-				ok = true
-				archivedSource = &base
 			}
 		}
 	}
@@ -166,7 +168,7 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 		if err = ctx.Err(); err != nil {
 			return empty, err
 		}
-		scope := liveCostCallScope{TenantID: tenant, RoomID: room, SessionID: session, PlanID: version.PlanID, Priority: "necessary", Reason: "高仿真话术原文长段首次合成", Key: fmt.Sprintf("volcengine-long:%d:%s", session, unit.Key)}
+		scope := liveCostCallScope{TenantID: tenant, RoomID: room, SessionID: session, PlanID: version.PlanID, Priority: "necessary", Reason: "高仿真话术长段合成或恢复补合成", Key: fmt.Sprintf("volcengine-long:%d:%s:%s", session, unit.Key, anchorcycle.ID())}
 		if parent := liveCostScope(ctx); parent.Priority == "optional" {
 			scope.Priority = "optional"
 			scope.Reason = parent.Reason
@@ -181,8 +183,26 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 		} else if statErr != nil {
 			return empty, statErr
 		}
-		generated, err = ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(ctx, scope), r)
+		_, stateErr := os.Stat(r.LongText.StatePath)
+		resumeOld := stateErr == nil
+		work := ctx
+		finish := func() {}
+		if resumeOld {
+			work, finish = context.WithTimeout(ctx, scriptArchiveRecoveryTimeout)
+			r.LongText.RecoveryWait = scriptArchiveRecoveryTimeout
+		}
+		generated, err = ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(work, scope), r)
+		finish()
 		release(ttsgateway.DefinitelyNotSent(err))
+		if err != nil && ctx.Err() == nil && resumeOld {
+			if e := retireUnavailableScriptFiles(ctx, unit, "job.json", "job.json.wav"); e != nil {
+				return empty, e
+			}
+			r.LongText.AccountID, r.LongText.RecoveryWait = "", 0
+			scope.Key = fmt.Sprintf("volcengine-long:%d:%s:%s", session, unit.Key, anchorcycle.ID())
+			log.Printf("script old cloud task unavailable key=%s; synthesize replacement", shortKey(unit.Key))
+			generated, err = ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(ctx, scope), r)
+		}
 		if err != nil {
 			return empty, err
 		}
@@ -194,6 +214,11 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 	}
 	duration, err := volcengineWAVDuration(generated.AudioFile)
 	if err != nil {
+		if archivedSource == nil {
+			if e := retireUnavailableScriptFiles(ctx, unit, "job.json", "job.json.wav"); e != nil {
+				return empty, e
+			}
+		}
 		return empty, err
 	}
 	var timeline []model.LiveAgentPlanTimelineSegment

@@ -128,7 +128,7 @@ func TestPlanWarmupPreservesExistingRoomAndIsolatesChangedVoice(t *testing.T) {
 	}
 }
 
-func TestPlanWarmupDoesNotRepurchaseUncertainOrCorruptSource(t *testing.T) {
+func TestPlanWarmupUnavailableSourceFallsThroughToForegroundRecovery(t *testing.T) {
 	for _, native := range []bool{false, true} {
 		t.Run(map[bool]string{false: "qwen", true: "volcengine"}[native], func(t *testing.T) {
 			t.Setenv("MEDIA_ROOT", t.TempDir())
@@ -141,8 +141,8 @@ func TestPlanWarmupDoesNotRepurchaseUncertainOrCorruptSource(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
 					t.Fatal(err)
 				}
-				if err := (&Server{}).hydrateFirstParagraphFromPlan(t.Context(), 14, 29, v, u); err == nil {
-					t.Fatal("uncertain paid intent silently fell through to fresh purchase", body)
+				if err := (&Server{}).hydrateFirstParagraphFromPlan(t.Context(), 14, 29, v, u); err != nil {
+					t.Fatal("optional damaged prewarm blocked foreground recovery", err)
 				}
 				if _, err := os.Stat(u.Dir); !errors.Is(err, os.ErrNotExist) {
 					t.Fatal("incomplete source copied into room")

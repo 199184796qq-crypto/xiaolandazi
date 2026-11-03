@@ -132,7 +132,12 @@ func (s *Server) hydrateFirstParagraphFromPlan(ctx context.Context, tenant, room
 	}
 	ready, err := planWarmupSourceReady(v, unit, source)
 	if err != nil || !ready {
-		return err
+		// A damaged prewarm is optional. The foreground producer now restores
+		// its matching archive or buys a replacement rather than failing startup.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return nil
 	}
 	if err = ctx.Err(); err != nil {
 		return err

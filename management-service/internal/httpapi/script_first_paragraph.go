@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
 )
@@ -21,30 +22,26 @@ type scriptFirstPaidState struct {
 	Subtitles []ttsgateway.SpeechSubtitle `json:"subtitles,omitempty"`
 }
 
-// Only local validation/admission failures can clear the intent marker. An
-// ambiguous remote outcome never buys the paragraph again on retry/restart.
+// Availability takes precedence: retain an unusable prior attempt as evidence,
+// then allow a fresh synthesis under the caller's paragraph lock.
 func prepareScriptFirstPaid(ctx context.Context, unit volcengineScriptUnit, generate func(context.Context, string) (ttsgateway.SynthesizeResponse, error)) (ttsgateway.SynthesizeResponse, error) {
 	path := filepath.Join(unit.Dir, "paragraph-job.json")
 	audioPath := filepath.Join(unit.Dir, "paragraph.wav")
 	state := scriptFirstPaidState{Key: unit.Key}
 	err := readVolcengineJSON(path, &state)
 	if err == nil {
-		if state.Key != unit.Key || !state.Complete {
-			return ttsgateway.SynthesizeResponse{}, errors.New("整段合成结果尚未确认，已保留原任务，未重复购买")
-		}
 		raw, e := os.ReadFile(audioPath)
-		if e != nil {
-			return ttsgateway.SynthesizeResponse{}, errors.New("已付费整段声音暂不可用，未重复购买")
-		}
 		sum := sha256.Sum256(raw)
-		if hex.EncodeToString(sum[:]) != state.SourceSHA {
-			return ttsgateway.SynthesizeResponse{}, errors.New("已付费整段声音校验失败，未重复购买")
+		if state.Key == unit.Key && state.Complete && e == nil && len(raw) > 0 && hex.EncodeToString(sum[:]) == state.SourceSHA {
+			return ttsgateway.SynthesizeResponse{AudioFile: audioPath, VoiceID: state.VoiceID, Subtitles: state.Subtitles}, nil
 		}
-		return ttsgateway.SynthesizeResponse{AudioFile: audioPath, VoiceID: state.VoiceID, Subtitles: state.Subtitles}, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		return ttsgateway.SynthesizeResponse{}, err
+		if err = retireUnavailableScriptFiles(ctx, unit, "paragraph-job.json", "paragraph.wav"); err != nil {
+			return ttsgateway.SynthesizeResponse{}, err
+		}
 	}
+	state = scriptFirstPaidState{Key: unit.Key}
 	if err = ctx.Err(); err != nil {
 		return ttsgateway.SynthesizeResponse{}, err
 	}
@@ -104,12 +101,17 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 	}
 	defer unlock()
 	indexPath := filepath.Join(unit.Dir, "cache.json")
-	cache, err := loadVolcengineParagraphCache(indexPath, unit.Key)
+	cache, err := loadRecoverableScriptCache(ctx, unit)
 	if err != nil {
 		return empty, err
 	}
 	if audio, ok := cache.Audio[100]; ok {
-		if _, err = s.recordingStreamAssetURL(ctx, tenant, audio.AssetID); err == nil {
+		if _, err = s.recordingStreamAssetURL(ctx, tenant, audio.AssetID); err == nil && s.scriptAudioAvailable(ctx, tenant, audio.AssetID) {
+			return audio, nil
+		}
+	}
+	if !scriptPaidSourceReady(unit) {
+		if audio, ok := s.recoverScriptParagraphArchive(ctx, tenant, v, unit, &cache); ok {
 			return audio, nil
 		}
 	}
@@ -127,7 +129,7 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 		if err != nil {
 			return ttsgateway.SynthesizeResponse{}, scriptBudgetAdmissionError{err}
 		}
-		scope := liveCostCallScope{TenantID: tenant, RoomID: room, SessionID: session, PlanID: v.PlanID, Priority: "necessary", Reason: "话术原文整段首次合成", Key: fmt.Sprintf("script-paragraph:%d:%s", session, unit.Key)}
+		scope := liveCostCallScope{TenantID: tenant, RoomID: room, SessionID: session, PlanID: v.PlanID, Priority: "necessary", Reason: "话术原文整段合成或恢复补合成", Key: fmt.Sprintf("script-paragraph:%d:%s:%s", session, unit.Key, anchorcycle.ID())}
 		if parent := liveCostScope(c); parent.Priority == "optional" {
 			scope.Priority = "optional"
 			scope.Reason = parent.Reason
@@ -144,6 +146,9 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 	}
 	duration, err := volcengineWAVDuration(generated.AudioFile)
 	if err != nil {
+		if e := retireUnavailableScriptFiles(ctx, unit, "paragraph-job.json", "paragraph.wav"); e != nil {
+			return empty, e
+		}
 		return empty, err
 	}
 	// Keep the untimed transcript separate. No character-based cue timing.

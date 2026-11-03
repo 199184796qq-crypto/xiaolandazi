@@ -486,13 +486,8 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		for i, a := range known {
 			recordScriptVoiceVersion(recordingCacheMediaRoot(), v.PlanID, scriptUnitForVoice(activeV, units[i]), activeV, a)
 		}
-		if pool := scriptCompatiblePool(recordingCacheMediaRoot(), activeV, units[0]); !scriptPlanPools(recordingCacheMediaRoot(), activeV, units).Full && len(pool.Versions) == 1 && pool.HasOriginal(activeV.VoiceIdentity.VoiceID) {
-			s.reportLiveStartup(ctx, tenant, room, session, "generating_voice")
-			s.maybeGenerateRewriteVersion(ctx, tenant, room, activeV, scriptUnitForVoice(activeV, units[0]))
-			if len(scriptCompatiblePool(recordingCacheMediaRoot(), activeV, units[0]).Versions) < 2 {
-				log.Printf("script policy startup supply shortage tenant=%d room=%d session=%d", tenant, room, session)
-			}
-		}
+		// Existing playable audio starts immediately. The loop's coalesced
+		// background policy fills rewrites without holding first sound hostage.
 	}
 	for {
 		if err = ctx.Err(); err != nil {
@@ -601,6 +596,23 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			audio, e = awaitVolcengineParagraph(work, 500*time.Millisecond, func(c context.Context) (volcengineCachedAudio, error) {
 				return s.ensureScriptFirstParagraph(c, tenant, room, session, generationVersion, voiceUnit, allowSynthesis)
 			}, keepPlaying)
+		} else if !s.scriptAudioAvailable(work, tenant, audio.AssetID) {
+			// Recover the selected version's exact spoken text, not its original
+			// sample. Keep its kind/facts/play history when replacing lost media.
+			old := audio.AssetID
+			spoken := voiceUnit
+			if strings.TrimSpace(audio.Text) != "" {
+				spoken.Text = audio.Text
+			}
+			spoken.Key = scriptFirstParagraphKey(generationVersion, spoken.Text)
+			spoken.Dir = filepath.Join(filepath.Dir(voiceUnit.Dir), spoken.Key)
+			audio, e = awaitVolcengineParagraph(work, 500*time.Millisecond, func(c context.Context) (volcengineCachedAudio, error) {
+				return s.ensureScriptFirstParagraph(c, tenant, room, session, generationVersion, spoken, allowSynthesis)
+			}, keepPlaying)
+			if e == nil {
+				audio.Text = spoken.Text
+				e = replaceScriptPoolAudio(recordingCacheMediaRoot(), generationVersion, voiceUnit, old, audio)
+			}
 		}
 		done()
 		if e != nil {
@@ -653,10 +665,6 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		// 现在生成器只返回原文，所以登记的一定是原始版本；改写接入后自动记改写。
 		if !fromPool {
 			recordScriptVoiceVersion(recordingCacheMediaRoot(), v.PlanID, voiceUnit, activeV, audio)
-			if cursor.Sequence == 0 && !scriptPlanPools(recordingCacheMediaRoot(), activeV, units).Full {
-				s.reportLiveStartup(ctx, tenant, room, session, "generating_voice")
-				s.maybeGenerateRewriteVersion(ctx, tenant, room, activeV, voiceUnit)
-			}
 		}
 
 		if err = queue(ctx, index, audio, true); err != nil {

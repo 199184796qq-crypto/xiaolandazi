@@ -95,15 +95,15 @@ func TestScriptFirstPaidResultSurvivesStopAndArchiveRetry(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(u.Dir, "paragraph.wav"), []byte("tampered"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := prepareScriptFirstPaid(t.Context(), u, generate); err == nil {
-		t.Fatal("hash mismatch accepted")
+	if _, err := prepareScriptFirstPaid(t.Context(), u, generate); err != nil {
+		t.Fatal("unavailable paid media did not receive replacement", err)
 	}
-	if calls != 1 {
-		t.Fatal("corrupt paid media repurchased")
+	if calls != 2 {
+		t.Fatal("replacement was not synthesized exactly once", calls)
 	}
 }
 
-func TestScriptFirstUnknownSubmitNeverResubmits(t *testing.T) {
+func TestScriptFirstUnknownSubmitDoesNotPermanentlyFenceReplacement(t *testing.T) {
 	u := volcengineScriptUnit{Key: "unknown", Dir: t.TempDir()}
 	calls := 0
 	generate := func(context.Context, string) (ttsgateway.SynthesizeResponse, error) {
@@ -115,8 +115,12 @@ func TestScriptFirstUnknownSubmitNeverResubmits(t *testing.T) {
 			t.Fatal("unknown success")
 		}
 	}
-	if calls != 1 {
-		t.Fatal("ambiguous request repeated", calls)
+	if calls != 3 {
+		t.Fatal("each retry should replace the unavailable completed attempt", calls)
+	}
+	backups, _ := filepath.Glob(filepath.Join(u.Dir, ".unavailable-*", "paragraph-job.json"))
+	if len(backups) != 2 {
+		t.Fatal("old attempts not retained", backups)
 	}
 }
 
