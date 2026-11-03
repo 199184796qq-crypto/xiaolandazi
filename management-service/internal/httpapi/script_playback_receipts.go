@@ -12,17 +12,21 @@ import (
 )
 
 type scriptDeliveredTrack struct {
-	Unit        int                    `json:"unit"`
-	TrackID     string                 `json:"track_id"`
-	InstanceID  string                 `json:"instance_id"`
-	AssetID     int64                  `json:"asset_id"`
-	VoiceID     string                 `json:"voice_id"`
-	Model       string                 `json:"model"`
-	Batch       uint64                 `json:"batch,omitempty"`
-	Completed   bool                   `json:"completed,omitempty"`
-	TotalBlocks int                    `json:"total_blocks,omitempty"`
-	Block       scriptFirstCachedBlock `json:"block"`
-	Confirmed   bool                   `json:"confirmed,omitempty"`
+	PolicyRecordedMS int64                  `json:"policy_recorded_ms,omitempty"`
+	PolicyText       string                 `json:"policy_text,omitempty"`
+	PolicyDurationMS int64                  `json:"policy_duration_ms,omitempty"`
+	PolicyOffsetMS   int64                  `json:"policy_offset_ms,omitempty"`
+	Unit             int                    `json:"unit"`
+	TrackID          string                 `json:"track_id"`
+	InstanceID       string                 `json:"instance_id"`
+	AssetID          int64                  `json:"asset_id"`
+	VoiceID          string                 `json:"voice_id"`
+	Model            string                 `json:"model"`
+	Batch            uint64                 `json:"batch,omitempty"`
+	Completed        bool                   `json:"completed,omitempty"`
+	TotalBlocks      int                    `json:"total_blocks,omitempty"`
+	Block            scriptFirstCachedBlock `json:"block"`
+	Confirmed        bool                   `json:"confirmed,omitempty"`
 }
 
 func scriptSupplyCheckpointPath(tenant, room, session int64) string {
@@ -77,6 +81,22 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 		}
 	}
 	changed := false
+	started := map[string]string{}
+	for _, receipt := range snapshot.MainlinePlaybackReceipts {
+		started[receipt.TrackID] = receipt.StartedAt
+	}
+	for _, receipt := range snapshot.PlaybackReceipts {
+		for i := range cursor.Delivered {
+			track := &cursor.Delivered[i]
+			if track.TrackID == receipt.TrackID && receipt.PlayedMS > track.PolicyRecordedMS {
+				if err := recordScriptPolicyPCM(recordingCacheMediaRoot(), tenant, room, v.PlanID, *track, receipt.PlayedMS, started[track.TrackID], time.Now().UTC()); err != nil {
+					return err
+				}
+				track.PolicyRecordedMS = receipt.PlayedMS
+				changed = true
+			}
+		}
+	}
 	for _, receipt := range snapshot.PlaybackReceipts {
 		if !receipt.Complete {
 			continue
@@ -132,7 +152,8 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 		voiceVersion := scriptVersionForVoice(v, recordingScriptVoice{VoiceID: track.VoiceID, Model: track.Model})
 		recordPlaybackLedger(tenant, room, voiceVersion, track.Unit, track.Block, track.TrackID)
 		log.Printf("script playback confirmed tenant=%d room=%d session=%d track=%s asset=%d", tenant, room, session, track.TrackID, track.AssetID)
-		go s.maybeGenerateRewriteVersion(ctx, tenant, room, voiceVersion, units[track.Unit])
+		// Continuous policy ticks choose the next shared deficit; playback receipts
+		// only provide evidence, never buy a version per play.
 	}
 	if changed {
 		if len(cursor.Delivered) > 128 {

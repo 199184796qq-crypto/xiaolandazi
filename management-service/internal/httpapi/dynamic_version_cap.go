@@ -8,14 +8,12 @@ import (
 
 // 动态版本上限：按整轮内容时长算，而不是固定 6 个。
 //
-// 目标：同一条音频至少隔 2 小时才重复；片段越少、一轮越短，版本就越多。
-// 三层护栏：下限 3、上限 20、单音色总数 80（成本熔断）。
+// Compatibility estimate only. Formal scheduling uses measured duration and
+// per-piece exposure in scriptPlanPools; this is not a two-hour guarantee.
 const (
-	scriptVersionTargetGapMin = 120
-	scriptVersionCapMin       = 3
-	scriptVersionCapMax       = 20
-	scriptVersionTotalMax     = 80
-	scriptSpeechRunesPerMin   = 250
+	scriptVersionTargetGapMin = 80
+	scriptVersionCapMin       = 1
+	scriptSpeechRunesPerMin   = 320
 )
 
 // scriptVersionCapFromUnits 按整轮时长推算版本上限。
@@ -35,15 +33,10 @@ func scriptVersionCapFromUnits(units []volcengineScriptUnit) int {
 	}
 	roundMin := float64(total) / scriptSpeechRunesPerMin
 	want := int(float64(scriptVersionTargetGapMin)/roundMin + 0.999)
-	if want > scriptVersionCapMax {
-		want = scriptVersionCapMax
-	}
 	if want < scriptVersionCapMin {
 		want = scriptVersionCapMin
 	}
-	if limit := max(1, scriptVersionTotalMax/pieces); want > limit {
-		want = limit
-	}
+
 	return want
 }
 

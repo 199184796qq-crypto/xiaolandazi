@@ -32,7 +32,7 @@ var rewriteWorker = struct {
 	slot     chan struct{}
 }{inFlight: map[string]bool{}, slot: make(chan struct{}, 1)}
 
-// maybeGenerateRewriteVersion 在片段播过一次之后，替它生成一个新改写版本。
+// maybeGenerateRewriteVersion services the shared plan supply decision.
 //
 // 规则（对齐开发任务书 4.1–4.3）：
 //  1. 该音色下已有原始版本（原始优先）
@@ -61,11 +61,8 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		rewriteWorker.Unlock()
 		return
 	}
-	// 满池并完整播足后，冻结一批 30% 的改写槽位逐个替换。
-	cap := cachedScriptVersionCap(v)
-	if script, ok := recordingScriptFromContext(v.GenerationContext); ok && script.VersionCap > 0 {
-		cap = min(script.VersionCap, max(1, scriptVersionTotalMax/max(1, len(recordingStreamTexts(v)))))
-	}
+	// Capacity and finite refresh batches are now owned by the plan policy.
+	cap := 0
 	full := false
 	retireRef := ""
 
@@ -88,20 +85,25 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		return
 	}
 	defer sharedRelease()
+	planRelease, planAcquired, planErr := tryScriptGeneration(recordingCacheMediaRoot(), tenant, v.PlanID, "policy-"+scriptFirstParagraphKey(v, "policy"))
+	if planErr != nil || !planAcquired {
+		return
+	}
+	defer planRelease()
+	units, unitsErr := scriptFirstUnits(v, filepath.Dir(unit.Dir))
+	if unitsErr != nil {
+		return
+	}
+	index, wanted, retired, policyErr := scriptPolicyGeneration(recordingCacheMediaRoot(), v, units, time.Now().UTC(), true)
+	if policyErr != nil || index < 0 || units[index].poolID() != unit.poolID() {
+		return
+	}
+	cap, retireRef, full = wanted, retired, retired != ""
 	// Re-read after the cross-process gate: another room may have completed a
 	// shared audio slot while this worker was waiting for the provider slot.
 	pool = scriptCompatiblePool(recordingCacheMediaRoot(), v, unit)
 	if !pool.HasOriginal(voiceID) {
 		return
-	}
-	full = !pool.CanGenerate(voiceID, cap)
-	if full {
-		var allowed bool
-		var err error
-		retireRef, allowed, err = scriptRefreshRetire(recordingCacheMediaRoot(), v, unit, pool, cap)
-		if err != nil || !allowed {
-			return
-		}
 	}
 
 	// Compatibility hook; hourly character limits have been retired.
@@ -124,7 +126,7 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	ctx = withLiveCostScope(ctx, liveCostCallScope{TenantID: tenant, RoomID: room, PlanID: v.PlanID, Priority: "optional", Reason: "话术后台改写", Key: fmt.Sprintf("script-rewrite:%d:%s:%d", v.PlanID, unit.poolID(), time.Now().UnixNano())})
 	ctx = withScriptModelCostSteps(ctx)
 	pool = scriptCompatiblePool(recordingCacheMediaRoot(), v, unit)
-	if !pool.HasOriginal(voiceID) || (!full && !pool.CanGenerate(voiceID, cap)) {
+	if !pool.HasOriginal(voiceID) || (!full && len(pool.Versions) >= cap) {
 		return
 	}
 	if shared, found, err := scriptMissingSharedText(recordingCacheMediaRoot(), v, unit); err != nil {

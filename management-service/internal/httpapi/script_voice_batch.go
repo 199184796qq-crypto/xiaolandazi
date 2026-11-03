@@ -95,14 +95,11 @@ func stageScriptHostVoice(state *voicebatch.State, voices []recordingScriptVoice
 }
 
 func scriptVoiceFullTargets(v model.LiveAgentPlanVersion, units []volcengineScriptUnit) []string {
-	cap := cachedScriptVersionCap(v)
-	if script, ok := recordingScriptFromContext(v.GenerationContext); ok && script.VersionCap > 0 {
-		cap = min(script.VersionCap, max(1, scriptVersionTotalMax/max(1, len(units))))
-	}
+	policy := scriptPlanPools(recordingCacheMediaRoot(), v, units)
 	var keys []string
-	for _, unit := range units {
+	for i, unit := range units {
 		pool := scriptCompatiblePool(recordingCacheMediaRoot(), v, scriptUnitForVoice(v, unit))
-		if len(pool.Versions) < cap {
+		if len(pool.Versions) < policy.Caps[i] {
 			return nil
 		}
 		for _, version := range pool.Versions {
