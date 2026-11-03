@@ -12,6 +12,7 @@ const MaxPromptRunes = 20000
 type Sections struct {
 	PersonaMD                 string `json:"persona_md"`
 	FactsMD                   string `json:"facts_md"`
+	RedLinesMD                string `json:"red_lines_md"`
 	SpeechRequirementsMD      string `json:"speech_requirements_md"`
 	InteractionRequirementsMD string `json:"interaction_requirements_md"`
 }
@@ -27,7 +28,13 @@ func clean(text string) string {
 }
 
 func (s Sections) Normalize() Sections {
-	return Sections{clean(s.PersonaMD), clean(s.FactsMD), clean(s.SpeechRequirementsMD), clean(s.InteractionRequirementsMD)}
+	return Sections{
+		PersonaMD:                 clean(s.PersonaMD),
+		FactsMD:                   clean(s.FactsMD),
+		RedLinesMD:                clean(s.RedLinesMD),
+		SpeechRequirementsMD:      clean(s.SpeechRequirementsMD),
+		InteractionRequirementsMD: clean(s.InteractionRequirementsMD),
+	}
 }
 
 func compose(blocks ...string) string {
@@ -42,16 +49,16 @@ func compose(blocks ...string) string {
 
 func (s Sections) Interaction() string {
 	s = s.Normalize()
-	return compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "互动回答要求", s.InteractionRequirementsMD)
+	return compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "红线禁止", s.RedLinesMD, "互动回答要求", s.InteractionRequirementsMD)
 }
 
 func (s Sections) Speech() string {
 	s = s.Normalize()
-	return compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "直播话术要求", s.SpeechRequirementsMD)
+	return compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "红线禁止", s.RedLinesMD, "直播话术要求", s.SpeechRequirementsMD)
 }
 
 func (s Sections) Empty() bool {
-	return strings.TrimSpace(s.PersonaMD+s.FactsMD+s.SpeechRequirementsMD+s.InteractionRequirementsMD) == ""
+	return strings.TrimSpace(s.PersonaMD+s.FactsMD+s.RedLinesMD+s.SpeechRequirementsMD+s.InteractionRequirementsMD) == ""
 }
 
 func (s Sections) Validate() error {
@@ -95,5 +102,39 @@ func SplitLegacy(text string) (Sections, bool) {
 		}
 		groups[target] = append(groups[target], line)
 	}
-	return (Sections{strings.Join(groups[0], "\n"), strings.Join(groups[1], "\n"), strings.Join(groups[2], "\n"), strings.Join(groups[3], "\n")}).Normalize(), !recognised && strings.TrimSpace(text) != ""
+	return (Sections{
+		PersonaMD:                 strings.Join(groups[0], "\n"),
+		FactsMD:                   strings.Join(groups[1], "\n"),
+		SpeechRequirementsMD:      strings.Join(groups[2], "\n"),
+		InteractionRequirementsMD: strings.Join(groups[3], "\n"),
+	}).Normalize(), !recognised && strings.TrimSpace(text) != ""
+}
+
+// RewritePrompt 把母版里的占位符替换成方案内容，得到方案专属的改写元提示词。
+//
+// 母版由 httpapi 从 configs/prompts/anchor-style/rewrite-master.md 读出并缓存在进程内，
+// 这里只做纯文本替换，保证与保存时刻的方案内容一致。
+func RewritePrompt(master string, s Sections, sample string) string {
+	return RewritePromptWithOpenings(master, s, sample, "")
+}
+
+// RewritePromptWithOpenings 额外填入"这个片段已经用过的开场"，让每次改写都换一种开法。
+func RewritePromptWithOpenings(master string, s Sections, sample, openings string) string {
+	s = s.Normalize()
+	out := strings.ReplaceAll(master, "{{主播人设}}", s.PersonaMD)
+	out = strings.ReplaceAll(out, "{{事实依据}}", composeFacts(s))
+	out = strings.ReplaceAll(out, "{{红线禁止}}", s.RedLinesMD)
+	out = strings.ReplaceAll(out, "{{样本话术}}", strings.TrimSpace(sample))
+	// 逐条级占位符（已有开场、开场方式）是生成某一条时才有的信息，
+	// 方案保存时一律原样保留，不能清空，否则生成阶段没有位置可填。
+	if strings.TrimSpace(openings) != "" {
+		out = strings.ReplaceAll(out, "{{已有开场}}", strings.TrimSpace(openings))
+	}
+
+	return out
+}
+
+// composeFacts 拼出「事实依据」块：商品卡/活动福利/事实都在 FactsMD 里，红线单独一块。
+func composeFacts(s Sections) string {
+	return s.FactsMD
 }

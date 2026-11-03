@@ -7,6 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"livecompanion/management/internal/db"
 	"livecompanion/management/internal/ttsgateway"
 	"livecompanion/management/internal/ttsscheduler"
 )
@@ -37,6 +38,9 @@ func TestHighFidelityPoolCatalogueUsesEnabledConfiguredMappings(t *testing.T) {
 		if voice.Provider != ttsgateway.ProviderVolcengine || voice.Model != ttsgateway.VolcengineICL2 || strings.Contains(voice.Name, "火山") {
 			t.Fatal("wrong identity or supplier exposed in display", voice)
 		}
+		if voice.Name != "高仿真声音" || voice.Gender != "" || strings.Contains(voice.Name, strings.TrimPrefix(voice.ID, "S_")) {
+			t.Fatal("missing display metadata must not invent name/gender from ID", voice)
+		}
 	}
 	raw, _ := json.Marshal(voices)
 	for _, secret := range []string{"private-account", "private-uid", "supplier-name", "S_private_target", "S_other_target"} {
@@ -52,5 +56,20 @@ func TestHighFidelityPoolCatalogueUsesEnabledConfiguredMappings(t *testing.T) {
 	long := highFidelityPoolVoices([]ttsscheduler.Account{account})
 	if len(long) != 1 || long[0].ID != longID || utf8.RuneCountInString(long[0].Name) > 128 {
 		t.Fatal("long valid IDs must remain selectable and saveable", long)
+	}
+}
+
+func TestHighFidelityPoolCatalogueDisplayIsSeparateFromSynthesisIdentity(t *testing.T) {
+	account := ttsscheduler.Account{Provider: ttsgateway.ProviderVolcengine, Configured: true, Enabled: true, Models: []string{ttsgateway.VolcengineICL2}, Voices: map[string]string{"seed-icl-2.0/S_main": "S_backup_target"}}
+	before := highFidelityPoolVoices([]ttsscheduler.Account{account})
+	after := applyHighFidelityVoiceDisplays(highFidelityPoolVoices([]ttsscheduler.Account{account}), map[string]db.TTSVoiceDisplay{
+		"S_main": {Name: "晚晴", Gender: "女声"}, "S_not_available": {Name: "停用声音", Gender: "男声"},
+	})
+	if len(after) != 1 || after[0].Name != "晚晴" || after[0].Gender != "女声" {
+		t.Fatal("display data must only overlay available voices", after)
+	}
+	before[0].Name, before[0].Gender = after[0].Name, after[0].Gender
+	if !reflect.DeepEqual(before, after) || account.Voices["seed-icl-2.0/S_main"] != "S_backup_target" {
+		t.Fatal("metadata changed synthesis identity/mapping")
 	}
 }

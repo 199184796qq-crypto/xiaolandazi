@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"livecompanion/management/internal/model"
 	"strings"
 	"sync"
@@ -100,6 +101,11 @@ func TestSharedPlanRoomsMySQL(t *testing.T) {
 		t.Fatal("other user obtained this plan", err)
 	}
 	exec(`INSERT INTO live_runtime_sessions(external_id,tenant_id,room_id,status,execution_realm,started_at,last_billed_at) VALUES('shared-test',14,15,'running','test',UTC_TIMESTAMP(3),UTC_TIMESTAMP(3))`)
+	// A plan is shared across rooms: a live room15 also blocks saves from room26.
+	if _, err := s.CreateLiveAgentPlanVersion(ctx, 14, 4, 8, input); !errors.Is(err, ErrLiveAgentPlanInUse) {
+		t.Fatal("another room overwrote an in-use plan", err)
+	}
+	exec(`UPDATE live_runtime_sessions SET status='stopped',ended_at=UTC_TIMESTAMP(3) WHERE external_id='shared-test'`)
 	var wg sync.WaitGroup
 	results := make(chan model.LiveAgentPlanVersion, 2)
 	errs := make(chan error, 2)
@@ -135,7 +141,7 @@ func TestSharedPlanRoomsMySQL(t *testing.T) {
 		t.Fatal("same plan allocated room-specific version numbers", numbers)
 	}
 	assertShared(latest)
-	// A running room protects the startup version, even when another room saves.
+	// After stop the plan can be saved again, with normal history retention.
 	before := scalar(`SELECT COUNT(*) FROM live_agent_plan_versions WHERE tenant_id=14 AND plan_id=4`)
 	input.RoomID = 26
 	if _, err = s.CreateLiveAgentPlanVersion(ctx, 14, 4, 8, input); err != nil {
@@ -144,7 +150,7 @@ func TestSharedPlanRoomsMySQL(t *testing.T) {
 	if scalar(`SELECT COUNT(*) FROM live_agent_plan_versions WHERE tenant_id=14 AND plan_id=4`) != before+1 {
 		t.Fatal("save pruned a different room's startup version")
 	}
-	if _, err = s.GetLiveAgentPlanVersion(ctx, 14, 4, 74); err != nil {
-		t.Fatal("running room's version disappeared", err)
+	if _, err = s.GetLiveAgentPlanVersion(ctx, 14, 4, latest); err != nil {
+		t.Fatal("recent saved version disappeared", err)
 	}
 }

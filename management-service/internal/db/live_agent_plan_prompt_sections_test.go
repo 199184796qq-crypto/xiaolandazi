@@ -146,7 +146,7 @@ func TestPlanPromptSectionsAtomicStorageAndRuntimeRead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if state.alters != 2 || state.writes != 1 {
+	if state.alters != 3 || state.writes != 1 {
 		t.Fatal("migration should be additive and idempotent", state.alters, state.writes)
 	}
 	state.rows[[2]int64{14, 8}] = []driver.Value{"原文", "invalid-json", nil, time.Now()}

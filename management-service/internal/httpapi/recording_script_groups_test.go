@@ -37,6 +37,8 @@ func TestRecordingScriptGroupsSaveAndReadBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	read, ok := recordingScriptFromContext(ctx)
+	// 开场锚点由保存时的规则计算，不参与"逐字原样"比对。
+	read.OpeningTabID, read.OpeningEntryID = "", ""
 	if !ok || !reflect.DeepEqual(read, script) {
 		t.Fatalf("not saved independently: %#v", read)
 	}

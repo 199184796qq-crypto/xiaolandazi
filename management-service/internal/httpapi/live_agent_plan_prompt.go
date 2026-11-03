@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"livecompanion/management/internal/planprompt"
@@ -40,6 +41,9 @@ func (s *Server) liveAgentPlanPromptPut(w http.ResponseWriter, r *http.Request) 
 	}
 	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, 0, true)
 	if !ok {
+		return
+	}
+	if !s.allowPlanSave(w, r, tenantID, planID) {
 		return
 	}
 	var input struct {
@@ -80,6 +84,12 @@ func (s *Server) liveAgentPlanPromptPut(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "方案提示词保存失败")
 		return
 	}
+	// 保存方案时同步生成这份方案专属的改写元提示词，跟另外两份组合提示词一起保存。
+	if rewrite, err := renderPlanRewritePrompt(document.Sections); err == nil && strings.TrimSpace(rewrite) != "" {
+		if err := s.store.SaveLiveAgentPlanPromptRewrite(r.Context(), tenantID, planID, rewrite); err == nil {
+			document.RewritePromptMD = rewrite
+		}
+	}
 	writeJSON(w, http.StatusOK, document)
 }
 
@@ -102,4 +112,29 @@ func stripPlanPromptHints(text string) string {
 		out = strings.ReplaceAll(out, "\n\n\n", "\n\n")
 	}
 	return strings.TrimSpace(out)
+}
+
+// planRewriteMaster 读取改写元提示词母版；进程内只读一次，改母版后重启生效。
+var planRewriteMasterOnce sync.Once
+var planRewriteMasterMD string
+var planRewriteMasterErr error
+
+func loadPlanRewriteMaster() (string, error) {
+	planRewriteMasterOnce.Do(func() {
+		md, _, err := loadReplaceablePromptAsset("PLAN_REWRITE_MASTER_PATH", "configs/prompts/anchor-style/rewrite-master.md", "话术改写母版")
+		planRewriteMasterMD, planRewriteMasterErr = md, err
+	})
+	return planRewriteMasterMD, planRewriteMasterErr
+}
+
+// renderPlanRewritePrompt 用母版和方案内容生成方案专属的改写元提示词。
+//
+// 样本话术留空：真正改写的每一条由调用方在请求时填进 {{样本话术}}，
+// 这样同一个方案所有片段共用同一份指令，只有样本不同。
+func renderPlanRewritePrompt(sections planprompt.Sections) (string, error) {
+	master, err := loadPlanRewriteMaster()
+	if err != nil {
+		return "", err
+	}
+	return planprompt.RewritePrompt(master, sections, ""), nil
 }

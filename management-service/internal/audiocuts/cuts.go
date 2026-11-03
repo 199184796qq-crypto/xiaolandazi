@@ -1,4 +1,4 @@
-// Package audiocuts 从 PCM 音频中扫描可用于互动插播的声学切点。
+﻿// Package audiocuts 从 PCM 音频中扫描可用于互动插播的声学切点。
 //
 // 设计要点：
 //   - 以 1 毫秒能量包络为判据，不用文字标点（标点不等于声学停顿）
@@ -321,3 +321,4 @@ func NextCut(points []Point, fromMS, deadlineMS int32) (Point, bool) {
 	}
 	return Point{}, false
 }
+

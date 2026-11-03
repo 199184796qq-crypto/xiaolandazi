@@ -224,7 +224,7 @@ type welcomeContent struct {
 	Highlight string `json:"highlight"`
 }
 
-const welcomeContentCachePrefix = "livecompanion:welcome-content:v1:"
+const welcomeContentCachePrefix = "livecompanion:welcome-content:v2:"
 const welcomeContentCacheTTL = 8 * time.Hour
 
 // welcomeContentFacts returns the speakable fact package and a cache key bound to
@@ -331,19 +331,41 @@ func (w *Worker) generateWelcomeIntro(ctx context.Context, session model.LiveRun
 		"卖什么、给谁、有什么特点。要求：不超过45字；口语；只能使用事实，不编造；不要罗列商品和价格；不要称呼；不要客服腔。" +
 		"\n必须说成“卖XX（产品名）+ 品类”，例如“卖四川特色美食绸都杨鸭子，卤味熟食”；" +
 		"原料（土麻鸭、鸭坯）只能作为工艺补充放在后面，绝不能当商品说；禁止“活鸭、活禽、卖鸭”。" +
+		"\n不要出现具体链接号、规格、适用人数、原价/团购价、优惠券、每桌等交易细节；这些留给后面的卖点。" +
 		"\n只输出这句话本身。"
 	user := "已确认事实：\n" + introFacts
 	for attempt := 0; attempt < 2; attempt++ {
 		system := base
 		if attempt > 0 {
-			system += "\n上一次没有说清品类；这次必须出现本行业的品类词，明确是在卖做好的产品。"
+			system += "\n上一次没有说清品类，或写进了链接/人数/价格细节；这次必须只讲卖什么品类、给谁、有什么特点。"
 		}
 		text := strings.TrimSpace(w.completeWelcome(ctx, session, "interaction_welcome_intro", system, user, 100))
+		if welcomeIntroScopeProblem(text) != nil {
+			continue
+		}
 		if factbound.ValidateIntroFor(text, introFacts) == nil {
 			return text
 		}
 	}
 	return ""
+}
+
+// welcomeIntroScopeProblem keeps the room intro at category level. Link-specific
+// audience/price details belong to selling points and were the source of
+// cross-link mistakes such as assigning the 2号 link audience to 1号.
+func welcomeIntroScopeProblem(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("空介绍")
+	}
+	for _, marker := range []string{
+		"号链接", "适用人数", "适合", "原价", "团购价", "优惠券", "每桌", "克", "元",
+	} {
+		if strings.Contains(text, marker) {
+			return fmt.Errorf("介绍不能包含商品/交易细节：%s", marker)
+		}
+	}
+	return nil
 }
 
 // welcomeIntroProblem rejects an intro that sounds like selling live animals or

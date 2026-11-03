@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,7 +95,20 @@ func (s *Server) liveAgentPlanPromptRender(w http.ResponseWriter, r *http.Reques
 	}
 	data := planPromptRenderData{PlanName: plan.Name, Links: links, Benefits: benefits, Facts: facts}
 	text := renderPlanPrompt(string(master), data)
-	writeJSON(w, http.StatusOK, map[string]any{"prompt_md": text, "facts_md": renderPlanPromptFacts(data), "master_sha256": fmt.Sprintf("%x", sha256.Sum256(master))})
+	// 先用带标记的母版切分区，再把标记剥掉作为提示词正文：标记不能进模型输入。
+	sections := splitPlanPromptSections(text)
+	text = stripPlanPromptSectionMarkers(text)
+	sections = stripPlanPromptSectionMarkerValues(sections)
+	// 事实依据保留母版原文（商品卡、活动福利、事实依据、数据使用规则都在），
+	// 只把【事实依据】那一段的正文换成方案里的真实事实，规则一条都不删。
+	sections["facts"] = fillPlanPromptFactsBlock(sections["facts"], planFactBlock(data.Facts))
+	factsDigest := renderPlanPromptFacts(data)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"prompt_md":     text,
+		"facts_md":      factsDigest,
+		"sections":      sections,
+		"master_sha256": fmt.Sprintf("%x", sha256.Sum256(master)),
+	})
 }
 
 func renderPlanPromptFacts(data planPromptRenderData) string {
@@ -307,4 +321,218 @@ func planContainsString(list []string, target string) bool {
 // 供测试与调用方复用，避免后再各自实现一遍。
 func renderPlanPromptForTest(master string, data planPromptRenderData) string {
 	return renderPlanPrompt(master, data)
+}
+
+// planPromptSectionMarkers 是母版里声明的分区标记，形如：
+//
+//	<!-- 分区：主播人设 -->
+//
+// 标记之后的内容都归入该分区，直到下一个标记。
+// 分区完全由母版决定，代码不写死任何标题或顺序；母版没写标记时才退回按标题归类。
+var planPromptSectionMarker = regexp.MustCompile(`^<!--\s*分区[:：]\s*(.+?)\s*-->$`)
+
+// planPromptSectionAliases 只在母版没有分区标记的旧版本里使用。
+var planPromptSectionAliases = map[string]string{
+	"主播人设":    "persona",
+	"事实依据":    "facts",
+	"红线禁止":    "redlines",
+	"直播话术要求": "speech",
+	"互动回答要求": "interaction",
+}
+
+// planPromptSectionTitles 把母版里的标题归到四个编辑分区。
+//
+// 母版是整篇的，但页面按四块编辑，所以按标题把渲染结果切回去。
+var planPromptSectionTitles = map[string]string{
+	"身份设定":       "persona",
+	"核心定位":       "persona",
+	"性格 & 语气设定":  "persona",
+	"直播目标":       "persona",
+	"商品卡":        "facts",
+	"活动福利":       "facts",
+	"事实依据":       "facts",
+	"数据使用规则":     "facts",
+	"称呼规则":       "speech",
+	"用词消歧":       "speech",
+	"话术规则":       "speech",
+	"互动约束":       "interaction",
+	"禁忌边界":       "redlines",
+	"输出格式要求":     "interaction",
+}
+
+// splitPlanPromptSections 按【标题】把整篇提示词切成四块原文。
+//
+// 未识别的标题归到最近一次命中的分区，避免内容丢失。
+func splitPlanPromptSections(text string) map[string]string {
+	out := map[string]string{"persona": "", "facts": "", "redlines": "", "speech": "", "interaction": ""}
+	// 母版声明了分区标记：完全按标记切，顺序和标题都不由代码决定。
+	if section, rest, ok := splitPlanPromptSectionsByMarker(text); ok {
+		return mergePlanPromptSections(out, section, rest)
+	}
+	current := ""
+	var buf strings.Builder
+	flush := func() {
+		if current == "" {
+			buf.Reset()
+			return
+		}
+		body := strings.TrimSpace(buf.String())
+		if body != "" {
+			if out[current] != "" {
+				out[current] += "\n\n"
+			}
+			out[current] += body
+		}
+		buf.Reset()
+	}
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "【") && strings.HasSuffix(trimmed, "】") {
+			title := strings.TrimSuffix(strings.TrimPrefix(trimmed, "【"), "】")
+			if section, ok := planPromptSectionTitles[title]; ok {
+				flush()
+				current = section
+			}
+		}
+		if current != "" {
+			buf.WriteString(line)
+			buf.WriteString("\n")
+		}
+	}
+	flush()
+	return out
+}
+
+// splitPlanPromptSectionsByMarker 按母版的「分区」标记切块。
+//
+// 返回每个分区名对应的正文；没有标记时 ok=false，由调用方退回按标题归类。
+func splitPlanPromptSectionsByMarker(text string) (map[string]string, []string, bool) {
+	sections := map[string]string{}
+	var order []string
+	current := ""
+	var buf strings.Builder
+	found := false
+	flush := func() {
+		if current == "" {
+			buf.Reset()
+			return
+		}
+		body := strings.TrimSpace(buf.String())
+		if body != "" {
+			if sections[current] != "" {
+				sections[current] += "\n\n"
+			}
+			sections[current] += body
+		}
+		buf.Reset()
+	}
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if match := planPromptSectionMarker.FindStringSubmatch(trimmed); match != nil {
+			flush()
+			name := strings.TrimSpace(match[1])
+			if key, ok := planPromptSectionAliases[name]; ok {
+				current = key
+			} else {
+				current = name // 母版新增的自定义分区，原样保留
+			}
+			order = append(order, current)
+			found = true
+			continue
+		}
+		if current != "" {
+			buf.WriteString(line)
+			buf.WriteString("\n")
+		}
+	}
+	flush()
+	return sections, order, found
+}
+
+// mergePlanPromptSections 把母版切出来的分区并进固定四个编辑框。
+//
+// 母版新增的分区不丢弃：追加到互动回答要求后面，用户照样能看到。
+func mergePlanPromptSections(base map[string]string, sections map[string]string, order []string) map[string]string {
+	var extra []string
+	seen := map[string]bool{}
+	for _, name := range order {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		body := sections[name]
+		if body == "" {
+			continue
+		}
+		if _, ok := base[name]; ok {
+			base[name] = body
+			continue
+		}
+		extra = append(extra, body)
+	}
+	if len(extra) > 0 {
+		if base["interaction"] != "" {
+			base["interaction"] += "\n\n"
+		}
+		base["interaction"] += strings.Join(extra, "\n\n")
+	}
+	return base
+}
+
+// stripPlanPromptSectionMarkers 去掉分区标记行，避免它们进入模型提示词。
+func stripPlanPromptSectionMarkers(text string) string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if planPromptSectionMarker.MatchString(strings.TrimSpace(line)) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// stripPlanPromptSectionMarkerValues 对每个分区正文同样剥掉标记。
+func stripPlanPromptSectionMarkerValues(sections map[string]string) map[string]string {
+	for key, body := range sections {
+		sections[key] = stripPlanPromptSectionMarkers(body)
+	}
+	return sections
+}
+
+// fillPlanPromptFactsBlock 只替换【事实依据】标题下的正文，其它块原样保留。
+//
+// 母版里这一块后面紧跟【数据使用规则】，那 7 条规则必须留着，
+// 所以这里按"下一个【标题】"为边界替换，不能整块覆盖。
+func fillPlanPromptFactsBlock(section, facts string) string {
+	lines := strings.Split(section, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "【事实依据】" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		// 母版没有这一块：把事实追加在末尾，规则同样保留。
+		if strings.TrimSpace(facts) == "" {
+			return section
+		}
+		return strings.TrimRight(section, "\n") + "\n\n" + facts
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "【") && strings.HasSuffix(trimmed, "】") {
+			end = i
+			break
+		}
+	}
+	body := []string{lines[start]}
+	if text := strings.TrimSpace(facts); text != "" {
+		body = append(body, text)
+	}
+	rebuilt := append([]string{}, lines[:start]...)
+	rebuilt = append(rebuilt, body...)
+	rebuilt = append(rebuilt, lines[end:]...)
+	return strings.Join(rebuilt, "\n")
 }

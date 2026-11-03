@@ -39,8 +39,8 @@ func PickStyle(seed *rand.Rand) string {
 
 // FormsFor expands base and short into the only addressable shapes.
 func FormsFor(base, short string, terms []string) FormSet {
-	base = strings.TrimSpace(base)
-	short = strings.TrimSpace(short)
+	base = normalizeLatinAddress(strings.TrimSpace(base))
+	short = normalizeLatinAddress(strings.TrimSpace(short))
 	forms := []string{}
 	seen := map[string]bool{}
 	add := func(form string) {
@@ -53,9 +53,13 @@ func FormsFor(base, short string, terms []string) FormSet {
 	}
 	add(base)
 	add(short)
+	if HasAddressSuffix(base) {
+		return FormSet{Base: base, Short: short, Forms: forms}
+	}
 	for _, term := range terms {
-		term = strings.TrimSpace(term)
-		if term == "" {
+		// 个体称谓去掉「们」；「各位/大家」这类群体专用词不能连写。
+		term = SingularTerm(term)
+		if term == "" || IsGroupOnlyTerm(term) {
 			continue
 		}
 		add(base + term)
@@ -85,6 +89,9 @@ func BuildPhrase(in PhraseInput, r *rand.Rand) string {
 			terms = append(terms, term)
 		}
 	}
+	if in.Mode == "single" {
+		terms = SingularTerms(terms)
+	}
 	selectedTerm := ""
 	if len(terms) > 0 {
 		selectedTerm = terms[0]
@@ -98,7 +105,7 @@ func BuildPhrase(in PhraseInput, r *rand.Rand) string {
 			continue
 		}
 		withTerm := base
-		if selectedTerm != "" {
+		if selectedTerm != "" && !HasKinshipSuffix(base) {
 			withTerm = base + selectedTerm
 			for _, form := range person.Forms {
 				if strings.HasSuffix(form, selectedTerm) {
@@ -154,12 +161,14 @@ func PhrasePrompt(in PhraseInput, r *rand.Rand) (string, string) {
 规则（所有场景一致）：
 1. 只能用给定的人名形式和集体称呼，不能编造、不能改字、不能加数字。
 2. 单人时只叫这一个人，不出现集体称呼；多人时点名人数固定：有 2 人点 2 人，有 3 人及以上点 3 人，不得随机少点或多点；每个人名后面必须带同一个称谓（如“王卫成老乡、红豆老乡”），最后用集体称呼覆盖其他人。
-3. 同一条里称谓词统一，每个点名的人都要带同一个称谓；昵称本身已带称谓（哥/姐/老板/师傅）时不再叠加；同一个人名不出现两次。
-4. 昵称本身已带称谓（哥/姐/老板/师傅）时不要再叠加；性别称谓必须成对（哥姐、哥哥姐姐），禁止单独用“哥”或“姐”。
-5. 只能用一个集体称呼，不要同时用“老乡们”和“几位朋友”。
-6. %s
-7. 不要与 recent 里给出的话术雷同，换个开头、句式和称谓组合。
-8. 不要输出解释、不要引号外的内容。
+3. 同一条里称谓词统一，每个点名的人都要带同一个称谓；同一个人名不出现两次。
+4. 昵称本身已带称谓（哥/姐/老板/师傅等）时不要再叠加；如果昵称以姐、哥、妈、爸、弟、妹、叔、姨、奶、爷、婶、嫂、舅、姑、伯等亲属/代称结尾，只叫昵称本身，后面不再加任何称谓。
+5. 单人时称谓只能是单数，禁止出现“们”，禁止用“几位、大家、你们、老乡们、朋友们、家人们”等集体称呼；只有多人场景才允许集体称呼。
+6. 性别称谓必须成对（哥姐、哥哥姐姐），禁止单独用“哥”或“姐”。
+7. 只能用一个集体称呼，不要同时用“老乡们”和“几位朋友”。
+8. %s
+9. 不要与 recent 里给出的话术雷同，换个开头、句式和称谓组合。
+10. 不要输出解释、不要引号外的内容。
 
 示例：
 %s`, title, sceneRule, examples)
@@ -205,6 +214,29 @@ func ValidatePhrase(address string, in PhraseInput) error {
 	}
 	if hasDigit(address) {
 		return fmt.Errorf("称呼话术含数字")
+	}
+	if in.Mode == "single" {
+		if strings.Contains(address, "们") {
+			return fmt.Errorf("单人称呼不能使用复数称谓")
+		}
+		for _, term := range in.Terms {
+			if IsPluralTerm(term) && strings.Contains(address, strings.TrimSpace(term)) {
+				return fmt.Errorf("单人称呼不能使用集体称谓：%s", term)
+			}
+		}
+		for _, person := range in.People {
+			base := strings.TrimSpace(person.Base)
+			if base == "" || !HasKinshipSuffix(base) || !strings.Contains(address, base) {
+				continue
+			}
+			rest := strings.Replace(address, base, "", 1)
+			for _, term := range in.Terms {
+				term = strings.TrimSpace(term)
+				if term != "" && strings.Contains(rest, term) {
+					return fmt.Errorf("昵称自带亲属称谓，不能叠加：%s", term)
+				}
+			}
+		}
 	}
 	if in.Scene == "answer" {
 		return validateAnswerAddress(address, in)
@@ -294,9 +326,13 @@ func phraseHasGroup(address string, in PhraseInput) bool {
 // FallbackPhrase is used when the model is unavailable or its answer fails
 // validation; it still produces a speakable address.
 func FallbackPhrase(in PhraseInput) string {
+	terms := in.Terms
+	if in.Mode == "single" {
+		terms = SingularTerms(terms)
+	}
 	term := ""
-	if len(in.Terms) > 0 {
-		term = strings.TrimSpace(in.Terms[0])
+	if len(terms) > 0 {
+		term = strings.TrimSpace(terms[0])
 	}
 	names := make([]string, 0, 3)
 	for _, person := range in.People {
@@ -304,7 +340,7 @@ func FallbackPhrase(in PhraseInput) string {
 		if name == "" {
 			continue
 		}
-		if term != "" {
+		if term != "" && !HasAddressSuffix(name) {
 			name += term
 		}
 		names = append(names, name)

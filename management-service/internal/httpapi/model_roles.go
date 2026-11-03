@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/json"
+	"errors"
 	"livecompanion/management/internal/agentgateway"
 	"net/http"
 	"strconv"
@@ -51,6 +54,10 @@ func (s *Server) internalModelAnalysis(w http.ResponseWriter, r *http.Request) {
 			Content string `json:"content"`
 		} `json:"messages"`
 		MaxTokens int `json:"max_tokens"`
+		// Structured output is opt-in: callers that omit it keep the previous
+		// plain-text behaviour shared by every other internal consumer.
+		ResponseFormat string          `json:"response_format"`
+		ResponseSchema json.RawMessage `json:"response_schema"`
 	}
 	if readJSON(w, r, &input) != nil || input.Stream || len(input.Messages) == 0 || len(input.Messages) > 30 || input.MaxTokens < 1 || input.MaxTokens > 32000 {
 		writeError(w, 400, "invalid analysis request")
@@ -64,10 +71,37 @@ func (s *Server) internalModelAnalysis(w http.ResponseWriter, r *http.Request) {
 		}
 		messages = append(messages, agentgateway.Message{Role: m.Role, Content: m.Content})
 	}
-	result, err := s.speechGateway().Complete(r.Context(), agentgateway.Request{Stage: "speech_analysis", Messages: messages, MaxTokens: input.MaxTokens, EnableThinking: false, ResponseFormat: agentgateway.ResponseText, Timeout: 180 * time.Second})
+	format, schema, err := analysisResponseFormat(input.ResponseFormat, input.ResponseSchema)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	result, err := s.speechGateway().Complete(r.Context(), agentgateway.Request{Stage: "speech_analysis", Messages: messages, MaxTokens: input.MaxTokens, EnableThinking: false, ResponseFormat: format, ResponseSchema: schema, Timeout: 180 * time.Second})
 	if err != nil {
 		writeError(w, 502, "系统智能体分析请求失败")
 		return
 	}
 	writeJSON(w, 200, map[string]any{"model": result.Model, "choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": result.Text}}}, "usage": map[string]any{"prompt_tokens": result.InputTokens, "completion_tokens": result.OutputTokens, "total_tokens": result.TotalTokens}})
+}
+
+// analysisResponseFormat resolves the optional structured-output request. An
+// explicit schema always implies JSON mode; anything unexpected is rejected
+// rather than silently downgraded, so a bad caller cannot believe it received a
+// constrained response when it did not.
+func analysisResponseFormat(raw string, schema json.RawMessage) (agentgateway.ResponseFormat, []byte, error) {
+	trimmedSchema := bytes.TrimSpace(schema)
+	if len(trimmedSchema) > 32*1024 {
+		return "", nil, errors.New("response_schema 过大")
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "text":
+		if len(trimmedSchema) > 0 {
+			return agentgateway.ResponseJSON, trimmedSchema, nil
+		}
+		return agentgateway.ResponseText, nil, nil
+	case "json":
+		return agentgateway.ResponseJSON, trimmedSchema, nil
+	default:
+		return "", nil, errors.New("response_format 只支持 text 或 json")
+	}
 }

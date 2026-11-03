@@ -234,9 +234,12 @@ func Annotate(text, p0MD, p1MD, p2MD string) (AnnotationResult, error) {
 	for _, p := range []*annotationPolicy{p1, p2} {
 		excluded := p.exclusionRanges(text)
 		for _, h := range p.matcher.Scan(text, "ordinary_food").Hits {
-			ranges := excluded[h.RuleID]
-			at := sort.Search(len(ranges), func(i int) bool { return ranges[i].start > h.Start }) - 1
-			if at >= 0 && ranges[at].end >= h.End {
+			// 命中只要和排除词有重叠就不算命中。
+			//
+			// 原来是"完全被排除区间包住"才算排除，中文里根本不够：
+			// 「就没有机会了」中「有机」跨在「有|机会」上，只有一半落在排除词里，
+			// 结果「机会」被当成「有机认证」误报。
+			if overlapsExclusion(excluded[h.RuleID], h.Start, h.End) {
 				continue
 			}
 			e := p.entries[h.RuleID]
@@ -256,4 +259,14 @@ func Annotate(text, p0MD, p1MD, p2MD string) (AnnotationResult, error) {
 		return out.Hits[i].Severity < out.Hits[j].Severity
 	})
 	return out, nil
+}
+
+// overlapsExclusion 判断命中区间与排除区间是否有重叠。
+func overlapsExclusion(ranges []span, start, end int) bool {
+	for _, r := range ranges {
+		if start < r.end && end > r.start {
+			return true
+		}
+	}
+	return false
 }

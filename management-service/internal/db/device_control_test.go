@@ -68,6 +68,11 @@ func (deviceControlTx) Rollback() error { return nil }
 func (c *deviceControlConn) QueryContext(_ context.Context, q string, a []driver.NamedValue) (driver.Rows, error) {
 	q = strings.Join(strings.Fields(q), " ")
 	switch {
+	case strings.Contains(q, "SELECT plan.id FROM live_agent_plans"):
+		if len(a) != 2 || a[0].Value != int64(14) || a[1].Value != int64(26) || !strings.Contains(q, "FOR UPDATE") {
+			return nil, errors.New("selected plan lock scope")
+		}
+		return deviceControlNoRows(), nil
 	case strings.Contains(q, "SELECT b.device_id"):
 		if len(a) != 4 || a[0].Value != int64(14) || a[1].Value != int64(26) || a[2].Value != int64(7) || a[3].Value != int64(14) {
 			return deviceControlNoRows(), nil

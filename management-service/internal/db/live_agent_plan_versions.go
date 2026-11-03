@@ -158,6 +158,9 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if err := tx.QueryRowContext(ctx, `SELECT id,voice_rate FROM live_agent_plans WHERE tenant_id=? AND id=? AND status='active' FOR UPDATE`, tenantID, planID).Scan(&lockedPlan, &savedVoiceRate); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
+	if err := assertPlanNotLive(ctx, tx, tenantID, planID, true); err != nil {
+		return model.LiveAgentPlanVersion{}, err
+	}
 	input.VoiceIdentity.Rate = 1
 	if savedVoiceRate.Valid {
 		if rate, valid := model.NormalizePlanVoiceRate(savedVoiceRate.Float64); valid {

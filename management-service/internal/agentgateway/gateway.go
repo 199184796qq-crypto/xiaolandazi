@@ -40,7 +40,12 @@ type Request struct {
 	Temperature      *float64 `json:"temperature,omitempty"`
 	ThinkingOverride *bool    `json:"thinking_override,omitempty"`
 	ResponseFormat   ResponseFormat
-	Timeout          time.Duration
+	// ResponseSchema optionally carries an OpenAI-style json_schema descriptor
+	// ({name, strict, schema}). When set the provider is asked for structured
+	// output; providers that reject it degrade to json_object and then to plain
+	// text, so callers must still validate the decoded result.
+	ResponseSchema []byte
+	Timeout        time.Duration
 }
 
 type Response struct {

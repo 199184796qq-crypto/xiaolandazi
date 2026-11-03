@@ -101,3 +101,33 @@ func TestAnnotationConditionalMarkersDoNotClaimViolation(t *testing.T) {
 		t.Fatal("oversized text allowed")
 	}
 }
+
+func TestAnnotationExcludedTermSuppressesPartialOverlap(t *testing.T) {
+	// 用真实母版：food.p1.organic 带 excluded_terms:["机会"]。
+	_, p1, p2 := annotationMothers(t)
+	p0, _, _ := annotationMothers(t)
+	// 「就没有机会了」里「有|机会」拼出了「有机」，属于部分重叠，必须排除。
+	result, err := Annotate("就没有机会了", p0, p1, p2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range result.Hits {
+		if h.RuleID == "food.p1.organic" {
+			t.Fatalf("「没有机会」不应命中有机: %+v", h)
+		}
+	}
+	// 真正的「有机」说法仍然要报。
+	result, err = Annotate("咱们是有机认证的", p0, p1, p2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, h := range result.Hits {
+		if h.RuleID == "food.p1.organic" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("「有机认证」应命中，实际 %+v", result.Hits)
+	}
+}

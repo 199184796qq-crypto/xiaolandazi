@@ -11,6 +11,8 @@ import (
 )
 
 func (s *Server) registerTTSRoomPoolRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/system/tts-voice-display", s.systemTTSVoiceDisplay)
+	mux.HandleFunc("PUT /api/v1/system/tts-voice-display", s.systemTTSVoiceDisplay)
 	mux.HandleFunc("GET /api/v1/system/tts-room-pools", s.systemTTSRoomPools)
 	mux.HandleFunc("PUT /api/v1/system/tts-room-pools", s.systemTTSRoomPools)
 }

@@ -66,6 +66,9 @@ func (s *Server) planAssetMode(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, err := s.store.GetPlanAssetSettings(r.Context(), tenant, plan)
 	if err == nil && r.Method == http.MethodPut {
+		if !s.allowPlanSave(w, r, tenant, plan) {
+			return
+		}
 		var input struct {
 			Mode string `json:"content_mode"`
 		}

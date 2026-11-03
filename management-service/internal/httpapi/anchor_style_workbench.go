@@ -707,8 +707,18 @@ func (s *Server) anchorStyleWorkbenchSellingPointWheelConfirm(w http.ResponseWri
 	writeJSON(w, http.StatusOK, response)
 }
 
+func repairSellingPointWheelJSON(raw string) string {
+	// Models occasionally emit an extra quote after the angle array, e.g.
+	// `"],"},{"卖点名"` instead of `"]},{"卖点名"`. The text itself is intact;
+	// remove only that known delimiter typo before parsing.
+	raw = strings.ReplaceAll(raw, `"],"},{"`, `"]},{"`)
+	raw = strings.ReplaceAll(raw, `"],"}`, `"]}`)
+	return raw
+}
+
 func normalizeAnchorStyleSellingPointWheelJSON(raw string) (string, int, int, error) {
 	raw = strings.TrimSpace(stripPolicyJSONFence(raw))
+	raw = repairSellingPointWheelJSON(raw)
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &top); err != nil {
 		return "", 0, 0, errors.New("不是合法JSON")

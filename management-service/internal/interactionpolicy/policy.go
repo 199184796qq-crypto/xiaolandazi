@@ -46,6 +46,37 @@ func Read(name string) ([]byte, error) {
 	}
 	return nil, fmt.Errorf("缺少互动母版 %s", name)
 }
+// ReadOptional 用于可缺省的任务模板：文件不存在时返回 nil，不报错。
+// 互动正文的生成可以完全依赖方案提示词，此时不需要任何任务说明。
+func ReadOptional(name string) ([]byte, error) {
+	paths := []string{}
+	if dir := strings.TrimSpace(os.Getenv("ANCHOR_STYLE_PROMPT_DIR")); dir != "" {
+		paths = append(paths, filepath.Join(dir, name))
+	} else {
+		cwd, _ := os.Getwd()
+		for i := 0; i < 8 && cwd != ""; i++ {
+			paths = append(paths, filepath.Join(cwd, "configs", "prompts", "anchor-style", name))
+			parent := filepath.Dir(cwd)
+			if parent == cwd {
+				break
+			}
+			cwd = parent
+		}
+		exe, _ := os.Executable()
+		paths = append(paths, filepath.Join(filepath.Dir(exe), "..", "configs", "prompts", "anchor-style", name))
+	}
+	for _, p := range paths {
+		raw, err := os.ReadFile(p)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
+	return nil, nil
+}
 func Load() (model.InteractionSchedule, error) {
 	raw, err := Read("interaction-scheduling.json")
 	if err != nil {

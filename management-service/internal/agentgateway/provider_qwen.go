@@ -268,7 +268,14 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 			payload["max_completion_tokens"] = request.MaxTokens
 		}
 	}
-	if request.ResponseFormat == ResponseJSON {
+	// Structured output. A caller-supplied JSON Schema is the strongest hint;
+	// json_object only guarantees syntactically valid JSON. Providers differ in
+	// what they accept, so the send loop below degrades one step at a time
+	// instead of hard-coding model IDs.
+	schemaHint, hasSchema := structuredOutputHint(request.ResponseSchema)
+	if hasSchema {
+		payload["response_format"] = schemaHint
+	} else if request.ResponseFormat == ResponseJSON {
 		payload["response_format"] = map[string]string{"type": "json_object"}
 	}
 	if request.Temperature != nil || request.ThinkingOverride != nil {
@@ -311,30 +318,33 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 		return resp.StatusCode, responseBody, latencyMS, nil
 	}
 
-	statusCode, responseBody, latencyMS, err := send(payload)
-	if err != nil {
-		return Response{}, err
+	// Degrade structured-output hints one step at a time: json_schema ->
+	// json_object -> no hint. Only a rejected transport hint is retried; real
+	// model errors stay as they are.
+	attempts := []map[string]any{payload}
+	if hasSchema {
+		attempts = append(attempts,
+			replacePayloadKey(payload, "response_format", map[string]string{"type": "json_object"}),
+			dropPayloadKey(payload, "response_format"))
+	} else if request.ResponseFormat == ResponseJSON {
+		attempts = append(attempts, dropPayloadKey(payload, "response_format"))
 	}
-	if statusCode != http.StatusOK &&
-		request.ResponseFormat == ResponseJSON &&
-		(statusCode == http.StatusBadRequest || statusCode == http.StatusUnprocessableEntity) {
-		// Some OpenAI-compatible models do not implement response_format even
-		// though they can still follow a strict JSON-only prompt. Retry once
-		// without the optional transport hint instead of hard-coding model IDs.
-		fallbackPayload := make(map[string]any, len(payload)-1)
-		for key, value := range payload {
-			if key == "response_format" {
-				continue
-			}
-			fallbackPayload[key] = value
+	var statusCode int
+	var responseBody []byte
+	latencyMS := int64(0)
+	for index, attempt := range attempts {
+		code, body, attemptLatency, sendErr := send(attempt)
+		latencyMS += attemptLatency
+		if sendErr != nil {
+			return Response{}, sendErr
 		}
-		fallbackStatus, fallbackBody, fallbackLatencyMS, fallbackErr := send(fallbackPayload)
-		latencyMS += fallbackLatencyMS
-		if fallbackErr != nil {
-			return Response{}, fallbackErr
+		statusCode, responseBody = code, body
+		if code == http.StatusOK {
+			break
 		}
-		statusCode = fallbackStatus
-		responseBody = fallbackBody
+		if index == len(attempts)-1 || (code != http.StatusBadRequest && code != http.StatusUnprocessableEntity) {
+			break
+		}
 	}
 	if statusCode != http.StatusOK {
 		return Response{}, qwenProviderError(p.Name(), statusCode, responseBody)
@@ -361,4 +371,45 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 		TotalTokens:       decoded.Usage.TotalTokens,
 		CachedInputTokens: decoded.Usage.PromptTokensDetails.CachedTokens,
 	}, nil
+}
+
+// structuredOutputHint turns a caller-supplied json_schema descriptor into the
+// response_format object OpenAI-compatible providers expect. The descriptor is
+// {name, strict, schema}; anything without a schema is treated as absent.
+func structuredOutputHint(raw []byte) (map[string]any, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, false
+	}
+	var descriptor map[string]any
+	if err := json.Unmarshal(trimmed, &descriptor); err != nil || len(descriptor) == 0 {
+		return nil, false
+	}
+	if _, ok := descriptor["schema"]; !ok {
+		return nil, false
+	}
+	if name, _ := descriptor["name"].(string); strings.TrimSpace(name) == "" {
+		descriptor["name"] = "structured_output"
+	}
+	return map[string]any{"type": "json_schema", "json_schema": descriptor}, true
+}
+
+func replacePayloadKey(payload map[string]any, key string, value any) map[string]any {
+	clone := make(map[string]any, len(payload)+1)
+	for k, v := range payload {
+		clone[k] = v
+	}
+	clone[key] = value
+	return clone
+}
+
+func dropPayloadKey(payload map[string]any, key string) map[string]any {
+	clone := make(map[string]any, len(payload))
+	for k, v := range payload {
+		if k == key {
+			continue
+		}
+		clone[k] = v
+	}
+	return clone
 }

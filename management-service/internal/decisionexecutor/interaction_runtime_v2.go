@@ -10,7 +10,6 @@ import (
 	"livecompanion/management/internal/interactionplan"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/speechmission"
-	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -72,9 +71,7 @@ func (w *Worker) withdrawUnstartedV2(session model.LiveRuntimeSession, id string
 	}
 }
 func (w *Worker) v2Address(ctx context.Context, s model.LiveRuntimeSession, item *decisionItem, snapshot interactionplan.Snapshot) string {
-	if len(item.Nicknames) == 0 {
-		return ""
-	}
+	// 没有可点名的观众时也走完整流程，用群体词收尾。
 	// Rules rewrite only these associated viewers. Grey or unsafe names use a
 	// neutral form; no model maintains viewer indices or chooses another person.
 	rules := w.nicknameRules()
@@ -88,41 +85,109 @@ func (w *Worker) v2Address(ctx context.Context, s model.LiveRuntimeSession, item
 		return true
 	}
 	terms, _ := (addressing.AddressTermSources{Room: prefs.PreferredTerms, Style: anchorStyleAddressTerms(snapshot.Style)}).Resolve()
-	clean := terms[:0]
+	// 个体称谓去掉「们」；成对词（哥姐、兄弟姐妹）现在允许接在单人后面，
+	// 只排除群体专用词（各位、大家）。
+	clean := make([]string, 0, len(terms))
 	for _, term := range terms {
-		if allowed(term) && !addressing.IsPluralTerm(term) && !strings.Contains(term, "哥姐") && !strings.Contains(term, "兄弟姐妹") {
-			clean = append(clean, term)
+		term = addressing.SingularTerm(term)
+		if term == "" || !allowed(term) || addressing.IsGroupOnlyTerm(term) {
+			continue
 		}
+		clean = append(clean, term)
 	}
 	terms = clean
-	var names []string
-	for _, name := range item.Nicknames {
-		d := rules.Check(name)
-		if d.Status == addressing.StatusSafe || d.Status == addressing.StatusRewritten {
-			if d.Text != "" && allowed(d.Text) {
-				names = append(names, d.Text)
-			}
-		}
-		if len(names) == 3 {
+	// 逐个判：能念的直接用；灰色的先留着，攒成一批只问一次模型。
+	type addressSlot struct {
+		name string
+		raw  string
+		grey bool
+	}
+	slots := make([]addressSlot, 0, 3)
+	for _, raw := range item.Nicknames {
+		if len(slots) == 3 {
 			break
 		}
+		d := rules.Check(raw)
+		switch d.Status {
+		case addressing.StatusSafe, addressing.StatusRewritten:
+			// 纯英文不可念的名字在这里换成首字母，和 FormsFor 的规则保持一致。
+			name := addressing.FormsFor(d.Text, "", nil).Base
+			if name != "" && allowed(name) {
+				slots = append(slots, addressSlot{name: name, raw: raw})
+			}
+		case addressing.StatusGrey:
+			slots = append(slots, addressSlot{grey: true, raw: raw})
+		}
 	}
-	address := "这位朋友"
-	if len(item.Nicknames) > 1 {
-		address = "几位朋友"
+	// 灰色昵称：只有「去掉英文数字后还剩两个汉字」的才值得问模型，
+	// 纯符号/纯字母直接走群体词，不花这次调用。
+	greyIdx := make([]int, 0, len(slots))
+	greyNames := make([]string, 0, len(slots))
+	for i, slot := range slots {
+		if slot.grey && addressing.WorthAsking(slot.raw) {
+			greyIdx = append(greyIdx, i)
+			greyNames = append(greyNames, slot.raw)
+		}
+	}
+	if len(greyNames) > 0 && w.agent != nil {
+		if resolved := w.resolveGreyAddresses(ctx, s, item, greyNames, rules); len(resolved) == len(greyNames) {
+			for i, base := range resolved {
+				if base != "" && allowed(base) {
+					slots[greyIdx[i]] = addressSlot{name: base, raw: greyNames[i]}
+				}
+			}
+		}
+	}
+	var names []string
+	rawNames := make([]string, 0, len(slots))
+	for _, slot := range slots {
+		if slot.name != "" {
+			names = append(names, slot.name)
+			rawNames = append(rawNames, slot.raw)
+		}
+	}
+	// 一个可点名的都没有时，一律用群称呼：送过来的是这一批人，
+	// 被灰色判定拒掉也还是这批，不改成「这位朋友」。
+	// 群体也掷同一颗骰子：40% 不加称呼直接念正文，60% 加群体称谓。
+	group := addressing.GroupLabelsFrom(terms)
+	address := ""
+	if len(group) > 0 && addressing.WithTitle(w.addressRand()) {
+		address = group[0]
 	}
 	if len(names) > 0 {
-		// Program-owned forms keep the selected viewers and frozen plan's address
-		// style. The joining model cannot choose another person.
-		forms := make([]addressing.FormSet, 0, len(names))
-		for _, name := range names {
-			forms = append(forms, addressing.FormsFor(name, "", terms))
+		parts := make([]string, 0, len(names))
+		if len(names) == 1 {
+			// 单人：裸称 40%、带称谓 60%。
+			name := names[0]
+			label := name
+			// 超过 4 个字不加称谓，多人和单人都一样，掷到也一样。
+			if addressing.WithTitle(w.addressRand()) && len(terms) > 0 && !addressing.HasAddressSuffix(name) && len([]rune(rawNames[0])) <= 4 {
+				label = name + terms[0]
+			}
+			parts = append(parts, label)
+		} else {
+			// 多人：三种形态各三分之一——群体称呼 / 裸称名单 / 每个名字带称谓。
+			switch w.addressRand().Intn(3) {
+			case 0:
+				if len(group) > 0 {
+					address = group[0]
+				}
+			case 1:
+				parts = append(parts, names...)
+			default:
+				for i, name := range names {
+					label := name
+					// 原始昵称超过 4 个字不加称谓，多人名单里同样适用。
+					if len(terms) > 0 && !addressing.HasAddressSuffix(name) && i < len(rawNames) && len([]rune(rawNames[i])) <= 4 {
+						label = name + terms[0]
+					}
+					parts = append(parts, label)
+				}
+			}
 		}
-		mode := "single"
-		if len(forms) > 1 {
-			mode = "multi"
+		if len(parts) > 0 {
+			address = strings.Join(parts, "、")
 		}
-		address = addressing.BuildPhrase(addressing.PhraseInput{Mode: mode, Scene: "answer", People: forms, Terms: terms, GroupLabels: addressing.GroupLabelsFrom(terms)}, rand.New(rand.NewSource(int64(len(item.ID)))))
 	}
 	if !allowed(address) {
 		address = ""
@@ -184,7 +249,8 @@ func (w *Worker) generateInteractionV2(ctx context.Context, session model.LiveRu
 	item.SelectedInterrupt = "hard_cut"
 	item.BridgeText = ""
 	item.AppliedStrategyStages = []string{"plan_prompt_body_ready", "late_address", "address_join"}
-	// The existing order decision controls a real bell joined after TTS.
+	// Preserve the existing order decision/dedupe. The real bell is appended in
+	// the audio layer after the final TTS, never spoken as an extra word.
 	w.markOrderBell(item, e.Intent.Type)
 	address := w.v2Address(ctx, session, item, snapshot)
 	text, err := interactionplan.Join(ctx, snapshot, address, e.Body, complete)

@@ -4,8 +4,12 @@ import (
 	"context"
 	"livecompanion/management/internal/addressing"
 	"log"
+	"math/rand"
 	"strings"
+	"sync/atomic"
+	"time"
 
+	"livecompanion/management/internal/interactionplan"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/speechmission"
 )
@@ -30,7 +34,37 @@ const (
 
 // classifyInteraction 把一次互动事件归到三档之一。
 // 这是新互动策略机的「分类」环节，纯程序逻辑，不调模型。
+// v2IntentType 取新链路解析出的受控类型（提问/下单意向/催单/投诉/闲聊/刷屏）。
+func v2IntentType(item decisionItem) string {
+	if len(item.PurposeKnowledge) == 0 {
+		return ""
+	}
+	e, ok := interactionplan.Decode(item.PurposeKnowledge)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(e.Intent.Type)
+}
+
+// typeTier 把受控类型映射成档位：刷屏与闲聊走礼仪档，其余都算事实应答。
+func typeTier(t string) (interactionTier, bool) {
+	switch t {
+	case "刷屏", "闲聊":
+		return tierAcknowledge, true
+	case "提问", "下单意向", "催单", "投诉":
+		return tierFactAnswer, true
+	}
+	return tierAcknowledge, false
+}
+
 func classifyInteraction(item decisionItem) interactionTier {
+	// 新链路已经把类型解析出来，优先按类型定档，mission_kind 只做兜底。
+	if t := v2IntentType(item); t != "" {
+		if tier, ok := typeTier(t); ok {
+			log.Printf("interaction tier by type decision=%s type=%s", item.ID, t)
+			return tier
+		}
+	}
 	kind := strings.ToLower(strings.TrimSpace(item.MissionKind))
 	switch kind {
 	case "reply_question", "complaint":
@@ -337,6 +371,15 @@ func resolvedAddress(item decisionItem) string {
 // 其中 resolvedAddressingPlan 是完整称呼计划（与旧链路 mission.Addressing 同源）：
 // 单个就是单个（SelectedNames 长度 1）、多个就是多个（长度 2~3），名单不丢、不压平。
 // 各分支策略要「单人或多人名单」时读 plan.SelectedNames，要群称读 plan.GroupLabel，各取所需。
+// addressDice 让每次掷骰都拿到不同的种子，避免固定种子导致「永远带称谓」。
+var addressDice atomic.Uint64
+
+// addressRand 返回称呼骰子用的随机源。每次调用都换种子，
+// 不复用 nicknameRandSeed，否则同一进程内骰子结果恒定。
+func (w *Worker) addressRand() *rand.Rand {
+	n := addressDice.Add(1)
+	return rand.New(rand.NewSource(time.Now().UnixNano() + int64(n)*7919))
+}
 func (w *Worker) resolveInteractionAddressing(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem) (address string, guidance string) {
 	if item == nil {
 		return "", ""
@@ -399,6 +442,10 @@ func (w *Worker) resolveInteractionAddressing(ctx context.Context, session model
 		if len(forms) > 1 {
 			scene = "thanks"
 		}
+	}
+	// 个体称呼掷骰：裸称 40%、带称谓 60%。多人/群体保留群体词，不掷。
+	if mode == "single" && !addressing.WithTitle(w.addressRand()) {
+		terms = nil
 	}
 	phrase := addressing.FallbackPhrase(addressing.PhraseInput{
 		Mode: mode, Scene: scene, People: forms, Terms: terms, GroupLabels: addressing.GroupLabelsFrom(terms),

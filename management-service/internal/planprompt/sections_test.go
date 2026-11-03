@@ -6,7 +6,7 @@ import (
 )
 
 func TestComposeSeparatesUseCasesAndNormalizesHints(t *testing.T) {
-	s := (Sections{"自然讲话\n〔提示〕不要发送", "900克87.6元", "整轮循环讲品", "只答当前问题"}).Normalize()
+	s := (Sections{PersonaMD: "自然讲话\n〔提示〕不要发送", FactsMD: "900克87.6元", SpeechRequirementsMD: "整轮循环讲品", InteractionRequirementsMD: "只答当前问题"}).Normalize()
 	if strings.Contains(s.Interaction(), "整轮循环讲品") || strings.Contains(s.Speech(), "只答当前问题") {
 		t.Fatal("requirements leaked across uses")
 	}
@@ -64,5 +64,24 @@ func TestLegacyProjectionKeepsFactsUnknownTextAndDistinctRequirements(t *testing
 		if strings.Count(s.Interaction(), "【"+title+"】") > 1 {
 			t.Fatal("duplicate outer heading", title)
 		}
+	}
+}
+
+func TestRewritePromptFillsPlaceholders(t *testing.T) {
+	master := "人设：{{主播人设}}\n事实：{{事实依据}}\n样本：{{样本话术}}"
+	sections := Sections{PersonaMD: "我是小林", FactsMD: "价格八十七块六"}
+	got := RewritePrompt(master, sections, "原来的话")
+	if strings.Contains(got, "{{") {
+		t.Fatalf("还有未替换的占位符: %s", got)
+	}
+	for _, want := range []string{"我是小林", "价格八十七块六", "原来的话"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("缺少 %q: %s", want, got)
+		}
+	}
+	// 样本留空（保存方案时）不能留下占位符，交给调用方按条拼。
+	empty := RewritePrompt(master, sections, "")
+	if strings.Contains(empty, "{{样本话术}}") {
+		t.Fatalf("空样本也要替换掉占位符: %s", empty)
 	}
 }

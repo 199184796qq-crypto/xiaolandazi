@@ -57,12 +57,15 @@ func claimV2(core *fakeCore, e interactionplan.Envelope) {
 func TestInteractionV2RealWorkerReusesEarlyBodyAndOnlyJoinsOnce(t *testing.T) {
 	w, _, core, agent, tts, session, e := v2Fixture(t, 10001)
 	claimV2(core, e)
-	agent.responses = []string{"小王，" + e.Body}
 	if err := w.processRoom(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
-	if agent.calls != 1 || agent.requests[0].Stage != "interaction_single_greet" || tts.calls != 1 {
+	// 称呼由程序前置拼接，不再额外调一次模型。
+	if agent.calls != 0 || tts.calls != 1 {
 		t.Fatal("body or intent reran after selection", agent.calls, tts.calls)
+	}
+	if !strings.HasSuffix(tts.last.Text, e.Body) {
+		t.Fatal("address must sit before the frozen body", tts.last.Text)
 	}
 	if !strings.Contains(tts.last.Text, e.Body) || core.dispatches < 1 || core.dispatch["deferred_return"] != false {
 		t.Fatal("old bridge path still active or body changed", core.dispatch)
@@ -106,12 +109,12 @@ func TestInteractionV2ExpiredOrCrossSessionBodyNeverCallsTTS(t *testing.T) {
 }
 func TestInteractionV2ManualRequestsUseSamePlanProtocol(t *testing.T) {
 	w, _, core, agent, tts, session, _ := v2Fixture(t, 10010)
-	agent.responses = []string{`{"relevant":true,"question":true,"meaning":"发货时间"}`, "第二天上午发货。", "小王，第二天上午发货。"}
+	agent.responses = []string{"意图：问发货时间\n歧义：否\n回答：第二天上午发货。", "小王，第二天上午发货。"}
 	core.claimRaw = `{"claimed":true,"item":{"id":"d-1","topic":"manual","mission_kind":"reply_question","sample_questions":["哪天发"],"nicknames":["小王"]}}`
 	if err := w.processRoom(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
-	if agent.calls != 3 || tts.calls != 1 {
+	if agent.calls != 1 || tts.calls != 1 {
 		t.Fatal(agent.calls, tts.calls)
 	}
 }
@@ -122,8 +125,8 @@ func TestInteractionV2FrozenVoiceAndPlanIgnoreLaterAuthorEdits(t *testing.T) {
 	raw, _ := json.Marshal(e)
 	item := decisionItem{ID: "d", PurposeKnowledge: raw}
 	text, err := w.generateInteractionV2(context.Background(), session, &item)
-	if err != nil || text != e.Body || agent.calls != 0 {
-		t.Fatal(text, err, agent.calls)
+	// 群称会前置到冻结正文之前，正文本身必须逐字保留，且不得再调模型。
+	if err != nil || !strings.HasSuffix(text, e.Body) || agent.calls != 0 {
 	}
 	voice, ok := w.v2Voice(context.Background(), session, item)
 	if !ok || voice.VoiceID != "voice-1" {

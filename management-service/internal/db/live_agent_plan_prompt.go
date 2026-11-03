@@ -17,13 +17,14 @@ type LiveAgentPlanPromptDocument struct {
 	PromptMD            string              `json:"prompt_md"`
 	InteractionPromptMD string              `json:"interaction_prompt_md"`
 	SpeechPromptMD      string              `json:"speech_prompt_md"`
+	RewritePromptMD     string              `json:"rewrite_prompt_md"`
 	LegacyUnstructured  bool                `json:"legacy_unstructured,omitempty"`
 	LegacyPromptMD      string              `json:"legacy_prompt_md,omitempty"`
 	UpdatedAt           time.Time           `json:"updated_at,omitempty"`
 }
 
 func (s *Store) ensureLiveAgentPlanPromptColumns(ctx context.Context) error {
-	for _, column := range []string{"sections_json", "speech_prompt_md"} {
+	for _, column := range []string{"sections_json", "speech_prompt_md", "rewrite_prompt_md"} {
 		var count int
 		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='live_agent_plan_prompts' AND column_name=?`, column).Scan(&count); err != nil {
 			return err
@@ -49,6 +50,11 @@ func (s *Store) GetLiveAgentPlanPromptDocument(ctx context.Context, tenantID, pl
 	}
 	if err != nil {
 		return out, err
+	}
+	// 改写元提示词单独读，缺失列或旧数据时为空字符串，不影响其它分区。
+	var rewrite sql.NullString
+	if e := s.db.QueryRowContext(ctx, `SELECT rewrite_prompt_md FROM live_agent_plan_prompts WHERE tenant_id=? AND plan_id=?`, tenantID, planID).Scan(&rewrite); e == nil && rewrite.Valid {
+		out.RewritePromptMD = rewrite.String
 	}
 	if sections.Valid && strings.TrimSpace(sections.String) != "" {
 		if err := json.Unmarshal([]byte(sections.String), &out.Sections); err != nil {
@@ -132,4 +138,15 @@ func (s *Store) SaveLiveAgentPlanPrompt(ctx context.Context, tenantID, planID, a
 	}
 	_, updatedAt, err := s.GetLiveAgentPlanPrompt(ctx, tenantID, planID)
 	return updatedAt, err
+}
+
+// SaveLiveAgentPlanPromptRewrite 保存方案专属的改写元提示词。
+func (s *Store) SaveLiveAgentPlanPromptRewrite(ctx context.Context, tenantID, planID int64, prompt string) error {
+	if tenantID <= 0 || planID <= 0 {
+		return ErrLiveAgentPlanNotFound
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE live_agent_plan_prompts SET rewrite_prompt_md=? WHERE tenant_id=? AND plan_id=?`, prompt, tenantID, planID); err != nil {
+		return err
+	}
+	return nil
 }

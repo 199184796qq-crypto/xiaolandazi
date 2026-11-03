@@ -88,22 +88,32 @@ func scriptFirstUnits(v model.LiveAgentPlanVersion, dir string) ([]volcengineScr
 	texts := recordingStreamTexts(v)
 	if hasGroupedRecordingScript(v) {
 		var units []volcengineScriptUnit
-		for _, text := range texts {
+		// 版本池按条目 ID 建键：文案改了，已生成的版本还能继续用。
+		pools := scriptFirstEntryPoolIDs(v)
+		for i, text := range texts {
 			key := scriptFirstParagraphKey(v, text)
-			units = append(units, volcengineScriptUnit{Text: text, Key: key, Dir: filepath.Join(dir, key)})
+			pool := ""
+			if i < len(pools) {
+				pool = pools[i]
+			}
+			units = append(units, volcengineScriptUnit{Text: text, Key: key, Pool: pool, Dir: filepath.Join(dir, key)})
 		}
-		// Save-time prewarm and live start share this ordering. Keep the UI and
-		// persisted group order; only move the shortest independent entry first.
-		shortest := 0
-		for i := range units {
-			if utf8.RuneCountInString(units[i].Text) < utf8.RuneCountInString(units[shortest].Text) {
-				shortest = i
+		// 首条按方案保存时定下的开场锚点：优先固定标签，其次第一个标签，标签内取最短。
+		// 没有锚点（老方案）时退回"全局最短"，保持旧行为。
+		first := 0
+		if anchor := scriptOpeningUnitIndex(v, units); anchor >= 0 {
+			first = anchor
+		} else {
+			for i := range units {
+				if utf8.RuneCountInString(units[i].Text) < utf8.RuneCountInString(units[first].Text) {
+					first = i
+				}
 			}
 		}
-		if shortest > 0 {
-			first := units[shortest]
-			copy(units[1:shortest+1], units[:shortest])
-			units[0] = first
+		if first > 0 {
+			unit := units[first]
+			copy(units[1:first+1], units[:first])
+			units[0] = unit
 		}
 		return units, nil
 	}
@@ -183,4 +193,81 @@ func scriptFirstText(timeline []model.LiveAgentPlanTimelineSegment) string {
 		text.WriteString(cue.Text)
 	}
 	return text.String()
+}
+
+// scriptOpeningUnitIndex 找出方案保存时定下的开场片段在 units 里的下标。
+//
+// 用文本指纹对回原片段：锚点只存了 ID，跨版本 ID 可能变化，指纹更稳。
+func scriptOpeningUnitIndex(v model.LiveAgentPlanVersion, units []volcengineScriptUnit) int {
+	script, ok := recordingScriptFromContext(v.GenerationContext)
+	if !ok || script.OpeningEntryID == "" {
+		return -1
+	}
+	var text string
+	for _, tab := range script.Tabs {
+		if script.OpeningTabID != "" && tab.TabID != script.OpeningTabID {
+			continue
+		}
+		for _, entry := range tab.Entries {
+			if entry.EntryID == script.OpeningEntryID {
+				text = strings.TrimSpace(entry.Text)
+			}
+		}
+	}
+	if text == "" {
+		return -1
+	}
+	want := scriptFirstParagraphKey(v, text)
+	for i, unit := range units {
+		if unit.Key == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// scriptFirstEntryPoolIDs 按 recordingStreamTexts 的顺序返回每个条目的版本池键。
+//
+// 用 entry_id（前端生成、改文案不变）而不是文本哈希，避免改一个字就把
+// 已付费生成的改写版本全部作废。没有 entry_id 的旧数据返回空，退回文本哈希。
+func scriptFirstEntryPoolIDs(v model.LiveAgentPlanVersion) []string {
+	script, ok := recordingScriptFromContext(v.GenerationContext)
+	if !ok || script.Version != 2 {
+		return nil
+	}
+	var out []string
+	for tabIndex, tab := range script.Tabs {
+		// entry_id 只在标签内唯一（每个标签都从 s1 开始），必须带上标签身份。
+		tabKey := strings.TrimSpace(tab.TabID)
+		if tabKey == "" {
+			tabKey = fmt.Sprintf("t%d", tabIndex)
+		}
+		if tab.Entries != nil {
+			for _, entry := range tab.Entries {
+				if strings.TrimSpace(entry.Text) == "" {
+					continue
+				}
+				if strings.TrimSpace(entry.EntryID) != "" {
+					out = append(out, "e-"+tabKey+"-"+strings.TrimSpace(entry.EntryID))
+				} else {
+					out = append(out, "")
+				}
+			}
+			continue
+		}
+		if strings.TrimSpace(tab.Text) != "" {
+			out = append(out, "")
+		}
+	}
+	return out
+}
+func scriptEntryPoolID(tab recordingScriptTab, index int, entryID string) string {
+	tabKey := strings.TrimSpace(tab.TabID)
+	if tabKey == "" {
+		tabKey = fmt.Sprintf("t%d", index)
+	}
+	if strings.TrimSpace(entryID) == "" {
+		return ""
+	}
+	return "e-" + tabKey + "-" + strings.TrimSpace(entryID)
 }

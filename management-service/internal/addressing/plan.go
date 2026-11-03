@@ -137,48 +137,37 @@ func Build(viewers []Viewer, rules *Rules, r *rand.Rand) Plan {
 	default:
 		plan.Mode = "mixed"
 	}
-	resolveDuplicateAddresses(&plan, rules)
+	dropDuplicateAddresses(&plan)
 	return plan
 }
 
-// resolveDuplicateAddresses extends the spoken digits when two auto-generated
-// accounts would otherwise answer to the same address in one batch.
-func resolveDuplicateAddresses(plan *Plan, rules *Rules) {
-	counts := make(map[string]int, len(plan.Picked))
+// dropDuplicateAddresses 同一批里称呼相同的只留第一个，其余不点名并计入 Dropped。
+// 不做「K哥／小K哥」这种区分，撞名只叫一个。
+func dropDuplicateAddresses(plan *Plan) {
+	seen := map[string]bool{}
+	kept := plan.Picked[:0]
 	for _, picked := range plan.Picked {
-		counts[picked.Text]++
+		key := strings.TrimSpace(picked.Text)
+		if key == "" {
+			continue
+		}
+		if seen[key] {
+			plan.Dropped++
+			continue
+		}
+		seen[key] = true
+		kept = append(kept, picked)
 	}
-	for i := range plan.Picked {
-		picked := &plan.Picked[i]
-		if counts[picked.Text] <= 1 {
-			continue
-		}
-		if picked.Decision.Reason != "generic_account_digits" && picked.Decision.Reason != "digits_only" {
-			continue
-		}
-		for n := 4; n <= 12; n++ {
-			var candidate string
-			var ok bool
-			if picked.Decision.Reason == "digits_only" {
-				candidate, ok = DigitsAddress(picked.RawName, n)
-			} else {
-				candidate, ok = rules.HardBlock.AccountAddress(picked.RawName, n)
-			}
-			if !ok {
-				break
-			}
-			if counts[candidate] > 0 {
-				continue
-			}
-			counts[picked.Text]--
-			picked.Text = candidate
-			picked.Decision.Short = rules.ShortForm(candidate)
-			counts[candidate] = 1
-			break
-		}
+	plan.Picked = kept
+	switch {
+	case len(plan.Picked) == 0 && len(plan.Grey) == 0:
+		plan.Mode = "group"
+	case len(plan.Picked) == 1 && len(plan.Grey) == 0:
+		plan.Mode = "single"
+	default:
+		plan.Mode = "mixed"
 	}
 }
-
 func dedupeViewers(viewers []Viewer) []Viewer {
 	seen := map[string]struct{}{}
 	out := make([]Viewer, 0, len(viewers))

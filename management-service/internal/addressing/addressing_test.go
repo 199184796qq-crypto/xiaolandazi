@@ -134,17 +134,19 @@ func TestShortenKeepsSuffixTitle(t *testing.T) {
 	}
 }
 
-func TestDuplicateAccountAddressesAreExtended(t *testing.T) {
-	rules := testRules(t)
+func TestDuplicateAddressesAreDroppedNotExtended(t *testing.T) {
 	plan := Plan{Picked: []Picked{
 		{Viewer: Viewer{UserID: "1", RawName: "用户2616106374192"}, Decision: Decision{Reason: "generic_account_digits"}, Text: "用户二六一"},
 		{Viewer: Viewer{UserID: "2", RawName: "用户2613503868174"}, Decision: Decision{Reason: "generic_account_digits"}, Text: "用户二六一"},
 	}}
-	resolveDuplicateAddresses(&plan, rules)
-	if plan.Picked[0].Text == plan.Picked[1].Text {
-		t.Fatalf("collision kept: %s", plan.Picked[0].Text)
+	dropDuplicateAddresses(&plan)
+	if len(plan.Picked) != 1 {
+		t.Fatalf("撞名应只留一个，实际 %d 个", len(plan.Picked))
 	}
-	if !strings.HasPrefix(plan.Picked[0].Text, "用户二六一") {
-		t.Fatalf("address changed base: %s", plan.Picked[0].Text)
+	if plan.Picked[0].Text != "用户二六一" || plan.Dropped != 1 {
+		t.Fatalf("保留或计数错误: %+v dropped=%d", plan.Picked[0].Text, plan.Dropped)
+	}
+	if plan.Mode != "single" {
+		t.Fatalf("mode=%s", plan.Mode)
 	}
 }

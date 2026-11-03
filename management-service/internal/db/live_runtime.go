@@ -1538,6 +1538,12 @@ func (s *Store) StartLiveRuntimeSession(
 	if err := lockUsableRoomTx(ctx, tx, tenantID, roomID); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
+	// Serialize startup with saves of the selected plan. A save either commits
+	// before this session starts, or sees its running row and is refused.
+	var selectedPlan int64
+	if err := tx.QueryRowContext(ctx, `SELECT plan.id FROM live_agent_plans plan INNER JOIN live_agent_room_plan_selections selection ON selection.tenant_id=plan.tenant_id AND selection.plan_id=plan.id WHERE selection.tenant_id=? AND selection.room_id=? FOR UPDATE`, tenantID, roomID).Scan(&selectedPlan); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return model.LiveRuntimeSession{}, err
+	}
 
 	var existing int64
 	err = tx.QueryRowContext(ctx, `

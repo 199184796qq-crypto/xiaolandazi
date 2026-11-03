@@ -111,7 +111,8 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 		return BatchResult{}, err
 	}
 	req := agentgateway.Request{Stage: "interaction_purpose_resolution", ResponseFormat: agentgateway.ResponseText, MaxTokens: 900 * len(items), Timeout: 27 * time.Second, EnableThinking: false, CacheSystemPrompt: true,
-		Messages: []agentgateway.Message{{Role: "system", Content: s.P0 + "\n\n本场冻结的方案提示词：\n" + stripFormatSection(s.Prompt) + "\n\n" + string(md)}, {Role: "user", Content: string(raw)}}}
+		// P0 只用于生成后的硬校验，不再整段塞进请求；它每轮白烧一两千 token。
+		Messages: []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + stripFormatSection(s.Prompt) + "\n\n" + string(md)}, {Role: "user", Content: string(raw)}}}
 	response, err := complete(ctx, req)
 	if err != nil {
 		return BatchResult{}, err
@@ -208,7 +209,13 @@ func parseBatch(s Snapshot, items []BatchItem, raw string) BatchResult {
 	}
 	for id, b := range blocks {
 		i := indices[id]
-		if b.invalid || !b.closed {
+		// 模型偶尔会漏掉「结束」行，只要这一段的字段本身齐全，就按完整处理。
+		// 模型偶尔会漏掉「结束」行，只要这一段字段齐全，就按完整处理。
+		_, hasType := b.fields["类型"]
+		_, hasAmbiguity := b.fields["歧义"]
+		_, hasAnswer := b.fields["回答"]
+		complete := hasType && hasAmbiguity && hasAnswer
+		if b.invalid || (!b.closed && !complete) {
 			out.Items[i].Err = errors.New("互动结果编号、字段重复或分段不完整")
 			continue
 		}

@@ -38,6 +38,13 @@ func (c *planSaveConn) QueryContext(_ context.Context, q string, a []driver.Name
 	if !strings.Contains(q, "tenant_id=?") {
 		return nil, errors.New("tenant scope missing")
 	}
+	if strings.Contains(q, "FROM live_runtime_sessions session") {
+		values := [][]driver.Value{}
+		if c.active {
+			values = append(values, []driver.Value{int64(29)})
+		}
+		return &contentPolicyTestRows{columns: []string{"room_id"}, values: values}, nil
+	}
 	if strings.Contains(q, "SELECT COUNT(*)") {
 		v := int64(1)
 		if strings.Contains(q, "live_runtime_sessions") {
@@ -135,7 +142,7 @@ func TestSaveDuringLiveDoesNotDeletePinnedVersion(t *testing.T) {
 	c := &planSaveConn{active: true}
 	s := planSaveStore(t, c)
 	_, err := s.CreateLiveAgentPlanVersion(context.Background(), 14, 4, 8, model.CreateLiveAgentPlanVersionInput{RoomID: 26})
-	if err != nil || !c.committed || len(c.deleted) != 0 {
+	if !errors.Is(err, ErrLiveAgentPlanInUse) || c.committed || !c.rolled || len(c.deleted) != 0 || len(c.writes) != 0 {
 		t.Fatal(err, c)
 	}
 }

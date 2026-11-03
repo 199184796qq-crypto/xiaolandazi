@@ -24,6 +24,8 @@ type volcengineCachedAudio struct {
 	VoiceID           string                               `json:"voice_id"`
 	Timeline          []model.LiveAgentPlanTimelineSegment `json:"timeline"`
 	Blocks            []scriptFirstCachedBlock             `json:"blocks,omitempty"`
+	// Text 只在内存里表示"这条音频实际念的文本"，不落缓存文件。
+	Text string `json:"text,omitempty"`
 }
 type volcengineParagraphCache struct {
 	Key   string                        `json:"key"`
@@ -166,7 +168,22 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 			return empty, err
 		}
 		scope := liveCostCallScope{TenantID: tenant, RoomID: room, SessionID: session, PlanID: version.PlanID, Priority: "necessary", Reason: "高仿真话术原文长段首次合成", Key: fmt.Sprintf("volcengine-long:%d:%s", session, unit.Key)}
+		if liveCostScope(ctx).Reason == "话术后台改写" {
+			scope.Priority = "optional"
+			scope.Reason = "话术后台改写"
+		}
+		release := func(bool) {}
+		// Existing jobs are resumed by the provider, not purchased again.
+		if _, statErr := os.Stat(r.LongText.StatePath); errors.Is(statErr, os.ErrNotExist) {
+			release, err = reserveScriptVoiceSynthesis(version.PlanID, unit.Key, hanCount(unit.Text))
+			if err != nil {
+				return empty, err
+			}
+		} else if statErr != nil {
+			return empty, statErr
+		}
 		generated, err = ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(ctx, scope), r)
+		release(ttsgateway.DefinitelyNotSent(err))
 		if err != nil {
 			return empty, err
 		}

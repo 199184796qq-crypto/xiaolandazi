@@ -58,6 +58,26 @@ type recordingScript struct {
 	Tabs          []recordingScriptTab `json:"tabs"`
 	ActiveTabID   string               `json:"active_tab_id,omitempty"`
 	PlaybackOrder []string             `json:"playback_order,omitempty"`
+	// PlayMode 是方案级播放模式：full=一个标签的片段全播一遍再切，single=只播一个就切。
+	PlayMode string `json:"play_mode,omitempty"`
+	// VersionCap 是每个片段在每个音色下的版本上限。
+	VersionCap int `json:"version_cap,omitempty"`
+	// MinVoiceBlock 是一个音色块最少持续的大循环轮数。
+	MinVoiceBlock int `json:"min_voice_block,omitempty"`
+	// Voices 是本方案选中的音色列表（含所属模型），按选择顺序轮换。
+	Voices []recordingScriptVoice `json:"voices,omitempty"`
+	// OpeningTabID / OpeningEntryID 是保存时定下的开场锚点：
+	// 第一次开播的第一个片段固定用它，不再随机。
+	OpeningTabID   string `json:"opening_tab_id,omitempty"`
+	OpeningEntryID string `json:"opening_entry_id,omitempty"`
+}
+
+// recordingScriptVoice 是一个被选中的音色。
+//
+// 模型必须一起存：不同供应商的同一个 voice_id 并不通用。
+type recordingScriptVoice struct {
+	VoiceID string `json:"voice_id"`
+	Model   string `json:"model,omitempty"`
 }
 
 // normalizeRecordingScript 校验并规整调用方提交的话术组，写回 generation_context。
@@ -248,6 +268,77 @@ func (s *recordingScript) normalize() {
 		s.ActiveTabID = s.Tabs[0].TabID
 	}
 	s.ActiveTabID = strings.TrimSpace(s.ActiveTabID)
+	// 播放模式只保留 single；其它情况留空，由读取方按 full 处理，
+	// 这样没动过设置的旧方案存回去不会多出字段。
+	if strings.ToLower(strings.TrimSpace(s.PlayMode)) != "single" {
+		s.PlayMode = ""
+	}
+	// 版本上限与音色块轮数只做钳制，未配置时保持 0，由读取方用默认值。
+	if s.VersionCap < 0 {
+		s.VersionCap = 0
+	}
+	if s.VersionCap > 50 {
+		s.VersionCap = 50
+	}
+	if s.MinVoiceBlock < 0 {
+		s.MinVoiceBlock = 0
+	}
+	if s.MinVoiceBlock > 20 {
+		s.MinVoiceBlock = 20
+	}
+	// 开场锚点：
+	//   第一个位置是固定标签 → 用该标签内最短的一条（固定是用户指定的，必须尊重）
+	//   否则 → 全方案最短的一条（首段最快出声）
+	if len(s.Tabs) > 0 {
+		var anchor recordingScriptTab
+		restrict := false
+		if s.Tabs[0].Pinned {
+			anchor = s.Tabs[0]
+			restrict = true
+		}
+		openingTab, opening := "", ""
+		shortest := 0
+		for _, tab := range s.Tabs {
+			if restrict && tab.TabID != anchor.TabID {
+				continue
+			}
+			for _, entry := range tab.Entries {
+				text := strings.TrimSpace(entry.Text)
+				if text == "" {
+					continue
+				}
+				runes := len([]rune(text))
+				if opening == "" || runes < shortest {
+					openingTab = tab.TabID
+					opening = entry.EntryID
+					shortest = runes
+				}
+			}
+		}
+		if opening != "" {
+			s.OpeningTabID = openingTab
+			s.OpeningEntryID = opening
+		}
+	}
+
+	// 音色列表去空、去重，顺序即轮换顺序；最多保留 8 个。
+	if len(s.Voices) > 0 {
+		seen := make(map[string]bool, len(s.Voices))
+		cleaned := make([]recordingScriptVoice, 0, len(s.Voices))
+		for _, voice := range s.Voices {
+			voice.VoiceID = strings.TrimSpace(voice.VoiceID)
+			voice.Model = strings.TrimSpace(voice.Model)
+			if voice.VoiceID == "" || seen[voice.VoiceID] {
+				continue
+			}
+			seen[voice.VoiceID] = true
+			cleaned = append(cleaned, voice)
+			if len(cleaned) == 8 {
+				break
+			}
+		}
+		s.Voices = cleaned
+	}
 	for index := range s.PlaybackOrder {
 		s.PlaybackOrder[index] = strings.TrimSpace(s.PlaybackOrder[index])
 	}
@@ -282,4 +373,34 @@ func (s recordingScript) scriptedText() string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// EffectivePlayMode 返回播放模式，未配置时按 full（与改造前行为一致）。
+func (s recordingScript) EffectivePlayMode() string {
+	if strings.EqualFold(strings.TrimSpace(s.PlayMode), "single") {
+		return "single"
+	}
+	return "full"
+}
+
+// EffectiveVersionCap 返回每音色版本上限，未配置时为 6。
+func (s recordingScript) EffectiveVersionCap() int {
+	if s.VersionCap <= 0 {
+		return 6
+	}
+	if s.VersionCap > 50 {
+		return 50
+	}
+	return s.VersionCap
+}
+
+// EffectiveMinVoiceBlock 返回音色块最少轮数，未配置时为 4。
+func (s recordingScript) EffectiveMinVoiceBlock() int {
+	if s.MinVoiceBlock <= 0 {
+		return 4
+	}
+	if s.MinVoiceBlock > 20 {
+		return 20
+	}
+	return s.MinVoiceBlock
 }

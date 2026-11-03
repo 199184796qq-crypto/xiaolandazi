@@ -53,7 +53,8 @@ func prepareScriptFirstPaid(ctx context.Context, unit volcengineScriptUnit, gene
 	}
 	out, err := generate(ctx, audioPath)
 	if err != nil {
-		if ttsgateway.DefinitelyNotSent(err) {
+		var admission scriptBudgetAdmissionError
+		if ttsgateway.DefinitelyNotSent(err) || errors.As(err, &admission) {
 			if e := os.Remove(path); e != nil {
 				return out, e
 			}
@@ -121,8 +122,18 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 			return ttsgateway.SynthesizeResponse{}, errors.New("循环缺少首轮声音，未重新合成")
 		}
 		request := withNaturalBreathInstruction(ttsgateway.SynthesizeRequest{Provider: ttsgateway.ProviderQwen, Model: v.VoiceIdentity.Model, VoiceID: v.VoiceIdentity.VoiceID, Text: unit.Text, Rate: v.VoiceIdentity.Rate, Instruction: recordingInstructionForVersion(v, unit.Text), ParagraphPath: path})
+		release, err := reserveScriptVoiceSynthesis(v.PlanID, unit.Key, hanCount(unit.Text))
+		if err != nil {
+			return ttsgateway.SynthesizeResponse{}, scriptBudgetAdmissionError{err}
+		}
 		scope := liveCostCallScope{TenantID: tenant, RoomID: room, SessionID: session, PlanID: v.PlanID, Priority: "necessary", Reason: "话术原文整段首次合成", Key: fmt.Sprintf("script-paragraph:%d:%s", session, unit.Key)}
-		return ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(c, scope), request)
+		if liveCostScope(c).Reason == "话术后台改写" {
+			scope.Priority = "optional"
+			scope.Reason = "话术后台改写"
+		}
+		out, err := ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(c, scope), request)
+		release(ttsgateway.DefinitelyNotSent(err))
+		return out, err
 	})
 	if err != nil {
 		return empty, err

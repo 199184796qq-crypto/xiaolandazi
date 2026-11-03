@@ -2,12 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -20,7 +22,23 @@ import (
 const volcengineSupplyThresholdMS int64 = 40000
 const volcengineReplayThresholdMS int64 = 15000
 
-type volcengineScriptUnit struct{ Text, Key, Dir string }
+type volcengineScriptUnit struct {
+	Text string
+	// Key 是音频缓存身份：文本一变就要重合成，所以它是文本哈希。
+	Key string
+	// Pool 是版本池身份：按话术条目 ID 生成，改文案不会丢已生成的版本。
+	Pool string
+	Dir  string
+}
+
+// poolID 返回版本池用的键：有条目 ID 就用条目 ID，否则退回文本哈希。
+func (u volcengineScriptUnit) poolID() string {
+	if u.Pool != "" {
+		return u.Pool
+	}
+	return u.Key
+}
+
 type volcenginePendingTrack struct {
 	Unit      int                   `json:"unit"`
 	Audio     volcengineCachedAudio `json:"audio"`
@@ -29,6 +47,13 @@ type volcenginePendingTrack struct {
 	NextBlock int                   `json:"next_block,omitempty"`
 }
 type volcengineScriptCursor struct {
+	GroupedOrder         bool                            `json:"grouped_order,omitempty"`
+	RewriteSnapshot      *scriptRewriteSnapshot          `json:"rewrite_snapshot,omitempty"`
+	Delivered            []scriptDeliveredTrack          `json:"delivered,omitempty"`
+	ActiveVoice          string                          `json:"active_voice,omitempty"`
+	ActiveModel          string                          `json:"active_model,omitempty"`
+	VoiceBlockLeft       int                             `json:"voice_block_left,omitempty"`
+	UnitSelections       []int                           `json:"unit_selections,omitempty"`
 	VersionID            int64                           `json:"version_id"`
 	Signature            string                          `json:"signature"`
 	ProgramID            string                          `json:"program_id"`
@@ -37,6 +62,7 @@ type volcengineScriptCursor struct {
 	Position             int                             `json:"position"`
 	Sequence             int                             `json:"sequence"`
 	Previous             int                             `json:"previous"`
+	PreviousOrder        []int                           `json:"previous_order,omitempty"`
 	Pending              *volcenginePendingTrack         `json:"pending,omitempty"`
 	LastQueued           int                             `json:"last_queued,omitempty"`
 	ConsecutiveFallbacks int                             `json:"consecutive_fallbacks,omitempty"`
@@ -78,7 +104,7 @@ func validVolcengineCursor(c volcengineScriptCursor, version int64, signature st
 	}
 	seen := make([]bool, n)
 	for i, x := range c.Order {
-		if x < 0 || x >= n || seen[x] || (c.Round == 0 && x != i) {
+		if x < 0 || x >= n || seen[x] || (c.Round == 0 && !c.GroupedOrder && x != i) {
 			return false
 		}
 		seen[x] = true
@@ -180,10 +206,19 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		namespace = "script-first-v1"
 	}
 	dir := scope.CacheDir(namespace, "paragraphs")
+	// 音频跟着方案走，不跟着房间走：同一方案的多个房间共用一份段落缓存，
+	// 第二个房间开同一方案时直接复用，不再重新合成。
+	if planDir, ok := planCacheDir(tenant, v.PlanID, v.VoiceIdentity.Model); ok && hasGroupedRecordingScript(v) {
+		dir = filepath.Join(planDir, "paragraphs")
+	}
 	units, err := scriptFirstUnits(v, dir)
 	if err != nil {
 		return err
 	}
+	// 开播时顺手清掉不属于当前话术的旧版本池文件。
+	pruneScriptVoicePools(v.PlanID, units)
+	// 按整轮时长算这场的版本上限，片段越少版本越多。
+	rememberScriptVersionCap(v, units)
 	// 方案级首段预热：把保存时预先合成的首段复制进本房间缓存，
 	// 开播立即有声音；房间已有付费缓存时不覆盖。
 	if len(units) > 0 {
@@ -197,8 +232,9 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 	}
 	signature = volcengineParagraphKey(id, signature, v.VoiceIdentity.Rate)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	cursor := volcengineScriptCursor{VersionID: v.ID, Signature: signature, Order: volcengineParagraphOrder(len(units), 0, -1, rng), Previous: -1}
-	checkpoint := filepath.Join(recordingCacheMediaRoot(), "volcengine-supply", fmt.Sprintf("%d-%d-%d.json", tenant, room, session))
+
+	cursor := volcengineScriptCursor{VersionID: v.ID, Signature: signature, GroupedOrder: true, Order: scriptInitialPlaybackOrder(v, units), Previous: -1}
+	checkpoint := scriptSupplyCheckpointPath(tenant, room, session)
 	var saved volcengineScriptCursor
 	if e := readVolcengineJSON(checkpoint, &saved); e == nil {
 		if !validVolcengineCursor(saved, v.ID, signature, len(units)) {
@@ -208,6 +244,20 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 	} else if !errors.Is(e, os.ErrNotExist) {
 		return e
 	}
+	if cursor.RewriteSnapshot == nil {
+		frozen := scriptRewriteSnapshot{}
+		if cursor.Sequence == 0 {
+			if snapshot, err := s.loadScriptRewriteSnapshot(ctx, tenant, v); err == nil {
+				frozen = snapshot
+			} else {
+				log.Printf("script rewrite snapshot unavailable plan=%d: %v", v.PlanID, err)
+			}
+		}
+		// Legacy checkpoints have no proof of their old facts. Restore playback,
+		// but do not buy rewrites against a newly edited document after restart.
+		cursor.RewriteSnapshot = &frozen
+	}
+	v = withScriptRewriteSnapshot(v, *cursor.RewriteSnapshot)
 	save := func() error { return writeVolcengineJSON(checkpoint, cursor) }
 	if err = save(); err != nil {
 		return err
@@ -248,6 +298,9 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		if cursor.ProgramID == "" && p.Running && p.Task.SessionID != fmt.Sprintf("volcengine-long-%d", session) {
 			return p, anchorcycle.ErrStale
 		}
+		if e = s.confirmScriptPlayback(ctx, tenant, room, session, v, units, &cursor, p, save); e != nil {
+			return p, e
+		}
 		return p, nil
 	}
 	publish := func(c context.Context) error {
@@ -260,7 +313,11 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		}
 		blocks := pending.Audio.Blocks
 		if len(blocks) == 0 {
-			blocks = []scriptFirstCachedBlock{{AssetID: pending.Audio.AssetID, DurationMS: pending.Audio.DurationMS, Text: units[pending.Unit].Text, Timeline: pending.Audio.Timeline}}
+			blockText := units[pending.Unit].Text
+			if strings.TrimSpace(pending.Audio.Text) != "" {
+				blockText = pending.Audio.Text
+			}
+			blocks = []scriptFirstCachedBlock{{AssetID: pending.Audio.AssetID, DurationMS: pending.Audio.DurationMS, Text: blockText, Timeline: pending.Audio.Timeline}}
 		}
 		if err := publishScriptFirstBlocks(c, pending, blocks, func(c context.Context, blockIndex int, block scriptFirstCachedBlock) error {
 			if e := checkOwner(c); e != nil {
@@ -277,7 +334,7 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			if pending.Audio.UntimedTranscript {
 				id += "-raw"
 			}
-			track := coreclient.ProgramRefreshTrack{ID: id, Label: "话术原文整段", Text: block.Text, AudioURL: url, DurationMS: int(block.DurationMS), AllowConsecutiveRepeat: true,
+			track := coreclient.ProgramRefreshTrack{ID: id, Label: "话术主线整段", Text: block.Text, AudioURL: url, DurationMS: int(block.DurationMS), AllowConsecutiveRepeat: true,
 				UntimedTranscript: pending.Audio.UntimedTranscript,
 				Timeline:          recordingStreamTimeline(block.Timeline), SafePoints: recordingStreamSafePoints(volcengineSemanticSafePoints(block.Timeline))}
 			if cursor.ProgramID == "" {
@@ -292,6 +349,16 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 					return e
 				}
 			}
+			found := false
+			for _, sent := range cursor.Delivered {
+				if sent.TrackID == id {
+					found = true
+					break
+				}
+			}
+			if !found {
+				cursor.Delivered = append(cursor.Delivered, scriptDeliveredTrack{Unit: pending.Unit, TrackID: id, InstanceID: pending.ID, AssetID: pending.Audio.AssetID, VoiceID: pending.Audio.VoiceID, Model: cursor.ActiveModel, Block: block})
+			}
 			s.archiveTTSCacheReplay(c, tenant, room, session, cursor.ProgramID, track)
 			return nil
 		}, save); err != nil {
@@ -300,6 +367,10 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		if pending.Advance {
 			cursor.Position++
 			cursor.Previous = pending.Unit
+			if len(cursor.UnitSelections) != len(units) {
+				cursor.UnitSelections = make([]int, len(units))
+			}
+			cursor.UnitSelections[pending.Unit]++
 		}
 		cursor.LastQueued = pending.Unit
 		if pending.Advance {
@@ -368,6 +439,34 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		return nil
 	}
 	retryAttempt := 0
+	// 音色轮换：按方案选中的音色列表走块，一块至少 min_voice_block 轮。
+	// 目标音色没备齐就继续用当前音色，也就是"准备中"状态。
+	voices := scriptVoicesForPlayback(v)
+	voiceIdx := 0
+	// Begin with the already-authorized formal voice, not an arbitrary list item.
+	for i, voice := range voices {
+		if voice.VoiceID == v.VoiceIdentity.VoiceID && (voice.Model == "" || voice.Model == v.VoiceIdentity.Model) {
+			voiceIdx = i
+		}
+	}
+	if cursor.ActiveVoice != "" {
+		for i, voice := range voices {
+			if voice.VoiceID == cursor.ActiveVoice && (voice.Model == "" || voice.Model == cursor.ActiveModel) {
+				voiceIdx = i
+			}
+		}
+	}
+	activeV := scriptVersionForVoice(v, voices[voiceIdx])
+	for i, audio := range known {
+		if audio.VoiceID != activeV.VoiceIdentity.VoiceID {
+			delete(known, i)
+		}
+	}
+	cursor.ActiveVoice = activeV.VoiceIdentity.VoiceID
+	cursor.ActiveModel = activeV.VoiceIdentity.Model
+	if cursor.VoiceBlockLeft <= 0 {
+		cursor.VoiceBlockLeft = scriptVoiceBlockLength(activeV, units)
+	}
 	for {
 		if err = ctx.Err(); err != nil {
 			return err
@@ -395,7 +494,25 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		if cursor.Position == len(units) {
 			cursor.Round++
 			cursor.Position = 0
-			cursor.Order = volcengineParagraphOrder(len(units), cursor.Round, cursor.Previous, rng)
+			// 块走完就尝试切下一个音色；目标音色没备齐则留在当前音色。
+			if cursor.VoiceBlockLeft--; cursor.VoiceBlockLeft <= 0 {
+				if next, ok := scriptNextPlaybackVoice(voices, voiceIdx, v, units); ok {
+					voiceIdx = next
+				}
+				activeV = scriptVersionForVoice(v, voices[voiceIdx])
+				cursor.ActiveVoice = activeV.VoiceIdentity.VoiceID
+				cursor.ActiveModel = activeV.VoiceIdentity.Model
+				cursor.VoiceBlockLeft = scriptVoiceBlockLength(activeV, units)
+				// Fallbacks must use only this voice. Do not replay the previous voice
+				// while a selected voice is waiting on an asset URL.
+				known = map[int]volcengineCachedAudio{}
+			}
+			// 按话术标签分组排下一轮：固定标签锁位，其余随机。
+			previousOrder := cursor.Order
+			cursor.Order = scriptPlayRoundOrder(v, units, cursor.Round, cursor.Previous, previousOrder, rng)
+			// 跨轮首尾不能撞同一片段，否则连着听两遍一样的内容。
+			cursor.Order = scriptSingleSelectionOrder(v, units, cursor.Order, cursor.UnitSelections, cursor.Previous)
+			cursor.PreviousOrder = previousOrder
 			if err = save(); err != nil {
 				return err
 			}
@@ -410,8 +527,16 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		if e != nil {
 			return e
 		}
+		// 单选模式：该标签本轮已经播过一条，后面同组片段直接跳过。
+		if scriptPlaySkipInSingleMode(v, units, cursor.Order, cursor.Position) {
+			cursor.Position++
+			if err = save(); err != nil {
+				return err
+			}
+			continue
+		}
 		nextIndex := cursor.Order[cursor.Position]
-		needsSynthesis := cursor.Round == 0 && known[nextIndex].AssetID <= 0
+		needsSynthesis := known[nextIndex].AssetID <= 0
 		if cursor.ProgramID != "" && !volcengineSupplyDue(p, scriptFirstSupplyLead(units, nextIndex, v.VoiceIdentity.Model, needsSynthesis)) {
 			if err = waitLiveProducer(ctx); err != nil {
 				return err
@@ -424,10 +549,24 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		// This check is the sole paid lookahead gate: no next submission until
 		// buffered mainline reaches its length-based lead. One paragraph is in flight.
 		work, done := context.WithCancel(ctx)
-		allowSynthesis := cursor.Round == 0
-		audio, e := awaitVolcengineParagraph(work, 500*time.Millisecond, func(c context.Context) (volcengineCachedAudio, error) {
-			return s.ensureScriptFirstParagraph(c, tenant, room, session, v, units[index], allowSynthesis)
-		}, keepPlaying)
+		allowSynthesis := true // A single-select piece may first be visited in a later round.
+		if activeV.VoiceIdentity.VoiceID != v.VoiceIdentity.VoiceID || activeV.VoiceIdentity.Model != v.VoiceIdentity.Model {
+			allowSynthesis = false
+		}
+		// 先从片段版本池取一条已合成的音频；池子里没有才走合成。
+		voiceUnit := units[index]
+		voiceUnit.Key = scriptFirstParagraphKey(activeV, voiceUnit.Text)
+		voiceUnit.Dir = filepath.Join(filepath.Dir(voiceUnit.Dir), voiceUnit.Key)
+		audio, playedText, fromPool := scriptCompatiblePoolAudio(recordingCacheMediaRoot(), activeV, voiceUnit, fmt.Sprintf("%d-%d-%d", tenant, room, session), rng)
+		if fromPool && strings.TrimSpace(playedText) != "" {
+			audio.Text = playedText
+		}
+		if !fromPool {
+			generationVersion := activeV
+			audio, e = awaitVolcengineParagraph(work, 500*time.Millisecond, func(c context.Context) (volcengineCachedAudio, error) {
+				return s.ensureScriptFirstParagraph(c, tenant, room, session, generationVersion, voiceUnit, allowSynthesis)
+			}, keepPlaying)
+		}
 		done()
 		if e != nil {
 			if ctx.Err() != nil {
@@ -452,6 +591,12 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		}
 		retryAttempt = 0
 		known[index] = audio
+		// 把这次合成结果登记进片段版本池：音色、模型、音量、指纹与实际音频。
+		// 现在生成器只返回原文，所以登记的一定是原始版本；改写接入后自动记改写。
+		if !fromPool {
+			recordScriptVoiceVersion(recordingCacheMediaRoot(), v.PlanID, voiceUnit, activeV, audio)
+		}
+
 		if err = queue(ctx, index, audio, true); err != nil {
 			return err
 		}
@@ -459,3 +604,46 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 }
 
 var errVolcengineLivePaused = errors.New("高仿真供料场次已暂停")
+
+// playbackLedger 记录每一次真实推送给 Core 的声音，一行一条。
+//
+// 目的：事后能查"这场直播念了哪几条、每条几遍"，也能按音频 ID 对回版本池。
+// 只追加写，失败不影响播放。
+func recordPlaybackLedger(tenant, room int64, v model.LiveAgentPlanVersion, unitIndex int, block scriptFirstCachedBlock, trackID string) {
+	entry := map[string]any{
+		"at":          time.Now().Format(time.RFC3339),
+		"tenant_id":   tenant,
+		"room_id":     room,
+		"plan_id":     v.PlanID,
+		"version_id":  v.ID,
+		"unit_index":  unitIndex,
+		"asset_id":    block.AssetID,
+		"duration_ms": block.DurationMS,
+		"track_id":    trackID,
+		"voice_id":    v.VoiceIdentity.VoiceID,
+		"text_head":   playbackTextHead(block.Text, 40),
+	}
+	line, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(recordingCacheMediaRoot(), "playback-ledger")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%d-%d.jsonl", tenant, room))
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(line, '\n'))
+}
+
+func playbackTextHead(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit])
+}

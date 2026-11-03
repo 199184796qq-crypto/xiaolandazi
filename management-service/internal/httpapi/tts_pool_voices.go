@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"livecompanion/management/internal/db"
 	"livecompanion/management/internal/ttsgateway"
 	"livecompanion/management/internal/ttsscheduler"
 	"livecompanion/management/internal/voicecatalog"
@@ -34,11 +35,7 @@ func highFidelityPoolVoices(accounts []ttsscheduler.Account) []voicecatalog.Voic
 			if !ok || model != ttsgateway.VolcengineICL2 || !ttsgateway.ValidVolcengineVoiceID(source) || !ttsgateway.ValidVolcengineVoiceID(target) {
 				continue
 			}
-			label := strings.TrimPrefix(source, "S_")
-			if len(label) > 24 {
-				label = label[:12] + "…" + label[len(label)-12:]
-			}
-			voices[source] = voicecatalog.Voice{ID: source, Name: "高仿真音色 " + label, Gender: "", Description: "已配置的复刻音色，可试听后选入方案。", Tags: []string{"高仿真"}, Model: ttsgateway.VolcengineICL2, Provider: ttsgateway.ProviderVolcengine}
+			voices[source] = voicecatalog.Voice{ID: source, Name: "高仿真声音", Gender: "", Description: "已配置的复刻音色，可试听后选入方案。", Tags: []string{"高仿真"}, Model: ttsgateway.VolcengineICL2, Provider: ttsgateway.ProviderVolcengine}
 		}
 	}
 	result := make([]voicecatalog.Voice, 0, len(voices))
@@ -54,7 +51,20 @@ func (s *Server) availableHighFidelityVoices(ctx context.Context) ([]voicecatalo
 	if err != nil {
 		return nil, errors.New("读取高仿真声音失败")
 	}
-	return highFidelityPoolVoices(snapshot.Accounts), nil
+	displays, err := s.store.TTSVoiceDisplays(ctx)
+	if err != nil {
+		return nil, errors.New("读取声音展示资料失败")
+	}
+	return applyHighFidelityVoiceDisplays(highFidelityPoolVoices(snapshot.Accounts), displays), nil
+}
+
+func applyHighFidelityVoiceDisplays(voices []voicecatalog.Voice, displays map[string]db.TTSVoiceDisplay) []voicecatalog.Voice {
+	for i := range voices {
+		if display, ok := displays[voices[i].ID]; ok {
+			voices[i].Name, voices[i].Gender = display.Name, display.Gender
+		}
+	}
+	return voices
 }
 
 func (s *Server) findHighFidelityPoolVoice(ctx context.Context, voiceID string) (voicecatalog.Voice, error) {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"livecompanion/management/internal/contentguard"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
@@ -339,6 +340,9 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	input.RoomID = 0
+	if !s.allowPlanSave(w, r, tenantID, planID) {
+		return
+	}
 	if input.GenerationContext == nil {
 		input.GenerationContext = map[string]any{}
 	}
@@ -423,10 +427,19 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	// 话术违规检测：P0 命中就不允许入库，避免违规话术（极限词、编造承诺等）被保存。
+	if err := s.validateScriptEntriesAgainstP0(r.Context(), &input); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 	// 保存只做基础校验与资产生成；方案级匹配核对（validateRealtimeScheme）不卡保存入口，
 	// 其存在性检查仍由内容策略/工作区检查/派生安全三处链路承担。
 	reportAnchorAnalysis(r.Context(), 92, "检查已通过，正在保存智能体方案")
 	item, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, planID, actor.UserID, input)
+	if errors.Is(err, appdb.ErrLiveAgentPlanInUse) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if errors.Is(err, appdb.ErrPoolSourceChanged) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -444,8 +457,9 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	reportAnchorAnalysis(r.Context(), 100, "智能体方案已保存，下次开播直接使用")
-	// 保存即下一场的生效点：异步预热首段到方案级缓存，开播时复制进房间缓存，
-	// 避免首段现场合成干等。首段文本与声音没变时 key 命中，不重复计费。
+	// 保存即预生成"开场锚点那一条"：只一条，花费很小，换来开播立刻有声。
+	// 长片段方案若不在保存时预热，第一次开播要干等整段合成。
+	// Paid media remains available to existing live snapshots and later reuse.
 	s.warmPlanFirstParagraph(tenantID, planID, item)
 	writeJSON(w, http.StatusCreated, item)
 }
@@ -974,4 +988,59 @@ func (s *Server) validatePlanVoiceIdentity(ctx context.Context, tenantID int64, 
 		return errors.New("该声音已失效或已停用，请重新选择声音后再保存")
 	}
 	return nil
+}
+
+// validateScriptEntriesAgainstP0 用当前 P0 规则检查每条独立话术。
+//
+// 命中就返回错误，保存入口拦下；错误里逐条列出第几条、命中了什么词、属于哪条规则，
+// 前端可以直接展示给用户改。
+func (s *Server) validateScriptEntriesAgainstP0(ctx context.Context, input *model.CreateLiveAgentPlanVersionInput) error {
+	script, ok := recordingScriptFromContext(input.GenerationContext)
+	if !ok || script.Version != 2 {
+		return nil
+	}
+	p0, p1, p2, err := loadRiskAnnotationMothers()
+	if err != nil {
+		return fmt.Errorf("话术违规检测不可用（P0 规则缺失），本次不保存: %w", err)
+	}
+	var problems []string
+	for tabIndex, tab := range script.Tabs {
+		for entryIndex, entry := range tab.Entries {
+			text := strings.TrimSpace(entry.Text)
+			if text == "" {
+				continue
+			}
+			result, err := contentguard.Annotate(text, p0, p1, p2)
+			if err != nil {
+				return fmt.Errorf("话术违规检测失败，本次不保存: %w", err)
+			}
+			for _, hit := range result.Hits {
+				// 只给中文原因：前端会把含英文标识的整行过滤掉，导致只剩"后台未提供原因"。
+				reason := "需核对对应资质或依据"
+				if utf8.RuneCountInString(hit.Category) > 0 && !hasASCIILetters(hit.Category) {
+					reason = hit.Category
+				}
+				problems = append(problems, fmt.Sprintf("话术标签「%s」第 %d 条：命中「%s」，%s",
+					tab.Title, entryIndex+1, hit.Text, reason))
+			}
+		}
+		_ = tabIndex
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	if len(problems) > 10 {
+		problems = append(problems[:10], fmt.Sprintf("……另有 %d 处", len(problems)-10))
+	}
+	return fmt.Errorf("话术有违规内容，修改后才能保存：%s", strings.Join(problems, "；"))
+}
+
+// hasASCIILetters 判断字符串里有没有英文字母（用于过滤不适合展示给用户的英文标识）。
+func hasASCIILetters(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return true
+		}
+	}
+	return false
 }

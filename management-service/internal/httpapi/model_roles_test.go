@@ -11,7 +11,7 @@ import (
 
 func TestWorkbenchReviewUsesConfiguredReviewRole(t *testing.T) {
 	cfg := agentgateway.SpeechModels{SystemDefaultID: "analysis", DefaultID: "speech", ReviewDefaultID: "review"}
-	for _, stage := range []string{"fact_fields_normalize", "fact_fields_normalize_review", "fact_expression_examples_review", "mainline_p0_context"} {
+	for _, stage := range []string{"fact_fields_normalize", "fact_fields_normalize_review", "fact_expression_examples_review", "mainline_p0_context", "selling_point_extraction", "product_selling_point_extraction", "selling_point_incremental_update", "selling_point_incremental_review", "wheel_p0_rewrite", "fact_content_purposes", "fact_content_angles"} {
 		if got := workbenchProfileForStage(context.Background(), cfg, "old-analysis", stage); got != "review" {
 			t.Fatal(stage, got)
 		}

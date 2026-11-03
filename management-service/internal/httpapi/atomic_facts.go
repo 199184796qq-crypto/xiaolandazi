@@ -40,7 +40,7 @@ func (s *Server) buildAtomicFacts(ctx context.Context, raw string) string {
 		}
 		return response.Text, nil
 	})
-	if err != nil || strings.TrimSpace(text) == "" {
+	if err != nil || strings.TrimSpace(text) == "" || !atomicFactsScopeValid(text) {
 		return fallback
 	}
 	return text

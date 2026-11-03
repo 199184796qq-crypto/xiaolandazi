@@ -269,8 +269,14 @@ func request(s Snapshot, template, stage string, payload any, format agentgatewa
 	// 方案提示词里的输出格式段是给人看的规范，每次调用都带既费 token 又和本次
 	// 任务的输出契约冲突，拼装时直接剥掉。完整冻结P0仍作为公共内容约束携带。
 	// 任务模板为空时不再附加任何指令，模型只按方案提示词回答。
-	prompt := stripFormatSection(s.Prompt) + "\n\n" + OutputContract
-	messages := []agentgateway.Message{{Role: "system", Content: s.P0 + "\n\n本场冻结的方案提示词：\n" + prompt}}
+	prompt := stripFormatSection(s.Prompt)
+	// 批量模板自带完整输出格式（含编号/结束），不能再叠加单条契约，否则字段冲突。
+	if template != "interaction-v2-batch.md" {
+		prompt += "\n\n" + OutputContract
+	}
+	// P0 只做生成后的硬校验（contentguard），不再整段塞进请求：
+	// 它每轮白烧一两千 token，而真正的约束已经写进方案提示词和输出契约。
+	messages := []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + prompt}}
 	if task := strings.TrimSpace(string(md)); task != "" {
 		messages = append(messages, agentgateway.Message{Role: "system", Content: task})
 	}
@@ -434,7 +440,7 @@ func parseSingleContent(s Snapshot, in Input, kv map[string]string) (Intent, str
 
 // Remove standalone vocatives before freezing the body. Only entire address
 // clauses are removed; occurrences inside facts or an ordinary sentence stay.
-var vocative = regexp.MustCompile(`(^|[，,。！？!？；;：:])\s*(这位朋友|各位朋友|朋友们|家人们|各位老乡|老乡们|老乡|家人|几位朋友|这位老乡)\s*[，,！!：:]\s*`)
+var vocative = regexp.MustCompile(`(^|[，,。！？!？；;：:])\s*(这位朋友|各位朋友|朋友们|朋友|家人们|家人|各位老乡|老乡们|老乡|各位|几位朋友|这位老乡|大家)\s*[，,！!：:]\s*`)
 var answerLabel = regexp.MustCompile(`(?m)^(?:回答|答复|正文)\s*[：:]\s*`)
 var analysisLabel = regexp.MustCompile(`(?m)^(?:意图|置信度|歧义|候选|澄清句|建议)\s*[：:]`)
 
@@ -449,6 +455,10 @@ func spokenBody(raw string) (string, error) {
 	if strings.HasPrefix(text, "{") && strings.HasSuffix(text, "}") {
 		return "", errors.New("互动正文不是 KV 格式")
 	}
+	// 生成即去掉正文里的称呼：称呼统一由程序前置，避免「李姐，老乡别急」这种叠加。
+	if clean := withoutAddress(text); strings.TrimSpace(clean) != "" {
+		text = clean
+	}
 	if label := answerLabel.FindStringIndex(text); label != nil {
 		if label[0] == 0 || analysisLabel.MatchString(text[:label[0]]) {
 			text = strings.TrimSpace(text[label[1]:])
@@ -460,14 +470,27 @@ func spokenBody(raw string) (string, error) {
 	return text, nil
 }
 
+// leadingVocative 匹配句首称呼，后面不一定带标点（「老乡别急」这种也要剥）。
+var leadingVocative = regexp.MustCompile(`^(?:这位朋友|各位朋友|朋友们|朋友|家人们|家人|各位老乡|老乡们|老乡|各位|几位朋友|这位老乡|大家|大伙|诸位)[，,！!：:、。\t ]*`)
+
+// withoutAddress 把话术里的称呼全部拿掉：称呼由程序统一前置，正文不许自带。
+// 句首不带标点的（「老乡别急」）、句中被逗号包起来的（「啊，朋友们，」）都剥。
 func withoutAddress(text string) string {
 	text = strings.TrimSpace(text)
+	for i := 0; i < 4; i++ {
+		trimmed := strings.TrimSpace(leadingVocative.ReplaceAllString(text, ""))
+		// 整句就是称呼时保留原文，避免正文变空。
+		if trimmed == "" || trimmed == text {
+			break
+		}
+		text = trimmed
+	}
 	for {
-		next := vocative.ReplaceAllString(text, "$1")
-		if next == text {
+		next := strings.TrimSpace(vocative.ReplaceAllString(text, "$1"))
+		if next == text || next == "" {
 			return text
 		}
-		text = strings.TrimSpace(next)
+		text = next
 	}
 }
 
