@@ -4,6 +4,7 @@ import { renderLiveAgentPlanPrompt } from '../api'
 import { compilePlanPrompts, planPromptTabs, planPromptValidation, type PlanPromptSections } from '../planPrompt'
 
 const content = defineModel<PlanPromptSections>({ required: true })
+const rewritePrompt = defineModel<string>('rewritePrompt', { default: '' })
 const props = defineProps<{ planId: number | null; loaded: boolean; loading: boolean; saving: boolean; error: string; notice: string; legacyPrompt?: string }>()
 const emit = defineEmits<{ save: []; retry: []; clearFeedback: [] }>()
 const generating = ref(false)
@@ -13,11 +14,18 @@ const confirmation = ref<HTMLDialogElement | null>(null)
 const cancelButton = ref<HTMLButtonElement | null>(null)
 const regenerateButton = ref<HTMLButtonElement | null>(null)
 const editor = ref<HTMLTextAreaElement | null>(null)
-const activeTab = ref<keyof PlanPromptSections>('persona_md')
-const selectedTab = computed(() => planPromptTabs.find(tab => tab.key === activeTab.value)!)
-const activeContent = computed({ get: () => content.value[activeTab.value], set: value => { content.value = { ...content.value, [activeTab.value]: value } } })
+const tabs = [...planPromptTabs, { key: 'rewrite_prompt_md', label: '话术规划' }] as const
+const activeTab = ref<keyof PlanPromptSections | 'rewrite_prompt_md'>('persona_md')
+const selectedTab = computed(() => tabs.find(tab => tab.key === activeTab.value)!)
+const activeContent = computed({
+  get: () => activeTab.value === 'rewrite_prompt_md' ? rewritePrompt.value : content.value[activeTab.value],
+  set: value => {
+    if (activeTab.value === 'rewrite_prompt_md') rewritePrompt.value = value
+    else content.value = { ...content.value, [activeTab.value]: value }
+  },
+})
 const compiled = computed(() => compilePlanPrompts(content.value))
-const validation = computed(() => planPromptValidation(content.value))
+const validation = computed(() => planPromptValidation(content.value, rewritePrompt.value))
 const busy = computed(() => props.loading || props.saving || generating.value)
 const unavailable = computed(() => !props.planId || !props.loaded || busy.value)
 let mounted = true
@@ -99,9 +107,9 @@ function moveTab(event: KeyboardEvent, index: number) {
   const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']
   if (!keys.includes(event.key)) return
   event.preventDefault()
-  const last = planPromptTabs.length - 1
-  const next = event.key === 'Home' ? 0 : event.key === 'End' ? last : (index + (event.key === 'ArrowRight' ? 1 : -1) + planPromptTabs.length) % planPromptTabs.length
-  activeTab.value = planPromptTabs[next]!.key
+  const last = tabs.length - 1
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? last : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length
+  activeTab.value = tabs[next]!.key
   ;(event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus()
 }
 function backdrop(event: MouseEvent) {
@@ -117,7 +125,7 @@ function backdrop(event: MouseEvent) {
     <header class="plan-prompt-heading">
       <div>
         <h3 id="plan-prompt-heading">方案提示词</h3>
-        <p>五页原文分别保存、原样回显；两份元提示词单独生成。重新生成按模板重建各文本框。</p>
+        <p>五页原文分别保存、原样回显；话术规划保存为话术修改元提示词。重新生成仅重建前五页。</p>
       </div>
       <div class="plan-prompt-actions">
           <button ref="regenerateButton" type="button" class="plan-prompt-secondary" :disabled="unavailable" @click="requestRegeneration">{{ generating ? '生成中…' : '重新生成' }}</button>
@@ -143,7 +151,7 @@ function backdrop(event: MouseEvent) {
         <textarea :value="legacyPrompt" readonly rows="8" aria-label="旧版完整提示词"></textarea>
       </details>
       <div class="plan-prompt-tabs" role="tablist" aria-label="方案提示词分区">
-        <button v-for="(tab, index) in planPromptTabs" :id="'plan-prompt-tab-' + tab.key" :key="tab.key" type="button" role="tab" :aria-selected="activeTab === tab.key" aria-controls="plan-prompt-panel" :tabindex="activeTab === tab.key ? 0 : -1" @click="activeTab = tab.key" @keydown="moveTab($event, index)">{{ tab.label }}</button>
+        <button v-for="(tab, index) in tabs" :id="'plan-prompt-tab-' + tab.key" :key="tab.key" type="button" role="tab" :aria-selected="activeTab === tab.key" aria-controls="plan-prompt-panel" :tabindex="activeTab === tab.key ? 0 : -1" @click="activeTab = tab.key" @keydown="moveTab($event, index)">{{ tab.label }}</button>
       </div>
       <div class="plan-prompt-content-heading"><label for="plan-prompt-content">{{ selectedTab.label }}</label><span>{{ Array.from(activeContent).length }} 字</span></div>
       <p v-if="generating" class="plan-prompt-progress" role="status"><i aria-hidden="true"></i>正在按当前方案资料生成初稿…</p>
@@ -161,8 +169,8 @@ function backdrop(event: MouseEvent) {
 
     <Teleport to="body">
       <dialog ref="confirmation" class="plan-prompt-confirm" aria-labelledby="plan-prompt-confirm-heading" aria-describedby="plan-prompt-confirm-description" @cancel.prevent="cancelRegeneration" @click="backdrop">
-        <h2 id="plan-prompt-confirm-heading">重新生成全部文本框？</h2>
-        <p id="plan-prompt-confirm-description">将按母版模板重建全部分区，其中事实依据使用当前商品卡、活动福利和正式事实。所有文本框里未保存的修改都会被替换，生成后仍需保存。</p>
+        <h2 id="plan-prompt-confirm-heading">重新生成前五页文本框？</h2>
+        <p id="plan-prompt-confirm-description">将按母版模板重建前五页，其中事实依据使用当前商品卡、活动福利和正式事实。前五页未保存的修改都会被替换，话术规划保留当前内容，生成后仍需保存。</p>
         <footer><button ref="cancelButton" type="button" class="plan-prompt-secondary" @click="cancelRegeneration">取消</button><button type="button" class="plan-prompt-primary" @click="confirmRegeneration">确认重新生成</button></footer>
       </dialog>
     </Teleport>

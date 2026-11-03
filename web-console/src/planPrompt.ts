@@ -46,7 +46,8 @@ export function compilePlanPrompts(value: PlanPromptSections) {
   }
 }
 
-export function planPromptValidation(value: PlanPromptSections) {
+export function planPromptValidation(value: PlanPromptSections, rewritePrompt = '') {
+  if (Array.from(rewritePrompt).length > 20000) return '话术规划不能超过20000字，请缩短内容'
   const compiled = compilePlanPrompts(value)
   return Object.values(compiled).some(text => Array.from(text).length > 20000)
     ? '合成后的每份元提示词不能超过20000字，请缩短对应文本框内容' : ''

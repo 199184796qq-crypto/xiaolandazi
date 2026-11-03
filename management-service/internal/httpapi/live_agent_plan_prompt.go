@@ -47,8 +47,9 @@ func (s *Server) liveAgentPlanPromptPut(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var input struct {
-		PromptMD string               `json:"prompt_md"`
-		Sections *planprompt.Sections `json:"sections"`
+		PromptMD        string               `json:"prompt_md"`
+		Sections        *planprompt.Sections `json:"sections"`
+		RewritePromptMD *string              `json:"rewrite_prompt_md"`
 	}
 	if readJSON(w, r, &input) != nil {
 		writeError(w, http.StatusBadRequest, "方案提示词请求格式错误")
@@ -77,6 +78,19 @@ func (s *Server) liveAgentPlanPromptPut(w http.ResponseWriter, r *http.Request) 
 	sections := *input.Sections
 	if err := sections.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if input.RewritePromptMD != nil {
+		if utf8.RuneCountInString(*input.RewritePromptMD) > planprompt.MaxPromptRunes {
+			writeError(w, http.StatusBadRequest, "话术规划不能超过20000字，请缩短内容")
+			return
+		}
+		document, err := s.store.SaveLiveAgentPlanPromptSectionsWithRewrite(r.Context(), tenantID, planID, actor.UserID, sections, *input.RewritePromptMD)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "方案提示词保存失败")
+			return
+		}
+		writeJSON(w, http.StatusOK, document)
 		return
 	}
 	document, err := s.store.SaveLiveAgentPlanPromptSections(r.Context(), tenantID, planID, actor.UserID, sections)

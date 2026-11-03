@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"livecompanion/management/internal/planprompt"
 )
@@ -74,6 +75,16 @@ func (s *Store) GetLiveAgentPlanPromptDocument(ctx context.Context, tenantID, pl
 // One statement persists all four editable sections and both generated prompts.
 // Existing runtime readers consume prompt_md, which is now the interaction prompt.
 func (s *Store) SaveLiveAgentPlanPromptSections(ctx context.Context, tenantID, planID, actorID int64, sections planprompt.Sections) (LiveAgentPlanPromptDocument, error) {
+	return s.saveLiveAgentPlanPromptSections(ctx, tenantID, planID, actorID, sections, nil)
+}
+
+// SaveLiveAgentPlanPromptSectionsWithRewrite saves the editable rewrite prompt
+// alongside the originals and both derived prompts in the same statement.
+func (s *Store) SaveLiveAgentPlanPromptSectionsWithRewrite(ctx context.Context, tenantID, planID, actorID int64, sections planprompt.Sections, rewrite string) (LiveAgentPlanPromptDocument, error) {
+	return s.saveLiveAgentPlanPromptSections(ctx, tenantID, planID, actorID, sections, &rewrite)
+}
+
+func (s *Store) saveLiveAgentPlanPromptSections(ctx context.Context, tenantID, planID, actorID int64, sections planprompt.Sections, rewrite *string) (LiveAgentPlanPromptDocument, error) {
 	var out LiveAgentPlanPromptDocument
 	if tenantID <= 0 || planID <= 0 {
 		return out, ErrLiveAgentPlanNotFound
@@ -81,14 +92,22 @@ func (s *Store) SaveLiveAgentPlanPromptSections(ctx context.Context, tenantID, p
 	if err := sections.Validate(); err != nil {
 		return out, err
 	}
+	if rewrite != nil && utf8.RuneCountInString(*rewrite) > planprompt.MaxPromptRunes {
+		return out, errors.New("话术规划不能超过20000字，请缩短内容")
+	}
 	// Persist page originals verbatim. Interaction/Speech compile cleaned copies;
 	// neither compilation nor later reads may mutate or repartition originals.
 	raw, err := json.Marshal(sections)
 	if err != nil {
 		return out, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO live_agent_plan_prompts (tenant_id, plan_id, prompt_md, sections_json, speech_prompt_md, updated_by_user_id)
+	if rewrite != nil {
+		_, err = s.db.ExecContext(ctx, `INSERT INTO live_agent_plan_prompts (tenant_id, plan_id, prompt_md, sections_json, speech_prompt_md, rewrite_prompt_md, updated_by_user_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE prompt_md=VALUES(prompt_md), sections_json=VALUES(sections_json), speech_prompt_md=VALUES(speech_prompt_md), rewrite_prompt_md=VALUES(rewrite_prompt_md), updated_by_user_id=VALUES(updated_by_user_id), updated_at=CURRENT_TIMESTAMP(3)`, tenantID, planID, sections.Interaction(), string(raw), sections.Speech(), *rewrite, actorID)
+	} else {
+		_, err = s.db.ExecContext(ctx, `INSERT INTO live_agent_plan_prompts (tenant_id, plan_id, prompt_md, sections_json, speech_prompt_md, updated_by_user_id)
 		VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE prompt_md=VALUES(prompt_md), sections_json=VALUES(sections_json), speech_prompt_md=VALUES(speech_prompt_md), updated_by_user_id=VALUES(updated_by_user_id), updated_at=CURRENT_TIMESTAMP(3)`, tenantID, planID, sections.Interaction(), string(raw), sections.Speech(), actorID)
+	}
 	if err != nil {
 		return out, err
 	}

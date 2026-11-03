@@ -14,11 +14,12 @@ import (
 )
 
 type promptSectionSQL struct {
-	rows    map[[2]int64][]driver.Value
-	writes  int
-	fail    bool
-	columns map[string]bool
-	alters  int
+	rows     map[[2]int64][]driver.Value
+	writes   int
+	fail     bool
+	columns  map[string]bool
+	alters   int
+	rewrites map[[2]int64]string
 }
 type promptSectionConnector struct{ s *promptSectionSQL }
 
@@ -56,10 +57,19 @@ func (c *promptSectionConn) ExecContext(_ context.Context, q string, args []driv
 	if c.s.fail {
 		return nil, errors.New("injected write failure")
 	}
-	if !strings.Contains(q, "sections_json=VALUES(sections_json)") || !strings.Contains(q, "speech_prompt_md=VALUES(speech_prompt_md)") || len(args) != 6 {
+	if !strings.Contains(q, "sections_json=VALUES(sections_json)") || !strings.Contains(q, "speech_prompt_md=VALUES(speech_prompt_md)") || (len(args) != 6 && len(args) != 7) {
 		return nil, errors.New("all assets must be saved atomically")
 	}
 	key := [2]int64{args[0].Value.(int64), args[1].Value.(int64)}
+	if len(args) == 7 {
+		if !strings.Contains(q, "rewrite_prompt_md=VALUES(rewrite_prompt_md)") {
+			return nil, errors.New("rewrite must be saved atomically")
+		}
+		if c.s.rewrites == nil {
+			c.s.rewrites = map[[2]int64]string{}
+		}
+		c.s.rewrites[key] = args[5].Value.(string)
+	}
 	c.s.rows[key] = []driver.Value{args[2].Value, args[3].Value, args[4].Value, time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)}
 	c.s.writes++
 	return driver.RowsAffected(1), nil
@@ -76,6 +86,9 @@ func (c *promptSectionConn) QueryContext(_ context.Context, q string, args []dri
 		return nil, errors.New("missing tenant/plan scope")
 	}
 	values, ok := c.s.rows[[2]int64{args[0].Value.(int64), args[1].Value.(int64)}]
+	if strings.Contains(q, "SELECT rewrite_prompt_md") {
+		return &promptSectionRows{columns: []string{"rewrite_prompt_md"}, data: [][]driver.Value{{c.s.rewrites[[2]int64{args[0].Value.(int64), args[1].Value.(int64)}]}}}, nil
+	}
 	columns := []string{"prompt_md", "sections_json", "speech_prompt_md", "updated_at"}
 	if !strings.Contains(q, "sections_json") {
 		columns = []string{"prompt_md", "updated_at"}
@@ -88,6 +101,54 @@ func (c *promptSectionConn) QueryContext(_ context.Context, q string, args []dri
 		data = [][]driver.Value{values}
 	}
 	return &promptSectionRows{columns: columns, data: data}, nil
+}
+
+func TestPlanPromptRewriteEditorAtomicRoundTrip(t *testing.T) {
+	state := &promptSectionSQL{rows: map[[2]int64][]driver.Value{}}
+	database := sql.OpenDB(promptSectionConnector{state})
+	defer database.Close()
+	s := &Store{db: database}
+	ctx := context.Background()
+	sections := planprompt.Sections{PersonaMD: "原始人设", FactsMD: "原始事实", SpeechRequirementsMD: "主线要求", InteractionRequirementsMD: "回答要求"}
+	rewrite := "  自定义话术规划\n\n{{样本话术}}\n{{已有开场}}\n〔提示〕此行也原样保存\n  "
+	doc, err := s.SaveLiveAgentPlanPromptSectionsWithRewrite(ctx, 14, 4, 28, sections, rewrite)
+	if err != nil || doc.RewritePromptMD != rewrite || doc.Sections != sections || state.writes != 1 {
+		t.Fatalf("rewrite and originals not saved together: %#v %v writes=%d", doc, err, state.writes)
+	}
+	if strings.Contains(doc.InteractionPromptMD, "自定义话术规划") || strings.Contains(doc.SpeechPromptMD, "自定义话术规划") {
+		t.Fatal("rewrite must remain separate from the other two prompts")
+	}
+	other, err := s.GetLiveAgentPlanPromptDocument(ctx, 15, 4)
+	if err != nil || other.RewritePromptMD != "" {
+		t.Fatal("tenant leakage", other, err)
+	}
+	other, err = s.GetLiveAgentPlanPromptDocument(ctx, 14, 5)
+	if err != nil || other.RewritePromptMD != "" {
+		t.Fatal("plan leakage", other, err)
+	}
+	state.fail = true
+	if _, err = s.SaveLiveAgentPlanPromptSectionsWithRewrite(ctx, 14, 4, 28, planprompt.Sections{FactsMD: "失败事实"}, "失败规划"); err == nil {
+		t.Fatal("failure accepted")
+	}
+	state.fail = false
+	doc, err = s.GetLiveAgentPlanPromptDocument(ctx, 14, 4)
+	if err != nil || doc.RewritePromptMD != rewrite || doc.Sections != sections || state.writes != 1 {
+		t.Fatal("failed save corrupted document", doc, err)
+	}
+	if _, err = s.SaveLiveAgentPlanPromptSectionsWithRewrite(ctx, 14, 4, 28, sections, strings.Repeat("字", 20001)); err == nil || state.writes != 1 {
+		t.Fatal("oversized rewrite saved", err)
+	}
+	if _, err = s.SaveLiveAgentPlanPromptSections(ctx, 14, 4, 28, sections); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ = s.GetLiveAgentPlanPromptDocument(ctx, 14, 4)
+	if doc.RewritePromptMD != rewrite {
+		t.Fatal("omitted field cleared rewrite")
+	}
+	doc, err = s.SaveLiveAgentPlanPromptSectionsWithRewrite(ctx, 14, 4, 28, sections, "")
+	if err != nil || doc.RewritePromptMD != "" {
+		t.Fatal("explicit clearing not preserved", doc, err)
+	}
 }
 
 type promptSectionRows struct {
