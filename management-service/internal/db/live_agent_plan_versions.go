@@ -113,10 +113,16 @@ func scanLiveAgentPlanVersion(row liveAgentPlanVersionScanner) (model.LiveAgentP
 	return item, nil
 }
 
+var ErrPlanPreparedVoiceRateChanged = errors.New("准备声音期间方案语速已变化，请重新保存方案")
+
+// readyVoiceRate is supplied only after the Save handler has prepared its
+// opening audio. Recheck under the plan lock so a concurrent rate edit cannot
+// publish a version whose opening cache belongs to a different rate.
 func (s *Store) CreateLiveAgentPlanVersion(
 	ctx context.Context,
 	tenantID, planID, actorUserID int64,
 	input model.CreateLiveAgentPlanVersionInput,
+	readyVoiceRate ...float64,
 ) (model.LiveAgentPlanVersion, error) {
 	var exists int
 	if err := s.db.QueryRowContext(ctx, `
@@ -173,6 +179,9 @@ func (s *Store) CreateLiveAgentPlanVersion(
 			return model.LiveAgentPlanVersion{}, err
 		}
 		input.VoiceIdentity.Rate = planVoiceRateFromJSON(previousIdentity)
+	}
+	if len(readyVoiceRate) > 1 || (len(readyVoiceRate) == 1 && input.VoiceIdentity.Rate != readyVoiceRate[0]) {
+		return model.LiveAgentPlanVersion{}, ErrPlanPreparedVoiceRateChanged
 	}
 	voiceJSON, err = json.Marshal(input.VoiceIdentity)
 	if err != nil {

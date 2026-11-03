@@ -21,7 +21,7 @@ import (
 // 免得首次开播干等 10 秒以上。见 docs/2026-11-02-功能-方案级首段预热缓存.md。
 const (
 	planWarmupCacheName = "plan-paragraphs"
-	planWarmupTimeout   = 5 * time.Minute
+	planWarmupTimeout   = 60 * time.Second
 )
 
 func scriptFirstNamespace(model string) string {
@@ -53,43 +53,77 @@ func planCacheDir(tenant, plan int64, model string) (string, bool) {
 	), true
 }
 
-// warmPlanFirstParagraph 只合成首段。文本或声音没变时 key 命中，不重复计费。
-// 异步执行，失败只记日志，绝不影响保存结果。
-func (s *Server) warmPlanFirstParagraph(tenant, plan int64, v model.LiveAgentPlanVersion) {
+// warmPlanFirstParagraph waits for the opening anchor before a saved version
+// becomes effective. The request (including cache/queue waits) has a 60s limit.
+func (s *Server) warmPlanFirstParagraph(ctx context.Context, tenant, plan int64, v model.LiveAgentPlanVersion) error {
+	return waitPlanFirstParagraph(ctx, tenant, plan, v, func(work context.Context, unit volcengineScriptUnit) error {
+		audio, err := s.ensureScriptFirstParagraph(work, tenant, 0, 0, v, unit, true)
+		if err != nil {
+			return err
+		}
+		if audio.AssetID <= 0 || audio.DurationMS <= 0 || !s.scriptAudioAvailable(work, tenant, audio.AssetID) {
+			return errors.New("开场声音缓存尚未就绪")
+		}
+		return nil
+	})
+}
+
+func waitPlanFirstParagraph(ctx context.Context, tenant, plan int64, v model.LiveAgentPlanVersion, ensure func(context.Context, volcengineScriptUnit) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !usesScriptFirstParagraphs(v) {
-		return
+		return nil
 	}
-	if v.VoiceIdentity.Rate == 0 {
-		v.VoiceIdentity.Rate = 1
+	if tenant <= 0 || plan <= 0 || v.TenantID != tenant || v.PlanID != plan || v.VoiceIdentity.Rate <= 0 {
+		return errors.New("方案首段缓存身份无效")
 	}
+	dir, ok := planCacheDir(tenant, plan, v.VoiceIdentity.Model)
+	if !ok {
+		return errors.New("方案首段缓存位置无效")
+	}
+	units, err := scriptFirstUnits(v, dir)
+	if err != nil {
+		return err
+	}
+	if len(units) == 0 {
+		return errors.New("方案没有可生成的开场话术")
+	}
+	work, cancel := context.WithTimeout(ctx, planWarmupTimeout)
+	defer cancel()
+	started := time.Now()
+	result := make(chan error, 1)
+	// Providers may retain an already-paid result after cancellation. Never let
+	// such a detached drain delay the response or publish a late saved version.
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("plan warmup panic tenant=%d plan=%d: %v", tenant, plan, r)
+				result <- errors.New("开场声音生成失败")
 			}
 		}()
-		dir, ok := planCacheDir(tenant, plan, v.VoiceIdentity.Model)
-		if !ok {
-			return
-		}
-		units, err := scriptFirstUnits(v, dir)
-		if err != nil || len(units) == 0 {
-			if err != nil {
-				log.Printf("plan warmup units failed tenant=%d plan=%d: %v", tenant, plan, err)
-			}
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), planWarmupTimeout)
-		defer cancel()
-		started := time.Now()
-		if _, err = s.ensureScriptFirstParagraph(ctx, tenant, 0, 0, v, units[0], true); err != nil {
-			log.Printf("plan warmup failed tenant=%d plan=%d unit=%s error=%v",
-				tenant, plan, shortKey(units[0].Key), err)
-			return
-		}
-		log.Printf("plan warmup ready tenant=%d plan=%d unit=%s elapsed=%s",
-			tenant, plan, shortKey(units[0].Key), time.Since(started).Round(time.Millisecond))
+		result <- ensure(work, units[0])
 	}()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-work.Done():
+			return work.Err()
+		case err := <-result:
+			if work.Err() != nil {
+				return work.Err()
+			}
+			if err != nil {
+				log.Printf("plan warmup failed tenant=%d plan=%d unit=%s error=%v", tenant, plan, shortKey(units[0].Key), err)
+				return err
+			}
+			log.Printf("plan warmup ready tenant=%d plan=%d unit=%s elapsed=%s", tenant, plan, shortKey(units[0].Key), time.Since(started).Round(time.Millisecond))
+			return nil
+		case <-ticker.C:
+			reportAnchorAnalysis(ctx, 94, "正在准备开场声音缓存，最多等待60秒")
+		}
+	}
 }
 
 // hydrateFirstParagraphFromPlan 开播时把方案级首段复制进房间缓存。

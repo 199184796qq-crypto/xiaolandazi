@@ -449,8 +449,36 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 	}
 	// 保存只做基础校验与资产生成；方案级匹配核对（validateRealtimeScheme）不卡保存入口，
 	// 其存在性检查仍由内容策略/工作区检查/派生安全三处链路承担。
-	reportAnchorAnalysis(r.Context(), 92, "检查已通过，正在保存智能体方案")
-	item, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, planID, actor.UserID, input)
+	var readyVoiceRate []float64
+	if usesScriptFirstParagraphs(paragraphVersion) {
+		// The plan's independent rate is authoritative, including legacy defaults;
+		// preparing the rate from a stale browser payload would warm the wrong key.
+		rate, rateErr := s.store.GetPlanVoiceRate(r.Context(), tenantID, planID)
+		if rateErr != nil {
+			writeError(w, http.StatusConflict, "读取方案语速失败，本次未保存，请重试")
+			return
+		}
+		input.VoiceIdentity.Rate = rate.Rate
+		prepared := model.LiveAgentPlanVersion{TenantID: tenantID, PlanID: planID, VoiceIdentity: input.VoiceIdentity, Variants: input.Variants, GenerationContext: input.GenerationContext}
+		reportAnchorAnalysis(r.Context(), 94, "正在准备开场声音缓存，最多等待60秒")
+		if err := s.warmPlanFirstParagraph(r.Context(), tenantID, planID, prepared); err != nil {
+			status, message := http.StatusBadGateway, "开场声音生成失败，本次未保存，原正式版本保持不变，请重试"
+			if errors.Is(err, context.DeadlineExceeded) {
+				status, message = http.StatusGatewayTimeout, "开场声音准备超过60秒，本次保存已放弃，原正式版本保持不变，请重试"
+			} else if errors.Is(err, context.Canceled) {
+				status, message = http.StatusRequestTimeout, "本次保存已取消，原正式版本保持不变"
+			}
+			writeError(w, status, message)
+			return
+		}
+		readyVoiceRate = []float64{rate.Rate}
+	}
+	reportAnchorAnalysis(r.Context(), 98, "开场准备已完成，正在保存智能体方案")
+	item, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, planID, actor.UserID, input, readyVoiceRate...)
+	if errors.Is(err, appdb.ErrPlanPreparedVoiceRateChanged) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if errors.Is(err, appdb.ErrLiveAgentPlanInUse) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -472,10 +500,6 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	reportAnchorAnalysis(r.Context(), 100, "智能体方案已保存，下次开播直接使用")
-	// 保存即预生成"开场锚点那一条"：只一条，花费很小，换来开播立刻有声。
-	// 长片段方案若不在保存时预热，第一次开播要干等整段合成。
-	// Paid media remains available to existing live snapshots and later reuse.
-	s.warmPlanFirstParagraph(tenantID, planID, item)
 	writeJSON(w, http.StatusCreated, item)
 }
 
