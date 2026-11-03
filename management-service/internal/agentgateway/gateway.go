@@ -28,18 +28,18 @@ type Message struct {
 }
 
 type Request struct {
-	TextPromptID     string `json:"text_prompt_id,omitempty"`
-	TextPromptSHA    string `json:"text_prompt_sha256,omitempty"`
-	Stage            string
-	Provider         string
-	Model            string
-	Messages         []Message
-	MaxTokens        int
-	EnableThinking   bool
-	CacheSystemPrompt bool `json:"cache_system_prompt,omitempty"`
-	Temperature      *float64 `json:"temperature,omitempty"`
-	ThinkingOverride *bool    `json:"thinking_override,omitempty"`
-	ResponseFormat   ResponseFormat
+	TextPromptID      string `json:"text_prompt_id,omitempty"`
+	TextPromptSHA     string `json:"text_prompt_sha256,omitempty"`
+	Stage             string
+	Provider          string
+	Model             string
+	Messages          []Message
+	MaxTokens         int
+	EnableThinking    bool
+	CacheSystemPrompt bool     `json:"cache_system_prompt,omitempty"`
+	Temperature       *float64 `json:"temperature,omitempty"`
+	ThinkingOverride  *bool    `json:"thinking_override,omitempty"`
+	ResponseFormat    ResponseFormat
 	// ResponseSchema optionally carries an OpenAI-style json_schema descriptor
 	// ({name, strict, schema}). When set the provider is asked for structured
 	// output; providers that reject it degrade to json_object and then to plain
@@ -49,7 +49,9 @@ type Request struct {
 }
 
 type Response struct {
-	Text              string
+	Text string
+	// FinishReason is supplier metadata, never an instruction or spoken text.
+	FinishReason      string `json:",omitempty"`
 	Provider          string
 	Model             string
 	LatencyMS         int64

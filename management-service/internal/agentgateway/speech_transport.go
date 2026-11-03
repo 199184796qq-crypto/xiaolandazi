@@ -193,7 +193,9 @@ func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request,
 		return Response{}, errors.New("模型响应读取失败或过大")
 	}
 	var decoded struct {
-		Output []struct {
+		Status     string `json:"status"`
+		StopReason string `json:"stop_reason"`
+		Output     []struct {
 			Content []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
@@ -204,7 +206,8 @@ func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request,
 			Text string `json:"text"`
 		} `json:"content"`
 		Candidates []struct {
-			Content struct {
+			FinishReason string `json:"finishReason"`
+			Content      struct {
 				Parts []struct {
 					Text    string `json:"text"`
 					Thought bool   `json:"thought"`
@@ -226,8 +229,10 @@ func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request,
 		return Response{}, errors.New("响应格式不符合所选 API 协议")
 	}
 	var parts []string
+	finishReason := ""
 	switch p.Protocol {
 	case "openai_responses":
+		finishReason = decoded.Status
 		for _, output := range decoded.Output {
 			for _, part := range output.Content {
 				if part.Type == "output_text" {
@@ -236,6 +241,7 @@ func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request,
 			}
 		}
 	case "anthropic":
+		finishReason = decoded.StopReason
 		for _, part := range decoded.Content {
 			if part.Type == "text" {
 				parts = append(parts, part.Text)
@@ -243,6 +249,7 @@ func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request,
 		}
 	case "gemini":
 		if len(decoded.Candidates) > 0 {
+			finishReason = decoded.Candidates[0].FinishReason
 			for _, part := range decoded.Candidates[0].Content.Parts {
 				if !part.Thought {
 					parts = append(parts, part.Text)
@@ -258,7 +265,7 @@ func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request,
 	if decoded.Usage.Total == 0 {
 		decoded.Usage.Total = decoded.Usage.Input + decoded.Usage.Output
 	}
-	return Response{Text: text, Model: p.Model, Provider: p.Protocol, LatencyMS: time.Since(started).Milliseconds(), InputTokens: decoded.Usage.Input, OutputTokens: decoded.Usage.Output, TotalTokens: decoded.Usage.Total}, nil
+	return Response{Text: text, FinishReason: finishReason, Model: p.Model, Provider: p.Protocol, LatencyMS: time.Since(started).Milliseconds(), InputTokens: decoded.Usage.Input, OutputTokens: decoded.Usage.Output, TotalTokens: decoded.Usage.Total}, nil
 }
 
 func dashScopeQwenEndpoint(baseURL, model string) bool {

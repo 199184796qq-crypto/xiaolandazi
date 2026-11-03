@@ -1432,7 +1432,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	reschedule := false
 	defer func() {
 		if !completed {
-			if hasInteractionV2Body(*item) && !reschedule {
+			if (hasInteractionV2Body(*item) || errors.Is(resultErr, interactionplan.ErrInvalidResult)) && !reschedule {
 				w.withdrawUnstartedV2(session, item.ID)
 				if resultErr != nil {
 					resultErr = v2TaskFailure{resultErr}

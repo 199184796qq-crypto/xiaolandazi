@@ -120,12 +120,12 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 	if err := ctx.Err(); err != nil {
 		return BatchResult{}, err
 	}
-	return parseBatch(s, items, response.Text), nil
+	return parseBatch(s, items, response.Text, response.FinishReason), nil
 }
 
 // Parse blocks without relying on return order. Bad/missing blocks are explicit
 // failures; duplicate labels invalidate that person, never overwrite a reply.
-func parseBatch(s Snapshot, items []BatchItem, raw string) BatchResult {
+func parseBatch(s Snapshot, items []BatchItem, raw string, finishReason ...string) BatchResult {
 	out := BatchResult{Items: make([]ItemResult, len(items))}
 	indices := map[string]int{}
 	for i, item := range items {
@@ -145,6 +145,25 @@ func parseBatch(s Snapshot, items []BatchItem, raw string) BatchResult {
 	blocks := map[string]*block{}
 	var active *block
 	activeID := ""
+	completion := agentgateway.Response{}
+	if len(finishReason) > 0 {
+		completion.FinishReason = finishReason[0]
+	}
+	// A new item header is a definite boundary for the previous one. EOF is
+	// definite only when the supplier confirms a normal completion. Neither
+	// boundary repairs missing fields, invalid values, or ambiguous identities.
+	closeInferred := func(reason string) {
+		if active == nil || active.closed || active.invalid || !active.bodySeen {
+			return
+		}
+		for _, key := range []string{"意图", "类型", "歧义"} {
+			if strings.TrimSpace(active.fields[key]) == "" {
+				return
+			}
+		}
+		active.closed = true
+		out.Issues = append(out.Issues, fmt.Sprintf("%s缺少结束标记，按%s确认边界", activeID, reason))
+	}
 	raw = strings.TrimPrefix(strings.TrimSpace(raw), "\ufeff")
 	raw = strings.ReplaceAll(strings.ReplaceAll(raw, "\r\n", "\n"), "\r", "\n")
 	legacy := len(items) == 1
@@ -178,7 +197,10 @@ func parseBatch(s Snapshot, items []BatchItem, raw string) BatchResult {
 		key, value := strings.TrimSpace(line[:at]), strings.TrimSpace(line[at+sep:])
 		if key == "编号" {
 			if active != nil && !active.closed {
-				active.invalid = true
+				closeInferred("下一编号")
+				if !active.closed {
+					active.invalid = true
+				}
 			}
 			activeID = value
 			if _, ok := indices[value]; !ok {
@@ -225,6 +247,13 @@ func parseBatch(s Snapshot, items []BatchItem, raw string) BatchResult {
 		}
 		active.fields[key] = value
 		active.bodySeen = bodyField(key)
+	}
+	if completion.CompletedNormally() {
+		closeInferred("供应商正常结束")
+	} else if legacy && strings.TrimSpace(completion.FinishReason) != "" && active != nil {
+		// Legacy single-item replies have no explicit boundary at all. Keep
+		// historical unknown-status compatibility, but never accept a known cut.
+		active.invalid = true
 	}
 	for id, b := range blocks {
 		i := indices[id]

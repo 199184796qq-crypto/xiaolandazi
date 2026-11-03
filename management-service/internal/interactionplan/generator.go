@@ -339,6 +339,9 @@ func Generate(ctx context.Context, s Snapshot, in Input, complete Complete) (Int
 		return Intent{}, "", err
 	}
 	item := batch.Items[0]
+	if item.Err != nil {
+		return item.Intent, "", invalidResultError{item.Err}
+	}
 	return item.Intent, item.Body, item.Err
 }
 

@@ -57,14 +57,15 @@ func qwenProviderError(name string, statusCode int, responseBody []byte) error {
 
 type qwenChatResponse struct {
 	Choices []struct {
-		Message struct {
+		FinishReason string `json:"finish_reason"`
+		Message      struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-		TotalTokens      int64 `json:"total_tokens"`
+		PromptTokens        int64 `json:"prompt_tokens"`
+		CompletionTokens    int64 `json:"completion_tokens"`
+		TotalTokens         int64 `json:"total_tokens"`
 		PromptTokensDetails struct {
 			CachedTokens int64 `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
@@ -363,6 +364,7 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 	}
 	return Response{
 		Text:              text,
+		FinishReason:      decoded.Choices[0].FinishReason,
 		Provider:          p.Name(),
 		Model:             request.Model,
 		LatencyMS:         latencyMS,
