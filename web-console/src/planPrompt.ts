@@ -1,6 +1,7 @@
 export interface PlanPromptSections {
   persona_md: string
   facts_md: string
+  red_lines_md: string
   speech_requirements_md: string
   interaction_requirements_md: string
 }
@@ -8,20 +9,21 @@ export interface PlanPromptSections {
 export const planPromptTabs = [
   { key: 'persona_md', label: '主播人设' },
   { key: 'facts_md', label: '事实依据' },
+  { key: 'red_lines_md', label: '红线禁止' },
   { key: 'speech_requirements_md', label: '直播话术要求' },
   { key: 'interaction_requirements_md', label: '互动回答要求' },
 ] as const
 
 export function emptyPlanPromptSections(): PlanPromptSections {
-  return { persona_md: '', facts_md: '', speech_requirements_md: '', interaction_requirements_md: '' }
+  return { persona_md: '', facts_md: '', red_lines_md: '', speech_requirements_md: '', interaction_requirements_md: '' }
 }
 
 export function readPlanPromptSections(value: unknown): PlanPromptSections {
   if (!value || typeof value !== 'object' || !planPromptTabs.every(tab => typeof (value as Record<string, unknown>)[tab.key] === 'string')) {
-    throw new Error('服务端未返回完整的四分区提示词，当前内容已保留，请更新服务后重试')
+    throw new Error('服务端未返回完整的分区提示词，当前内容已保留，请更新服务后重试')
   }
   const source = value as PlanPromptSections
-  return { persona_md: source.persona_md, facts_md: source.facts_md, speech_requirements_md: source.speech_requirements_md, interaction_requirements_md: source.interaction_requirements_md }
+  return { persona_md: source.persona_md, facts_md: source.facts_md, red_lines_md: source.red_lines_md, speech_requirements_md: source.speech_requirements_md, interaction_requirements_md: source.interaction_requirements_md }
 }
 
 export function cleanPlanPromptSections(value: PlanPromptSections): PlanPromptSections {
@@ -39,8 +41,8 @@ export function compilePlanPrompts(value: PlanPromptSections) {
     return s[key] ? `【${title}】\n${s[key]}` : ''
   }).filter(Boolean).join('\n\n')
   return {
-    interaction_prompt_md: combine(['persona_md', 'facts_md', 'interaction_requirements_md']),
-    speech_prompt_md: combine(['persona_md', 'facts_md', 'speech_requirements_md']),
+    interaction_prompt_md: combine(['persona_md', 'facts_md', 'red_lines_md', 'interaction_requirements_md']),
+    speech_prompt_md: combine(['persona_md', 'facts_md', 'red_lines_md', 'speech_requirements_md']),
   }
 }
 

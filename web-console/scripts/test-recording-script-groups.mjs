@@ -21,6 +21,8 @@ import { computed, ref } from 'vue'
 import RecordingScriptTabs from '/src/components/RecordingScriptTabs.vue'
 import RecordingScriptEntries from '/src/components/RecordingScriptEntries.vue'
 import { groupedScriptForSave, scriptEntries } from '/src/recordingScriptGroups'
+import { readScriptPlaybackSettings } from '/src/scriptPlaybackSettings'
+const recordingPlayback=ref(readScriptPlaybackSettings(undefined))
 import '/src/style.css'
 type RecordingScriptTab=import('/src/recordingScriptGroups').ScriptGroup
 const recordingTabs=ref<RecordingScriptTab[]>([]), activeRecordingTabId=ref('a'), saving=ref(false), notice=ref('')
@@ -38,7 +40,7 @@ window.fixture={reset, save:()=>recordingScriptForSave(true), restore:restoreRec
 <header><strong>原始话术</strong></header>
 <RecordingScriptTabs :tabs="recordingTabs" :active-id="activeRecordingTabId" :disabled="saving" @select="activeRecordingTabId=$event" />
 <label class="strategy-script-tab-title"><span>组名</span><input v-model="active.title" :disabled="saving" aria-label="组名" /></label>
-<RecordingScriptEntries :key="active.id" :entries="entries" :disabled="saving" @update="active.entries=$event" />
+<RecordingScriptEntries :key="active.id" :entries="entries" :plan-id="1" :disabled="saving" @update="active.entries=$event" />
 </section></main></template>
 <style scoped src="/src/styles/recordingScriptGroups.css"></style>`
 const server = await createServer({ server: { host: '127.0.0.1', port: 0 }, plugins: [{ name: 'script-group-fixture',
@@ -60,10 +62,11 @@ try {
     if (new URL(route.request().url()).hostname === '127.0.0.1') return route.continue()
     externalRequests.push(route.request().url());return route.abort()
   })
+  await context.route('**/api/v1/live-agent-plans/1/anchor-style-workbench/risk-annotations', route => route.fulfill({contentType:'application/json',body:JSON.stringify({hits:[]})}));
   const page = await context.newPage();page.on('pageerror', e => errors.push(e.message));page.setDefaultTimeout(10000)
   await page.goto(server.resolvedUrls.local[0] + '__script-groups-test')
   const editors = page.locator('.recording-script-entry textarea')
-  const add = page.getByRole('button', { name: '＋ 添加话术', exact: true })
+  const add = { isDisabled: () => page.getByRole('button', {name:'＋ 添加话术',exact:true}).isDisabled(), click: async () => { await page.evaluate(() => document.activeElement?.blur()); await page.waitForFunction(() => !document.querySelector('.recording-script-entry-checking')); await page.getByRole('button', {name:'＋ 添加话术',exact:true}).click() } }
   const first = () => page.getByRole('textbox', { name: '话术 1 正文', exact: true })
   await first().fill('甲'.repeat(399));await add.click()
   assert.equal(await editors.count(), 1)
@@ -87,7 +90,7 @@ try {
   await second.fill('乙'.repeat(4001))
   assert.ok((await page.locator('.recording-script-entry-error').nth(1).innerText()).includes('单条不能超过'))
   const removeSecond = page.getByRole('button', { name: '删除话术 2', exact: true })
-  await removeSecond.click()
+  await first().blur(); await page.waitForFunction(() => !document.querySelector('.recording-script-entry-checking')); await removeSecond.click()
   assert.equal(await editors.count(), 2)
   const confirmSecond = page.getByRole('button', { name: '确认删除话术 2', exact: true })
   assert.equal(await confirmSecond.innerText(), '确认删除')
@@ -100,7 +103,7 @@ try {
   assert.equal(confirmationStyle.color, 'rgb(255, 255, 255)')
   await first().click()
   assert.equal(await page.getByRole('button', { name: '删除话术 2', exact: true }).count(), 1)
-  await removeSecond.click()
+  await first().blur(); await page.waitForFunction(() => !document.querySelector('.recording-script-entry-checking')); await removeSecond.click()
   await confirmSecond.click()
   assert.equal(await editors.count(), 1)
   await first().fill('甲'.repeat(3601));await add.click()

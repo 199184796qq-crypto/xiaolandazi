@@ -375,6 +375,12 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := normalizeScriptPlaybackVoices(&input, func(identity *model.LiveAgentVoiceIdentity) error {
+		return s.validatePlanVoiceIdentity(r.Context(), tenantID, identity)
+	}); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	paragraphVersion := model.LiveAgentPlanVersion{GenerationContext: input.GenerationContext, VoiceIdentity: input.VoiceIdentity, Variants: input.Variants}
 	if usesScriptFirstParagraphs(paragraphVersion) && !hasGroupedRecordingScript(paragraphVersion) {
 		if err := validateScriptFirstTexts(recordingStreamTexts(paragraphVersion)); err != nil {
@@ -391,6 +397,15 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if actor.IsInternalStaff() {
+		for _, selected := range scriptVoicesForPlayback(paragraphVersion) {
+			if selected.Identity == nil {
+				continue
+			}
+			identity := selected.Identity
+			if !s.requireLiveSupportSelectedVoice(w, r, actor, tenantID, map[string]any{"profile_id": identity.ProfileID, "binding_id": identity.BindingID, "voice_id": identity.VoiceID}) {
+				return
+			}
+		}
 		voice := map[string]any{"profile_id": input.VoiceIdentity.ProfileID, "binding_id": input.VoiceIdentity.BindingID, "voice_id": input.VoiceIdentity.VoiceID}
 		if !s.requireLiveSupportSelectedVoice(w, r, actor, tenantID, voice) {
 			return

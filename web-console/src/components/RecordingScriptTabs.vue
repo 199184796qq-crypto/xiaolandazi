@@ -263,6 +263,7 @@ onBeforeUnmount(() => {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5m4-5v5" /></svg>
       </button>
     </div>
+    <slot />
     <span :id="instructionsId" class="recording-script-sr-only">按住标签左侧六点把手拖动可排序，点击文字切换标签。钉子可固定标签位置，钉住后不能移动。按住Alt和左右方向键也可调整顺序。</span>
     <span class="recording-script-sr-only" aria-live="polite">{{ announcement }}</span>
     <Teleport to="body">

@@ -4428,8 +4428,31 @@ export function saveLiveAgentPlanPrompt(planId: number, sections: import('./plan
   )
 }
 
+export type PlanTextRiskHit = {
+  rule_id: string
+  severity?: string
+  category?: string
+  matched_text: string
+  original_start: number
+  original_end: number
+  note?: string
+}
+
+export function annotatePlanText(planId: number, text: string) {
+  return request<{ hits?: PlanTextRiskHit[]; mode?: string }>(
+    '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/risk-annotations',
+    { method: 'POST', body: JSON.stringify({ text }), suppressErrorDialog: true },
+  )
+}
+export type PlanPromptRenderSections = {
+  persona?: string
+  facts?: string
+  speech?: string
+  interaction?: string
+}
+
 export function renderLiveAgentPlanPrompt(planId: number) {
-  return request<{ facts_md: string; prompt_md: string; master_sha256?: string }>(
+  return request<{ facts_md: string; prompt_md: string; sections?: PlanPromptRenderSections; master_sha256?: string }>(
     '/api/v1/live-agent-plans/' + planId + '/prompt/render',
     { method: 'POST', body: JSON.stringify({}), suppressErrorDialog: true },
   )

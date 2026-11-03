@@ -41,6 +41,9 @@ func (s *Server) validateLiveContentVersion(ctx context.Context, tenantID, roomI
 	if err := s.store.CheckTTSRoomPool(ctx, tenantID, roomID, version.VoiceIdentity.Provider); err != nil {
 		return err
 	}
+	if err := s.validateScriptPlaybackVoices(ctx, tenantID, roomID, version); err != nil {
+		return err
+	}
 	access, err := s.store.GetLiveContentMode(ctx, tenantID, roomID)
 	if err != nil {
 		return err

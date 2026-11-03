@@ -47,13 +47,24 @@ async function generate() {
   try {
     const result = await renderLiveAgentPlanPrompt(planId)
     if (!current()) return
-    if (typeof result.facts_md !== 'string') throw new Error('未返回事实依据，当前内容已保留，请重试')
-    const next = { ...content.value, facts_md: result.facts_md }
+    const sections = result.sections
+    const filled: Partial<PlanPromptSections> = sections
+      ? {
+          persona_md: sections.persona ?? '',
+          facts_md: sections.facts ?? result.facts_md ?? '',
+          speech_requirements_md: sections.speech ?? '',
+          interaction_requirements_md: sections.interaction ?? '',
+        }
+      : { facts_md: result.facts_md }
+    if (!sections && typeof result.facts_md !== 'string') throw new Error('未返回提示词内容，当前内容已保留，请重试')
+    const next = { ...content.value, ...filled }
     const error = planPromptValidation(next)
     if (error) throw new Error(error)
     content.value = next
-    activeTab.value = 'facts_md'
-    generationNotice.value = result.facts_md.trim() ? '已更新事实依据，其余三个文本框保持不变，检查后保存' : '当前方案没有可用商品卡、福利或事实，事实依据已清空，检查后保存'
+    activeTab.value = 'persona_md'
+    generationNotice.value = next.facts_md.trim() || next.persona_md.trim()
+      ? '已按模板重新生成：主播人设、事实依据、红线禁止、直播话术要求、互动回答要求都已更新，检查后保存'
+      : '当前方案没有可用商品卡、福利或事实，事实依据已清空，检查后保存'
   } catch (err) {
     if (current()) generationError.value = err instanceof Error ? err.message : '生成方案提示词失败，请重试'
   } finally {
@@ -88,7 +99,8 @@ function moveTab(event: KeyboardEvent, index: number) {
   const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']
   if (!keys.includes(event.key)) return
   event.preventDefault()
-  const next = event.key === 'Home' ? 0 : event.key === 'End' ? 3 : (index + (event.key === 'ArrowRight' ? 1 : -1) + 4) % 4
+  const last = planPromptTabs.length - 1
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? last : (index + (event.key === 'ArrowRight' ? 1 : -1) + planPromptTabs.length) % planPromptTabs.length
   activeTab.value = planPromptTabs[next]!.key
   ;(event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus()
 }
@@ -105,7 +117,7 @@ function backdrop(event: MouseEvent) {
     <header class="plan-prompt-heading">
       <div>
         <h3 id="plan-prompt-heading">方案提示词</h3>
-        <p>四页原文分别保存、原样回显；两份元提示词单独生成。重新生成只替换事实依据。</p>
+        <p>五页原文分别保存、原样回显；两份元提示词单独生成。重新生成按模板重建各文本框。</p>
       </div>
       <div class="plan-prompt-actions">
           <button ref="regenerateButton" type="button" class="plan-prompt-secondary" :disabled="unavailable" @click="requestRegeneration">{{ generating ? '生成中…' : '重新生成' }}</button>
@@ -149,8 +161,8 @@ function backdrop(event: MouseEvent) {
 
     <Teleport to="body">
       <dialog ref="confirmation" class="plan-prompt-confirm" aria-labelledby="plan-prompt-confirm-heading" aria-describedby="plan-prompt-confirm-description" @cancel.prevent="cancelRegeneration" @click="backdrop">
-        <h2 id="plan-prompt-confirm-heading">重新生成事实依据？</h2>
-        <p id="plan-prompt-confirm-description">将按当前商品卡、活动福利和正式事实，替换“事实依据”中的内容，包括未保存的修改。另外三个文本框保持不变，生成后仍需保存。</p>
+        <h2 id="plan-prompt-confirm-heading">重新生成全部文本框？</h2>
+        <p id="plan-prompt-confirm-description">将按母版模板重建全部分区，其中事实依据使用当前商品卡、活动福利和正式事实。所有文本框里未保存的修改都会被替换，生成后仍需保存。</p>
         <footer><button ref="cancelButton" type="button" class="plan-prompt-secondary" @click="cancelRegeneration">取消</button><button type="button" class="plan-prompt-primary" @click="confirmRegeneration">确认重新生成</button></footer>
       </dialog>
     </Teleport>

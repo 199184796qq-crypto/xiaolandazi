@@ -154,6 +154,23 @@ func commitScriptRewriteVersion(root string, v model.LiveAgentPlanVersion, unit 
 }
 
 func scriptVersionForVoice(v model.LiveAgentPlanVersion, voice recordingScriptVoice) model.LiveAgentPlanVersion {
+	// PCM receipts carry only model/id. Restore the saved selection's complete
+	// identity before bookkeeping or background rewriting for a secondary voice.
+	if voice.Identity == nil {
+		if script, ok := recordingScriptFromContext(v.GenerationContext); ok {
+			for _, selected := range script.Voices {
+				if selected.Identity != nil && selected.VoiceID == voice.VoiceID && (voice.Model == "" || selected.Model == voice.Model) {
+					voice.Identity = selected.Identity
+					break
+				}
+			}
+		}
+	}
+	if voice.Identity != nil {
+		rate := v.VoiceIdentity.Rate
+		v.VoiceIdentity = *voice.Identity
+		v.VoiceIdentity.Rate = rate
+	}
 	v.VoiceIdentity.VoiceID = voice.VoiceID
 	if voice.Model != "" {
 		v.VoiceIdentity.Model = voice.Model

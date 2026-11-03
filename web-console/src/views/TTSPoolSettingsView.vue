@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { request } from '../api'
 import TTSRoomPoolPanel from '../components/TTSRoomPoolPanel.vue'
+import TTSVoiceDisplayPanel from '../components/TTSVoiceDisplayPanel.vue'
 
 interface ModelUsage { model: string; used_minute: number; in_flight: number; last_requested_at: string }
 interface Account { provider: string; max_concurrent: number; id: string; name: string; account_uid: string; credential_source: string; configured: boolean; enabled: boolean; rpm: number; rps: number; revision: number; used_minute: number; used_second: number; in_flight: number; voices: Record<string, string>; models: string[]; model_usage: ModelUsage[] }
@@ -87,6 +88,7 @@ onUnmounted(() => { disposed = true; if (timer) clearInterval(timer); draft.valu
       </fieldset></form>
     </section>
     <section class="panel"><h2>等待合成 <span class="badge">{{ pool.queued }}</span></h2><p>显示最早的50条等待请求。账号有额度后继续分配；过期或取消的请求不再发送。</p><div class="table-wrap"><table><thead><tr><th>直播间</th><th>场次</th><th>模型</th><th>进入队列</th></tr></thead><tbody><tr v-for="q in pool.requests" :key="q.id"><td>{{ q.room_id || '后台任务' }}</td><td>{{ q.session_id || '—' }}</td><td>{{ q.model }}<small>{{ providerLabel(q.provider) }}</small></td><td>{{ new Date(q.queued_at).toLocaleTimeString() }}</td></tr><tr v-if="!pool.requests.length"><td colspan="4">暂无等待请求</td></tr></tbody></table></div></section>
+    <TTSVoiceDisplayPanel />
     <TTSRoomPoolPanel />
   </main>
 </template>

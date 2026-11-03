@@ -1,4 +1,5 @@
 <script setup lang="ts">
+
 import { validateOriginalAudioFiles } from '../directAudioUpload'
 import RoomReadingRules from '../components/RoomReadingRules.vue'
 import PlanPromptEditor from '../components/PlanPromptEditor.vue'
@@ -28,6 +29,7 @@ import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
 import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import RecordingScriptTabs from '../components/RecordingScriptTabs.vue'
 import RecordingScriptEntries from '../components/RecordingScriptEntries.vue'
+import { playbackVoiceKey, readScriptPlaybackSettings, selectedScriptVoices, scriptPlaybackForSave } from '../scriptPlaybackSettings'
 import { groupedScriptForSave, scriptEntries, scriptGroupsError, type ScriptEntry } from '../recordingScriptGroups'
 import RecordingOriginalMedia from '../components/RecordingOriginalMedia.vue'
 import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
@@ -1048,6 +1050,8 @@ const recordingTabs = ref<RecordingScriptTab[]>([{ id: 't1', title: '开场', te
 const activeRecordingTabId = ref('t1')
 let recordingTabSeq = 1
 // 原始声音跟着标签走：每个标签各自记住自己上传的那段声音。
+const recordingPlayback = ref(readScriptPlaybackSettings(undefined))
+const recordingSelectedVoices = computed(() => selectedScriptVoices(recordingPlayback.value, currentVoiceIdentity.value))
 const recordingTabDrafts = ref<Record<string, LiveAgentCustomMainlineResponse>>({})
 const activeRecordingTab = computed<RecordingScriptTab | null>(
   () => recordingTabs.value.find((item) => item.id === activeRecordingTabId.value) || recordingTabs.value[0] || null,
@@ -1134,6 +1138,7 @@ function toggleRecordingTabPin(id: string): void {
   tab.pinned = !tab.pinned
 }
 function resetRecordingTabs(): void {
+  recordingPlayback.value = readScriptPlaybackSettings(undefined)
   recordingTabSeq = 1
   recordingTabs.value = [{ id: 't1', title: '开场', text: '', audioAssetIds: [], pinned: false }]
   activeRecordingTabId.value = 't1'
@@ -1147,7 +1152,7 @@ watch(activeRecordingOriginal, (draft) => {
 }, { flush: 'sync' })
 // 落库形态：1..20 个文本框，每框最多 1 段声音，标签唯一。
 function recordingScriptForSave(grouped = false) {
-  if (grouped) return groupedScriptForSave(recordingTabs.value, activeRecordingTabId.value)
+  if (grouped) return { ...groupedScriptForSave(recordingTabs.value, activeRecordingTabId.value), ...recordingPlayback.value }
   return {
     tabs: recordingTabs.value.map((tab, index) => ({
       tab_id: tab.id,
@@ -1158,11 +1163,13 @@ function recordingScriptForSave(grouped = false) {
       pinned: Boolean(tab.pinned),
     })),
     active_tab_id: activeRecordingTabId.value,
+    ...recordingPlayback.value,
   }
 }
 // 旧版本没有 recording_script，读出来就是单框；有则原样恢复。
 function restoreRecordingScript(context: Record<string, unknown> | undefined): void {
   const raw = (context as { recording_script?: { tabs?: unknown[]; active_tab_id?: string } } | undefined)?.recording_script
+  recordingPlayback.value = readScriptPlaybackSettings(raw)
   const tabs = Array.isArray(raw?.tabs) ? raw.tabs : []
   const restored: RecordingScriptTab[] = []
   tabs.forEach((item, index) => {
@@ -3231,6 +3238,9 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   fullShowNotice.value = '正在核对方案声音与保存内容。'
   try {
     const voiceAtSave = cleanVersionVoiceIdentity(currentVoiceIdentity.value)
+    const voicesAtSave = recordingSelectedVoices.value.map(voice => cleanVersionVoiceIdentity({ ...voice, rate: voiceAtSave.rate }))
+    const scriptAtSave = roomModeAtSave === 'user_audio' && recordingVoiceMode.value === 'stream_clone' ? cloneVersionJSON<Record<string, unknown>>(recordingScriptForSave(recordingVoiceMode.value === 'stream_clone'), {}) : undefined
+    const playbackAtSave = scriptPlaybackForSave(recordingPlayback.value, voicesAtSave)
     const mismatch = poolVoiceError(voiceAtSave)
     if (mismatch) throw new Error(mismatch)
     const [bindings, official, profiles] = await Promise.all([getLiveVoiceModelBindings(), getPoolOfficialVoices(voiceAtSave.tts_pool || voicePoolID(voiceAtSave) || undefined), getLiveVoiceProfiles()])
@@ -3239,6 +3249,16 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
     systemDefaultVoice.value = planDefaultVoice(official.items || [], official.configured === true)
     voiceSaveError.value = planVoiceUnavailable(voiceAtSave, bindings || [], official.items || [], official.configured === true, profiles || [])
     if (voiceSaveError.value) throw new Error(voiceSaveError.value)
+    for (let i = 0; i < voicesAtSave.length; i++) {
+      let voice: LiveAgentVoiceIdentity = voicesAtSave[i]!
+      // Older snapshots only stored model/id. Resolve from the authorized catalogue.
+      if (!voice.source) voice = availablePlanVoices.value.find(item => playbackVoiceKey(item) === playbackVoiceKey(voice)) || voice
+      const error = poolVoiceError(voice) || planVoiceUnavailable(voice, bindings || [], official.items || [], official.configured === true, profiles || [])
+      if (error) throw new Error(`第${i + 1}个声音不可用：${error}`)
+      if ((voice.tts_pool || voicePoolID(voice)) !== (voiceAtSave.tts_pool || voicePoolID(voiceAtSave))) throw new Error('多个声音须来自当前语音池，请重新选择')
+      playbackAtSave.voices[i] = { voice_id: voice.voice_id, model: voice.model, identity: { ...voice, rate: voiceAtSave.rate } }
+    }
+    if (scriptAtSave) Object.assign(scriptAtSave, playbackAtSave)
     if (roomModeAtSave === 'user_audio' && recordingVoiceMode.value === 'original' && readyRecordingOriginal.value) {
       await applyCustomMainlineAsFormal(readyRecordingOriginal.value)
       assertCurrent()
@@ -3308,7 +3328,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       generation_context: {
         content_mode: contentModeAtSave,
         ...(contentModeAtSave === 'user_audio' ? { recording_voice_mode: recordingVoiceMode.value } : {}),
-        ...(contentModeAtSave === 'user_audio' ? { recording_script: recordingScriptForSave(recordingVoiceMode.value === 'stream_clone') } : {}),
+        ...(contentModeAtSave === 'user_audio' ? { recording_script: scriptAtSave || { ...recordingScriptForSave(false), ...playbackAtSave } } : {}),
         ...(contentModeAtSave === 'user_audio' ? { recording_original_sources: recordingOriginalSources } : {}),
         ...(realtimeOptionsAtSave ? { anchor_generation_options: realtimeOptionsAtSave } : {}),
         duration_minutes: Math.round(Number(fullShowDuration.value || 0)),
@@ -4808,6 +4828,7 @@ const voiceSaveError = ref('')
 const availablePlanVoices = ref<LiveAgentVoiceIdentity[]>([])
 function handleLiveVoiceChanged(voice: LiveAgentVoiceIdentity) {
   if (fullShowVersionSaving.value || fullShowWorkspaceLoading.value || fullShowWorkspaceHydrating.value) return
+  if (recordingPlayback.value.voices.length && playbackVoiceKey(recordingPlayback.value.voices[0]!) !== playbackVoiceKey(voice)) recordingPlayback.value.voices = []
   fullShowWorkspaceVoiceIdentity.value = { ...voice, rate: planVoiceRate.saved.value }
   voiceSaveError.value = ''
   fullShowSavedVersion.value = null
@@ -4817,11 +4838,19 @@ function handleLiveVoiceChanged(voice: LiveAgentVoiceIdentity) {
     ? '已选择方案互动声音，请点击“保存方案”。主线保留上传原声。'
     : '已选择方案声音，请点击“保存方案”。'
 }
+function handleLiveVoicesChanged(voices: LiveAgentVoiceIdentity[]) {
+  if (!voices.length || voices.length > 8 || fullShowVersionSaving.value || fullShowWorkspaceLoading.value || fullShowWorkspaceHydrating.value) return
+  recordingPlayback.value.voices = voices.map(identity => ({ voice_id: identity.voice_id, model: identity.model, identity: { ...identity } }))
+  handleLiveVoiceChanged(voices[0]!)
+  fullShowNotice.value = '已调整方案声音，请点击“保存方案”。'
+}
 function chooseAvailablePlanVoice(event: Event) {
   const voice = availablePlanVoices.value[Number((event.target as HTMLSelectElement).value)]
   if (voice) handleLiveVoiceChanged(voice)
 }
 function handleLiveVoicePoolChanged(pool: TTSPoolID) {
+  if (fullShowVersionSaving.value || fullShowWorkspaceLoading.value || fullShowWorkspaceHydrating.value) return
+  recordingPlayback.value.voices = []
   handleLiveVoiceChanged({ ...currentVoiceIdentity.value, tts_pool: pool })
   fullShowNotice.value = '已切换语音池，请选择该池可用的声音后保存方案。'
 }
@@ -5753,10 +5782,13 @@ onBeforeUnmount(() => {
           :plan-id="currentRoomPlanId"
           :plan-name="currentPlan?.name"
           :selected-voice="currentVoiceIdentity"
+          :selected-voices="recordingSelectedVoices"
+          multiple
           :scope-key="planSelectionPreferenceKey(planSelectionScope())"
           :disabled="fullShowVersionSaving || fullShowWorkspaceLoading || fullShowWorkspaceHydrating"
           :support-session="props.supportSession"
           @selected="handleLiveVoiceChanged"
+          @voices-changed="handleLiveVoicesChanged"
           @pool-selected="handleLiveVoicePoolChanged"
         />
         </section>
@@ -6188,7 +6220,14 @@ onBeforeUnmount(() => {
                     @remove="removeRecordingTab"
                     @reorder="reorderRecordingTabs"
                     @toggle-pin="toggleRecordingTabPin"
-                  />
+                  >
+                    <label v-if="recordingVoiceMode === 'stream_clone'" class="strategy-script-play-mode">
+                      <select v-model="recordingPlayback.play_mode" :disabled="recordingOriginalBusy" aria-label="话术播放方式">
+                        <option value="full">整轮</option>
+                        <option value="single">单次</option>
+                      </select>
+                    </label>
+                  </RecordingScriptTabs>
                   <label v-if="activeRecordingTab" class="strategy-script-tab-title">
                     <span>{{ recordingVoiceMode === 'stream_clone' ? '组名' : '标题' }}</span>
                     <input v-model="activeRecordingTab.title" :disabled="fullShowVersionSaving" type="text" maxlength="30" placeholder="例如：开场、XX床介绍、XX套餐介绍" />
@@ -6209,6 +6248,7 @@ onBeforeUnmount(() => {
                     :key="activeRecordingTab.id"
                     :entries="activeRecordingEntries"
                     :disabled="recordingOriginalBusy"
+                    :plan-id="currentRoomPlanId"
                     @update="updateRecordingEntries"
                   />
                   <p v-if="recordingVoiceMode === 'stream_clone'" class="strategy-script-notice">
@@ -6746,6 +6786,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.strategy-script-play-mode{display:flex;flex:0 0 auto;align-items:center;margin-left:16px;font-size:20px;white-space:nowrap}
+.strategy-script-play-mode select{min-width:118px;padding:10px 14px;border:1px solid #d5ddeb;border-radius:12px;background:white;color:#536079;font:inherit}
 .strategy-benefit-card-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:8px}
 .strategy-benefit-delete{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:6px 9px;border:1px solid #f0ccd4;border-radius:7px;background:#fff4f5;color:#c4475c;font:inherit;font-size:11px;font-weight:700;cursor:pointer}
 .strategy-benefit-delete svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}

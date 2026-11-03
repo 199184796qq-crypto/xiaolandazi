@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"livecompanion/management/internal/model"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -76,8 +77,9 @@ type recordingScript struct {
 //
 // 模型必须一起存：不同供应商的同一个 voice_id 并不通用。
 type recordingScriptVoice struct {
-	VoiceID string `json:"voice_id"`
-	Model   string `json:"model,omitempty"`
+	Identity *model.LiveAgentVoiceIdentity `json:"identity,omitempty"`
+	VoiceID  string                        `json:"voice_id"`
+	Model    string                        `json:"model,omitempty"`
 }
 
 // normalizeRecordingScript 校验并规整调用方提交的话术组，写回 generation_context。
@@ -148,6 +150,12 @@ func recordingScriptFromContext(context map[string]any) (recordingScript, bool) 
 }
 
 func (s recordingScript) validate() error {
+	if mode := strings.ToLower(strings.TrimSpace(s.PlayMode)); mode != "" && mode != "full" && mode != "single" {
+		return errors.New("请选择整轮或单次播放")
+	}
+	if len(s.Voices) > 8 {
+		return errors.New("最多选择8个声音")
+	}
 	if s.Version != 0 && s.Version != 2 {
 		return errors.New("话术组版本不支持")
 	}
@@ -328,10 +336,11 @@ func (s *recordingScript) normalize() {
 		for _, voice := range s.Voices {
 			voice.VoiceID = strings.TrimSpace(voice.VoiceID)
 			voice.Model = strings.TrimSpace(voice.Model)
-			if voice.VoiceID == "" || seen[voice.VoiceID] {
+			key := voice.Model + "\x00" + voice.VoiceID
+			if voice.VoiceID == "" || seen[key] {
 				continue
 			}
-			seen[voice.VoiceID] = true
+			seen[key] = true
 			cleaned = append(cleaned, voice)
 			if len(cleaned) == 8 {
 				break

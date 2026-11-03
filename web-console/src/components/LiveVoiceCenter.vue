@@ -20,8 +20,10 @@ import { liveSupportMediaPlaybackURL } from '../liveSupportAccess'
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { getPoolOfficialVoices, poolVoiceError, ttsPoolOptions, voicePoolID, type TTSPoolID } from '../ttsPools'
 
-const props = defineProps<{ planId: number | null; planName?: string; selectedVoice: LiveAgentVoiceIdentity; scopeKey: string; disabled?: boolean; supportSession?: boolean }>()
-const emit = defineEmits<{ selected: [voice: LiveAgentVoiceIdentity]; poolSelected: [pool: TTSPoolID] }>()
+import { playbackVoiceKey } from '../scriptPlaybackSettings'
+
+const props = defineProps<{ planId: number | null; planName?: string; selectedVoice: LiveAgentVoiceIdentity; selectedVoices?: LiveAgentVoiceIdentity[]; multiple?: boolean; scopeKey: string; disabled?: boolean; supportSession?: boolean }>()
+const emit = defineEmits<{ selected: [voice: LiveAgentVoiceIdentity]; voicesChanged: [voices: LiveAgentVoiceIdentity[]]; poolSelected: [pool: TTSPoolID] }>()
 const selectedPool = computed(() => String(props.selectedVoice.tts_pool || voicePoolID(props.selectedVoice) || (props.selectedVoice.provider ? '' : 'standard')))
 function changePool(event: Event) {
   if (props.disabled || loading.value || selecting.value || !props.planId) return
@@ -93,9 +95,45 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 const selectedVoice = computed(() => props.selectedVoice)
+const selectedVoices = computed(() => props.multiple ? (props.selectedVoices || [props.selectedVoice]).filter(voice => !poolVoiceError(voice)) : [props.selectedVoice])
+function hasSelectedVoice(voice: Pick<LiveAgentVoiceIdentity, 'voice_id' | 'model'>): boolean {
+  return selectedVoices.value.some(item => playbackVoiceKey(item) === playbackVoiceKey(voice))
+}
+function selectedVoiceLabel(voice: LiveAgentVoiceIdentity): string {
+  return officialVoices.value.find(item => item.id === voice.voice_id && item.model === voice.model)?.name ||
+    voiceProfiles.value.find(item => item.id === voice.profile_id)?.name || voice.name || '待重新选择的声音'
+}
+function unavailableSelection(voice: LiveAgentVoiceIdentity): boolean {
+  if (loading.value) return false
+  if (voice.source === 'official') return !officialConfigured.value || !officialVoices.value.some(item => item.id === voice.voice_id && item.model === voice.model && (item.provider || 'aliyun_qwen') === voice.provider)
+  if (voice.source === 'clone') {
+    const profile = visibleVoiceProfiles.value.find(item => item.id === voice.profile_id && item.clone_status === 'ready')
+    if (!profile) return true
+    if (voice.binding_id) return !voiceBindings.value.some(binding => binding.id === voice.binding_id && binding.profile_id === profile.id && binding.status === 'ready' && binding.voice_id === voice.voice_id && binding.model === voice.model && binding.provider === voice.provider)
+    return profile.voice_id !== voice.voice_id || profile.provider !== voice.provider
+  }
+  return true
+}
+function removeSelectedVoice(voice: LiveAgentVoiceIdentity): void {
+  if (props.disabled || loading.value || selecting.value) return
+  const remaining = selectedVoices.value.filter(item => playbackVoiceKey(item) !== playbackVoiceKey(voice))
+  if (!remaining.length) { error.value = '请至少保留一个声音'; return }
+  emit('voicesChanged', remaining)
+  notice.value = '声音选择已调整，请点击“保存方案”。'
+}
 
 const voicePoolMismatch = computed(() => Boolean(poolVoiceError(selectedVoice.value)))
-const currentVoiceName = computed(() => voicePoolMismatch.value ? '请选择当前池的声音' : voiceProfiles.value.find(profile => profile.id === selectedProfileId.value)?.name || String(selectedVoice.value.name || '').trim() || '未选择声音')
+const currentVoiceName = computed(() => {
+  if (voicePoolMismatch.value) return '请选择当前池的声音'
+  const voice = selectedVoice.value
+  if (selectedPool.value === 'high_fidelity' && voice.source === 'official' && voice.voice_id) {
+    const fresh = officialVoices.value.find(item => item.id === voice.voice_id && item.model === voice.model && item.provider === voice.provider)
+    if (fresh) return fresh.name
+    const saved = String(voice.name || '').trim()
+    return saved && !saved.startsWith('高仿真音色 ') && saved !== voice.voice_id ? saved : '高仿真声音'
+  }
+  return voiceProfiles.value.find(profile => profile.id === selectedProfileId.value)?.name || String(voice.name || '').trim() || '未选择声音'
+})
 const selectedProfileId = computed(() => Number(selectedVoice.value.profile_id || 0))
 const canSubmitClone = computed(
   () => Boolean(cloneName.value.trim() && !selecting.value && (cloneMode.value === 'design'
@@ -188,7 +226,7 @@ async function saveName(profile: VoiceProfile) {
 }
 
 function isCustomModelSelected(profile: VoiceProfile) {
-  return isCustomSelected(profile) && selectedVoice.value.model === profileModel(profile)
+  return selectedVoices.value.some(voice => voice.profile_id === profile.id && voice.model === profileModel(profile))
 }
 
 function customPreviewKey(profile: VoiceProfile) { return `custom-${profile.id}-${profileModel(profile)}` }
@@ -239,7 +277,11 @@ function selectVoice(voice: LiveAgentVoiceIdentity) {
   const selected = { ...voice, tts_pool: selectedPool.value || voicePoolID(voice) || undefined }
   const mismatch = poolVoiceError(selected)
   if (mismatch) { error.value = mismatch; return }
-  emit('selected', selected)
+  if (props.multiple) {
+    if (hasSelectedVoice(selected)) { removeSelectedVoice(selected); return }
+    if (selectedVoices.value.length >= 8) { error.value = '最多选择8个声音'; return }
+    emit('voicesChanged', [...selectedVoices.value, selected])
+  } else emit('selected', selected)
   notice.value = `“${voice.name}”已选入方案「${props.planName || '当前方案'}」，请点击“保存方案”完成保存。`
 }
 
@@ -297,6 +339,11 @@ async function previewCustom(profile: VoiceProfile) {
 
 async function useCustom(profile: VoiceProfile) {
   if (!props.planId || props.disabled || loading.value || selecting.value) return
+  if (props.multiple) {
+    const existing = selectedVoices.value.find(voice => voice.profile_id === profile.id && voice.model === profileModel(profile))
+    if (existing) { removeSelectedVoice(existing); return }
+    if (selectedVoices.value.length >= 8) { error.value = '最多选择8个声音'; return }
+  }
   if (isImportedVoice(profile)) {
     selectVoice({ version: 'V1', source: 'clone', provider: profile.provider, name: profile.name, voice_id: profile.voice_id, profile_id: profile.id, model: profileModel(profile), rate: 1 })
     return
@@ -470,19 +517,18 @@ function avatarForProfile(profile: VoiceProfile) {
   return avatarOptions.find((item) => item.key === key) || avatarOptions[0]
 }
 
-function officialAvatar(item: OfficialVoice, index: number) {
-  const candidates = item.gender.includes('女')
-    ? [avatarOptions[0], avatarOptions[1], avatarOptions[2]]
-    : [avatarOptions[3], avatarOptions[4], avatarOptions[5]]
-  return candidates[index % candidates.length]
+function officialAvatar(item: OfficialVoice) {
+  if (item.gender.includes('女')) return { emoji: '👩', tone: 'violet', label: '女声' }
+  if (item.gender.includes('男')) return { emoji: '👨', tone: 'blue', label: '男声' }
+  return { emoji: '🎙️', tone: 'slate', label: '声音' }
 }
 
 function officialTag(item: OfficialVoice) { return item.tags?.[0] || item.gender || '官方声音' }
 function isOfficialSelected(item: OfficialVoice) {
-  return selectedVoice.value.source === 'official' && String(selectedVoice.value.voice_id || '') === item.id
+  return selectedVoices.value.some(voice => voice.source === 'official' && voice.voice_id === item.id && voice.model === item.model)
 }
 function isCustomSelected(profile: VoiceProfile) {
-  return selectedVoice.value.source === 'clone' && selectedProfileId.value === profile.id
+  return selectedVoices.value.some(voice => voice.source === 'clone' && voice.profile_id === profile.id)
 }
 function createdLabel(value: string) {
   const date = new Date(value)
@@ -509,6 +555,15 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
       </div>
     </div>
 
+    <div v-if="multiple && selectedVoices.length" class="voice-selection" aria-label="已选声音">
+      <p>已选 {{ selectedVoices.length }} / 8 个声音，按选择顺序轮换；第一个声音用于首播和互动。</p>
+      <div class="voice-selection-list">
+        <span v-for="(voice, index) in selectedVoices" :key="playbackVoiceKey(voice)" class="voice-selection-item" :class="{ unavailable: unavailableSelection(voice) }">
+          {{ index + 1 }}. {{ selectedVoiceLabel(voice) }}{{ unavailableSelection(voice) ? '（不可用，请重新选择）' : '' }}
+          <button type="button" :disabled="disabled || loading || selecting || selectedVoices.length <= 1" :aria-label="'取消选择' + selectedVoiceLabel(voice)" @click="removeSelectedVoice(voice)">×</button>
+        </span>
+      </div>
+    </div>
     <p v-if="error" class="inline-error">{{ error }}</p>
     <p v-if="notice" class="inline-notice">{{ notice }}</p>
     <p v-if="voicePoolMismatch" class="inline-notice" role="status">已切换语音池，请从下方选择一个声音，再保存方案。</p>
@@ -545,12 +600,12 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
           <p v-if="selectedPool === 'high_fidelity' && !officialVoices.length" class="inline-notice" role="status">暂无可用高仿真音色，请联系后台配置。</p>
           <p v-else-if="!officialConfigured" class="inline-notice" role="status">声音尚未配置，请联系后台完成配置。</p>
           <label v-if="officialVoices.length" class="official-preview-text"><span>试听文字</span><textarea v-model="officialPreviewText" rows="2" maxlength="1000" placeholder="可输入要测试的话术；留空使用简短问候语" /></label>
-          <article v-for="(item, index) in officialVoices" :key="item.id" class="voice-row" :class="{ selected: isOfficialSelected(item) }">
-            <div class="voice-avatar" :class="'tone-' + officialAvatar(item, index).tone"><span>{{ officialAvatar(item, index).emoji }}</span><i class="avatar-wave">▂▅▃▆▂</i></div>
+          <article v-for="item in officialVoices" :key="item.id" class="voice-row" :class="{ selected: isOfficialSelected(item) }">
+            <div class="voice-avatar" :class="'tone-' + officialAvatar(item).tone" role="img" :aria-label="officialAvatar(item).label"><span>{{ officialAvatar(item).emoji }}</span><i class="avatar-wave">▂▅▃▆▂</i></div>
             <div class="voice-row-copy"><div><strong>{{ item.name }}</strong><span>{{ officialTag(item) }}</span></div><p>{{ item.description }}</p></div>
             <div class="voice-row-actions">
               <button type="button" class="preview-button" :disabled="!officialConfigured" @click="previewOfficial(item)"><span>{{ previewingKey === 'official-' + item.id ? 'Ⅱ' : '▶' }}</span>{{ previewingKey === 'official-' + item.id ? previewPhase === 'playing' ? '正在试听' : '准备中…' : '试听' }}</button>
-              <button type="button" class="use-voice-button" :class="{ selected: isOfficialSelected(item) }" :disabled="disabled || !planId || loading || selecting || !officialConfigured" @click="chooseOfficial(item)">{{ isOfficialSelected(item) ? '当前使用' : '使用这个声音' }}</button>
+              <button type="button" class="use-voice-button" :class="{ selected: isOfficialSelected(item) }" :aria-pressed="isOfficialSelected(item)" :disabled="disabled || !planId || loading || selecting || !officialConfigured" @click="chooseOfficial(item)">{{ multiple ? (isOfficialSelected(item) ? '✓ 已选择' : '选择声音') : (isOfficialSelected(item) ? '当前使用' : '使用这个声音') }}</button>
             </div>
           </article>
         </div>
@@ -561,12 +616,12 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
             <div class="voice-row-copy custom-copy"><div>
               <input v-if="editingNameId === profile.id" v-model="nameDraft" class="voice-name-input" aria-label="声音名称" maxlength="80" :disabled="savingNameId === profile.id" @keydown.stop="nameKeydown($event, profile)" @blur="saveName(profile)" />
               <template v-else><strong>{{ profile.name }}</strong><button v-if="!props.supportSession" type="button" class="voice-name-edit" :aria-label="'修改声音名称：' + profile.name" title="修改名称" :disabled="!!savingNameId" @click.stop="beginRename(profile, $event)"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1 12-12a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button></template>
-              <span v-if="isCustomSelected(profile)">当前使用</span>
+              <span v-if="isCustomSelected(profile)">{{ multiple ? '已选择' : '当前使用' }}</span>
             </div><small v-if="editingNameId === profile.id && nameError" class="voice-name-error" role="alert">{{ nameError }}</small><small v-else-if="savingNameId === profile.id" class="voice-name-status" role="status">正在保存…</small><p>创建于 {{ createdLabel(profile.created_at) }}</p></div>
 
             <div class="voice-row-actions custom-actions">
               <button type="button" class="preview-button" :disabled="(Boolean(bindingBusyKey) && previewingKey !== customPreviewKey(profile))" @click="previewCustom(profile)"><span>{{ previewingKey === customPreviewKey(profile) ? 'Ⅱ' : '▶' }}</span>{{ previewingKey === customPreviewKey(profile) ? previewPhase === 'playing' ? '停止试听' : '准备中…' : '试听' }}</button>
-              <button type="button" class="use-voice-button" :class="{ selected: isCustomModelSelected(profile) }" :disabled="disabled || !planId || loading || selecting || Boolean(bindingBusyKey)" @click="useCustom(profile)">{{ isCustomModelSelected(profile) ? '当前使用' : '使用这个声音' }}</button>
+              <button type="button" class="use-voice-button" :class="{ selected: isCustomModelSelected(profile) }" :aria-pressed="isCustomModelSelected(profile)" :disabled="disabled || !planId || loading || selecting || Boolean(bindingBusyKey)" @click="useCustom(profile)">{{ multiple ? (isCustomModelSelected(profile) ? '✓ 已选择' : '选择声音') : (isCustomModelSelected(profile) ? '当前使用' : '使用这个声音') }}</button>
               <button v-if="!props.supportSession" type="button" class="delete-voice-button" :disabled="deletingProfileId === profile.id" title="删除自定义声音" @click="removeCustomVoice(profile)">{{ deletingProfileId === profile.id ? '…' : '删除' }}</button>
             </div>
           </article>
@@ -607,6 +662,13 @@ onBeforeUnmount(() => { nameScope++; stopPreview() })
 </template>
 
 <style scoped>
+.voice-selection{padding:16px 20px;border:1px solid #e0e5f2;border-radius:16px;background:#fafbff;font-size:20px}
+.voice-selection p{margin:0 0 12px}
+.voice-selection-list{display:flex;flex-wrap:wrap;gap:10px}
+.voice-selection-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid #cbc5ff;border-radius:12px;color:#564bc4;overflow-wrap:anywhere}
+.voice-selection-item.unavailable{color:#c72c40;border-color:#e6b0b9}
+.voice-selection-item button{border:0;background:transparent;font:inherit;color:inherit;cursor:pointer}
+.voice-selection-item button:disabled{opacity:.4;cursor:default}
 .voice-workspace.high-fidelity-workspace{grid-template-columns:minmax(0,1fr)}
 .high-fidelity-workspace .voice-row-copy>div>span{flex-shrink:0;white-space:nowrap}
 .voice-pool-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px 24px; font-size: 16px; color: #526282; }

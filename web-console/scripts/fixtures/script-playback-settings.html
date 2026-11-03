@@ -1,0 +1,51 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><div id="app"></div><script type="module">
+import Feedback from '/src/components/GlobalFeedback.vue';import {feedbackState} from '/src/uiFeedback.ts';import {createApp,h} from 'vue';import {createRouter,createMemoryHistory} from 'vue-router';import View from '/src/views/LiveStrategyView.vue';import {applySession} from '/src/session.ts';import '/src/style.css';
+const params=new URLSearchParams(location.search), plans=[7,8].map(id=>({id,tenant_id:14,name:'测试方案'+id,status:'active',room_count:0,term_count:0}));
+const transcript='这是一段用于检查长录音保存完整性的测试话术。'.repeat(750);
+const timeline=Array.from({length:251},(_,index)=>({segment_id:'s'+index,index:index+1,start_ms:index*9600,end_ms:(index+1)*9600,text:transcript.slice(index*60,index*60+60),safe_cut:true}));
+const draft={audio_asset_id:26103,audio_url:'/api/v1/live/media-assets/26103/content',duration_ms:251*9600,transcript,timeline,srt:timeline.map((s,i)=>(i+1)+'\n00:00:00,000 --> 00:00:09,600\n'+s.text+'\n').join('\n'),safe_points:timeline.map(s=>({id:'p'+s.index,cut_ms:s.end_ms,score:95,grade:'A',kind:'SENTENCE',sentence_id:s.segment_id,left_preview:s.text,next_preview:'后文',topics:[]})),asset_manifest:{version:'v3',timeline_object_key:'fixture/timeline',safe_points_object_key:'fixture/points',subtitle_object_key:'fixture/srt'},clone_error:'模拟自动克隆失败，原始声音仍有效'};
+const jobs=[{id:'done',status:'ready',result:draft}];
+const official=[{id:'longanlingxin',name:'龙安灵心',provider:'aliyun_qwen',model:'qwen-audio-3.0-tts-plus',tags:['直播默认'],gender:'女',description:'测试声音A'},...Array.from({length:8},(_,i)=>({id:'voice'+(i+2),name:'测试声音'+(i+2),provider:'aliyun_qwen',model:'qwen-audio-3.0-tts-plus',tags:[],gender:'女',description:'测试声音'}))];
+const bindings=[{id:21,profile_id:13,status:'ready',provider:'qwen_audio',model:'qwen-audio-3.1-tts-flash',voice_id:'fixture-clone-21'},{id:20,profile_id:12,status:'disabled',provider:'qwen_audio',model:'qwen-audio-3.1-tts-flash',voice_id:'fixture-clone-20'}];
+window.feedbackState=feedbackState;window.fixture={calls:[],draft,official,bindings,mode:params.get('legacy')||'user_audio',jobs:params.has('empty')?[]:jobs,holdWorkspace:params.has('delayed'),failSave:false,failRead:params.has('read-error'),saved:JSON.parse(sessionStorage.getItem('saved-recording')||'null')};
+window.fetch=async(url,init={})=>{
+ const f=window.fixture,u=new URL(url,location.origin),p=u.pathname,method=init.method||'GET',body=init.body?JSON.parse(init.body):null,plan=Number(p.match(/live-agent-plans\/(\d+)/)?.[1]||0);
+ f.calls.push({path:p,method,body,search:u.search});
+ if(p.endsWith('/save-check'))return f.blocked ? Response.json({error:'该方案正在直播间 26、29 使用，暂时不能保存。请先结束这些直播间的直播后再保存，页面中的修改已保留。'},{status:409}) : Response.json({editable:true});
+ if(p.endsWith('/content-mode') && method==='PUT'){ if(f.holdMode){f.holdMode=false;await new Promise(r=>f.releaseMode=r)} if(f.failMode)return Response.json({error:'模拟设置保存失败'},{status:503});f.mode=body.content_mode;return Response.json({content_mode:f.mode,available_modes:['user_audio'],dynamic_authorized:false}) }
+ if(method==='POST'&&p.endsWith('/fact-gap-check'))return Response.json({items:[],issues:[],gaps:[],checks:[]});
+ if(method==='POST'&&p.endsWith('/uploads'))return Response.json({id:'new-upload',uploads:[{url:'https://fixture-oss.invalid/upload',fields:{key:'fixture'}}]});
+ if(method==='POST'&&p.endsWith('/complete'))return Response.json({id:'new-upload',status:'ready',result:draft});
+ if(method==='POST'&&p.endsWith('/versions')){
+   if(f.blocked)return Response.json({error:'该方案正在直播间 26、29 使用，暂时不能保存。请先结束直播后再保存，页面中的修改已保留。'},{status:409});
+   if(f.mode!=='user_audio')throw Error('Backend requires actual user_audio mode'); f.payload=body;
+   if(f.holdSave){f.holdSave=false;await new Promise(r=>f.releaseSave=r)}
+   if(f.failSave){f.failSave=false;return Response.json({error:'模拟保存失败，请重试'},{status:503})}
+   f.saved={...body,id:701,plan_id:plan,tenant_id:14,version_no:(f.saved?.version_no||0)+1,lifecycle_status:'published',created_at:new Date().toISOString(),updated_at:new Date().toISOString()};sessionStorage.setItem('saved-recording',JSON.stringify(f.saved));return Response.json(f.saved);
+ }
+ if(p.endsWith('/prompt')){const sections=body?.sections||{persona_md:'',facts_md:'',red_lines_md:'',speech_requirements_md:'',interaction_requirements_md:''};return Response.json({sections,prompt_md:'',interaction_prompt_md:'',speech_prompt_md:''})}
+ if(method!=='GET')throw Error('Unexpected mutation '+method+' '+p);
+ if(p.endsWith('/workspace')){
+   const response=f.saved&&plan===7?{version:f.saved,source:'published',recording_uploads:f.jobs}:{version:null,source:'',recording_uploads:plan===7?f.jobs:[]};
+   if(f.holdWorkspace&&plan===7){f.holdWorkspace=false;await new Promise(r=>f.releaseWorkspace=r)}
+   if(f.failRead)return Response.json({error:'读取已完成录音失败，请重试；无需重新上传'},{status:503});return Response.json(response);
+ }
+ if(p==='/api/v1/rooms')return Response.json({items:[]});
+ if(p.endsWith('/ui-preferences'))return Response.json({});
+ if(p==='/api/v1/live-agent-plans')return Response.json({items:plans});
+ if(p.endsWith('/voice-rate'))return Response.json({tenant_id:14,plan_id:plan,rate:1.2});
+ if(p.endsWith('/content-mode'))return Response.json({content_mode:f.mode,available_modes:['user_audio','ai_pregenerated','ai_dynamic'],dynamic_authorized:true});
+ if(p.endsWith('/content-pools'))return Response.json({state:'synced',changes:[],products:[],benefits:[],pools:[],set_id:9,saved_set_id:9,job:{}});
+ if(p.endsWith('/realtime-options'))return Response.json({buffer_seconds:60,body_min:2,body_max:4,max_chars:300});
+ if(p.endsWith('/versions'))return Response.json({items:f.saved&&plan===7?[f.saved]:[]});
+ if(p.endsWith('/official-voices'))return Response.json({configured:true,items:u.searchParams.get('pool')==='high_fidelity'?[{id:'S_test',name:'测试高仿真',provider:'volcengine',model:'seed-icl-2.0',tags:[],gender:'女',description:'测试声音'}]:f.official.filter(item=>!(f.disabledVoices||[]).includes(item.id))});
+ if(p.endsWith('/voice-profiles'))return Response.json([]);
+ if(p.endsWith('/voice-settings'))return Response.json({custom_model:'qwen-audio-3.1-tts-flash',can_design:false});
+ if(p.endsWith('/voice-model-bindings'))return Response.json(f.bindings);
+ return Response.json({items:[],plugins:[],checks:[],groups:[],catalog:[],profiles:[],version:null,source:null,addressing:[],greeting:'你好'});
+};
+
+window.fixture.saved ||= {id:701,tenant_id:14,plan_id:7,version_no:1,lifecycle_status:'published',duration_minutes:90,round_minutes:7,voice_identity:{name:'龙安灵心',version:'V1',source:'official',provider:'aliyun_qwen',model:'qwen-audio-3.0-tts-plus',voice_id:'longanlingxin',rate:1.2},variants:[],generation_context:{content_mode:'user_audio',recording_voice_mode:'stream_clone',recording_script:{version:2,version_cap:7,min_voice_block:4,active_tab_id:'a',tabs:[{tab_id:'a',title:'测试组',pinned:false,entries:[{entry_id:'s1',text:'甲'.repeat(803)},{entry_id:'s2',text:'乙'.repeat(940)}]}]}}};
+
+applySession({actor:{user_id:14,tenant_id:14,role:'customer',username:'test'},tenants:[{id:14,name:'测试'}],environment:'test'});
+const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:View}]});await router.push('/');await router.isReady();createApp({render:()=>h('div',{},[h(View),h(Feedback)])}).use(router).mount('#app');</script></html>

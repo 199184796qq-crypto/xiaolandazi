@@ -194,6 +194,9 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 	}
 	v.VoiceIdentity.VoiceID = id
 	v.VoiceIdentity.Model = modelName
+	if err := s.validateScriptPlaybackVoices(ctx, tenant, room, v); err != nil {
+		return err
+	}
 	if v.VoiceIdentity.Rate == 0 {
 		v.VoiceIdentity.Rate = 1
 	}
@@ -462,11 +465,13 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			delete(known, i)
 		}
 	}
+	restoringVoice := cursor.ActiveVoice != ""
 	cursor.ActiveVoice = activeV.VoiceIdentity.VoiceID
 	cursor.ActiveModel = activeV.VoiceIdentity.Model
-	if cursor.VoiceBlockLeft <= 0 {
+	if !restoringVoice && cursor.VoiceBlockLeft <= 0 {
 		cursor.VoiceBlockLeft = scriptVoiceBlockLength(activeV, units)
 	}
+	lastVoicePreparation := ""
 	for {
 		if err = ctx.Err(); err != nil {
 			return err
@@ -494,18 +499,25 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		if cursor.Position == len(units) {
 			cursor.Round++
 			cursor.Position = 0
-			// 块走完就尝试切下一个音色；目标音色没备齐则留在当前音色。
-			if cursor.VoiceBlockLeft--; cursor.VoiceBlockLeft <= 0 {
-				if next, ok := scriptNextPlaybackVoice(voices, voiceIdx, v, units); ok {
-					voiceIdx = next
+
+			// At block end, keep retrying readiness each round rather than resetting
+			// another four rounds while the target voice is still being prepared.
+			cursor.VoiceBlockLeft = max(0, cursor.VoiceBlockLeft-1)
+			if cursor.VoiceBlockLeft == 0 {
+				if next, ready := scriptNextPlaybackVoice(voices, voiceIdx, v, units); ready {
+					target := scriptVersionForVoice(v, voices[next])
+					identity := target.VoiceIdentity
+					if e := s.validatePlanVoiceIdentity(ctx, tenant, &identity); e != nil {
+						log.Printf("script voice switch unavailable tenant=%d room=%d session=%d: %v", tenant, room, session, e)
+					} else {
+						voiceIdx, activeV = next, target
+						cursor.ActiveVoice, cursor.ActiveModel = activeV.VoiceIdentity.VoiceID, activeV.VoiceIdentity.Model
+						cursor.VoiceBlockLeft = scriptVoiceBlockLength(activeV, units)
+						known = map[int]volcengineCachedAudio{}
+					}
+				} else if len(voices) == 1 {
+					cursor.VoiceBlockLeft = scriptVoiceBlockLength(activeV, units)
 				}
-				activeV = scriptVersionForVoice(v, voices[voiceIdx])
-				cursor.ActiveVoice = activeV.VoiceIdentity.VoiceID
-				cursor.ActiveModel = activeV.VoiceIdentity.Model
-				cursor.VoiceBlockLeft = scriptVoiceBlockLength(activeV, units)
-				// Fallbacks must use only this voice. Do not replay the previous voice
-				// while a selected voice is waiting on an asset URL.
-				known = map[int]volcengineCachedAudio{}
 			}
 			// 按话术标签分组排下一轮：固定标签锁位，其余随机。
 			previousOrder := cursor.Order
@@ -544,19 +556,49 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			continue
 		}
 		index := cursor.Order[cursor.Position]
+		// Secondary preparation uses the same producer, account pool, budget and
+		// durable paid checkpoints. Admit only below 40s, near the next voice block,
+		// and with this voice's next piece already paid, so current supply takes priority.
+		preparation := fmt.Sprintf("%d:%d", cursor.Round, cursor.Position)
+		if len(voices) > 1 && scriptVoicePreparationDue(cursor, p, lastVoicePreparation, len(scriptCompatiblePool(recordingCacheMediaRoot(), activeV, units[index]).Versions) > 0) {
+			if target, unit, needed := scriptNextVoicePreparation(voices, voiceIdx, v, units); needed {
+				lastVoicePreparation = preparation
+				identity := target.VoiceIdentity
+				prepareErr := s.validatePlanVoiceIdentity(ctx, tenant, &identity)
+				if prepareErr == nil {
+					prepareErr = s.store.CheckTTSRoomPool(ctx, tenant, room, identity.Provider)
+				}
+				if prepareErr == nil {
+					var prepared volcengineCachedAudio
+					prepared, prepareErr = awaitVolcengineParagraph(ctx, 500*time.Millisecond, func(c context.Context) (volcengineCachedAudio, error) {
+						if e := checkOwner(c); e != nil {
+							return volcengineCachedAudio{}, e
+						}
+						return s.ensureScriptFirstParagraph(c, tenant, room, session, target, unit, true)
+					}, keepPlaying)
+					if prepareErr == nil {
+						recordScriptVoiceVersion(recordingCacheMediaRoot(), v.PlanID, unit, target, prepared)
+					}
+				}
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if errors.Is(prepareErr, anchorcycle.ErrStale) {
+					return prepareErr
+				}
+				if prepareErr != nil {
+					log.Printf("script next voice preparation deferred tenant=%d room=%d session=%d: %v", tenant, room, session, prepareErr)
+				}
+			}
+		}
 		// 循环变速已关闭：跨轮固定 1.0 倍率，直接复用首轮原速音频。
 		// 关闭原因是每轮每段一次 ffmpeg atempo 渲染对机器压力明显（2026-11-01）。
 		// This check is the sole paid lookahead gate: no next submission until
 		// buffered mainline reaches its length-based lead. One paragraph is in flight.
 		work, done := context.WithCancel(ctx)
-		allowSynthesis := true // A single-select piece may first be visited in a later round.
-		if activeV.VoiceIdentity.VoiceID != v.VoiceIdentity.VoiceID || activeV.VoiceIdentity.Model != v.VoiceIdentity.Model {
-			allowSynthesis = false
-		}
-		// 先从片段版本池取一条已合成的音频；池子里没有才走合成。
-		voiceUnit := units[index]
-		voiceUnit.Key = scriptFirstParagraphKey(activeV, voiceUnit.Text)
-		voiceUnit.Dir = filepath.Join(filepath.Dir(voiceUnit.Dir), voiceUnit.Key)
+		// Only canonical, authorized selected identities may purchase missing audio.
+		allowSynthesis := voices[voiceIdx].Identity != nil || (activeV.VoiceIdentity.VoiceID == v.VoiceIdentity.VoiceID && activeV.VoiceIdentity.Model == v.VoiceIdentity.Model)
+		voiceUnit := scriptUnitForVoice(activeV, units[index])
 		audio, playedText, fromPool := scriptCompatiblePoolAudio(recordingCacheMediaRoot(), activeV, voiceUnit, fmt.Sprintf("%d-%d-%d", tenant, room, session), rng)
 		if fromPool && strings.TrimSpace(playedText) != "" {
 			audio.Text = playedText
