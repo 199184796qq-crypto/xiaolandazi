@@ -9,12 +9,12 @@ await mkdir(output, { recursive: true })
 const source = (await readFile(new URL('./test-plan-prompt-editor.mjs', import.meta.url), 'utf8')).replace(/\r\n/g, '\n')
 let fixture = source.split('const fixture=String.raw`')[1].split('`\nconst server=')[0]
 const setup = String.raw`
-import {emptyPlanPromptSections,compilePlanPrompts} from '/src/planPrompt.ts';
+import {emptyPlanPromptSections,compilePlanPrompts,compilePlanRewritePrompt} from '/src/planPrompt.ts';
 const previousFetch=window.fetch;
 const bindings=[101,102].map((id,i)=>({id,tenant_id:14,profile_id:201+i,sample_asset_id:1,provider:'aliyun_qwen',model:'test-model',voice_id:'test-voice-'+id,rate:1,status:'ready'}));
 const voice=id=>{const b=bindings[id===4?0:1];return {name:'声音'+id,version:'V1',source:'clone',provider:b.provider,model:b.model,voice_id:b.voice_id,binding_id:b.id,profile_id:b.profile_id,rate:1,emotion_enabled:false,style:{}}};
 const versions=Object.fromEntries([4,5].map(id=>[id,{id:id*10,tenant_id:14,plan_id:id,version_no:1,lifecycle_status:'published',duration_minutes:90,round_minutes:7,voice_identity:voice(id),variants:[],generation_context:{content_mode:'user_audio',recording_voice_mode:'stream_clone',recording_script:{version:2,tabs:[{tab_id:'g1',title:'测试话术',pinned:true,entries:[{entry_id:'e1',text:'这是本地测试话术。'.repeat(50)}],audio_asset_ids:[]}],active_tab_id:'g1'},anchor_generation_options:{buffer_seconds:120,body_min:2,body_max:4,max_chars:300}}}]));
-const defaults=Object.fromEntries([4,5].map(id=>[id,{sections:{...emptyPlanPromptSections(),persona_md:'方案'+id+'人设',facts_md:'方案'+id+'事实'},rewrite_prompt_md:'方案'+id+'现有修改元提示词\n{{样本话术}}'}]));
+const defaults=Object.fromEntries([4,5].map(id=>{const sections={...emptyPlanPromptSections(),persona_md:'方案'+id+'人设',facts_md:'方案'+id+'事实'};const planning='方案'+id+'现有规划正文\n{{已有开场}}';return [id,{sections,rewrite_planning_md:planning,rewrite_prompt_md:compilePlanRewritePrompt(sections,planning)}]}));
 Object.assign(window.fixture,{documents:JSON.parse(sessionStorage.getItem('rewrite-documents')||'null')||defaults,versions});
 window.fetch=async(url,init={})=>{
  const f=window.fixture,u=new URL(url,location.origin),p=u.pathname,method=init.method||'GET',body=init.body?JSON.parse(init.body):null,plan=Number(p.match(/live-agent-plans\/(\d+)/)?.[1]||0);
@@ -38,8 +38,8 @@ window.fetch=async(url,init={})=>{
  if(p.endsWith('/render'))return Response.json({sections:{persona:'重新生成的人设',facts:'重新生成的事实',speech:'新的话术要求',interaction:'新的回答要求'},facts_md:'重新生成的事实'});
  if(method==='PUT'){
   if(f.failPrompt){f.failPrompt=false;return Response.json({error:'提示词保存失败，请重试'},{status:500})}
-  if(typeof body.rewrite_prompt_md!=='string')throw Error('rewrite prompt missing');
-  f.documents[plan]=structuredClone(body);sessionStorage.setItem('rewrite-documents',JSON.stringify(f.documents));
+  if(typeof body.rewrite_planning_md!=='string'||'rewrite_prompt_md' in body)throw Error('only original planning must be submitted');
+  f.documents[plan]={...structuredClone(body),rewrite_prompt_md:compilePlanRewritePrompt(body.sections,body.rewrite_planning_md)};sessionStorage.setItem('rewrite-documents',JSON.stringify(f.documents));
  }
  const doc=structuredClone(f.documents[plan]);
  if(method==='GET'&&f.holdRead){f.holdRead=false;await new Promise(r=>f.releaseRead=r)}
@@ -74,19 +74,27 @@ try {
   const savePrompt = async () => { await page.getByRole('button', { name: '保存方案提示词', exact: true }).click(); await page.getByText('方案提示词已保存，已生成主播互动元提示词和主播话术生成提示词', { exact: true }).waitFor() }
   await page.goto(server.resolvedUrls.local[0] + '__rewrite-editor'); await page.waitForFunction(() => window.fixture?.view?.plan() === 4); await open(); await ready()
   assert.deepEqual(await page.getByRole('tab').allTextContents(), ['主播人设','事实依据','红线禁止','直播话术要求','互动回答要求','话术规划'])
-  assert.equal(await showRewrite(), '方案4现有修改元提示词\n{{样本话术}}')
-  checks.push('话术规划紧跟互动回答要求，直接回显现有方案的修改元提示词')
-  const draft = '  自定义规划\n\n{{样本话术}}\n{{已有开场}}\n{{开场方式}}\n〔提示〕原样保留😀\n  '
+  assert.equal(await showRewrite(), '方案4现有规划正文\n{{已有开场}}')
+  assert.ok(!(await editor.inputValue()).includes('【事实依据】')); checks.push('话术规划紧跟互动回答要求，只回显规划原文，完整元提示词不混进编辑框')
+  const draft = '  自定义规划\n\n{{已有开场}}\n{{开场方式}}\n〔提示〕原样保留😀\n  '
   await editor.fill(draft); await tab('互动回答要求').click(); await editor.fill('互动专用要求'); assert.equal(await showRewrite(), draft)
-  await savePrompt(); assert.equal((await puts()).at(-1).body.rewrite_prompt_md, draft)
+  await savePrompt(); assert.equal((await puts()).at(-1).body.rewrite_planning_md, draft)
   assert.equal((await puts()).at(-1).body.sections.interaction_requirements_md, '互动专用要求')
-  await switchTo(5); assert.equal(await showRewrite(), '方案5现有修改元提示词\n{{样本话术}}'); await switchTo(4); assert.equal(await showRewrite(), draft)
+  await switchTo(5); assert.equal(await showRewrite(), '方案5现有规划正文\n{{已有开场}}'); await switchTo(4); assert.equal(await showRewrite(), draft)
   await page.reload(); await page.waitForFunction(() => window.fixture?.view?.plan() === 4); await open(); await ready(); assert.equal(await showRewrite(), draft)
   checks.push('单独保存、切换方案和刷新均逐字回显：空白、换行、占位符和 Unicode 保持，另外两份提示词独立')
+  await tab('事实依据').click(); await editor.fill('更新后的方案事实：八十七元六角'); await savePrompt(); assert.equal(await showRewrite(), draft)
+  const compiledDoc = await page.evaluate(() => window.fixture.documents[4])
+  assert.ok(compiledDoc.rewrite_prompt_md.startsWith('你是直播话术改写器。'))
+  assert.ok(compiledDoc.rewrite_prompt_md.includes('【事实依据】\n更新后的方案事实：八十七元六角'))
+  assert.ok(compiledDoc.rewrite_prompt_md.includes('【样本话术】\n{{样本话术}}\n\n' + draft))
+  assert.equal(compiledDoc.rewrite_prompt_md.split('{{样本话术}}').length - 1, 1)
+  checks.push('更新事实后重新合成完整提示词；样本节与占位符保留，规划正文原样独立保存')
+
   const topDraft = draft + '顶部保存'
   await editor.fill(topDraft); await page.evaluate(() => window.fixture.holdVersion = true); await page.locator('#plan-save-button').click(); await page.waitForFunction(() => !!window.fixture.releaseVersion)
   assert.equal(await editor.getAttribute('readonly'), '')
-  await page.evaluate(() => window.fixture.releaseVersion()); await ready(); assert.equal((await puts()).at(-1).body.rewrite_prompt_md, topDraft)
+  await page.evaluate(() => window.fixture.releaseVersion()); await ready(); assert.equal((await puts()).at(-1).body.rewrite_planning_md, topDraft)
   await switchTo(5); await switchTo(4); assert.equal(await showRewrite(), topDraft)
   checks.push('真正点击顶部保存方案：正式版本保存期间锁定编辑，提交点击时的规划快照并回显')
   const failedDraft = topDraft + '失败后保留'
@@ -102,12 +110,12 @@ try {
   checks.push('重新生成前五页保留手工话术规划，不用母版覆盖修改元提示词')
   await editor.fill(''); await savePrompt(); await switchTo(5); await switchTo(4); assert.equal(await showRewrite(), '')
   checks.push('显式清空规划后仍保存空值，不复活上一份文本')
-  await page.evaluate(() => { window.fixture.documents[4].rewrite_prompt_md = '隐藏页读取的规划'; sessionStorage.setItem('rewrite-documents', JSON.stringify(window.fixture.documents)) })
+  await page.evaluate(() => { window.fixture.documents[4].rewrite_planning_md = '隐藏页读取的规划'; sessionStorage.setItem('rewrite-documents', JSON.stringify(window.fixture.documents)) })
   await page.reload(); await page.waitForFunction(() => window.fixture?.view?.plan() === 4); await ready(); await page.locator('#plan-save-button').click(); await ready()
-  assert.equal((await puts()).at(-1).body.rewrite_prompt_md, '隐藏页读取的规划'); await open(); assert.equal(await showRewrite(), '隐藏页读取的规划')
+  assert.equal((await puts()).at(-1).body.rewrite_planning_md, '隐藏页读取的规划'); await open(); assert.equal(await showRewrite(), '隐藏页读取的规划')
   checks.push('未打开提示词页直接保存方案，会先加载已有规划，避免空稿覆盖')
   await switchTo(5); await page.evaluate(() => window.fixture.holdRead = true); await page.evaluate(() => window.fixture.view.setPlan(4)); await page.waitForFunction(() => !!window.fixture.releaseRead)
-  await switchTo(5); await page.evaluate(() => window.fixture.releaseRead()); await page.waitForFunction(() => !window.fixture.view.loading()); assert.equal(await showRewrite(), '方案5现有修改元提示词\n{{样本话术}}')
+  await switchTo(5); await page.evaluate(() => window.fixture.releaseRead()); await page.waitForFunction(() => !window.fixture.view.loading()); assert.equal(await showRewrite(), '方案5现有规划正文\n{{已有开场}}')
   checks.push('旧方案迟到读取不串写新方案规划')
   await switchTo(4); await showRewrite()
   assert.equal(await editor.evaluate(el => getComputedStyle(el).fontSize), '20px')

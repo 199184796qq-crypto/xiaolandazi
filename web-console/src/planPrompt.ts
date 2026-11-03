@@ -26,6 +26,11 @@ export function readPlanPromptSections(value: unknown): PlanPromptSections {
   return { persona_md: source.persona_md, facts_md: source.facts_md, red_lines_md: source.red_lines_md, speech_requirements_md: source.speech_requirements_md, interaction_requirements_md: source.interaction_requirements_md }
 }
 
+export function readPlanRewritePlanning(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('服务端未返回话术规划原文，当前内容已保留，请更新服务后重试')
+  return value
+}
+
 export function cleanPlanPromptSections(value: PlanPromptSections): PlanPromptSections {
   const out = emptyPlanPromptSections()
   for (const { key } of planPromptTabs) {
@@ -46,9 +51,19 @@ export function compilePlanPrompts(value: PlanPromptSections) {
   }
 }
 
-export function planPromptValidation(value: PlanPromptSections, rewritePrompt = '') {
-  if (Array.from(rewritePrompt).length > 20000) return '话术规划不能超过20000字，请缩短内容'
+export function compilePlanRewritePrompt(value: PlanPromptSections, planning: string) {
+  const s = cleanPlanPromptSections(value)
+  return '你是直播话术改写器。你的工作不是润色，是"换一套说法把同一件事重新讲一遍"。'
+    + `\n\n【主播人设】\n${s.persona_md}\n\n【事实依据】\n${s.facts_md}\n\n【红线禁止】\n${s.red_lines_md}`
+    + `\n\n【样本话术】\n{{样本话术}}\n\n${planning}`
+}
+
+export function planPromptValidation(value: PlanPromptSections, planning = '') {
+  if (Array.from(planning).length > 20000) return '话术规划不能超过20000字，请缩短内容'
   const compiled = compilePlanPrompts(value)
-  return Object.values(compiled).some(text => Array.from(text).length > 20000)
-    ? '合成后的每份元提示词不能超过20000字，请缩短对应文本框内容' : ''
+  if (Object.values(compiled).some(text => Array.from(text).length > 20000)) {
+    return '合成后的每份元提示词不能超过20000字，请缩短对应文本框内容'
+  }
+  return Array.from(compilePlanRewritePrompt(value, planning)).length > 20000
+    ? '合成后的话术修改元提示词不能超过20000字，请缩短话术规划或方案资料' : ''
 }

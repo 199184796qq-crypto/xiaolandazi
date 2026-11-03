@@ -4,7 +4,7 @@ import { renderLiveAgentPlanPrompt } from '../api'
 import { compilePlanPrompts, planPromptTabs, planPromptValidation, type PlanPromptSections } from '../planPrompt'
 
 const content = defineModel<PlanPromptSections>({ required: true })
-const rewritePrompt = defineModel<string>('rewritePrompt', { default: '' })
+const rewritePlanning = defineModel<string>('rewritePlanning', { default: '' })
 const props = defineProps<{ planId: number | null; loaded: boolean; loading: boolean; saving: boolean; error: string; notice: string; legacyPrompt?: string }>()
 const emit = defineEmits<{ save: []; retry: []; clearFeedback: [] }>()
 const generating = ref(false)
@@ -14,18 +14,18 @@ const confirmation = ref<HTMLDialogElement | null>(null)
 const cancelButton = ref<HTMLButtonElement | null>(null)
 const regenerateButton = ref<HTMLButtonElement | null>(null)
 const editor = ref<HTMLTextAreaElement | null>(null)
-const tabs = [...planPromptTabs, { key: 'rewrite_prompt_md', label: '话术规划' }] as const
-const activeTab = ref<keyof PlanPromptSections | 'rewrite_prompt_md'>('persona_md')
+const tabs = [...planPromptTabs, { key: 'rewrite_planning_md', label: '话术规划' }] as const
+const activeTab = ref<keyof PlanPromptSections | 'rewrite_planning_md'>('persona_md')
 const selectedTab = computed(() => tabs.find(tab => tab.key === activeTab.value)!)
 const activeContent = computed({
-  get: () => activeTab.value === 'rewrite_prompt_md' ? rewritePrompt.value : content.value[activeTab.value],
+  get: () => activeTab.value === 'rewrite_planning_md' ? rewritePlanning.value : content.value[activeTab.value],
   set: value => {
-    if (activeTab.value === 'rewrite_prompt_md') rewritePrompt.value = value
+    if (activeTab.value === 'rewrite_planning_md') rewritePlanning.value = value
     else content.value = { ...content.value, [activeTab.value]: value }
   },
 })
 const compiled = computed(() => compilePlanPrompts(content.value))
-const validation = computed(() => planPromptValidation(content.value, rewritePrompt.value))
+const validation = computed(() => planPromptValidation(content.value, rewritePlanning.value))
 const busy = computed(() => props.loading || props.saving || generating.value)
 const unavailable = computed(() => !props.planId || !props.loaded || busy.value)
 let mounted = true
@@ -66,7 +66,7 @@ async function generate() {
       : { facts_md: result.facts_md }
     if (!sections && typeof result.facts_md !== 'string') throw new Error('未返回提示词内容，当前内容已保留，请重试')
     const next = { ...content.value, ...filled }
-    const error = planPromptValidation(next)
+    const error = planPromptValidation(next, rewritePlanning.value)
     if (error) throw new Error(error)
     content.value = next
     activeTab.value = 'persona_md'
@@ -125,7 +125,7 @@ function backdrop(event: MouseEvent) {
     <header class="plan-prompt-heading">
       <div>
         <h3 id="plan-prompt-heading">方案提示词</h3>
-        <p>五页原文分别保存、原样回显；话术规划保存为话术修改元提示词。重新生成仅重建前五页。</p>
+        <p>五页原文与话术规划分别保存、原样回显；保存时合成话术修改元提示词。重新生成仅重建前五页。</p>
       </div>
       <div class="plan-prompt-actions">
           <button ref="regenerateButton" type="button" class="plan-prompt-secondary" :disabled="unavailable" @click="requestRegeneration">{{ generating ? '生成中…' : '重新生成' }}</button>

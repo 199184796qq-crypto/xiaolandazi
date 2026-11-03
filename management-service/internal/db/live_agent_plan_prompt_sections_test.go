@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -249,5 +250,77 @@ func TestPlanPromptRawSectionsRoundTripWithoutRepartition(t *testing.T) {
 	empty, err := s.GetLiveAgentPlanPromptDocument(context.Background(), 14, 4)
 	if err != nil || !empty.Sections.Empty() || empty.PromptMD != "" || empty.SpeechPromptMD != "" {
 		t.Fatal("explicitly clearing all four pages must persist", empty, err)
+	}
+}
+
+func TestPlanRewritePlanningSeparateAtomicStorage(t *testing.T) {
+	state := &promptSectionSQL{rows: map[[2]int64][]driver.Value{}}
+	database := sql.OpenDB(promptSectionConnector{state})
+	defer database.Close()
+	store := &Store{db: database}
+	sections := planprompt.Sections{PersonaMD: "原始人设", FactsMD: "八十七元六角", RedLinesMD: "不编造", SpeechRequirementsMD: "主线要求", InteractionRequirementsMD: "回答要求"}
+	planning := "  第一步：抽取直播流程骨架\r\n【事实依据】此行属于规则，不能拆出去\n{{已有开场}}\n{{开场方式}}\n  "
+	doc, err := store.SaveLiveAgentPlanPromptPlanning(t.Context(), 14, 4, 28, sections, planning)
+	if err != nil || state.writes != 1 || doc.RewritePlanningMD == nil || *doc.RewritePlanningMD != planning || doc.Sections != sections {
+		t.Fatalf("raw planning failed round trip: %#v %v", doc, err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(state.rows[[2]int64{14, 4}][1].(string)), &raw); err != nil || raw["rewrite_planning_md"] != planning {
+		t.Fatal("planning was not separately persisted", raw, err)
+	}
+	if doc.RewritePromptMD != planprompt.CompileRewritePlanning(sections, planning) || !strings.Contains(doc.RewritePromptMD, "【样本话术】\n{{样本话术}}") {
+		t.Fatal("runtime envelope incomplete", doc.RewritePromptMD)
+	}
+	if strings.Contains(doc.SpeechPromptMD, "第一步") || strings.Contains(doc.InteractionPromptMD, "第一步") {
+		t.Fatal("planning leaked to other prompts")
+	}
+	for _, key := range [][2]int64{{15, 4}, {14, 5}} {
+		other, err := store.GetLiveAgentPlanPromptDocument(t.Context(), key[0], key[1])
+		if err != nil || other.RewritePlanningMD != nil || other.RewritePromptMD != "" {
+			t.Fatal("scope leakage", other, err)
+		}
+	}
+	state.fail = true
+	changed := sections
+	changed.FactsMD = "失败事实"
+	if _, err := store.SaveLiveAgentPlanPromptPlanning(t.Context(), 14, 4, 28, changed, "失败规则"); err == nil {
+		t.Fatal("failed write accepted")
+	}
+	state.fail = false
+	reloaded, err := store.GetLiveAgentPlanPromptDocument(t.Context(), 14, 4)
+	if err != nil || reloaded.RewritePromptMD != doc.RewritePromptMD || *reloaded.RewritePlanningMD != planning || reloaded.Sections != sections || state.writes != 1 {
+		t.Fatal("partial save", reloaded, err)
+	}
+	for _, oversized := range []string{strings.Repeat("字", 20001), strings.Repeat("字", 19980)} {
+		if _, err := store.SaveLiveAgentPlanPromptPlanning(t.Context(), 14, 4, 28, sections, oversized); err == nil || state.writes != 1 {
+			t.Fatal("raw or combined limit ignored", err)
+		}
+	}
+	changed.FactsMD = "九十二元六角"
+	doc, err = store.SaveLiveAgentPlanPromptPlanning(t.Context(), 14, 4, 28, changed, planning)
+	if err != nil || *doc.RewritePlanningMD != planning || !strings.Contains(doc.RewritePromptMD, "九十二元六角") || strings.Contains(doc.RewritePromptMD, "八十七元六角") {
+		t.Fatal("latest facts not composed", doc, err)
+	}
+	doc, err = store.SaveLiveAgentPlanPromptPlanning(t.Context(), 14, 4, 28, changed, "")
+	if err != nil || doc.RewritePlanningMD == nil || *doc.RewritePlanningMD != "" || !strings.Contains(doc.RewritePromptMD, "{{样本话术}}") {
+		t.Fatal("explicit empty rules lost sample slot", doc, err)
+	}
+}
+
+func TestPlanRewriteLegacyPlanningReadDoesNotWrite(t *testing.T) {
+	state := &promptSectionSQL{rows: map[[2]int64][]driver.Value{}, rewrites: map[[2]int64]string{}}
+	database := sql.OpenDB(promptSectionConnector{state})
+	defer database.Close()
+	store := &Store{db: database}
+	sections := planprompt.Sections{PersonaMD: "人设", FactsMD: "原事实"}
+	raw, _ := json.Marshal(sections)
+	state.rows[[2]int64{14, 4}] = []driver.Value{sections.Interaction(), string(raw), sections.Speech(), time.Now()}
+	planning := "第一步：结构规则\n{{已有开场}}"
+	for _, legacy := range []string{planprompt.CompileRewritePlanning(sections, planning), strings.Replace(planprompt.CompileRewritePlanning(sections, planning), "{{样本话术}}", "", 1), planning} {
+		state.rewrites[[2]int64{14, 4}] = legacy
+		doc, err := store.GetLiveAgentPlanPromptDocument(t.Context(), 14, 4)
+		if err != nil || doc.RewritePlanningMD == nil || *doc.RewritePlanningMD != planning || doc.RewritePromptMD != legacy || state.writes != 0 {
+			t.Fatal("legacy read modified assets", doc, err)
+		}
 	}
 }

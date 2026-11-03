@@ -3,7 +3,7 @@
 import { validateOriginalAudioFiles } from '../directAudioUpload'
 import RoomReadingRules from '../components/RoomReadingRules.vue'
 import PlanPromptEditor from '../components/PlanPromptEditor.vue'
-import { emptyPlanPromptSections, readPlanPromptSections, planPromptValidation, type PlanPromptSections } from '../planPrompt'
+import { emptyPlanPromptSections, readPlanPromptSections, readPlanRewritePlanning, planPromptValidation, type PlanPromptSections } from '../planPrompt'
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { normalizeLiveAgentPlanVersion } from '../liveAgentPlanVersion'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
@@ -111,8 +111,8 @@ type StrategyMode =
 const activeMode = ref<StrategyMode>('products')
 const lastFactMode = ref<PlanFactMode>('products')
 const planPromptSections = ref(emptyPlanPromptSections())
-const planRewritePrompt = ref('')
-type PlanPromptDraft = { sections: PlanPromptSections; rewritePrompt: string }
+const planRewritePlanning = ref('')
+type PlanPromptDraft = { sections: PlanPromptSections; rewritePlanning: string }
 const planPromptLoading = ref(false)
 const planPromptSaving = ref(false)
 const planPromptError = ref('')
@@ -183,7 +183,7 @@ async function loadPlanPrompt() {
   const planId = Number(currentRoomPlanId.value || 0)
   if (!planId) {
     planPromptSections.value = emptyPlanPromptSections()
-    planRewritePrompt.value = ''
+    planRewritePlanning.value = ''
     planPromptLegacy.value = ''
     planPromptLoadedPlan.value = 0
     return
@@ -198,7 +198,7 @@ async function loadPlanPrompt() {
     const result = await getLiveAgentPlanPrompt(planId)
     if (!current()) return
     planPromptSections.value = readPlanPromptSections(result.sections)
-    planRewritePrompt.value = result.rewrite_prompt_md ?? ''
+    planRewritePlanning.value = readPlanRewritePlanning(result.rewrite_planning_md)
     planPromptLegacy.value = result.legacy_prompt_md || ''
     planPromptLoadedPlan.value = planId
     planPromptNotice.value = result.legacy_unstructured ? '旧版完整提示词已单独保留，四页只显示各自保存的原文；请填写后保存。' : ''
@@ -219,7 +219,7 @@ async function savePlanPrompt() {
     planPromptError.value = '请先填写四页内容；旧版完整提示词仍单独保留。'
     return
   }
-  const validation = planPromptValidation(planPromptSections.value, planRewritePrompt.value)
+  const validation = planPromptValidation(planPromptSections.value, planRewritePlanning.value)
   if (validation) { planPromptError.value = validation; return }
   const epoch = planAssetScopeEpoch
   const promptEpoch = planPromptScopeEpoch
@@ -229,10 +229,10 @@ async function savePlanPrompt() {
   planPromptNotice.value = ''
   try {
     const original = readPlanPromptSections(planPromptSections.value)
-    const result = await saveLiveAgentPlanPrompt(planId, original, planRewritePrompt.value)
+    const result = await saveLiveAgentPlanPrompt(planId, original, planRewritePlanning.value)
     if (!current()) return
     planPromptSections.value = readPlanPromptSections(result.sections)
-    planRewritePrompt.value = result.rewrite_prompt_md ?? ''
+    planRewritePlanning.value = readPlanRewritePlanning(result.rewrite_planning_md)
     planPromptLegacy.value = result.legacy_prompt_md || ''
     planPromptLoadedPlan.value = planId
     planPromptNotice.value = '方案提示词已保存，已生成主播互动元提示词和主播话术生成提示词'
@@ -247,7 +247,7 @@ watch(currentRoomPlanId, () => {
   planPromptScopeEpoch++
   planPromptSequence++
   planPromptSections.value = emptyPlanPromptSections()
-  planRewritePrompt.value = ''
+  planRewritePlanning.value = ''
   planPromptLegacy.value = ''
   planPromptLoadedPlan.value = 0
   planPromptLoading.value = false
@@ -3412,9 +3412,9 @@ async function planPromptOriginalsForSave(planId: number): Promise<PlanPromptDra
   if (!current()) throw new Error('方案已变化，本次保存已取消')
   if (planPromptLoadedPlan.value !== planId) throw new Error(planPromptError.value || '方案提示词未读取完成，请重试')
   if (planPromptLegacy.value && !Object.values(planPromptSections.value).some(text => text.trim())) return null
-  const validation = planPromptValidation(planPromptSections.value, planRewritePrompt.value)
+  const validation = planPromptValidation(planPromptSections.value, planRewritePlanning.value)
   if (validation) throw new Error(validation)
-  return { sections: readPlanPromptSections(planPromptSections.value), rewritePrompt: planRewritePrompt.value }
+  return { sections: readPlanPromptSections(planPromptSections.value), rewritePlanning: planRewritePlanning.value }
 }
 async function persistPlanPromptIfAny(planId: number, original?: PlanPromptDraft | null) {
   const epoch = planAssetScopeEpoch
@@ -3425,10 +3425,10 @@ async function persistPlanPromptIfAny(planId: number, original?: PlanPromptDraft
   if (planPromptSaving.value) throw new Error('方案提示词正在保存，请完成后重试')
   planPromptSaving.value = true
   try {
-    const result = await saveLiveAgentPlanPrompt(planId, draft.sections, draft.rewritePrompt)
+    const result = await saveLiveAgentPlanPrompt(planId, draft.sections, draft.rewritePlanning)
     if (!current()) return
     planPromptSections.value = readPlanPromptSections(result.sections)
-    planRewritePrompt.value = result.rewrite_prompt_md ?? ''
+    planRewritePlanning.value = readPlanRewritePlanning(result.rewrite_planning_md)
     planPromptLegacy.value = result.legacy_prompt_md || ''
     planPromptLoadedPlan.value = planId
     planPromptNotice.value = '方案提示词已保存，已生成主播互动元提示词和主播话术生成提示词'
@@ -5656,7 +5656,7 @@ onBeforeUnmount(() => {
           <PlanPromptEditor
             :key="planSelectionPreferenceKey(planSelectionScope()) + ':' + currentRoomPlanId"
             v-model="planPromptSections"
-            v-model:rewrite-prompt="planRewritePrompt"
+            v-model:rewrite-planning="planRewritePlanning"
             :plan-id="currentRoomPlanId"
             :loaded="planPromptLoadedPlan === currentRoomPlanId"
             :loading="planPromptLoading"

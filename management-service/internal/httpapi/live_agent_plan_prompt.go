@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
 	"unicode/utf8"
 
+	"livecompanion/management/internal/db"
 	"livecompanion/management/internal/planprompt"
 )
 
@@ -27,6 +29,12 @@ func (s *Server) liveAgentPlanPromptGet(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "方案提示词读取失败")
 		return
 	}
+	planning, err := resolvePlanRewritePlanning(document)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	document.RewritePlanningMD = &planning
 	writeJSON(w, http.StatusOK, document)
 }
 
@@ -47,9 +55,10 @@ func (s *Server) liveAgentPlanPromptPut(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var input struct {
-		PromptMD        string               `json:"prompt_md"`
-		Sections        *planprompt.Sections `json:"sections"`
-		RewritePromptMD *string              `json:"rewrite_prompt_md"`
+		PromptMD          string               `json:"prompt_md"`
+		Sections          *planprompt.Sections `json:"sections"`
+		RewritePromptMD   *string              `json:"rewrite_prompt_md"`
+		RewritePlanningMD *string              `json:"rewrite_planning_md"`
 	}
 	if readJSON(w, r, &input) != nil {
 		writeError(w, http.StatusBadRequest, "方案提示词请求格式错误")
@@ -80,31 +89,75 @@ func (s *Server) liveAgentPlanPromptPut(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if input.RewritePromptMD != nil {
-		if utf8.RuneCountInString(*input.RewritePromptMD) > planprompt.MaxPromptRunes {
-			writeError(w, http.StatusBadRequest, "话术规划不能超过20000字，请缩短内容")
-			return
-		}
-		document, err := s.store.SaveLiveAgentPlanPromptSectionsWithRewrite(r.Context(), tenantID, planID, actor.UserID, sections, *input.RewritePromptMD)
+	planning := input.RewritePlanningMD
+	if planning == nil {
+		previous, err := s.store.GetLiveAgentPlanPromptDocument(r.Context(), tenantID, planID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "方案提示词保存失败")
+			writeError(w, http.StatusInternalServerError, "方案提示词读取失败，当前内容未保存")
 			return
 		}
-		writeJSON(w, http.StatusOK, document)
+		// Older clients may submit the former editable full prompt. Extract only
+		// a recognized envelope; omitted fields preserve the current planning.
+		if input.RewritePromptMD != nil {
+			previous.RewritePromptMD = *input.RewritePromptMD
+			previous.RewritePlanningMD = nil
+			if value, ok := planprompt.LegacyRewritePlanning(*input.RewritePromptMD, previous.Sections); ok {
+				previous.RewritePlanningMD = &value
+			} else if value, ok := planprompt.LegacyRewritePlanning(*input.RewritePromptMD, sections); ok {
+				previous.RewritePlanningMD = &value
+			}
+			if *input.RewritePromptMD == "" {
+				previous.RewritePlanningMD = input.RewritePromptMD
+			}
+		}
+		value, err := resolvePlanRewritePlanning(previous)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		planning = &value
+	}
+	if utf8.RuneCountInString(*planning) > planprompt.MaxPromptRunes {
+		writeError(w, http.StatusBadRequest, "话术规划不能超过20000字，请缩短内容")
 		return
 	}
-	document, err := s.store.SaveLiveAgentPlanPromptSections(r.Context(), tenantID, planID, actor.UserID, sections)
+	if utf8.RuneCountInString(planprompt.CompileRewritePlanning(sections, *planning)) > planprompt.MaxPromptRunes {
+		writeError(w, http.StatusBadRequest, "合成后的话术修改元提示词不能超过20000字，请缩短话术规划或方案资料")
+		return
+	}
+	document, err := s.store.SaveLiveAgentPlanPromptPlanning(r.Context(), tenantID, planID, actor.UserID, sections, *planning)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "方案提示词保存失败")
 		return
 	}
-	// 保存方案时同步生成这份方案专属的改写元提示词，跟另外两份组合提示词一起保存。
-	if rewrite, err := renderPlanRewritePrompt(document.Sections); err == nil && strings.TrimSpace(rewrite) != "" {
-		if err := s.store.SaveLiveAgentPlanPromptRewrite(r.Context(), tenantID, planID, rewrite); err == nil {
-			document.RewritePromptMD = rewrite
-		}
-	}
 	writeJSON(w, http.StatusOK, document)
+}
+
+func resolvePlanRewritePlanning(document db.LiveAgentPlanPromptDocument) (string, error) {
+	if document.RewritePlanningMD != nil {
+		return *document.RewritePlanningMD, nil
+	}
+	if document.RewritePromptMD != "" {
+		if planning, ok := planprompt.LegacyRewritePlanning(document.RewritePromptMD, document.Sections); ok {
+			return planning, nil
+		}
+		return "", errors.New("旧版话术修改元提示词无法安全拆出话术规划，原内容已保留，请先核对旧版提示词")
+	}
+	return defaultPlanRewritePlanning()
+}
+
+func defaultPlanRewritePlanning() (string, error) {
+	master, err := loadPlanRewriteMaster()
+	if err != nil {
+		return "", errors.New("话术规划模板读取失败，当前内容已保留")
+	}
+	planning, ok := planprompt.LegacyRewritePlanning(master, planprompt.Sections{
+		PersonaMD: "{{主播人设}}", FactsMD: "{{事实依据}}", RedLinesMD: "{{红线禁止}}",
+	})
+	if !ok || !strings.HasPrefix(master, planprompt.RewriteIntro) || strings.TrimSpace(planning) == "" {
+		return "", errors.New("话术规划模板格式不正确，当前内容已保留")
+	}
+	return planning, nil
 }
 
 // stripPlanPromptHints 仅用于旧单字段客户端。四分区原文原样保存，提示行
@@ -143,12 +196,12 @@ func loadPlanRewriteMaster() (string, error) {
 
 // renderPlanRewritePrompt 用母版和方案内容生成方案专属的改写元提示词。
 //
-// 样本话术留空：真正改写的每一条由调用方在请求时填进 {{样本话术}}，
+// 样本话术保留占位符：真正改写的每一条由调用方在请求时填进 {{样本话术}}，
 // 这样同一个方案所有片段共用同一份指令，只有样本不同。
 func renderPlanRewritePrompt(sections planprompt.Sections) (string, error) {
-	master, err := loadPlanRewriteMaster()
+	planning, err := defaultPlanRewritePlanning()
 	if err != nil {
 		return "", err
 	}
-	return planprompt.RewritePrompt(master, sections, ""), nil
+	return planprompt.CompileRewritePlanning(sections, planning), nil
 }

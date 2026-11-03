@@ -4426,6 +4426,7 @@ export interface PlanPrompt {
   interaction_prompt_md: string
   speech_prompt_md: string
   rewrite_prompt_md?: string
+  rewrite_planning_md?: string
   legacy_unstructured?: boolean
   legacy_prompt_md?: string
   updated_at?: string
@@ -4438,10 +4439,10 @@ export function getLiveAgentPlanPrompt(planId: number) {
   )
 }
 
-export function saveLiveAgentPlanPrompt(planId: number, sections: import('./planPrompt').PlanPromptSections, rewritePrompt?: string) {
+export function saveLiveAgentPlanPrompt(planId: number, sections: import('./planPrompt').PlanPromptSections, rewritePlanning?: string) {
   return request<PlanPrompt>(
     '/api/v1/live-agent-plans/' + planId + '/prompt',
-    { method: 'PUT', body: JSON.stringify({ sections, rewrite_prompt_md: rewritePrompt }) },
+    { method: 'PUT', body: JSON.stringify({ sections, rewrite_planning_md: rewritePlanning }) },
   )
 }
 

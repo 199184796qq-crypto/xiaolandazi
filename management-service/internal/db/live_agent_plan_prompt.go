@@ -19,6 +19,7 @@ type LiveAgentPlanPromptDocument struct {
 	InteractionPromptMD string              `json:"interaction_prompt_md"`
 	SpeechPromptMD      string              `json:"speech_prompt_md"`
 	RewritePromptMD     string              `json:"rewrite_prompt_md"`
+	RewritePlanningMD   *string             `json:"rewrite_planning_md,omitempty"`
 	LegacyUnstructured  bool                `json:"legacy_unstructured,omitempty"`
 	LegacyPromptMD      string              `json:"legacy_prompt_md,omitempty"`
 	UpdatedAt           time.Time           `json:"updated_at,omitempty"`
@@ -62,6 +63,13 @@ func (s *Store) GetLiveAgentPlanPromptDocument(ctx context.Context, tenantID, pl
 			return out, fmt.Errorf("decode plan prompt sections: %w", err)
 		}
 		out.SpeechPromptMD = speech.String
+		var original struct {
+			RewritePlanningMD *string `json:"rewrite_planning_md"`
+		}
+		if err := json.Unmarshal([]byte(sections.String), &original); err != nil {
+			return out, err
+		}
+		out.RewritePlanningMD = original.RewritePlanningMD
 	} else {
 		// No page originals exist for a legacy document. Never reverse-parse its
 		// compiled text into editable pages; expose that old text separately.
@@ -69,22 +77,35 @@ func (s *Store) GetLiveAgentPlanPromptDocument(ctx context.Context, tenantID, pl
 		out.LegacyUnstructured = strings.TrimSpace(out.PromptMD) != ""
 	}
 	out.InteractionPromptMD = out.PromptMD
+	if out.RewritePlanningMD == nil {
+		if planning, ok := planprompt.LegacyRewritePlanning(out.RewritePromptMD, out.Sections); ok {
+			out.RewritePlanningMD = &planning
+		}
+	}
 	return out, nil
 }
 
-// One statement persists all four editable sections and both generated prompts.
+// One statement persists the five original sections and the compiled prompts.
 // Existing runtime readers consume prompt_md, which is now the interaction prompt.
 func (s *Store) SaveLiveAgentPlanPromptSections(ctx context.Context, tenantID, planID, actorID int64, sections planprompt.Sections) (LiveAgentPlanPromptDocument, error) {
-	return s.saveLiveAgentPlanPromptSections(ctx, tenantID, planID, actorID, sections, nil)
+	return s.saveLiveAgentPlanPromptSections(ctx, tenantID, planID, actorID, sections, nil, nil)
 }
 
-// SaveLiveAgentPlanPromptSectionsWithRewrite saves the editable rewrite prompt
-// alongside the originals and both derived prompts in the same statement.
+// SaveLiveAgentPlanPromptSectionsWithRewrite retains the old full-prompt save API.
+// New editors use SaveLiveAgentPlanPromptPlanning for separately stored rules.
 func (s *Store) SaveLiveAgentPlanPromptSectionsWithRewrite(ctx context.Context, tenantID, planID, actorID int64, sections planprompt.Sections, rewrite string) (LiveAgentPlanPromptDocument, error) {
-	return s.saveLiveAgentPlanPromptSections(ctx, tenantID, planID, actorID, sections, &rewrite)
+	return s.saveLiveAgentPlanPromptSections(ctx, tenantID, planID, actorID, sections, &rewrite, nil)
 }
 
-func (s *Store) saveLiveAgentPlanPromptSections(ctx context.Context, tenantID, planID, actorID int64, sections planprompt.Sections, rewrite *string) (LiveAgentPlanPromptDocument, error) {
+func (s *Store) SaveLiveAgentPlanPromptPlanning(ctx context.Context, tenantID, planID, actorID int64, sections planprompt.Sections, planning string) (LiveAgentPlanPromptDocument, error) {
+	if utf8.RuneCountInString(planning) > planprompt.MaxPromptRunes {
+		return LiveAgentPlanPromptDocument{}, errors.New("话术规划不能超过20000字，请缩短内容")
+	}
+	rewrite := planprompt.CompileRewritePlanning(sections, planning)
+	return s.saveLiveAgentPlanPromptSections(ctx, tenantID, planID, actorID, sections, &rewrite, &planning)
+}
+
+func (s *Store) saveLiveAgentPlanPromptSections(ctx context.Context, tenantID, planID, actorID int64, sections planprompt.Sections, rewrite, planning *string) (LiveAgentPlanPromptDocument, error) {
 	var out LiveAgentPlanPromptDocument
 	if tenantID <= 0 || planID <= 0 {
 		return out, ErrLiveAgentPlanNotFound
@@ -93,11 +114,18 @@ func (s *Store) saveLiveAgentPlanPromptSections(ctx context.Context, tenantID, p
 		return out, err
 	}
 	if rewrite != nil && utf8.RuneCountInString(*rewrite) > planprompt.MaxPromptRunes {
-		return out, errors.New("话术规划不能超过20000字，请缩短内容")
+		return out, errors.New("合成后的话术修改元提示词不能超过20000字，请缩短话术规划或方案资料")
 	}
 	// Persist page originals verbatim. Interaction/Speech compile cleaned copies;
 	// neither compilation nor later reads may mutate or repartition originals.
-	raw, err := json.Marshal(sections)
+	var originals any = sections
+	if planning != nil {
+		originals = struct {
+			planprompt.Sections
+			RewritePlanningMD *string `json:"rewrite_planning_md"`
+		}{sections, planning}
+	}
+	raw, err := json.Marshal(originals)
 	if err != nil {
 		return out, err
 	}
