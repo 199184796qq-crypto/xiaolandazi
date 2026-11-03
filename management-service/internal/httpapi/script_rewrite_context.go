@@ -15,6 +15,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/planprompt"
+	"livecompanion/management/internal/sharedfilelock"
 )
 
 type scriptRewriteContextScope struct {
@@ -109,6 +110,14 @@ func beginScriptRewriteTurn(ctx context.Context, root string, scope scriptRewrit
 	if err != nil {
 		return nil, err
 	}
+	fileRelease, err := sharedfilelock.Lock(ctx, path+".lock")
+	if err != nil {
+		release()
+		return nil, err
+	}
+	localRelease := release
+	var closeOnce sync.Once
+	release = func() { closeOnce.Do(func() { fileRelease(); localRelease() }) }
 	turn := &scriptRewriteTurn{path: path, scope: scope, close: release}
 	var record scriptRewriteContextRecord
 	if err := readVolcengineJSON(path, &record); errors.Is(err, os.ErrNotExist) {

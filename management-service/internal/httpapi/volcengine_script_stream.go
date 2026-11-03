@@ -202,19 +202,10 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 	if v.VoiceIdentity.Rate == 0 {
 		v.VoiceIdentity.Rate = 1
 	}
-	scope, ok := recordingCacheScopeFor(tenant, room, v.PlanID)
-	if !ok {
-		return errors.New("高仿真长段缓存目录不可用")
-	}
-	namespace := "volcengine-longtext-v1"
-	if modelName != ttsgateway.VolcengineICL2 {
-		namespace = "script-first-v1"
-	}
-	dir := scope.CacheDir(namespace, "paragraphs")
-	// 音频跟着方案走，不跟着房间走：同一方案的多个房间共用一份段落缓存，
-	// 第二个房间开同一方案时直接复用，不再重新合成。
-	if planDir, ok := planCacheDir(tenant, v.PlanID, v.VoiceIdentity.Model); ok && hasGroupedRecordingScript(v) {
-		dir = filepath.Join(planDir, "paragraphs")
+	// Only immutable audio is shared; room/session checkpoints stay separate.
+	dir, err := scriptFirstCacheDir(tenant, room, v)
+	if err != nil {
+		return err
 	}
 	units, err := scriptFirstUnits(v, dir)
 	if err != nil {
@@ -564,7 +555,12 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		// Only canonical, authorized selected identities may purchase missing audio.
 		allowSynthesis := scriptAuthorizedPlaybackVoice(generationVersion, voices) || voicebatch.Same(generationVersion.VoiceIdentity, v.VoiceIdentity)
 		voiceUnit := scriptUnitForVoice(generationVersion, units[index])
-		audio, playedText, fromPool := scriptCompatiblePoolAudio(recordingCacheMediaRoot(), generationVersion, voiceUnit, fmt.Sprintf("%d-%d-%d", tenant, room, session), rng)
+		history, historyErr := loadScriptRoomPlayback(recordingCacheMediaRoot(), tenant, room, v.PlanID)
+		if historyErr != nil {
+			done()
+			return historyErr
+		}
+		audio, playedText, fromPool := scriptCompatiblePoolAudio(recordingCacheMediaRoot(), generationVersion, voiceUnit, fmt.Sprintf("%d-%d-%d", tenant, room, session), rng, history)
 		if fromPool && strings.TrimSpace(playedText) != "" {
 			audio.Text = playedText
 		}

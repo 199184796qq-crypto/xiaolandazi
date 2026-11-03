@@ -68,8 +68,11 @@ func scriptVoicePoolPath(root string, planID int64, pieceID string) string {
 
 // loadScriptVoicePool 读取某个片段的版本池；文件不存在时返回空池。
 func loadScriptVoicePool(root string, planID int64, pieceID string) (scriptplay.Pool, error) {
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		return scriptplay.Pool{}, err
+	}
+	defer release()
 	return loadScriptVoicePoolLocked(root, planID, pieceID)
 }
 
@@ -111,8 +114,11 @@ func loadScriptVoicePoolLocked(root string, planID int64, pieceID string) (scrip
 
 // saveScriptVoicePool 原子写入某个片段的版本池。
 func saveScriptVoicePool(root string, planID int64, pieceID string, pool scriptplay.Pool) error {
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return saveScriptVoicePoolLocked(root, planID, pieceID, pool)
 }
 
@@ -155,8 +161,11 @@ func saveScriptVoicePoolLocked(root string, planID int64, pieceID string, pool s
 
 // addScriptVoiceVersion 往池子里追加一个版本并落盘。
 func addScriptVoiceVersion(root string, planID int64, pieceID string, version scriptplay.Version) error {
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		return err
+	}
+	defer release()
 	pool, err := loadScriptVoicePoolLocked(root, planID, pieceID)
 	if err != nil {
 		return err
@@ -178,8 +187,11 @@ func addScriptVoiceVersion(root string, planID int64, pieceID string, version sc
 
 // invalidateScriptVoicePool 按指纹清理版本池，返回被判失效的版本。
 func invalidateScriptVoicePool(root string, planID int64, pieceID, keepFingerprint string) ([]scriptplay.Version, error) {
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	pool, err := loadScriptVoicePoolLocked(root, planID, pieceID)
 	if err != nil {
 		return nil, err
@@ -202,8 +214,12 @@ func recordScriptVoiceVersion(root string, planID int64, unit volcengineScriptUn
 	if audio.AssetID <= 0 || unit.Key == "" || (audio.VoiceID != "" && audio.VoiceID != v.VoiceIdentity.VoiceID) {
 		return
 	}
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		log.Printf("script pool register lock failed: %v", err)
+		return
+	}
+	defer release()
 	pool, err := loadScriptVoicePoolLocked(root, planID, unit.poolID())
 	if err != nil {
 		log.Printf("script pool register load failed: %v", err)
@@ -211,12 +227,18 @@ func recordScriptVoiceVersion(root string, planID int64, unit volcengineScriptUn
 	}
 	ref := strconv.FormatInt(audio.AssetID, 10)
 	fingerprint := scriptplay.Fingerprint(unit.Text)
-	for _, existing := range pool.Versions {
+	for i, existing := range pool.Versions {
 		if existing.VoiceID == v.VoiceIdentity.VoiceID && existing.Model == v.VoiceIdentity.Model && (existing.AudioRef == ref || (existing.Fingerprint == fingerprint && existing.SourcePath == unit.Dir)) {
+			if existing.Kind == scriptplay.KindOriginal && existing.Fingerprint == fingerprint && existing.FactsKey != scriptRewriteFactsKey(v) {
+				pool.Versions[i].FactsKey = scriptRewriteFactsKey(v)
+				if err := saveScriptVoicePoolLocked(root, planID, unit.poolID(), pool); err != nil {
+					log.Printf("script original policy registration failed: %v", err)
+				}
+			}
 			return
 		}
 	}
-	version := scriptplay.Version{PieceID: unit.poolID(), Fingerprint: fingerprint, VoiceID: v.VoiceIdentity.VoiceID, Model: v.VoiceIdentity.Model, Kind: scriptplay.KindOriginal, AudioRef: ref, Text: unit.Text, DurationMS: audio.DurationMS, SourcePath: unit.Dir, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	version := scriptplay.Version{PieceID: unit.poolID(), Fingerprint: fingerprint, VoiceID: v.VoiceIdentity.VoiceID, Model: v.VoiceIdentity.Model, Kind: scriptplay.KindOriginal, AudioRef: ref, Text: unit.Text, DurationMS: audio.DurationMS, SourcePath: unit.Dir, FactsKey: scriptRewriteFactsKey(v), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := pool.Add(version); err != nil {
 		return
 	}
@@ -421,8 +443,12 @@ func markScriptVersionPlayed(root string, planID int64, pieceKey, audioRef strin
 	if pieceKey == "" || audioRef == "" {
 		return
 	}
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		log.Printf("script play count lock failed: %v", err)
+		return
+	}
+	defer release()
 	pool, err := loadScriptVoicePoolLocked(root, planID, pieceKey)
 	if err != nil {
 		return
@@ -449,8 +475,12 @@ func markScriptVersionPlayed(root string, planID int64, pieceKey, audioRef strin
 // 只删文件名不在当前片段集合里的池文件，当前片段一个都不动。
 func pruneScriptVoicePools(planID int64, units []volcengineScriptUnit) {
 	root := recordingCacheMediaRoot()
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		log.Printf("script pool migration lock failed: %v", err)
+		return
+	}
+	defer release()
 	for _, unit := range units {
 		if unit.poolID() == unit.Key || unit.Key == "" {
 			continue

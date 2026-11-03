@@ -41,9 +41,11 @@ func archiveUntimedScriptFirstAsset(ctx context.Context, registry *storage.Regis
 	}
 	sum := sha256.Sum256(raw)
 	d := uint64(duration)
-	asset, err := create(ctx, model.CreateMediaAssetInput{TenantID: tenant, AssetType: "generated_voice", OriginalName: "script-paragraph.wav", StorageDriver: storage.Driver(), StorageBucket: storage.Bucket(), ObjectKey: objectKey, MIMEType: "audio/wav", SizeBytes: uint64(len(raw)), DurationMS: &d, ChecksumSHA256: hex.EncodeToString(sum[:]), Metadata: map[string]any{
+	metadata := map[string]any{
 		"purpose": "live_agent_formal_voice_timeline", "plan_id": v.PlanID, "room_id": room, "voice_id": voice, "tts_model": v.VoiceIdentity.Model, "source": v.VoiceIdentity.Source, "voice_rate": v.VoiceIdentity.Rate, "paragraph_key": key, "original_transcript": strings.TrimSpace(text), "untimed_transcript": true, "timeline_precision": "none", "segment_head_ms": 0, "segment_tail_ms": 0,
-	}})
+	}
+	applyScriptSharedAssetInfo(withScriptSharedAsset(ctx, v, room), metadata)
+	asset, err := create(ctx, model.CreateMediaAssetInput{TenantID: tenant, AssetType: "generated_voice", OriginalName: "script-paragraph.wav", StorageDriver: storage.Driver(), StorageBucket: storage.Bucket(), ObjectKey: objectKey, MIMEType: "audio/wav", SizeBytes: uint64(len(raw)), DurationMS: &d, ChecksumSHA256: hex.EncodeToString(sum[:]), Metadata: metadata})
 	if err != nil {
 		_ = storage.Delete(ctx, objectKey)
 		return 0, err

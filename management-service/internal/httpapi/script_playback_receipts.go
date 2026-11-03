@@ -104,6 +104,9 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 			}
 		}
 		if complete {
+			if err := markScriptRoomPlayback(recordingCacheMediaRoot(), tenant, room, v.PlanID, units[first.Unit].poolID(), strconv.FormatInt(first.AssetID, 10), first.InstanceID, true); err != nil {
+				return err
+			}
 			if err := markScriptVersionCompletedOnce(recordingCacheMediaRoot(), v.PlanID, units[first.Unit].poolID(), strconv.FormatInt(first.AssetID, 10), first.InstanceID); err != nil {
 				return err
 			}
@@ -113,6 +116,9 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 		track := &cursor.Delivered[i]
 		if track.Confirmed || !played[track.TrackID] || track.Unit < 0 || track.Unit >= len(units) {
 			continue
+		}
+		if err := markScriptRoomPlayback(recordingCacheMediaRoot(), tenant, room, v.PlanID, units[track.Unit].poolID(), strconv.FormatInt(track.AssetID, 10), track.InstanceID, false); err != nil {
+			return err
 		}
 		fresh, err := markScriptVersionPlayedOnce(recordingCacheMediaRoot(), v.PlanID, units[track.Unit].poolID(), strconv.FormatInt(track.AssetID, 10), track.InstanceID)
 		if err != nil {
@@ -150,8 +156,11 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 }
 
 func markScriptVersionCompletedOnce(root string, plan int64, piece, asset, instance string) error {
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		return err
+	}
+	defer release()
 	pool, err := loadScriptVoicePoolLocked(root, plan, piece)
 	if err != nil {
 		return err
@@ -177,8 +186,11 @@ func markScriptVersionCompletedOnce(root string, plan int64, piece, asset, insta
 }
 
 func markScriptVersionPlayedOnce(root string, planID int64, piece, audioRef, trackID string) (bool, error) {
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	pool, err := loadScriptVoicePoolLocked(root, planID, piece)
 	if err != nil {
 		return false, err

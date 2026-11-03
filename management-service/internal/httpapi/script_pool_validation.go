@@ -15,6 +15,10 @@ import (
 // is still strict: the saved spoken text, model, voice, instructions and rate
 // must resolve to the cache we are about to use. Metadata alone is not readiness.
 func scriptVersionAudio(root string, unit volcengineScriptUnit, v model.LiveAgentPlanVersion, version scriptplay.Version) (volcengineCachedAudio, bool) {
+	if current := scriptRewriteFactsKey(v); current != "" && version.Kind == scriptplay.KindOriginal &&
+		((version.FactsKey != "" && version.FactsKey != current) || (version.FactsKey == "" && strings.TrimSpace(version.Text) != strings.TrimSpace(unit.Text))) {
+		return volcengineCachedAudio{}, false
+	}
 	if current := scriptRewriteFactsKey(v); version.Kind == scriptplay.KindRewrite && current != "" && version.FactsKey != current {
 		return volcengineCachedAudio{}, false
 	}
@@ -52,12 +56,21 @@ func scriptCompatiblePool(root string, v model.LiveAgentPlanVersion, unit volcen
 	return compatible
 }
 
-func scriptCompatiblePoolAudio(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, scope string, rng *rand.Rand) (volcengineCachedAudio, string, bool) {
+func scriptCompatiblePoolAudio(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, scope string, rng *rand.Rand, history ...map[string]scriptRoomPlayState) (volcengineCachedAudio, string, bool) {
 	pool := scriptCompatiblePool(root, v, unit)
 	if len(pool.Versions) == 0 {
 		return volcengineCachedAudio{}, "", false
 	}
-	key := scope + "|" + strconv.FormatInt(v.PlanID, 10) + "|" + unit.poolID() + "|" + v.VoiceIdentity.Model + "|" + v.VoiceIdentity.VoiceID
+	// Other rooms do not move this room's playback history. The shared pool
+	// counters remain aggregate evidence for retirement only.
+	if len(history) > 0 {
+		for i := range pool.Versions {
+			entry := history[0][scriptRoomAssetKey(unit.poolID(), pool.Versions[i].AudioRef)]
+			pool.Versions[i].LastPlayedAt = entry.LastPlayedAt
+			pool.Versions[i].PlayCount = entry.PlayCount
+		}
+	}
+	key := root + "|" + scope + "|" + strconv.FormatInt(v.PlanID, 10) + "|" + unit.poolID() + "|" + v.VoiceIdentity.Model + "|" + v.VoiceIdentity.VoiceID
 	scriptPoolRotation.Lock()
 	defer scriptPoolRotation.Unlock()
 	used := scriptPoolRotation.used[key]
@@ -111,8 +124,11 @@ func scriptPlaybackBefore(a, b string) bool {
 // Commit replacement atomically. An identical model reply can reuse a paid
 // original; that is not a newly added version and must not retire anything.
 func commitScriptRewriteVersion(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, version scriptplay.Version, cap int, refresh bool, retireRef ...string) (bool, error) {
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	pool, err := loadScriptVoicePoolLocked(root, v.PlanID, unit.poolID())
 	if err != nil {
 		return false, err
@@ -120,6 +136,13 @@ func commitScriptRewriteVersion(root string, v model.LiveAgentPlanVersion, unit 
 	compatible := []int{}
 	for i, existing := range pool.Versions {
 		if existing.Model == version.Model && existing.VoiceID == version.VoiceID && existing.AudioRef == version.AudioRef {
+			// A freshly accepted reply can match an old paid WAV exactly. Refresh
+			// its rule approval without buying again or resetting real play counts.
+			if version.FactsKey != "" && version.FactsKey == scriptRewriteFactsKey(v) && existing.Text == version.Text &&
+				filepath.Base(version.SourcePath) == scriptFirstParagraphKey(v, version.Text) && existing.FactsKey != version.FactsKey {
+				pool.Versions[i].FactsKey = version.FactsKey
+				return false, saveScriptVoicePoolLocked(root, v.PlanID, unit.poolID(), pool)
+			}
 			return false, nil
 		}
 		if _, ok := scriptVersionAudio(root, unit, v, existing); ok {

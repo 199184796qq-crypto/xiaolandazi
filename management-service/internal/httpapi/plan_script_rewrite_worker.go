@@ -66,17 +66,8 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	if script, ok := recordingScriptFromContext(v.GenerationContext); ok && script.VersionCap > 0 {
 		cap = min(script.VersionCap, max(1, scriptVersionTotalMax/max(1, len(recordingStreamTexts(v)))))
 	}
-	full := !pool.CanGenerate(voiceID, cap)
+	full := false
 	retireRef := ""
-	if full {
-		var allowed bool
-		var err error
-		retireRef, allowed, err = scriptRefreshRetire(recordingCacheMediaRoot(), v, unit, pool, cap)
-		if err != nil || !allowed {
-			rewriteWorker.Unlock()
-			return
-		}
-	}
 
 	rewriteWorker.inFlight[poolKey] = true
 	rewriteWorker.Unlock()
@@ -92,8 +83,28 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	case <-ctx.Done():
 		return
 	}
+	sharedRelease, acquired, lockErr := tryScriptGeneration(recordingCacheMediaRoot(), tenant, v.PlanID, unit.poolID())
+	if lockErr != nil || !acquired {
+		return
+	}
+	defer sharedRelease()
+	// Re-read after the cross-process gate: another room may have completed a
+	// shared audio slot while this worker was waiting for the provider slot.
+	pool = scriptCompatiblePool(recordingCacheMediaRoot(), v, unit)
+	if !pool.HasOriginal(voiceID) {
+		return
+	}
+	full = !pool.CanGenerate(voiceID, cap)
+	if full {
+		var allowed bool
+		var err error
+		retireRef, allowed, err = scriptRefreshRetire(recordingCacheMediaRoot(), v, unit, pool, cap)
+		if err != nil || !allowed {
+			return
+		}
+	}
 
-	// 每小时合成预算：超了就这次不生成，已有版本继续播，不会断音。
+	// Compatibility hook; hourly character limits have been retired.
 	if !allowScriptVoiceSynthesis(v.PlanID, hanCount(unit.Text)) {
 		return
 	}
@@ -481,8 +492,11 @@ const (
 // 只从池子里摘掉记录，音频文件留给后续清理任务处理，避免正在播的音频被删。
 func dropOldestScriptVersion(planID int64, pieceKey, voiceID string, minPlays int, models ...string) {
 	root := recordingCacheMediaRoot()
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		return
+	}
+	defer release()
 	pool, err := loadScriptVoicePoolLocked(root, planID, pieceKey)
 	if err != nil {
 		return

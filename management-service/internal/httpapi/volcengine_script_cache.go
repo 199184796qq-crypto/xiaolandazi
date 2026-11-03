@@ -11,9 +11,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/sharedfilelock"
 	"livecompanion/management/internal/ttsgateway"
 )
 
@@ -32,17 +32,15 @@ type volcengineParagraphCache struct {
 	Audio map[int]volcengineCachedAudio `json:"audio"`
 }
 
-var volcengineParagraphLocks sync.Map
-
 func lockVolcengineParagraph(ctx context.Context, path string) (func(), error) {
-	actual, _ := volcengineParagraphLocks.LoadOrStore(path, make(chan struct{}, 1))
-	ch := actual.(chan struct{})
-	select {
-	case ch <- struct{}{}:
-		return func() { <-ch }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	identity, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
 	}
+	sum := sha256.Sum256([]byte(filepath.Clean(identity)))
+	// The lock lives beside the directory: taking it must not create a paid
+	// checkpoint directory that hydration would mistake for an existing task.
+	return sharedfilelock.Lock(ctx, filepath.Join(filepath.Dir(path), ".paragraph-locks", hex.EncodeToString(sum[:])+".lock"))
 }
 func writeVolcengineJSON(path string, value any) error {
 	raw, err := json.Marshal(value)
@@ -108,6 +106,7 @@ func withVolcengineArchiveInfo(ctx context.Context, percent int) context.Context
 	return context.WithValue(ctx, volcengineArchiveInfoKey{}, percent)
 }
 func applyVolcengineArchiveInfo(ctx context.Context, payload map[string]any) {
+	applyScriptSharedAssetInfo(ctx, payload)
 	if pct, ok := ctx.Value(volcengineArchiveInfoKey{}).(int); ok {
 		payload["segment_head_ms"], payload["segment_tail_ms"] = 0, 0
 		payload["timeline_precision"] = "supplier_timestamps"

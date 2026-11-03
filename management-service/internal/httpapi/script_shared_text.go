@@ -29,9 +29,13 @@ func scriptSharedTextPath(root string, plan int64, piece string) string {
 	return filepath.Join(root, "script-texts", strconv.FormatInt(plan, 10), filepath.Base(scriptVoicePoolPath(root, plan, piece)))
 }
 
+func scriptSharedTextScopePath(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit) string {
+	return filepath.Join(root, "script-texts", strconv.FormatInt(v.PlanID, 10), "policies", scriptRewriteFactsKey(v), filepath.Base(scriptVoicePoolPath(root, v.PlanID, unit.poolID())))
+}
+
 func loadScriptSharedTextsLocked(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit) (scriptSharedTexts, error) {
 	var out scriptSharedTexts
-	err := readVolcengineJSON(scriptSharedTextPath(root, v.PlanID, unit.poolID()), &out)
+	err := readVolcengineJSON(scriptSharedTextScopePath(root, v, unit), &out)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return out, err
 	}
@@ -71,8 +75,11 @@ func loadScriptSharedTextsLocked(root string, v model.LiveAgentPlanVersion, unit
 }
 
 func saveScriptSharedText(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, text string) error {
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		return err
+	}
+	defer release()
 	pool, err := loadScriptSharedTextsLocked(root, v, unit)
 	if err != nil {
 		return err
@@ -81,16 +88,19 @@ func saveScriptSharedText(root string, v model.LiveAgentPlanVersion, unit volcen
 	for _, entry := range pool.Versions {
 		if entry.Fingerprint == key {
 			// Also persist legacy imports before the audio slot can be retired.
-			return writeVolcengineJSON(scriptSharedTextPath(root, v.PlanID, unit.poolID()), pool)
+			return writeVolcengineJSON(scriptSharedTextScopePath(root, v, unit), pool)
 		}
 	}
 	pool.Versions = append(pool.Versions, scriptSharedText{Text: text, Fingerprint: key, FactsKey: scriptRewriteFactsKey(v), Kind: scriptplay.KindRewrite})
-	return writeVolcengineJSON(scriptSharedTextPath(root, v.PlanID, unit.poolID()), pool)
+	return writeVolcengineJSON(scriptSharedTextScopePath(root, v, unit), pool)
 }
 
 func scriptMissingSharedText(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit) (scriptSharedText, bool, error) {
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		return scriptSharedText{}, false, err
+	}
+	defer release()
 	texts, err := loadScriptSharedTextsLocked(root, v, unit)
 	if err != nil {
 		return scriptSharedText{}, false, err
@@ -128,8 +138,11 @@ func (s *Server) synthesizeSharedScriptText(ctx context.Context, tenant, room in
 }
 
 func markScriptSharedTextRendered(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, text string) error {
-	scriptVoicePoolMu.Lock()
-	defer scriptVoicePoolMu.Unlock()
+	release, err := lockScriptPoolStore(root)
+	if err != nil {
+		return err
+	}
+	defer release()
 	pool, err := loadScriptSharedTextsLocked(root, v, unit)
 	if err != nil {
 		return err
@@ -143,5 +156,5 @@ func markScriptSharedTextRendered(root string, v model.LiveAgentPlanVersion, uni
 			entry.RenderedAudio[scriptFirstParagraphKey(v, text)] = true
 		}
 	}
-	return writeVolcengineJSON(scriptSharedTextPath(root, v.PlanID, unit.poolID()), pool)
+	return writeVolcengineJSON(scriptSharedTextScopePath(root, v, unit), pool)
 }

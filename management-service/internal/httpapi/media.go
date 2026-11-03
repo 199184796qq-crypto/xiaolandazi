@@ -382,6 +382,10 @@ func (s *Server) liveDeleteMediaAsset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "媒体资产可能由多个方案使用，请由客户删除")
 		return
 	}
+	if isSharedScriptMedia(item) {
+		writeError(w, http.StatusConflict, "这是方案共享的话术声音，可能正在被其他直播间使用，不能在单个房间中删除。")
+		return
+	}
 	if err := s.store.DeleteMediaAsset(r.Context(), tenantID, assetID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "媒体资产不存在")

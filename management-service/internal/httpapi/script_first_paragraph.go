@@ -76,6 +76,7 @@ func prepareScriptFirstPaid(ctx context.Context, unit volcengineScriptUnit, gene
 }
 
 func (s *Server) ensureScriptFirstParagraph(ctx context.Context, tenant, room, session int64, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, allowSynthesis bool) (volcengineCachedAudio, error) {
+	ctx = withScriptSharedAsset(ctx, v, room)
 	var audio volcengineCachedAudio
 	if v.VoiceIdentity.Model == ttsgateway.VolcengineICL2 {
 		var err error

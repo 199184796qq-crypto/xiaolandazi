@@ -38,7 +38,10 @@ func scriptRewriteFactsKey(v model.LiveAgentPlanVersion) string {
 	if !ok {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(strings.TrimSpace(snapshot.Facts)))
+	// Equivalent facts alone cannot approve a rewrite under changed persona,
+	// redlines or writing rules. Tenant/plan ownership is part of this identity.
+	raw, _ := json.Marshal([]any{"script-text-policy-v2", v.TenantID, v.PlanID, strings.TrimSpace(snapshot.Prompt), strings.TrimSpace(snapshot.Facts)})
+	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
 func withScriptRewriteSnapshot(v model.LiveAgentPlanVersion, snapshot scriptRewriteSnapshot) model.LiveAgentPlanVersion {
