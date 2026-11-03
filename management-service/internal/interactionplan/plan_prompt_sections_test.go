@@ -38,7 +38,7 @@ func TestSplitPromptUsesExistingInteractionFreezeAndSingleBatchCall(t *testing.T
 				for _, message := range request.Messages {
 					all += message.Content
 				}
-				if strings.Contains(all, sections.SpeechRequirementsMD) || strings.Count(all, sections.Interaction()) != 1 {
+				if strings.Contains(all, sections.SpeechRequirementsMD) || strings.Count(all, stripFormatSection(sections.Interaction())) != 1 || strings.Count(all, "【输出格式") != 1 || !strings.Contains(all, planprompt.BatchInteractionOutputContract) {
 					t.Fatal("wrong prompt routing", all)
 				}
 				text := ""

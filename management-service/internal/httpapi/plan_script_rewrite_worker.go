@@ -15,6 +15,7 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/contentguard"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/planprompt"
 	"livecompanion/management/internal/scriptplay"
 	"livecompanion/management/internal/voicebatch"
 )
@@ -143,16 +144,17 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	work, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 	result, err := s.completePaidScriptModel(work, agentgateway.Request{
-		Stage:     "script_rewrite",
-		Messages:  []agentgateway.Message{{Role: "user", Content: prompt}},
-		MaxTokens: 2400,
-		Timeout:   180 * time.Second,
+		Stage:          "script_rewrite",
+		Messages:       scriptRewriteMessages(prompt),
+		ResponseFormat: agentgateway.ResponseText,
+		MaxTokens:      2400,
+		Timeout:        180 * time.Second,
 	})
 	if err != nil {
 		log.Printf("script rewrite failed plan=%d piece=%s: %v", v.PlanID, shortKey(unit.Key), err)
 		return
 	}
-	parsed, err := parseScriptRewriteOutput(result.Text)
+	parsed, err := parseScriptRewriteResponse(result.Text)
 	if err != nil {
 		log.Printf("script rewrite output rejected plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
 		return
@@ -248,11 +250,18 @@ func renderBackgroundScriptRewritePrompt(template, sample, openings, openingKind
 	if err != nil {
 		return "", err
 	}
+	// Move only our exact suffix; never re-parse already inserted sample or
+	// opening text as a template, since its placeholders are literal data.
+	prompt = strings.TrimSpace(strings.TrimSuffix(prompt, planprompt.RewriteOutputContract))
 	// 存下来的可能是旧版提示词（占位符已被替换成空），补一段保证开场指令一定送到。
 	if !strings.Contains(prompt, scriptOpeningBlockMarker) {
 		prompt += scriptOpeningBlock(openings, openingKind)
 	}
-	return prompt, nil
+	// 时间语义：这条音频会在任何时段反复播，不能被绑定到某个时间。
+	if !strings.Contains(prompt, scriptTimeRuleMarker) {
+		prompt += scriptTimeRuleBlock()
+	}
+	return prompt + "\n\n" + planprompt.RewriteOutputContract, nil
 }
 
 // rewriteScriptAcceptable 只挡空内容。

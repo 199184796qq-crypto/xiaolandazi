@@ -49,12 +49,12 @@ func compose(blocks ...string) string {
 
 func (s Sections) Interaction() string {
 	s = s.Normalize()
-	return compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "红线禁止", s.RedLinesMD, "互动回答要求", s.InteractionRequirementsMD)
+	return WithOutputContractUnlessEmpty(compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "红线禁止", s.RedLinesMD, "互动回答要求", s.InteractionRequirementsMD), InteractionOutputContract)
 }
 
 func (s Sections) Speech() string {
 	s = s.Normalize()
-	return compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "红线禁止", s.RedLinesMD, "直播话术要求", s.SpeechRequirementsMD)
+	return WithOutputContractUnlessEmpty(compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "红线禁止", s.RedLinesMD, "直播话术要求", s.SpeechRequirementsMD), SpeechOutputContract)
 }
 
 func (s Sections) Empty() bool {

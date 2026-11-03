@@ -40,7 +40,7 @@ func TestPlanRewriteSampleInjectedOnlyIntoActualRequest(t *testing.T) {
 			t.Fatal("runtime placeholders unresolved", prompt)
 		}
 	}
-	if strings.Count(saved, "【样本话术】\n{{样本话术}}") != 1 || !strings.HasSuffix(saved, rules) {
+	if strings.Count(saved, "【样本话术】\n{{样本话术}}") != 1 || !strings.HasSuffix(saved, planprompt.RewriteOutputContract) || !strings.Contains(saved, rules) {
 		t.Fatal("stored sample slot or original rules mutated", saved)
 	}
 }
@@ -50,7 +50,7 @@ func TestPlanRewriteDefaultShowsRulesWithoutInjectedContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(rules, "--------------------------------------------------\n第一步：抽取直播流程骨架\n") || !strings.Contains(rules, "话术内容只能是一段") {
+	if !strings.HasPrefix(rules, "--------------------------------------------------\n第一步：抽取直播流程骨架\n") || !strings.Contains(rules, "一段连续正文") {
 		t.Fatal("default rules body incomplete", rules)
 	}
 	for _, context := range []string{planprompt.RewriteIntro, "【主播人设】\n{{主播人设}}", "【事实依据】\n{{事实依据}}", "【样本话术】"} {
@@ -62,7 +62,7 @@ func TestPlanRewriteDefaultShowsRulesWithoutInjectedContext(t *testing.T) {
 		t.Fatal("runtime opening placeholders lost", rules)
 	}
 	prompt, err := renderPlanRewritePrompt(planprompt.Sections{PersonaMD: "测试人设", FactsMD: "测试事实", RedLinesMD: "测试红线"})
-	if err != nil || !strings.Contains(prompt, "【样本话术】\n{{样本话术}}\n\n"+rules) {
+	if err != nil || !strings.Contains(prompt, "【样本话术】\n{{样本话术}}\n\n") || prompt != planprompt.CompileRewritePlanning(planprompt.Sections{PersonaMD: "测试人设", FactsMD: "测试事实", RedLinesMD: "测试红线"}, rules) {
 		t.Fatal("default fallback removed sample slot", prompt, err)
 	}
 }

@@ -37,9 +37,8 @@ func TestBatchOneThroughTenUsesOneCallAndIndependentContexts(t *testing.T) {
 				if len(req.Messages) != 2 || strings.Count(req.Messages[0].Content, s.Prompt) != 1 || req.Stage != "interaction_purpose_resolution" || req.MaxTokens != 900*n {
 					t.Fatalf("wrong shared prompt/budget: %+v", req)
 				}
-				// P0 只做生成后硬校验，不再进入请求（省 token）。
-				if strings.Contains(req.Messages[0].Content, s.P0) {
-					t.Fatal("batch must not carry P0 in prompt")
+				if !strings.Contains(req.Messages[0].Content, s.P0) {
+					t.Fatal("batch must carry complete effective P0")
 				}
 				var payload struct {
 					Items    []BatchItem `json:"items"`

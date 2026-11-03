@@ -20,6 +20,7 @@ import (
 	"livecompanion/management/internal/contentguard"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/planprompt"
 	"livecompanion/management/internal/policy"
 )
 
@@ -57,17 +58,20 @@ type Input struct {
 	AllowClarify    bool             `json:"allow_clarify"`
 }
 type Intent struct {
-	Relation       string `json:"dialogue_relation,omitempty"`
-	Relevant       bool   `json:"relevant"`
-	Question       bool   `json:"question"`
-	Meaning        string `json:"meaning"`
-	Type           string `json:"type,omitempty"`
-	Priority       string `json:"priority,omitempty"`
-	PriorityReason string `json:"priority_reason,omitempty"`
-	NeedClarify    bool   `json:"need_clarify"`
-	Clarify        string `json:"clarify,omitempty"`
-	Continue       bool   `json:"continue_dialogue,omitempty"`
-	Command        string `json:"engagement_command,omitempty"`
+	Alternatives   []IntentAlternative `json:"alternatives,omitempty"`
+	Requirements   string              `json:"requirements,omitempty"`
+	Candidates     string              `json:"candidates,omitempty"`
+	Relation       string              `json:"dialogue_relation,omitempty"`
+	Relevant       bool                `json:"relevant"`
+	Question       bool                `json:"question"`
+	Meaning        string              `json:"meaning"`
+	Type           string              `json:"type,omitempty"`
+	Priority       string              `json:"priority,omitempty"`
+	PriorityReason string              `json:"priority_reason,omitempty"`
+	NeedClarify    bool                `json:"need_clarify"`
+	Clarify        string              `json:"clarify,omitempty"`
+	Continue       bool                `json:"continue_dialogue,omitempty"`
+	Command        string              `json:"engagement_command,omitempty"`
 }
 
 // Envelope is created by the program, never by the model. It travels in the
@@ -229,33 +233,12 @@ func Freeze(ctx context.Context, source Source, session model.LiveRuntimeSession
 
 // OutputContract 由程序在提交提示词时追加，保证格式与字段稳定；
 // 方案提示词本身只写业务，不需要维护输出格式。
-const OutputContract = `【输出格式】
-一行一个字段，用中文冒号，不要 JSON、不要代码块、不要解释：
-意图：观众这句话最可能在问什么
-类型：只能是 提问、下单意向、催单、投诉、闲聊、刷屏 里的一个
-歧义：是或否
-澄清句：歧义为是时写一句反问，否则留空
-回答：可直接口播的正文，不写昵称和"这位朋友"这类称呼`
+const OutputContract = planprompt.InteractionOutputContract
 
 // stripFormatSection 去掉方案提示词里自带的【输出格式要求】段，
 // 避免和程序追加的契约冲突。
 func stripFormatSection(prompt string) string {
-	var lines []string
-	skip := false
-	for _, line := range strings.Split(prompt, "\n") {
-		title := strings.TrimSpace(line)
-		if title == "【输出格式要求】" || title == "【输出格式】" {
-			skip = true
-			continue
-		}
-		if skip && strings.HasPrefix(title, "【") {
-			skip = false
-		}
-		if !skip {
-			lines = append(lines, line)
-		}
-	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
+	return planprompt.StripOutputFormatSection(prompt)
 }
 func request(s Snapshot, template, stage string, payload any, format agentgateway.ResponseFormat) (agentgateway.Request, error) {
 	md, err := interactionpolicy.ReadOptional(template)
@@ -274,9 +257,7 @@ func request(s Snapshot, template, stage string, payload any, format agentgatewa
 	if template != "interaction-v2-batch.md" {
 		prompt += "\n\n" + OutputContract
 	}
-	// P0 只做生成后的硬校验（contentguard），不再整段塞进请求：
-	// 它每轮白烧一两千 token，而真正的约束已经写进方案提示词和输出契约。
-	messages := []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + prompt}}
+	messages := []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + prompt + "\n\n【本场有效P0】\n" + s.P0}}
 	if task := strings.TrimSpace(string(md)); task != "" {
 		messages = append(messages, agentgateway.Message{Role: "system", Content: task})
 	}
@@ -365,15 +346,20 @@ func Generate(ctx context.Context, s Snapshot, in Input, complete Complete) (Int
 func parseSingleContent(s Snapshot, in Input, kv map[string]string) (Intent, string, error) {
 	var intent Intent
 	var err error
+	if err := validateContentFields(kv); err != nil {
+		return intent, "", err
+	}
 	meaning, ok := kvPick(kv, "意图")
 	if !ok || strings.TrimSpace(meaning) == "" {
 		return intent, "", errors.New("互动结果不是 KV 格式")
 	}
-	// 母版要求「意图｜置信度｜建议」写在一行，分级只取第一段，其余留在原始回复里入库。
-	if i := strings.IndexAny(meaning, "｜|"); i > 0 {
-		meaning = meaning[:i]
+	intent.Alternatives, err = parseIntentLines(meaning)
+	if err != nil {
+		return intent, "", err
 	}
-	intent.Meaning = strings.TrimSpace(meaning)
+	intent.Meaning = intent.Alternatives[0].Meaning
+	intent.Requirements = kv["话术要求"]
+	intent.Candidates = kv["候选"]
 	intent.Relevant = true
 	intent.Question = true
 	if v, ok := kvPick(kv, "类型", "type"); ok {
@@ -426,7 +412,7 @@ func parseSingleContent(s Snapshot, in Input, kv map[string]string) (Intent, str
 		}
 		return intent, intent.Clarify, nil
 	}
-	answer, _ := kvPick(kv, "回答")
+	answer, _ := kvPick(kv, "话术", "回答")
 	body := strings.TrimSpace(answer)
 	if body == "" {
 		return intent, "", errors.New("互动结果缺少回答")

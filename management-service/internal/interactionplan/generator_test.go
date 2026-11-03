@@ -80,8 +80,8 @@ func TestIntentAndBodyUseOnlyPlanAndCompleteP0(t *testing.T) {
 		if len(r.Messages) < 2 || len(r.Messages) > 3 {
 			t.Fatal("interaction request must be plan prompt (+ optional task) + payload")
 		}
-		if strings.Contains(r.Messages[0].Content, s.P0) {
-			t.Fatal("P0 must stay out of the interaction prompt")
+		if !strings.Contains(r.Messages[0].Content, s.P0) {
+			t.Fatal("complete effective P0 missing from interaction prompt")
 		}
 		if !strings.Contains(r.Messages[0].Content, "方案提示词") {
 			t.Fatal("missing plan prompt")

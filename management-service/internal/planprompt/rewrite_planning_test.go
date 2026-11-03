@@ -9,7 +9,7 @@ func TestRewritePlanningEnvelopePreservesRuntimePlaceholders(t *testing.T) {
 	sections := Sections{PersonaMD: "  本店主播  ", FactsMD: "八十七元六角", RedLinesMD: "不编造承诺", SpeechRequirementsMD: "主线专用", InteractionRequirementsMD: "互动专用"}
 	planning := "  只保存规则正文\r\n{{已有开场}}\n{{开场方式}}\n〔提示〕保留原文😀\n  "
 	prompt := CompileRewritePlanning(sections, planning)
-	want := RewriteIntro + "\n\n【主播人设】\n本店主播\n\n【事实依据】\n八十七元六角\n\n【红线禁止】\n不编造承诺\n\n【样本话术】\n{{样本话术}}\n\n" + planning
+	want := RewriteIntro + "\n\n【主播人设】\n本店主播\n\n【事实依据】\n八十七元六角\n\n【红线禁止】\n不编造承诺\n\n【样本话术】\n{{样本话术}}\n\n" + strings.TrimSpace(strings.ReplaceAll(planning, "\r\n", "\n")) + "\n\n" + RewriteOutputContract
 	if prompt != want {
 		t.Fatalf("context, sample placeholder or raw planning changed: %q", prompt)
 	}

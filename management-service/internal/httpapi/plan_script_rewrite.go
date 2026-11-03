@@ -78,16 +78,17 @@ func (s *Server) planScriptRewrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.speechGateway().Complete(r.Context(), agentgateway.Request{
-		Stage:     "script_rewrite",
-		Messages:  []agentgateway.Message{{Role: "user", Content: prompt}},
-		MaxTokens: 2400,
-		Timeout:   180 * time.Second,
+		Stage:          "script_rewrite",
+		Messages:       scriptRewriteMessages(prompt),
+		ResponseFormat: agentgateway.ResponseText,
+		MaxTokens:      2400,
+		Timeout:        180 * time.Second,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "改写请求失败，请稍后重试")
 		return
 	}
-	parsed, err := parseScriptRewriteOutput(result.Text)
+	parsed, err := parseScriptRewriteResponse(result.Text)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "改写结果字段不完整，未保存或合成")
 		return

@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/planprompt"
 )
 
 type scriptRewriteContextScope struct {
@@ -135,6 +138,12 @@ func (turn *scriptRewriteTurn) Save(result scriptRewriteOutput) error {
 }
 
 func renderScriptRewriteRequest(prompt, sample, openings, openingKind string, previous scriptRewriteOutput) (string, error) {
+	// Strip before injecting sample/history: those are literal data, not plan
+	// sections. Enforce the program contract even for old or edited plans.
+	prompt = planprompt.StripOutputFormatSection(prompt)
+	if !strings.Contains(prompt, "{{样本话术}}") {
+		prompt += "\n\n【样本话术】\n{{样本话术}}"
+	}
 	const placeholder = "{{近期写作记录}}"
 	hasSlot := strings.Contains(prompt, placeholder)
 	block := "（暂无上次写作记录）"
@@ -154,5 +163,15 @@ func renderScriptRewriteRequest(prompt, sample, openings, openingKind string, pr
 	if !hasSlot && strings.TrimSpace(previous.Context) != "" {
 		prompt += "\n\n" + block
 	}
-	return prompt, nil
+	return strings.TrimSpace(prompt) + "\n\n" + planprompt.RewriteOutputContract, nil
+}
+
+func scriptRewriteMessages(prompt string) []agentgateway.Message {
+	// The format is system-owned. Business rules, sample and previous model
+	// metadata cannot turn it into editable user instructions.
+	body := strings.TrimSpace(strings.TrimSuffix(prompt, planprompt.RewriteOutputContract))
+	return []agentgateway.Message{
+		{Role: "system", Content: planprompt.RewriteOutputContract},
+		{Role: "user", Content: body},
+	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/interactionpolicy"
+	"livecompanion/management/internal/planprompt"
 )
 
 const MaxBatchItems = 10
@@ -111,8 +112,7 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 		return BatchResult{}, err
 	}
 	req := agentgateway.Request{Stage: "interaction_purpose_resolution", ResponseFormat: agentgateway.ResponseText, MaxTokens: 900 * len(items), Timeout: 27 * time.Second, EnableThinking: false, CacheSystemPrompt: true,
-		// P0 只用于生成后的硬校验，不再整段塞进请求；它每轮白烧一两千 token。
-		Messages: []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + stripFormatSection(s.Prompt) + "\n\n" + string(md)}, {Role: "user", Content: string(raw)}}}
+		Messages: []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + stripFormatSection(s.Prompt) + "\n\n【本场有效P0】\n" + s.P0 + "\n\n" + stripFormatSection(string(md)) + "\n\n" + planprompt.BatchInteractionOutputContract}, {Role: "user", Content: string(raw)}}}
 	response, err := complete(ctx, req)
 	if err != nil {
 		return BatchResult{}, err
@@ -137,20 +137,29 @@ func parseBatch(s Snapshot, items []BatchItem, raw string) BatchResult {
 		return out
 	}
 	type block struct {
-		fields  map[string]string
-		invalid bool
-		closed  bool
+		fields   map[string]string
+		invalid  bool
+		closed   bool
+		bodySeen bool
 	}
 	blocks := map[string]*block{}
 	var active *block
 	activeID := ""
-	legacy := len(items) == 1 && !strings.Contains(raw, "编号：") && !strings.Contains(raw, "编号:")
+	raw = strings.TrimPrefix(strings.TrimSpace(raw), "\ufeff")
+	raw = strings.ReplaceAll(strings.ReplaceAll(raw, "\r\n", "\n"), "\r", "\n")
+	legacy := len(items) == 1
+	for _, line := range strings.Split(raw, "\n") {
+		if key, _, ok := splitKVLine(line); ok && key == "编号" {
+			legacy = false
+			break
+		}
+	}
 	if legacy {
 		activeID = items[0].ID
 		active = &block{fields: map[string]string{}, closed: true}
 		blocks[activeID] = active
 	}
-	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "```") {
 			continue
@@ -202,20 +211,24 @@ func parseBatch(s Snapshot, items []BatchItem, raw string) BatchResult {
 		if active == nil {
 			continue
 		}
-		if _, exists := active.fields[key]; exists {
+		if !isInteractionField(key) || active.bodySeen {
 			active.invalid = true
+			continue
+		}
+		if _, exists := active.fields[key]; exists {
+			if key != "意图" {
+				active.invalid = true
+			} else {
+				active.fields[key] += "\n" + value
+				continue
+			}
 		}
 		active.fields[key] = value
+		active.bodySeen = bodyField(key)
 	}
 	for id, b := range blocks {
 		i := indices[id]
-		// 模型偶尔会漏掉「结束」行，只要这一段的字段本身齐全，就按完整处理。
-		// 模型偶尔会漏掉「结束」行，只要这一段字段齐全，就按完整处理。
-		_, hasType := b.fields["类型"]
-		_, hasAmbiguity := b.fields["歧义"]
-		_, hasAnswer := b.fields["回答"]
-		complete := hasType && hasAmbiguity && hasAnswer
-		if b.invalid || (!b.closed && !complete) {
+		if b.invalid || !b.closed {
 			out.Items[i].Err = errors.New("互动结果编号、字段重复或分段不完整")
 			continue
 		}
