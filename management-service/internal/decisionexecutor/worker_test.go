@@ -363,6 +363,8 @@ func (f *fakeCore) DoRoom(
 	status := http.StatusOK
 	raw := `{"ok":true}`
 	switch {
+	case strings.HasSuffix(path, "/preflight"):
+		raw = `{"allowed":true,"checked_at":"2026-11-04T00:00:00Z"}`
 	case strings.Contains(path, "/strategy-select"):
 		category := ""
 		if value, ok := body.(map[string]any); ok {

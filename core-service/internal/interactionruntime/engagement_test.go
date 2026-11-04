@@ -219,7 +219,7 @@ func TestNumericDialogueOwnsReplyBeforePublicCommand(t *testing.T) {
 	}
 }
 
-func TestClassificationContinuesWhenPlaybackQuotaAndCooldownExhausted(t *testing.T) {
+func TestClassificationDefersWhenPlaybackQuotaExhaustedWithoutInflatingSemanticPeople(t *testing.T) {
 	e := New()
 	s := scope(29)
 	r := e.room(s, base)
@@ -231,12 +231,8 @@ func TestClassificationContinuesWhenPlaybackQuotaAndCooldownExhausted(t *testing
 	r.Cool["semantic"] = base.Add(time.Minute)
 	add(e, s, "new", "new-person", "chat", "哪里发货", base.Add(2*time.Second))
 	bs := e.Batches(base.Add(8*time.Second), 1)
-	if len(bs) != 1 {
-		t.Fatal("playback quota blocked classification", bs)
-	}
-	e.Accept(bs[0].Works[0], Content{Body: "按方案说明。", Intent: Intent{Relevant: true, Question: true, Type: "提问"}}, nil, base.Add(8*time.Second))
-	if len(e.rooms[29].SemanticUsers) != 22 || e.Select(s, base.Add(8*time.Second)) != nil {
-		t.Fatal("classification and playback quotas were coupled")
+	if len(bs) != 0 || len(e.rooms[29].SemanticUsers) != 21 || len(e.rooms[29].History["new-person"]) != 1 {
+		t.Fatal("blocked preparation spent a model batch, lost raw input, or inflated confirmed semantic count", bs)
 	}
 }
 

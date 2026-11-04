@@ -7,6 +7,7 @@ import (
 	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/messagecaptain"
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,17 @@ func (s *Server) validatePCMInteractionStart(ctx context.Context, event audioout
 	item, ok := s.agentDecisions.Get(meta.RoomID, meta.DecisionID)
 	if !ok || item.Status != agentdecision.StatusClaimed || item.PlaybackTaskID != event.SpeechTaskID || meta.RoomID != event.RoomID || meta.RuntimeEpoch == "" || meta.RuntimeEpoch != s.currentInteractionEpoch(meta.RoomID) || !s.agentWork.IsWorking(meta.RoomID) {
 		return fmt.Errorf("playback decision/run changed")
+	}
+	if s.speechRuntime != nil {
+		if current, err := s.speechRuntime.Snapshot(meta.RoomID); err == nil {
+			t := current.Interrupt
+			if strings.EqualFold(string(t.Status), "paused") || (t.DecisionID != "" && t.DecisionID != meta.DecisionID) || (t.SpeechTaskID != "" && t.SpeechTaskID != event.SpeechTaskID) {
+				return fmt.Errorf("playback runtime changed before PCM")
+			}
+			if t.StartedAt == nil && t.PreparedUntil != nil && !time.Now().Before(*t.PreparedUntil) {
+				return fmt.Errorf("source_start_timeout")
+			}
+		}
 	}
 	if !s.interactionControlAllowed(meta.RoomID, *item) {
 		return fmt.Errorf("interaction disabled before PCM")

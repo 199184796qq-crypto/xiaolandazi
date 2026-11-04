@@ -515,6 +515,7 @@ func main() {
 	api.SetStrategyPolicyStore(strategyPolicies)
 	api.SetAudioClient(coreAudioClient, cfg.CorePublicURL)
 	paidAgents.SetMessageCaptain(api.MessageCaptain())
+	paidAgents.SetPreparationReader(api.InteractionPreparationWindow)
 	managementURL := strings.TrimSpace(os.Getenv("MANAGEMENT_INTERNAL_URL"))
 	if managementURL == "" {
 		managementURL = "http://127.0.0.1:8080"

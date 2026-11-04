@@ -529,7 +529,9 @@ func (q *Queue) Complete(roomID int64, id string) (*RecentAnswer, bool) {
 	return nil, false
 }
 
-func (q *Queue) ClaimNext(roomID int64) (*Item, bool) {
+func (q *Queue) ClaimNext(roomID int64) (*Item, bool)                { return q.claimNext(roomID, "") }
+func (q *Queue) ClaimExpected(roomID int64, id string) (*Item, bool) { return q.claimNext(roomID, id) }
+func (q *Queue) claimNext(roomID int64, expected string) (*Item, bool) {
 	if roomID <= 0 {
 		return nil, false
 	}
@@ -562,6 +564,9 @@ func (q *Queue) ClaimNext(roomID int64) (*Item, bool) {
 				q.addNoteLocked(state, now, "frequency_wait", item.Title+"本分钟回答上限已到，继续排队")
 				continue
 			}
+		}
+		if expected != "" && item.ID != expected {
+			return nil, false
 		}
 		item.Status = StatusClaimed
 		item.Attempts++
@@ -602,7 +607,7 @@ func (q *Queue) release(roomID int64, id string, cutReschedule bool, preparedUnt
 		expired := !now.Before(itemDeadline(item))
 		if cutReschedule {
 			if item.PreparedUntil.IsZero() {
-				item.PreparedUntil = now.Add(2 * time.Minute)
+				item.PreparedUntil = now.Add(15 * time.Second)
 				if len(preparedUntil) > 0 && !preparedUntil[0].IsZero() && preparedUntil[0].Before(item.PreparedUntil) {
 					item.PreparedUntil = preparedUntil[0]
 				}
@@ -632,8 +637,8 @@ func (q *Queue) release(roomID int64, id string, cutReschedule bool, preparedUnt
 			}
 			item.PreparedTaskID, item.PreparedCutMS = "", 0
 			item.AudioPrepared = true
-			item.RetryAfter = now.Add(time.Second)
-			q.addNoteLocked(state, now, "cut_reschedule", fmt.Sprintf("“%s”声音已备好，等待当前主线的新句末切点", item.Title))
+			item.RetryAfter = now.Add(5 * time.Second)
+			q.addNoteLocked(state, now, "cut_reschedule", fmt.Sprintf("“%s”声音已备好，等待当前主线的真实PCM声学切点", item.Title))
 			q.sortLocked(state)
 			copy = cloneItem(*item)
 			return &copy, true

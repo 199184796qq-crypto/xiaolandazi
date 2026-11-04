@@ -183,6 +183,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/welcome-ready", s.internal(http.HandlerFunc(s.admitWelcomeV2)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/complete", s.internal(http.HandlerFunc(s.completeRoomAgentDecision)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/simulation-complete", s.internal(http.HandlerFunc(s.completeRoomAgentSimulation)))
+	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/preflight", s.internal(http.HandlerFunc(s.preflightRoomAgentDecision)))
 	mux.Handle("POST /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}/release", s.internal(http.HandlerFunc(s.releaseRoomAgentDecision)))
 	mux.Handle("DELETE /internal/v1/rooms/{roomID}/agent-decisions/{decisionID}", s.internal(http.HandlerFunc(s.removeRoomAgentDecision)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/agent-runtime", s.internal(http.HandlerFunc(s.getRoomAgentWork)))

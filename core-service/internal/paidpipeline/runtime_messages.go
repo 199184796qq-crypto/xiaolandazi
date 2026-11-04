@@ -31,6 +31,8 @@ func (p *Processor) handleRuntimeMessage(_ context.Context, m messagecaptain.Mes
 		return nil
 	case "interaction.v2.welcome-ready":
 		return p.readyWelcomeV2(m)
+	case "interaction.v2.preflight":
+		return p.preflightAudio(m)
 	case "interaction.v2.reserve-audio":
 		return p.reserveAudioV2(m)
 	}

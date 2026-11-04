@@ -59,6 +59,18 @@ func TestOriginalRecordingOrdinaryInteractionClaim(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer client.StopProgram(context.Background(), 94)
+			readyUntil := time.Now().Add(2 * time.Second)
+			for {
+				p, _ := client.ProgramSnapshot(context.Background(), 94)
+				if p.AcousticReady {
+					break
+				}
+				if time.Now().After(readyUntil) {
+					t.Fatal("PCM scan not ready")
+				}
+				time.Sleep(time.Millisecond)
+			}
+
 			first := s.agentDecisions.Enqueue(94, agentdecision.Candidate{Topic: "PURPOSE:spec", Question: "怎么选择规格", ManualAction: "answer", InteractionDecision: agentdecision.InteractionDecision{UniqueChatters30s: 3}}).Item
 			if first == nil {
 				t.Fatal("missing first decision")
@@ -70,7 +82,7 @@ func TestOriginalRecordingOrdinaryInteractionClaim(t *testing.T) {
 				if _, ok := s.agentDecisions.RescheduleCut(94, first.ID); !ok {
 					t.Fatal("cannot release prepared answer to sentence-end scheduling")
 				}
-				time.Sleep(1100 * time.Millisecond)
+				time.Sleep(5100 * time.Millisecond)
 			}
 			second := s.agentDecisions.Enqueue(94, agentdecision.Candidate{Topic: "PURPOSE:service", Question: "能咨询客服吗", ManualAction: "answer", InteractionDecision: agentdecision.InteractionDecision{UniqueChatters30s: 1}}).Item
 			if second == nil {

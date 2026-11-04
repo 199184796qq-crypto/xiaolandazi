@@ -132,6 +132,7 @@ type Worker struct {
 	readingRules         map[string]readingRulesCacheEntry
 	benefitRedis         *redis.Client
 	prepared             map[preparedInteractionKey]preparedInteraction
+	preflightDrafts      map[preparedInteractionKey]preparedInteraction
 	timeReportDrafts     map[preparedInteractionKey]timeReportDraft
 }
 
@@ -1462,6 +1463,14 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if isSimulation {
 		ctx = context.WithValue(ctx, workerPaidOptOutKey{}, true)
 	}
+	if !isSimulation {
+		if wait, err := w.playoutPreflight(ctx, session, *item, "", "model"); err != nil {
+			return err
+		} else if wait {
+			completed = true
+			return nil
+		}
+	}
 	memoryBefore, err := w.interactionV2Memory(ctx, session, *item)
 	if err != nil {
 		return err
@@ -1508,7 +1517,10 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if isTimeReport(*item) {
 		ctx = context.WithValue(ctx, timeReportContextKey{}, timeReportIdentity{Scope: preparationScope, Memory: memoryBefore})
 	}
-	text, err := w.generateDecisionTextMutable(ctx, session, item)
+	text, reusedDraft := w.preflightDraft(session, item, preparationScope, memoryBefore)
+	if !reusedDraft {
+		text, err = w.generateDecisionTextMutable(ctx, session, item)
+	}
 	if err != nil {
 		w.transitionMission(item, speechmission.StateFailed, "generation_failed", err.Error())
 		return err
@@ -1543,6 +1555,13 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		return nil
 	}
 
+	if wait, err := w.playoutPreflight(ctx, session, *item, text, "tts"); err != nil {
+		return err
+	} else if wait {
+		w.savePreflightDraft(session, *item, text, preparationScope, memoryBefore)
+		completed = true
+		return nil
+	}
 	// TTS 前只处理命中 P0 的句子：能换就换，换不掉就丢这一句，其余原样组装。
 	// 不整段重生成，避免一句违规把整段口播和 token 全部重来。
 	if _, v2 := interactionplan.Decode(item.PurposeKnowledge); !v2 && !strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
@@ -2306,6 +2325,10 @@ func (w *Worker) claim(ctx context.Context, session model.LiveRuntimeSession) (c
 
 func (w *Worker) release(ctx context.Context, session model.LiveRuntimeSession, decisionID string, reasons ...string) error {
 	query := tenantQuery(session.TenantID)
+	if len(reasons) > 0 && strings.HasPrefix(reasons[0], "preflight:") {
+		query.Set("reason", "preflight")
+		query.Set("block_reason", strings.TrimPrefix(reasons[0], "preflight:"))
+	}
 	if len(reasons) > 0 && reasons[0] == "cut_reschedule" {
 		query.Set("reason", "cut_reschedule")
 		w.mu.Lock()

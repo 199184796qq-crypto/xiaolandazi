@@ -97,8 +97,9 @@ type programState struct {
 }
 
 type Client struct {
-	scanSlots chan struct{}
-	mu        sync.RWMutex
+	interactionPlayback map[string]audioout.InteractionPlaybackReceipt
+	scanSlots           chan struct{}
+	mu                  sync.RWMutex
 
 	hub               *audiohub.Hub
 	roomAudio         *roomaudio.Engine
@@ -218,13 +219,17 @@ func (c *Client) publishInterruptPlayback(roomID int64, taskID, status string, s
 	program, captain := c.programs[roomID], c.messages
 	valid := program != nil && program.Running && program.CurrentTaskID == taskID && program.Suspended
 	c.mu.RUnlock()
-	if !valid || captain == nil {
+	if !valid {
 		return nil
 	}
 	if snapshot, ok := c.hub.Snapshot(taskID); ok {
 		event := audioout.PlaybackEvent{RoomID: roomID, SpeechTaskID: taskID, SessionID: snapshot.Task.SessionID, ReceiverID: "core-pcm-output", Status: status, DurationMS: snapshot.Task.DurationMS, OccurredAt: c.now().UTC()}
 		if streamErr != nil {
 			event.Error = streamErr.Error()
+		}
+		c.recordInteractionPCM(taskID, event)
+		if captain == nil {
+			return nil
 		}
 		raw, _ := json.Marshal(event)
 		failures := captain.Publish(context.Background(), messagecaptain.Message{Kind: messagecaptain.AudioPlayback, RoomID: roomID, RunID: program.ID, TaskID: taskID, Payload: raw})
@@ -962,6 +967,22 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	program.AcousticResume = input.AcousticCut
 	program.InteractionReturn = nil
 	c.mu.Unlock()
+	startDeadline := now.Add(15 * time.Second)
+	if !input.StartDeadline.IsZero() && input.StartDeadline.Before(startDeadline) {
+		startDeadline = input.StartDeadline
+	}
+	preparedTask := audioout.SpeechTask{ID: interactionID, RoomID: input.RoomID, SessionID: sessionID, Kind: "interaction_audio", Label: label, DurationMS: durationMS, ProgramID: program.ID, Sequence: sequence, Slot: slot, CreatedAt: now}
+	c.prepareInteractionPlayback(program, preparedTask, input.DecisionID, startDeadline)
+	if input.BeforePlayback != nil {
+		if err := input.BeforePlayback(preparedTask); err != nil {
+			c.mu.Lock()
+			if c.programs[input.RoomID] == program && program.CurrentTaskID == currentTaskID {
+				program.Suspended = false
+			}
+			c.mu.Unlock()
+			return audioout.RoomProgramSnapshot{}, err
+		}
+	}
 
 	c.cancelRoomAudioMirror(input.RoomID)
 	c.hub.Expire(currentTaskID)
@@ -1030,9 +1051,7 @@ func (c *Client) InsertTestProgramInteraction(ctx context.Context, input audioou
 	)
 	// Receiver COMPLETED is authoritative. The delayed timer is only a
 	// fallback for receivers that disappear without sending a terminal event.
-	time.AfterFunc(time.Duration(durationMS+4000)*time.Millisecond, func() {
-		c.resumeAfterInteraction(program, interaction.ID)
-	})
+	c.watchInteractionPlayback(program, interaction.ID)
 	return c.ProgramSnapshot(context.Background(), input.RoomID)
 }
 

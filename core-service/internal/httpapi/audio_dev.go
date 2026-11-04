@@ -338,6 +338,11 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 		return
 	}
 	if event.ReceiverID != "core-pcm-output" {
+		if reader, ok := state.client.(interactionPCMReader); ok {
+			if _, err := reader.InteractionPlaybackSnapshot(ctx, event.RoomID, event.SpeechTaskID); err == nil {
+				return
+			}
+		}
 		if reader, ok := state.client.(interactionReturnReader); ok {
 			if _, err := reader.InteractionReturnSnapshot(ctx, event.RoomID, event.SpeechTaskID); err == nil {
 				return
@@ -346,7 +351,8 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 	}
 	state.mu.Lock()
 	previous := state.events[event.SpeechTaskID]
-	if previous.Status == "COMPLETED" || previous.Status == "FAILED" {
+	duplicateTerminal := previous.Status == event.Status && (event.Status == "COMPLETED" || event.Status == "FAILED")
+	if (previous.Status == "COMPLETED" || previous.Status == "FAILED") && previous.Status != event.Status {
 		state.mu.Unlock()
 		return
 	}
@@ -354,8 +360,11 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 		state.mu.Unlock()
 		return
 	}
-	state.events[event.SpeechTaskID] = event
 	meta := state.interactions[event.SpeechTaskID]
+	if meta != nil && meta.RoomID != event.RoomID {
+		state.mu.Unlock()
+		return
+	}
 	if meta != nil && meta.DecisionID != "" && s.agentDecisions != nil {
 		item, ok := s.agentDecisions.Get(meta.RoomID, meta.DecisionID)
 		if !ok || item.Status != "CLAIMED" || (item.PlaybackTaskID != "" && item.PlaybackTaskID != event.SpeechTaskID) {
@@ -364,7 +373,71 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 		if meta != nil && meta.RuntimeEpoch != "" && s.currentInteractionEpoch(meta.RoomID) != meta.RuntimeEpoch {
 			meta = nil
 		}
+		if meta != nil && s.speechRuntime != nil {
+			if current, err := s.speechRuntime.Snapshot(meta.RoomID); err == nil && (current.Interrupt.Status == speechruntime.StatusPaused || (current.Interrupt.DecisionID != "" && current.Interrupt.DecisionID != meta.DecisionID) || (current.Interrupt.SpeechTaskID != "" && current.Interrupt.SpeechTaskID != event.SpeechTaskID)) {
+				meta = nil
+			}
+		}
 	}
+	if meta != nil && meta.DecisionID != "" {
+		if s.speechRuntime != nil {
+			status := speechruntime.StatusPlaying
+			switch event.Status {
+			case "COMPLETED":
+				if meta.WaitForMainline {
+					status = speechruntime.StatusReturning
+				} else {
+					status = speechruntime.StatusCompleted
+				}
+			case "FAILED":
+				status = speechruntime.StatusFailed
+			case "READY":
+				status = speechruntime.StatusReady
+			}
+			var switchAtMS *int
+			var preparedUntil *time.Time
+			var startedAt *time.Time
+			durationMS := 0
+			if current, snapshotErr := s.speechRuntime.Snapshot(meta.RoomID); snapshotErr == nil && current.Interrupt.DecisionID == meta.DecisionID && (current.Interrupt.SpeechTaskID == "" || current.Interrupt.SpeechTaskID == event.SpeechTaskID) {
+				switchAtMS = current.Interrupt.SwitchAtMS
+				preparedUntil = current.Interrupt.PreparedUntil
+				startedAt = current.Interrupt.StartedAt
+				durationMS = current.Interrupt.DurationMS
+			}
+			if event.Status == "PLAYING" && startedAt == nil && !event.OccurredAt.IsZero() {
+				at := event.OccurredAt.UTC()
+				startedAt = &at
+			}
+			if startedAt == nil && event.Status == "PROGRESS" && event.ProgressMS > 0 && !event.OccurredAt.IsZero() {
+				at := event.OccurredAt.UTC().Add(-time.Duration(event.ProgressMS) * time.Millisecond)
+				startedAt = &at
+			}
+			_, updateErr := s.speechRuntime.Update(meta.RoomID, speechruntime.UpdateInput{
+				Track:          speechruntime.TrackInterrupt,
+				ExpectedTaskID: event.SpeechTaskID, ExpectedDecisionID: meta.DecisionID, RequireIdentity: meta.RuntimeEpoch != "",
+				Status:         status,
+				Text:           meta.ReplyText,
+				QuestionText:   meta.QuestionText,
+				ReplyText:      meta.ReplyText,
+				ResumeStrategy: meta.ResumeMode,
+				BridgeText:     meta.BridgeText,
+				BridgeUsed:     meta.BridgeUsed,
+				Source:         meta.Source,
+				AudioURL:       meta.AudioURL,
+				DecisionID:     meta.DecisionID,
+				MissionID:      meta.MissionID,
+				SpeechTaskID:   event.SpeechTaskID,
+				SwitchAtMS:     switchAtMS,
+				DurationMS:     durationMS,
+				StartedAt:      startedAt, PreparedUntil: preparedUntil,
+			})
+			if updateErr != nil {
+				state.mu.Unlock()
+				return
+			}
+		}
+	}
+	state.events[event.SpeechTaskID] = event
 	var pinAnswer bool
 	var pinResume bool
 	var completedRecord *audioInteractionRecord
@@ -393,11 +466,11 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 		}
 	}
 	state.mu.Unlock()
-	if meta != nil && meta.DecisionID != "" && s.messages != nil {
+	if meta != nil && meta.DecisionID != "" && s.messages != nil && !duplicateTerminal {
 		raw, _ := json.Marshal(map[string]any{"decision_id": meta.DecisionID, "status": event.Status, "at": event.OccurredAt})
 		s.messages.Publish(ctx, messagecaptain.Message{Kind: "interaction.v2.playback", RoomID: meta.RoomID, RunID: meta.RuntimeEpoch, TaskID: event.SpeechTaskID, Payload: raw})
 	}
-	if (event.Status == "COMPLETED" || event.Status == "FAILED") && meta != nil {
+	if (event.Status == "COMPLETED" || event.Status == "FAILED") && meta != nil && !duplicateTerminal {
 		if event.Status == "COMPLETED" {
 			// A receiver reports completion exactly at the media boundary. Give its
 			// device/output buffer the same guard tail used by the PCM mirror before
@@ -416,54 +489,9 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 		}
 	}
 	if meta != nil && meta.DecisionID != "" {
-		if s.speechRuntime != nil {
-			status := speechruntime.StatusPlaying
-			switch event.Status {
-			case "COMPLETED":
-				if meta.WaitForMainline {
-					status = speechruntime.StatusReturning
-				} else {
-					status = speechruntime.StatusCompleted
-				}
-			case "FAILED":
-				status = speechruntime.StatusFailed
-			case "READY":
-				status = speechruntime.StatusReady
-			}
-			var switchAtMS *int
-			var startedAt *time.Time
-			durationMS := 0
-			if current, snapshotErr := s.speechRuntime.Snapshot(meta.RoomID); snapshotErr == nil {
-				switchAtMS = current.Interrupt.SwitchAtMS
-				startedAt = current.Interrupt.StartedAt
-				durationMS = current.Interrupt.DurationMS
-			}
-			if event.Status == "PLAYING" && startedAt == nil && !event.OccurredAt.IsZero() {
-				at := event.OccurredAt.UTC()
-				startedAt = &at
-			}
-			if event.Status == "PROGRESS" && event.ProgressMS > 0 && !event.OccurredAt.IsZero() {
-				at := event.OccurredAt.UTC().Add(-time.Duration(event.ProgressMS) * time.Millisecond)
-				startedAt = &at
-			}
-			_, _ = s.speechRuntime.Update(meta.RoomID, speechruntime.UpdateInput{
-				Track:          speechruntime.TrackInterrupt,
-				Status:         status,
-				Text:           meta.ReplyText,
-				QuestionText:   meta.QuestionText,
-				ReplyText:      meta.ReplyText,
-				ResumeStrategy: meta.ResumeMode,
-				BridgeText:     meta.BridgeText,
-				BridgeUsed:     meta.BridgeUsed,
-				Source:         meta.Source,
-				AudioURL:       meta.AudioURL,
-				DecisionID:     meta.DecisionID,
-				MissionID:      meta.MissionID,
-				SpeechTaskID:   event.SpeechTaskID,
-				SwitchAtMS:     switchAtMS,
-				DurationMS:     durationMS,
-				StartedAt:      startedAt,
-			})
+
+		if event.Status == "PLAYING" {
+			s.scheduleRoomAudioInteractionCompletion(meta.RoomID, audioout.SpeechTask{ID: event.SpeechTaskID, DurationMS: event.DurationMS}, meta.DecisionID, meta.WaitForMainline)
 		}
 		if event.Status == "COMPLETED" && s.agentDecisions != nil {
 			if meta.WaitForMainline {
@@ -473,7 +501,7 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 			}
 		}
 		if event.Status == "FAILED" && s.agentDecisions != nil {
-			_, _ = s.agentDecisions.Release(meta.RoomID, meta.DecisionID)
+			s.agentDecisions.FailPlayback(meta.RoomID, meta.DecisionID, event.SpeechTaskID, event.Error)
 		}
 	}
 	if completedRecord != nil {
@@ -513,7 +541,7 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 				},
 			}, "", 0)
 		}
-		if event.Status == "COMPLETED" && meta.HumanizationApplied && strings.TrimSpace(meta.HumanizationStrategy) != "" {
+		if !duplicateTerminal && event.Status == "COMPLETED" && meta.HumanizationApplied && strings.TrimSpace(meta.HumanizationStrategy) != "" {
 			s.brain.RecordPin(meta.RoomID, timeline.Pin{
 				At:       event.OccurredAt,
 				Kind:     timeline.PinHumanization,

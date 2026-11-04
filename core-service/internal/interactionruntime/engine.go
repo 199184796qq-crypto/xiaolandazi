@@ -120,6 +120,7 @@ type command struct {
 	Users       map[string]bool
 }
 type room struct {
+	PreparationReason                   string
 	Scope                               Scope
 	Started, LastEvent, LastInteraction time.Time
 	Tasks                               map[string]*Task
@@ -549,7 +550,7 @@ func (e *Engine) jobs(now time.Time, limit int, batch bool) [][]Work {
 				e.cancel(r, t, "original_event_expired")
 				t.State = "expired"
 			}
-			if t.Work.Template == "" && t.State == "collecting" && classificationEnabled(r, t.Work.Kind) && !now.Before(t.Work.Due) && (t.Work.WelcomeQuota || (batch && semanticKind(t.Work.Kind)) || !now.Before(r.Cool[t.Work.Kind])) && !(batch && semanticKind(t.Work.Kind) && preparing) {
+			if t.Work.Template == "" && t.State == "collecting" && preparationAllowed(r, t.Work.Kind, now) && classificationEnabled(r, t.Work.Kind) && !now.Before(t.Work.Due) && (t.Work.WelcomeQuota || (batch && semanticKind(t.Work.Kind)) || !now.Before(r.Cool[t.Work.Kind])) && !(batch && semanticKind(t.Work.Kind) && preparing) {
 				tasks = append(tasks, t)
 			}
 		}

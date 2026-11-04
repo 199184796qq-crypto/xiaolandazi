@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
 	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/agentwork"
+	"livecompanion/core/internal/audioout"
+	"livecompanion/core/internal/messagecaptain"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/speechruntime"
 )
@@ -159,13 +162,24 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "interaction_v2_expired"})
 		return
 	}
+	head := s.agentDecisions.ClaimableHead(roomID)
+	if head == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "deferred"})
+		return
+	}
+	queue = []agentdecision.Item{*head}
+	if !s.validInteractionV2Item(*head, roomID, tenantID, time.Now()) {
+		s.agentDecisions.Remove(roomID, head.ID)
+		writeJSON(w, 200, map[string]any{"claimed": false, "reason": "interaction_v2_expired"})
+		return
+	}
 	manualOrigin := strings.ToLower(strings.TrimSpace(queue[0].ManualOrigin))
 	if !observationExempt(manualOrigin) && s.inOpeningObservation(r.Context(), roomID, tenantID) {
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "opening_observation"})
 		return
 	}
 	if manualOrigin == "test_simulation" || manualOrigin == "agent_input_preview" {
-		item, claimed := s.agentDecisions.ClaimNext(roomID)
+		item, claimed := s.agentDecisions.ClaimExpected(roomID, queue[0].ID)
 		s.refreshClaimInteractionContext(roomID, item)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"claimed": claimed,
@@ -189,7 +203,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if s.agentWork.Mode(roomID) == agentwork.ModeControl {
-		item, claimed := s.agentDecisions.ClaimNext(roomID)
+		item, claimed := s.agentDecisions.ClaimExpected(roomID, queue[0].ID)
 		s.refreshClaimInteractionContext(roomID, item)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"claimed": claimed,
@@ -210,6 +224,19 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "mainline_low_buffer", "item": queue[0], "buffered_mainline_ms": program.BufferedMainlineMS})
 		return
 	}
+	check := s.InteractionPreparationWindow(r.Context(), audioout.InteractionPreflightRequest{RoomID: roomID, TenantID: tenantID, PlanID: s.agentWork.Get(roomID).PlanID, Epoch: s.currentInteractionEpoch(roomID), DecisionID: head.ID, Until: head.ExpiresAt, DurationMS: 3000})
+	if check.Allowed && s.messages != nil {
+		raw, _ := json.Marshal(audioout.InteractionPreflightRequest{TenantID: tenantID, RoomID: roomID, DecisionID: head.ID, DurationMS: 3000})
+		if errs := s.messages.Publish(r.Context(), messagecaptain.Message{Kind: "interaction.v2.preflight", RoomID: roomID, Payload: raw}); len(errs) > 0 {
+			check.Allowed = false
+			check.Reason = errs[0].Error()
+		}
+	}
+	if !check.Allowed {
+		s.agentDecisions.YieldPreparation(roomID, head.ID, check.Reason)
+		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": check.Reason, "retry_after_ms": 5000})
+		return
+	}
 	plannedSwitchMS := 0
 	currentMainline := ""
 	resumeMainline := ""
@@ -217,7 +244,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 	var preparationPlans []interactionCutPlan
 	// Text timelines are display-only. Claiming generation never waits for
 	// a legacy text preparation window; dispatch rechecks physical PCM cuts.
-	item, claimed := s.agentDecisions.ClaimNext(roomID)
+	item, claimed := s.agentDecisions.ClaimExpected(roomID, queue[0].ID)
 	if lowFlow && item != nil {
 		// Low-flow rooms (including an empty room with only a greeting event) do
 		// not wait for a semantic safe point once the answer audio is ready; the
@@ -328,7 +355,9 @@ func (s *Server) releaseRoomAgentDecision(w http.ResponseWriter, r *http.Request
 	}
 	var item *agentdecision.Item
 	var released bool
-	if r.URL.Query().Get("reason") == "cut_reschedule" {
+	if r.URL.Query().Get("reason") == "preflight" {
+		item, released = s.agentDecisions.YieldPreparation(roomID, id, r.URL.Query().Get("block_reason"))
+	} else if r.URL.Query().Get("reason") == "cut_reschedule" {
 		deadline, _ := time.Parse(time.RFC3339Nano, r.URL.Query().Get("prepared_until"))
 		item, released = s.agentDecisions.RescheduleCut(roomID, id, deadline)
 	} else {

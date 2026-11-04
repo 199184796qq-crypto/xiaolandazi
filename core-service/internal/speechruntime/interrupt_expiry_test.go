@@ -14,7 +14,7 @@ func TestExpiredInterruptOnlyFailsSameActiveTask(t *testing.T) {
 		want                                 bool
 	}{
 		{"same playing", "task", "decision", StatusPlaying, true},
-		{"same ready without start receipt", "task", "decision", StatusReady, true},
+		{"same ready without start receipt", "task", "decision", StatusReady, false},
 		{"replacement task", "old", "decision", StatusPlaying, false},
 		{"replacement decision", "task", "old", StatusPlaying, false},
 		{"manual pause", "task", "decision", StatusPaused, false},

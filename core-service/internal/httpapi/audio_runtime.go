@@ -86,21 +86,23 @@ func (s *Server) scheduleRoomAudioInteractionCompletion(roomID int64, task audio
 	if roomID <= 0 || strings.TrimSpace(task.ID) == "" || task.DurationMS <= 0 {
 		return
 	}
-	startedAt := task.StartedAt
-	if startedAt.IsZero() {
-		startedAt = time.Now().UTC()
+	deadline := time.Now().Add(15 * time.Second)
+	startedAt := time.Time{}
+	if s.speechRuntime != nil {
+		if snap, err := s.speechRuntime.Snapshot(roomID); err == nil && snap.Interrupt.SpeechTaskID == task.ID && snap.Interrupt.DecisionID == decisionID {
+			if snap.Interrupt.StartedAt != nil && snap.Interrupt.Status == speechruntime.StatusPlaying {
+				startedAt = *snap.Interrupt.StartedAt
+				deadline = startedAt.Add(time.Duration(snap.Interrupt.DurationMS)*time.Millisecond + 4*time.Second)
+			} else if snap.Interrupt.PreparedUntil != nil {
+				deadline = *snap.Interrupt.PreparedUntil
+			}
+		}
 	}
-	// Receiver COMPLETED/FAILED events normally close the interaction.
-	// This timer is only a fallback for a receiver that disappears, so leave
-	// enough grace for buffering/startup delay before force-completing it.
-	deadline := startedAt.Add(time.Duration(task.DurationMS+4000) * time.Millisecond)
 	delay := time.Until(deadline)
 	if delay < 0 {
 		delay = 0
 	}
-	time.AfterFunc(delay, func() {
-		s.expireRoomAudioInteraction(roomID, task, decisionID, startedAt, waitForMainline)
-	})
+	time.AfterFunc(delay, func() { s.expireRoomAudioInteraction(roomID, task, decisionID, startedAt, waitForMainline) })
 }
 
 func (s *Server) completeInteractionAfterMainlineResume(roomID int64, taskID, decisionID string) {
@@ -269,7 +271,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 
 	// Waiting TTL is checked when claiming. A claimed answer has its own
 	// execution lease, so a welcome cannot expire midway through TTS/cut wait.
-	dispatchCtx, dispatchCancel := context.WithTimeout(r.Context(), 40*time.Second)
+	dispatchCtx, dispatchCancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer dispatchCancel()
 	if decision.MissionKind == "time_report" {
 		var cancel context.CancelFunc
@@ -347,7 +349,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		// safe_points, text timeline flags and caller offsets cannot reactivate
 		// semantic switching or skipping.
 		acousticMode = true
-		maxLead := 30000
+		maxLead := 15000
 		deadline := decision.ExpiresAt
 		if decision.AudioPrepared && !decision.PreparedUntil.IsZero() {
 			deadline = decision.PreparedUntil
@@ -418,6 +420,47 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		})
 	}
 
+	originalDeadline := decision.ExpiresAt
+	if decision.AudioPrepared && !decision.PreparedUntil.IsZero() {
+		originalDeadline = decision.PreparedUntil
+	} else if !decision.CompletionUntil.IsZero() {
+		originalDeadline = decision.CompletionUntil
+	}
+	if decision.MissionKind == "time_report" && (originalDeadline.IsZero() || input.TimeReportValidUntil.Before(originalDeadline)) {
+		originalDeadline = input.TimeReportValidUntil
+	}
+	epoch := s.currentInteractionEpoch(roomID)
+	boundTaskID := ""
+	registered := false
+	registerPlayback := func(task audioout.SpeechTask) error {
+		if registered {
+			return nil
+		}
+		if s.currentInteractionEpoch(roomID) != epoch || !s.agentWork.IsWorking(roomID) || !s.agentDecisions.BindPlayback(roomID, input.DecisionID, task.ID) {
+			return fmt.Errorf("interaction identity changed before publication")
+		}
+		boundTaskID = task.ID
+		if state != nil {
+			state.mu.Lock()
+			if state.interactions[task.ID] == nil {
+				state.interactions[task.ID] = &audioInteractionMeta{RoomID: roomID, RuntimeEpoch: epoch, MissionID: input.MissionID, MissionKind: input.MissionKind, HumanizationStrategy: input.HumanizationStrategy, HumanizationKind: input.HumanizationKind, HumanizationApplied: input.HumanizationApplied, Topic: input.Topic, ResumeMode: resumeMode, BridgeText: input.BridgeText, BridgeUsed: bridgeUsed, DecisionID: input.DecisionID, QuestionText: input.Question, ReplyText: input.ReplyText, Source: source, AudioURL: input.AudioURL, WaitForMainline: !controlMode}
+			}
+			state.mu.Unlock()
+		}
+		until := time.Now().Add(15 * time.Second)
+		if !originalDeadline.IsZero() && originalDeadline.Before(until) {
+			until = originalDeadline
+		}
+		if s.speechRuntime != nil {
+			_, err := s.speechRuntime.Update(roomID, speechruntime.UpdateInput{Track: speechruntime.TrackInterrupt, Status: speechruntime.StatusReady, Text: input.ReplyText, QuestionText: input.Question, ReplyText: input.ReplyText, ResumeStrategy: resumeMode, BridgeText: input.BridgeText, BridgeUsed: bridgeUsed, Source: source, AudioURL: input.AudioURL, DecisionID: input.DecisionID, MissionID: input.MissionID, SwitchAtMS: switchAtMS, SpeechTaskID: task.ID, DurationMS: task.DurationMS, PreparedUntil: &until, KeepPlaybackState: true})
+			if err != nil {
+				return err
+			}
+		}
+		registered = true
+		return nil
+	}
+
 	var task audioout.SpeechTask
 	if controlMode {
 		sessionID := input.SessionID
@@ -464,6 +507,7 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		callbackURL := callbackBase + "/internal/v1/audio/events"
 		var snapshot audioout.RoomProgramSnapshot
 		snapshot, err = state.client.InsertTestProgramInteraction(dispatchCtx, audioout.InsertInteractionInput{
+			StartDeadline: originalDeadline, BeforePlayback: registerPlayback,
 			AcousticCut:    acousticMode,
 			ExpectedTaskID: program.Task.ID,
 			RoomID:         roomID,
@@ -483,9 +527,13 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		}
 	}
 	if err != nil {
+		if boundTaskID != "" {
+			s.agentDecisions.FailPlayback(roomID, input.DecisionID, boundTaskID, "publication_failed")
+		}
 		if s.speechRuntime != nil {
 			_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
 				Track:          speechruntime.TrackInterrupt,
+				ExpectedTaskID: boundTaskID, ExpectedDecisionID: input.DecisionID,
 				Status:         speechruntime.StatusFailed,
 				Text:           input.ReplyText,
 				QuestionText:   input.Question,
@@ -498,6 +546,10 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 				DecisionID:     input.DecisionID,
 				MissionID:      input.MissionID,
 			})
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeError(w, http.StatusConflict, "当前可用窗口内没有真实PCM声学切点，保留已合成声音继续排队")
+			return
 		}
 		if strings.Contains(err.Error(), "互动播出额度或原始期限暂不允许") {
 			writeError(w, http.StatusConflict, "互动播出额度或原始期限暂不允许，保留已合成声音继续排队")
@@ -515,63 +567,14 @@ func (s *Server) dispatchRoomAudioInteraction(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	s.agentDecisions.BindPlayback(roomID, input.DecisionID, task.ID)
-
+	if err := registerPlayback(task); err != nil {
+		writeError(w, http.StatusConflict, "interaction identity changed before playback")
+		return
+	}
 	if switchAtMS != nil {
 		s.agentDecisions.SetExecutionReceipt(roomID, input.DecisionID, actualInteractionCutLevel(program, *switchAtMS), input.SelectedContentPlan, input.PreparationCutPlans)
 	}
-	if state != nil {
-		state.mu.Lock()
-		state.interactions[task.ID] = &audioInteractionMeta{
-			RoomID:               roomID,
-			RuntimeEpoch:         s.currentInteractionEpoch(roomID),
-			MissionID:            input.MissionID,
-			MissionKind:          input.MissionKind,
-			HumanizationStrategy: input.HumanizationStrategy,
-			HumanizationKind:     input.HumanizationKind,
-			HumanizationApplied:  input.HumanizationApplied,
-			Topic:                input.Topic,
-			ResumeMode:           resumeMode,
-			BridgeText:           input.BridgeText,
-			BridgeUsed:           bridgeUsed,
-			DecisionID:           input.DecisionID,
-			QuestionText:         input.Question,
-			ReplyText:            input.ReplyText,
-			Source:               source,
-			AudioURL:             input.AudioURL,
-			WaitForMainline:      !controlMode,
-		}
-		state.mu.Unlock()
-	}
 
-	if s.speechRuntime != nil {
-		startedAt := task.StartedAt
-		if startedAt.IsZero() {
-			startedAt = time.Now().UTC()
-		}
-		durationMS := task.DurationMS
-		if durationMS <= 0 {
-			durationMS = estimatedInteractionDurationMS(input.ReplyText)
-		}
-		_, _ = s.speechRuntime.Update(roomID, speechruntime.UpdateInput{
-			Track:          speechruntime.TrackInterrupt,
-			Status:         speechruntime.StatusPlaying,
-			Text:           input.ReplyText,
-			QuestionText:   input.Question,
-			ReplyText:      input.ReplyText,
-			ResumeStrategy: resumeMode,
-			BridgeText:     input.BridgeText,
-			BridgeUsed:     bridgeUsed,
-			Source:         source,
-			AudioURL:       input.AudioURL,
-			DecisionID:     input.DecisionID,
-			MissionID:      input.MissionID,
-			SwitchAtMS:     switchAtMS,
-			SpeechTaskID:   task.ID,
-			DurationMS:     durationMS,
-			StartedAt:      &startedAt,
-		})
-	}
 	s.scheduleRoomAudioInteractionCompletion(roomID, task, input.DecisionID, !controlMode)
 	actualResumeSegmentID := ""
 	actualSkipCount := 0

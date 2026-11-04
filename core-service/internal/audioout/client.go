@@ -40,6 +40,8 @@ type CreateExternalTaskInput struct {
 }
 
 type InsertInteractionInput struct {
+	StartDeadline          time.Time              `json:"start_deadline,omitempty"`
+	BeforePlayback         func(SpeechTask) error `json:"-"`
 	AcousticCut            bool
 	AllowConsecutiveRepeat bool
 	DeferredReturn         bool

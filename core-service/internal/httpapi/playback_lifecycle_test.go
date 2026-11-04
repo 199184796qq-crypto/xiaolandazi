@@ -6,6 +6,7 @@ import (
 	"errors"
 	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/messagecaptain"
+	"livecompanion/core/internal/speechruntime"
 	"testing"
 	"time"
 )
@@ -51,6 +52,7 @@ func TestPCMPlayingReceiptKeepsRuntimeEpochAndTaskIdentity(t *testing.T) {
 	s.SetAudioClient(&fakeAudioTaskClient{}, "")
 	epoch := s.currentInteractionEpoch(94)
 	s.audioDevState().interactions["voice"] = &audioInteractionMeta{RoomID: 94, RuntimeEpoch: epoch, DecisionID: item.ID}
+	_, _ = s.speechRuntime.Update(94, speechruntime.UpdateInput{Track: speechruntime.TrackInterrupt, Status: speechruntime.StatusReady, DecisionID: item.ID, SpeechTaskID: "voice", DurationMS: 4000})
 	count := 0
 	s.messages.Register("receipt", func(_ context.Context, m messagecaptain.Message) error {
 		if m.Kind == "interaction.v2.playback" {

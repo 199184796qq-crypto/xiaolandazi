@@ -29,6 +29,7 @@ const (
 )
 
 type TrackState struct {
+	PreparedUntil  *time.Time `json:"prepared_until,omitempty"`
 	Status         Status     `json:"status"`
 	Text           string     `json:"text,omitempty"`
 	QuestionText   string     `json:"question_text,omitempty"`
@@ -67,22 +68,27 @@ type Snapshot struct {
 }
 
 type UpdateInput struct {
-	Track          Track      `json:"track"`
-	Status         Status     `json:"status"`
-	Text           string     `json:"text,omitempty"`
-	QuestionText   string     `json:"question_text,omitempty"`
-	ReplyText      string     `json:"reply_text,omitempty"`
-	ResumeStrategy string     `json:"resume_strategy,omitempty"`
-	BridgeText     string     `json:"bridge_text,omitempty"`
-	BridgeUsed     bool       `json:"bridge_used,omitempty"`
-	Source         string     `json:"source,omitempty"`
-	AudioURL       string     `json:"audio_url,omitempty"`
-	DecisionID     string     `json:"decision_id,omitempty"`
-	MissionID      string     `json:"mission_id,omitempty"`
-	SpeechTaskID   string     `json:"speech_task_id,omitempty"`
-	SwitchAtMS     *int       `json:"switch_at_ms,omitempty"`
-	DurationMS     int        `json:"duration_ms,omitempty"`
-	StartedAt      *time.Time `json:"started_at,omitempty"`
+	PreparedUntil      *time.Time `json:"prepared_until,omitempty"`
+	RequireIdentity    bool       `json:"-"`
+	ExpectedTaskID     string     `json:"-"`
+	ExpectedDecisionID string     `json:"-"`
+	KeepPlaybackState  bool       `json:"-"`
+	Track              Track      `json:"track"`
+	Status             Status     `json:"status"`
+	Text               string     `json:"text,omitempty"`
+	QuestionText       string     `json:"question_text,omitempty"`
+	ReplyText          string     `json:"reply_text,omitempty"`
+	ResumeStrategy     string     `json:"resume_strategy,omitempty"`
+	BridgeText         string     `json:"bridge_text,omitempty"`
+	BridgeUsed         bool       `json:"bridge_used,omitempty"`
+	Source             string     `json:"source,omitempty"`
+	AudioURL           string     `json:"audio_url,omitempty"`
+	DecisionID         string     `json:"decision_id,omitempty"`
+	MissionID          string     `json:"mission_id,omitempty"`
+	SpeechTaskID       string     `json:"speech_task_id,omitempty"`
+	SwitchAtMS         *int       `json:"switch_at_ms,omitempty"`
+	DurationMS         int        `json:"duration_ms,omitempty"`
+	StartedAt          *time.Time `json:"started_at,omitempty"`
 }
 
 type roomState struct {
@@ -155,6 +161,16 @@ func (r *Registry) Update(roomID int64, input UpdateInput) (Snapshot, error) {
 	if track == TrackInterrupt {
 		target = &state.interrupt
 	}
+	if input.ExpectedDecisionID != "" && (target.Status == StatusPaused || (input.RequireIdentity && (target.DecisionID != input.ExpectedDecisionID || target.SpeechTaskID != input.ExpectedTaskID))) {
+		return snapshotLocked(roomID, state, r.now().UTC()), errors.New("interaction playback identity changed")
+	}
+	if input.ExpectedDecisionID != "" && ((target.DecisionID != "" && target.DecisionID != input.ExpectedDecisionID) || (target.SpeechTaskID != "" && target.SpeechTaskID != input.ExpectedTaskID)) {
+		return snapshotLocked(roomID, state, r.now().UTC()), errors.New("interaction playback identity changed")
+	}
+	sameIdentity := target.DecisionID == strings.TrimSpace(input.DecisionID) && (target.SpeechTaskID == "" || input.SpeechTaskID == "" || target.SpeechTaskID == strings.TrimSpace(input.SpeechTaskID))
+	if input.KeepPlaybackState && sameIdentity && (target.Status == StatusPlaying || target.Status == StatusReturning || target.Status == StatusCompleted || target.Status == StatusFailed) && input.Status == StatusReady {
+		return snapshotLocked(roomID, state, r.now().UTC()), nil
+	}
 
 	status := input.Status
 	if status == "" {
@@ -172,7 +188,7 @@ func (r *Registry) Update(roomID int64, input UpdateInput) (Snapshot, error) {
 		*target = TrackState{Status: StatusIdle, UpdatedAt: timePtr(now)}
 	} else {
 		startedAt := input.StartedAt
-		if startedAt == nil && target.StartedAt != nil {
+		if startedAt == nil && sameIdentity && target.StartedAt != nil {
 			value := target.StartedAt.UTC()
 			startedAt = &value
 		}
@@ -180,7 +196,7 @@ func (r *Registry) Update(roomID int64, input UpdateInput) (Snapshot, error) {
 			startedAt = timePtr(now)
 		}
 		durationMS := input.DurationMS
-		if durationMS <= 0 {
+		if durationMS <= 0 && sameIdentity {
 			durationMS = target.DurationMS
 		}
 		text := strings.TrimSpace(input.Text)
@@ -195,6 +211,7 @@ func (r *Registry) Update(roomID int64, input UpdateInput) (Snapshot, error) {
 		}
 		timeline := buildTimeline(text, durationMS)
 		*target = TrackState{
+			PreparedUntil:  cloneTime(input.PreparedUntil),
 			Status:         status,
 			Text:           strings.TrimSpace(input.Text),
 			QuestionText:   strings.TrimSpace(input.QuestionText),

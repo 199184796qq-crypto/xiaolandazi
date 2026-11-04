@@ -1,9 +1,11 @@
 package paidpipeline
 
 import (
+	"context"
 	"fmt"
 	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/agentwork"
+	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/basepipeline"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/roombrain"
@@ -16,21 +18,22 @@ import (
 // Processor owns the single automatic interaction runtime. Missing model
 // configuration never falls back to a second heuristic scheduler.
 type Processor struct {
-	interactionV2  atomic.Pointer[interactionV2State]
-	cutMessages    cutMessageState
-	scheduleMu     sync.Mutex
-	schedules      map[int64]sessionSchedule
-	timeReportMu   sync.Mutex
-	timeReports    map[int64]*timeReportSchedule
-	contextReader  func(int64) (string, string)
-	tenantResolver func(int64) (int64, bool)
-	warmupEligible func(int64) bool
-	audioStarted   func(int64) time.Time
-	runtime        *agentwork.Registry
-	decisions      *agentdecision.Queue
-	policies       *strategycenter.Store
-	brain          *roombrain.Manager
-	now            func() time.Time
+	preparationReader func(context.Context, audioout.InteractionPreflightRequest) audioout.InteractionPreflightResult
+	interactionV2     atomic.Pointer[interactionV2State]
+	cutMessages       cutMessageState
+	scheduleMu        sync.Mutex
+	schedules         map[int64]sessionSchedule
+	timeReportMu      sync.Mutex
+	timeReports       map[int64]*timeReportSchedule
+	contextReader     func(int64) (string, string)
+	tenantResolver    func(int64) (int64, bool)
+	warmupEligible    func(int64) bool
+	audioStarted      func(int64) time.Time
+	runtime           *agentwork.Registry
+	decisions         *agentdecision.Queue
+	policies          *strategycenter.Store
+	brain             *roombrain.Manager
+	now               func() time.Time
 }
 
 func New(runtime *agentwork.Registry, decisions *agentdecision.Queue, policies ...*strategycenter.Store) *Processor {

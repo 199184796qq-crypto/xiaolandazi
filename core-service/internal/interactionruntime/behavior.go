@@ -240,7 +240,7 @@ func (e *Engine) TemplateBatches(now time.Time, limit int) []Batch {
 	var candidates []*Task
 	for _, r := range e.rooms {
 		for _, t := range r.Tasks {
-			if t.Work.Template != "" && t.State == "collecting" && enabled(r, t.Work.Kind) && now.Before(t.Work.Expires) {
+			if t.Work.Template != "" && t.State == "collecting" && preparationAllowed(r, t.Work.Kind, now) && enabled(r, t.Work.Kind) && now.Before(t.Work.Expires) {
 				candidates = append(candidates, t)
 			}
 		}

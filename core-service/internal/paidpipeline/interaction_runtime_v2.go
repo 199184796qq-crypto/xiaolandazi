@@ -226,18 +226,31 @@ func (p *Processor) tickInteractionV2(ctx context.Context, now time.Time) {
 		if !p.InteractionsAllowed(s.Room, s.Tenant) {
 			continue
 		}
+
+		gate := p.preparationCheck(ctx, s, "", 3000, now)
+		v.engine.SetPreparationBlocked(s, gate.Reason, now)
+		if !gate.Allowed && gate.Reason != "audio_duration_budget" {
+			continue
+		}
 		queue := p.decisions.Snapshot(s.Room).Queue
-		if len(queue) > 0 {
-			// Only our one unplayed item may be superseded by an urgent ready
-			// answer. Manual items and playing audio retain their ownership.
+		eligible := queue[:0]
+		for _, item := range queue {
+			// A report entitlement is not ownership of the whole execution lane.
+			if item.MissionKind == "time_report" && item.Status == agentdecision.StatusPending && item.PlaybackTaskID == "" {
+				continue
+			}
+			eligible = append(eligible, item)
+		}
+		if len(eligible) > 0 {
 			var envelope struct {
 				Protocol string `json:"protocol"`
 			}
-			json.Unmarshal(queue[0].PurposeKnowledge, &envelope)
-			if len(queue) != 1 || queue[0].PlaybackTaskID != "" || queue[0].Status == agentdecision.StatusClaimed || envelope.Protocol != interactionruntime.Protocol {
+			json.Unmarshal(eligible[0].PurposeKnowledge, &envelope)
+			if len(eligible) != 1 || eligible[0].PlaybackTaskID != "" || eligible[0].Status == agentdecision.StatusClaimed || envelope.Protocol != interactionruntime.Protocol {
 				continue
 			}
 		}
+
 		t := v.engine.Select(s, now)
 		if t == nil {
 			continue

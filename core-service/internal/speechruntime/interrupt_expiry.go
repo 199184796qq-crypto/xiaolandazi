@@ -19,10 +19,10 @@ func (r *Registry) FailExpiredInterrupt(roomID int64, taskID, decisionID string,
 	}
 	now := r.now().UTC()
 	track := &state.interrupt
-	if track.SpeechTaskID != taskID || track.DecisionID != decisionID || (track.Status != StatusPlaying && track.Status != StatusReady) {
+	if track.SpeechTaskID != taskID || track.DecisionID != decisionID || track.Status != StatusPlaying {
 		return snapshotLocked(roomID, state, now), false
 	}
-	started := fallbackStart
+	var started time.Time
 	if track.StartedAt != nil {
 		started = *track.StartedAt
 	}
@@ -34,4 +34,43 @@ func (r *Registry) FailExpiredInterrupt(roomID int64, taskID, decisionID string,
 	state.revision++
 	state.updatedAt = timePtr(now)
 	return snapshotLocked(roomID, state, now), true
+}
+
+// FailUnstartedInterrupt uses only the finite preparation/start deadline.
+func (r *Registry) FailUnstartedInterrupt(roomID int64, taskID, decisionID string, until time.Time) (Snapshot, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.rooms[roomID]
+	if state == nil {
+		return Snapshot{}, false
+	}
+	now := r.now().UTC()
+	t := &state.interrupt
+	if t.SpeechTaskID != taskID || t.DecisionID != decisionID || t.Status != StatusReady || t.StartedAt != nil || until.IsZero() || now.Before(until) {
+		return snapshotLocked(roomID, state, now), false
+	}
+	t.Status = StatusFailed
+	t.UpdatedAt = timePtr(now)
+	state.revision++
+	state.updatedAt = timePtr(now)
+	return snapshotLocked(roomID, state, now), true
+}
+
+func (r *Registry) FailCurrentInterrupt(roomID int64, taskID, decisionID string) (Snapshot, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.rooms[roomID]
+	if s == nil {
+		return Snapshot{}, false
+	}
+	now := r.now().UTC()
+	t := &s.interrupt
+	if t.SpeechTaskID != taskID || t.DecisionID != decisionID || (t.Status != StatusReady && t.Status != StatusPlaying && t.Status != StatusReturning) {
+		return snapshotLocked(roomID, s, now), false
+	}
+	t.Status = StatusFailed
+	t.UpdatedAt = timePtr(now)
+	s.revision++
+	s.updatedAt = timePtr(now)
+	return snapshotLocked(roomID, s, now), true
 }

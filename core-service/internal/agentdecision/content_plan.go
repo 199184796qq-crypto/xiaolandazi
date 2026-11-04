@@ -52,7 +52,7 @@ func (q *Queue) BindPlayback(roomID int64, id, taskID string) bool {
 		return false
 	}
 	for _, item := range state.items {
-		if item.ID == id && item.Status == StatusClaimed {
+		if item.ID == id && item.Status == StatusClaimed && (item.PlaybackTaskID == "" || item.PlaybackTaskID == taskID) {
 			item.PlaybackTaskID = taskID
 			return true
 		}

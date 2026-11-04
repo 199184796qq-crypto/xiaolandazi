@@ -11,7 +11,7 @@ func TestCutReschedulePreservesPreparedAnswerWithoutSpendingGenerationRetry(t *t
 	item := q.Enqueue(27, Candidate{Topic: "shipping", Scene: "product_question", MaxRetries: 0, PreparedTaskID: "old-track", PreparedCutMS: 26376}).Item
 	expires := item.ExpiresAt
 	var protection time.Time
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := 0; attempt < 2; attempt++ {
 		claimed, ok := q.ClaimNext(27)
 		if !ok || claimed.Attempts != 1 {
 			t.Fatalf("failed to reclaim prepared answer: %+v", claimed)
@@ -32,9 +32,9 @@ func TestCutReschedulePreservesPreparedAnswerWithoutSpendingGenerationRetry(t *t
 		if _, ok := q.ClaimNext(27); ok {
 			t.Fatal("cut reschedule should yield briefly to other queued work")
 		}
-		now = now.Add(time.Second)
+		now = now.Add(5 * time.Second)
 	}
-	now = expires.Add(time.Millisecond)
+	now = protection.Add(-time.Millisecond)
 	if _, ok := q.ClaimNext(27); !ok {
 		t.Fatal("prepared audio expired with ordinary event TTL")
 	}

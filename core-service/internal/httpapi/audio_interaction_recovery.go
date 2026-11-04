@@ -34,12 +34,11 @@ func (s *Server) forceAbortRoomAudioInteraction(roomID int64, taskID, decisionID
 		return
 	}
 	if s.speechRuntime != nil {
-		if speech, snapErr := s.speechRuntime.Snapshot(roomID); snapErr == nil {
-			startedAt := time.Now()
-			if speech.Interrupt.StartedAt != nil {
-				startedAt = *speech.Interrupt.StartedAt
+		if _, snapErr := s.speechRuntime.Snapshot(roomID); snapErr == nil {
+
+			if _, failed := s.speechRuntime.FailCurrentInterrupt(roomID, taskID, decisionID); failed && s.agentDecisions != nil {
+				s.agentDecisions.FailPlayback(roomID, decisionID, taskID, reason)
 			}
-			_, _ = s.speechRuntime.FailExpiredInterrupt(roomID, taskID, decisionID, startedAt, 0)
 		}
 	}
 	log.Printf(
@@ -52,7 +51,24 @@ func (s *Server) expireRoomAudioInteraction(roomID int64, task audioout.SpeechTa
 	if s.speechRuntime == nil {
 		return
 	}
-	snapshot, expired := s.speechRuntime.FailExpiredInterrupt(roomID, task.ID, decisionID, startedAt, 4*time.Second)
+
+	s.reconcileInteractionPCM(roomID, task.ID, decisionID)
+	current, err := s.speechRuntime.Snapshot(roomID)
+	if err != nil {
+		return
+	}
+	var snapshot speechruntime.Snapshot
+	var expired bool
+	if current.Interrupt.Status == speechruntime.StatusReady && current.Interrupt.StartedAt == nil {
+		until := time.Time{}
+		if current.Interrupt.PreparedUntil != nil {
+			until = *current.Interrupt.PreparedUntil
+		}
+		snapshot, expired = s.speechRuntime.FailUnstartedInterrupt(roomID, task.ID, decisionID, until)
+	} else {
+		snapshot, expired = s.speechRuntime.FailExpiredInterrupt(roomID, task.ID, decisionID, time.Time{}, 4*time.Second)
+	}
+
 	if !expired {
 		if snapshot.Interrupt.SpeechTaskID == task.ID && snapshot.Interrupt.DecisionID == decisionID && (snapshot.Interrupt.Status == speechruntime.StatusPlaying || snapshot.Interrupt.Status == speechruntime.StatusReady) {
 			task.StartedAt = startedAt
@@ -69,7 +85,11 @@ func (s *Server) expireRoomAudioInteraction(roomID int64, task audioout.SpeechTa
 	// pause/stop/replacement before it releases the return gate.
 	s.recoverExpiredRoomAudioInteraction(roomID, task.ID, decisionID, 0)
 	if decisionID != "" && s.agentDecisions != nil {
-		_, _ = s.agentDecisions.Release(roomID, decisionID)
+		reason := "terminal_receipt_missing"
+		if current.Interrupt.Status == speechruntime.StatusReady && current.Interrupt.StartedAt == nil {
+			reason = "source_start_timeout"
+		}
+		s.agentDecisions.FailPlayback(roomID, decisionID, task.ID, reason)
 	}
 }
 
@@ -105,4 +125,40 @@ func (s *Server) recoverExpiredRoomAudioInteraction(roomID int64, taskID, decisi
 	time.AfterFunc(delay, func() {
 		s.recoverExpiredRoomAudioInteraction(roomID, taskID, decisionID, min(attempt+1, 4))
 	})
+}
+
+type interactionPCMReader interface {
+	InteractionPlaybackSnapshot(context.Context, int64, string) (audioout.InteractionPlaybackReceipt, error)
+}
+
+func (s *Server) reconcileInteractionPCM(roomID int64, taskID, decisionID string) {
+	state := s.audioDevState()
+	if state == nil {
+		return
+	}
+	reader, ok := state.client.(interactionPCMReader)
+	if !ok {
+		return
+	}
+	r, err := reader.InteractionPlaybackSnapshot(context.Background(), roomID, taskID)
+	if err != nil || r.RoomID != roomID || r.TaskID != taskID || r.DecisionID != decisionID {
+		return
+	}
+	state.mu.Lock()
+	meta := state.interactions[taskID]
+	valid := meta != nil && meta.RoomID == roomID && meta.DecisionID == decisionID && meta.RuntimeEpoch == s.currentInteractionEpoch(roomID)
+	state.mu.Unlock()
+	if !valid {
+		return
+	}
+	if r.Event.Status == "COMPLETED" || r.Event.Status == "FAILED" {
+		s.applyAudioInteractionPlaybackEvent(context.Background(), state, r.Event)
+		return
+	}
+	if !r.StartedAt.IsZero() {
+		event := r.Event
+		event.Status = "PLAYING"
+		event.OccurredAt = r.StartedAt
+		s.applyAudioInteractionPlaybackEvent(context.Background(), state, event)
+	}
 }
