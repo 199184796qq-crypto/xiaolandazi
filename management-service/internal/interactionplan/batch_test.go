@@ -37,8 +37,8 @@ func TestBatchOneThroughTenUsesOneCallAndIndependentContexts(t *testing.T) {
 				if len(req.Messages) != 2 || strings.Count(req.Messages[0].Content, s.Prompt) != 1 || req.Stage != "interaction_purpose_resolution" || req.MaxTokens != 900*n {
 					t.Fatalf("wrong shared prompt/budget: %+v", req)
 				}
-				if !strings.Contains(req.Messages[0].Content, s.P0) {
-					t.Fatal("batch must carry complete effective P0")
+				if strings.Contains(req.Messages[0].Content, s.P0) || strings.Contains(req.Messages[0].Content, "【本场有效P0】") {
+					t.Fatal("batch generation must leave P0 in the program-side post-check")
 				}
 				var payload struct {
 					Items    []BatchItem `json:"items"`

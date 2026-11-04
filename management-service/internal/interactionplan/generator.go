@@ -254,14 +254,15 @@ func request(s Snapshot, template, stage string, payload any, format agentgatewa
 		return agentgateway.Request{}, err
 	}
 	// 方案提示词里的输出格式段是给人看的规范，每次调用都带既费 token 又和本次
-	// 任务的输出契约冲突，拼装时直接剥掉。完整冻结P0仍作为公共内容约束携带。
+	// 任务的输出契约冲突，拼装时直接剥掉。P0只用于返回正文的后置校验，
+	// 不再作为额外提示词发送给生成模型；冻结的规则和指纹仍保留在程序侧。
 	// 任务模板为空时不再附加任何指令，模型只按方案提示词回答。
 	prompt := stripFormatSection(s.Prompt)
 	// 批量模板的输出契约由 GenerateBatch 按人数追加，此处不叠加单条契约。
 	if template != "interaction-v2-batch.md" {
 		prompt += "\n\n" + OutputContract
 	}
-	messages := []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + prompt + "\n\n【本场有效P0】\n" + s.P0}}
+	messages := []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + prompt}}
 	if task := strings.TrimSpace(string(md)); task != "" {
 		messages = append(messages, agentgateway.Message{Role: "system", Content: task})
 	}

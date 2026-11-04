@@ -62,7 +62,7 @@ func fixture(t *testing.T) Snapshot {
 	}
 	return s
 }
-func TestIntentAndBodyUseOnlyPlanAndCompleteP0(t *testing.T) {
+func TestIntentAndBodyUsePlanWithoutAdditionalP0Prompt(t *testing.T) {
 	s := fixture(t)
 	var requests []agentgateway.Request
 	complete := func(ctx context.Context, r agentgateway.Request) (agentgateway.Response, error) {
@@ -80,8 +80,8 @@ func TestIntentAndBodyUseOnlyPlanAndCompleteP0(t *testing.T) {
 		if len(r.Messages) < 2 || len(r.Messages) > 3 {
 			t.Fatal("interaction request must be plan prompt (+ optional task) + payload")
 		}
-		if !strings.Contains(r.Messages[0].Content, s.P0) {
-			t.Fatal("complete effective P0 missing from interaction prompt")
+		if strings.Contains(r.Messages[0].Content, s.P0) || strings.Contains(r.Messages[0].Content, "【本场有效P0】") {
+			t.Fatal("generation request must not append P0")
 		}
 		if !strings.Contains(r.Messages[0].Content, "方案提示词") {
 			t.Fatal("missing plan prompt")
@@ -124,19 +124,13 @@ func TestJoinNeverRewritesFrozenBodyOrInventsAddress(t *testing.T) {
 	body := "第二天上午发货，特殊时间以客服确认为准。"
 	for _, output := range []string{"小王，" + body, "小王！" + body, "小李，" + body, "小王，保证今天发货。", "小王，谢谢你，" + body} {
 		t.Run(output, func(t *testing.T) {
-			got, err := Join(context.Background(), s, "小王", body, func(_ context.Context, r agentgateway.Request) (agentgateway.Response, error) {
-				for _, m := range r.Messages {
-					if m.Role == "system" && strings.Contains(m.Content, "本场冻结的方案提示词") && !strings.Contains(m.Content, s.P0) {
-						t.Fatal("missing complete frozen P0 in joining prompt")
-					}
-				}
-				if !strings.Contains(r.Messages[0].Content, "本场冻结的方案提示词") {
-					t.Fatal("join missing frozen plan prompt")
-				}
+			calls := 0
+			got, err := Join(context.Background(), s, "小王", body, func(_ context.Context, _ agentgateway.Request) (agentgateway.Response, error) {
+				calls++
 				return agentgateway.Response{Text: output}, nil
 			})
-			if err != nil || !strings.HasSuffix(got, body) || !(strings.HasPrefix(got, "小王，") || got == "小王！"+body) {
-				t.Fatal(got, err)
+			if err != nil || got != "小王，"+body || calls != 0 {
+				t.Fatal(got, err, calls)
 			}
 		})
 	}

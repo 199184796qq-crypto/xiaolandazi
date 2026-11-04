@@ -21,8 +21,8 @@ func TestAuditCompiledInteractionUsesOneRuntimeContractAndUnifiedBody(t *testing
 		if strings.Count(prompt, "【输出格式") != 1 || strings.Contains(prompt, "回答：可直接口播") {
 			t.Error("conflicting contracts in actual request")
 		}
-		if !strings.Contains(prompt, s.P0) {
-			t.Error("complete effective P0 missing from generation request")
+		if strings.Contains(prompt, s.P0) || strings.Contains(prompt, "【本场有效P0】") {
+			t.Error("generation request appended program-side P0")
 		}
 		return agentgateway.Response{Text: unifiedBlock("U02") + "\n" + unifiedBlock("U01")}, nil
 	})
