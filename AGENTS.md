@@ -1671,3 +1671,31 @@
 全部拥有路径编辑结束并已交接释放。基线41c9fb059882dbe1dac4b47b7639b00f6855f917；17份其它共享tracked修改逐字节保持，未代提交/发布P0/Core/前端或其它母版差异。完整源码/构建/测试/母版同步/部署/核验证据 E:/直播伴播-local/interaction-format-release-20261104/completion.json；说明 E:/直播伴播/docs/2026-11-04-互动解析容错与母版同步发布.md。真实模型/TTS/ASR测试调用0，未替用户开播，无新场扬声器实播验收。队列公平性/上游反压和上述P0误拦仍是独立问题，不冒称本次已修复。
 
 回退须取得共享发布锁、重新核对actual current指纹及全场/Core/采集空闲；仅反向恢复本轮Management、两份母版及其清单条目，保护后继发布、运维已保存覆盖、全部客户方案/事实/声音缓存/队列和前端；不得清缓存、停用户直播或恢复旧监控。前驱为 /opt/xiaolan/releases/20261104-acoustic-report-be66b8d，完整前驱文件仍保留。
+
+
+## 互动播出等待与误判修复接手（2026-11-04）
+
+用户明确“修复计划和修复然后上线”。负责人Codex领取 E:/直播伴播-local/interaction-playout-fix-20261104/baseline.json 内完整路径，原件与共享基线同目录；前轮拥有已释放。按C真实PCM起点/有限启动与台账对账、B未起播报时让位、A Core生成与Management TTS前声学/时长/原期限预检实施，保持真实切点、P0和已付费媒体保护。本次按用户新授权将无可播窗口/额度不足时的新增正文模型暂缓，原始弹幕和原截止保留，恢复按新鲜度处理；不增加模型阶段、提示词或付费测试。只提交拥有增量，从actual current完整源码构建，两端完整检查后共享锁/全场空闲/最新指纹发布Core与Management，保护前端/母版/客户数据和其它17份共享tracked差异，不恢复640监控。状态：计划与本地实现中。
+
+本轮追加领取回归夹具完整路径：E:\直播伴播\core-service\internal\agentdecision\cut_reschedule_test.go、E:\直播伴播\management-service\internal\decisionexecutor\worker_test.go、E:\直播伴播\core-service\internal\httpapi\audio_dev_test.go、E:\直播伴播\core-service\internal\httpapi\original_interaction_claim_test.go、E:\直播伴播\core-service\internal\httpapi\acoustic_claim_test.go。仅适配新预检RPC/真实PCM就绪及有限等待契约，原安全断言保留；修改前原件/SHA已入baseline.json。
+
+本轮边界复核追加领取 E:/直播伴播/core-service/internal/agentdecision/content_plan.go，仅强化同一领取项的播放任务绑定CAS，防同decision被不同task覆盖；原件/SHA已保存本轮baseline。
+
+本轮追加领取 E:/直播伴播/core-service/internal/httpapi/playback_lifecycle_test.go，给身份回执旧夹具补实际派发前必有的Ready绑定，原首帧预算/旧epoch/身份断言保持；原件已保存。
+
+
+## 互动播出等待、报时让位与PCM误判修复已上线（2026-11-04）
+
+用户明确“修复计划和修复然后上线”。源码 a096efe592d5d547b8d80a53f875093fb2be84b9 已选择性提交推送，北京时间 2026-11-04 17:11:37 发布 20261104-interaction-playout-a096efe。Core PID2374311 / SHA 11e3f75dfadcd083387fcf9d915e06c70019fa930a6606218cff13f5202e4867，Management PID2374323 / SHA a3bc99ab4127540b359affc1315502d364b9cc888e7e2c495efe2b3e381c8945；网关因Core依赖随动重启但程序SHA保持。只更新两个后台，无迁移、前端/母版/配置改动、客户方案/缓存/队列手工写入或开停播，不恢复640监控。
+
+Core正文批次、Management模型/TTS前检查当前运行身份、原期限、真实PCM切点及滚动60秒40/30/20秒播出时长额度；这不是小时金额预算。无可播窗口暂缓新增正文，原始弹幕及原截止保留，过期维护仍执行。模型后TTS前窗口变化用完整身份/原截止草稿避免重复买正文，变化不重标原生成时间；报时沿已有时间感知缓存。
+
+未起播报时预检失败5秒有限退避，V2接纳忽略未领取报时，按实际可执行候选校验/领取；已绑定PCM任务不可让位或改绑。声音切点重排固定15秒准备期不续期，已付费声音保留。Ready不计播放时长，启动另限最多15秒且受原文字期限约束；派发前注册身份，真实首PCM才记StartedAt，声音时长+4秒只用于起播后。Core先写PCM台账再发回执，超时先对账真实EOF；缺证据仍失败，重复/旧场/跨房间/替换/暂停/停止有CAS保护，失败不滞留领取通道。Returning仍须实际主线恢复。
+
+真实本地WAV延迟读取越过旧4.12秒线仍Ready，释放后首PCM/EOF一次；可控时钟延迟10秒、报时等60秒时其它12条完成、无窗口/满时长额度不调新增模型/TTS、已生成正文复用、EOF漏回调恢复与错误身份/暂停/停止均验证。正式候选Core734/Management3604共4338测试/子测试通过，140条件跳过，102有测试包通过；vet/Linux及10空闲守卫通过。初始旧RPC/等待断言和缺Ready身份夹具失败均保留，原保护未放松；Windows未跑race。
+
+前驱两端SHA完整独立复现，仅整合42个拥有路径，17份其它共享tracked差异逐字节保持。共享锁、最新完整指纹和重复全场/Core/采集空闲后激活，三健康200，公网三端/鉴权/标准生产冒烟通过；32保护表完整行列/全库结构索引、5064项旧非目标文件、全部母版/配置保持；3972项完整前端备份逐文件SHA/大小/权限匹配并更新权威指针。只清理本轮核验上传暂存1个，历史发布/客户付费媒体保留，清理后再次核验通过。
+
+计划 E:/直播伴播/docs/2026-11-04-互动播出等待与误判修复计划.md；说明 E:/直播伴播/docs/2026-11-04-互动播出等待修复发布记录.md；完整源码/测试/构建/部署/核验 E:/直播伴播-local/interaction-playout-fix-20261104，源归档SHA f6435e25bd1e8342716057079a449e5ede9458b7771ea60ec2259fd12a5cbaa5。本条覆盖本轮此前接手/实现中状态，全部拥有路径已释放。预检不保证供应商迟到/中途停播/实际时长与估计差时绝无已付费未播；历史6空档/7失败不能逐项补证或等同观众静音。真实付费测试调用0，未做新场扬声器实播。
+
+回退须重新共享锁/全场空闲/最新actual current，只反向恢复本轮Core/Management，保护后继发布、前端/母版/客户资料和付费声音，不清缓存、不停用户直播或恢复旧监控。前驱 /opt/xiaolan/releases/20261104-interaction-format-2053771 完整保留。
