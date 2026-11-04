@@ -76,6 +76,11 @@ func prepareScriptFirstPaid(ctx context.Context, unit volcengineScriptUnit, gene
 }
 
 func (s *Server) ensureScriptFirstParagraph(ctx context.Context, tenant, room, session int64, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, allowSynthesis bool) (volcengineCachedAudio, error) {
+	var bindErr error
+	ctx, v, unit, bindErr = s.voiceAssetParagraph(ctx, tenant, v, unit)
+	if bindErr != nil {
+		return volcengineCachedAudio{}, bindErr
+	}
 	ctx = withScriptSharedAsset(ctx, v, room)
 	var audio volcengineCachedAudio
 	if v.VoiceIdentity.Model == ttsgateway.VolcengineICL2 {
@@ -169,6 +174,9 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 		return empty, err
 	}
 	audio := volcengineCachedAudio{AssetID: assetID, DurationMS: duration, VoiceID: generated.VoiceID, Timeline: timeline, UntimedTranscript: true}
+	if err = checkScriptGenerationGuard(ctx); err != nil {
+		return empty, err
+	}
 	cache.Audio[100] = audio
 	if err = writeVolcengineJSON(indexPath, cache); err != nil {
 		return empty, err

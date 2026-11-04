@@ -82,6 +82,18 @@ func (s *Local) Delete(_ context.Context, objectKey string) error {
 	return err
 }
 
+func (s *Local) Exists(_ context.Context, objectKey string) (bool, error) {
+	path, err := s.resolve(objectKey)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (s *Local) SignedURL(_ context.Context, _ string, _ time.Duration) (string, error) {
 	return "", nil
 }
@@ -95,6 +107,22 @@ func (s *Local) resolve(objectKey string) (string, error) {
 	rel, err := filepath.Rel(s.root, path)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", fmt.Errorf("media object key escapes storage root")
+	}
+	current := s.root
+	for _, part := range append([]string{""}, strings.Split(rel, string(filepath.Separator))...) {
+		if part != "" {
+			current = filepath.Join(current, part)
+		}
+		info, e := os.Lstat(current)
+		if os.IsNotExist(e) {
+			continue
+		}
+		if e != nil {
+			return "", e
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("media symlink is not allowed")
+		}
 	}
 	return path, nil
 }

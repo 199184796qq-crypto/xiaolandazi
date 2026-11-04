@@ -866,6 +866,7 @@ func (s *Server) archiveVoiceBundle(
 	raw []byte, durationMS int64, timeline []model.LiveAgentPlanTimelineSegment,
 	previewOnly bool, voiceRates ...float64,
 ) (fullShowVoiceArchiveResult, error) {
+	ctx = s.voiceUploadContext(ctx, tenantID, planID)
 	var result fullShowVoiceArchiveResult
 	voiceRate, err := optionalArchivedVoiceRate(voiceRates)
 	if err != nil {
@@ -882,6 +883,9 @@ func (s *Server) archiveVoiceBundle(
 	if ossStore, ossErr := s.assetStorage.For("oss"); ossErr == nil {
 		assetStore = ossStore
 	}
+	if err = recordVoiceUpload(ctx, assetStore.Driver(), assetStore.Bucket(), objectKey); err != nil {
+		return result, err
+	}
 	if err := assetStore.Put(ctx, objectKey, bytes.NewReader(raw), "audio/wav"); err != nil {
 		return result, err
 	}
@@ -894,6 +898,9 @@ func (s *Server) archiveVoiceBundle(
 	if strings.TrimSpace(srt) == "" {
 		_ = assetStore.Delete(ctx, objectKey)
 		return result, errors.New("正式声音字幕时间轴为空")
+	}
+	if err = recordVoiceUpload(ctx, assetStore.Driver(), assetStore.Bucket(), subtitleObjectKey); err != nil {
+		return result, err
 	}
 	if err := assetStore.Put(ctx, subtitleObjectKey, strings.NewReader(srt), "application/x-subrip; charset=utf-8"); err != nil {
 		_ = assetStore.Delete(ctx, objectKey)
@@ -969,6 +976,9 @@ func (s *Server) archiveVoiceBundle(
 	applyVolcengineArchiveInfo(ctx, manifest)
 	manifestRaw, _ := json.MarshalIndent(manifest, "", "  ")
 	putSidecar := func(key string, raw []byte, contentType string) error {
+		if err := recordVoiceUpload(ctx, assetStore.Driver(), assetStore.Bucket(), key); err != nil {
+			return err
+		}
 		if err := assetStore.Put(ctx, key, bytes.NewReader(raw), contentType); err != nil {
 			return err
 		}

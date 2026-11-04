@@ -17,6 +17,7 @@ import (
 	"livecompanion/management/internal/coreclient"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
+	"livecompanion/management/internal/voiceasset"
 	"livecompanion/management/internal/voicebatch"
 )
 
@@ -202,6 +203,10 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 	if v.VoiceIdentity.Rate == 0 {
 		v.VoiceIdentity.Rate = 1
 	}
+	_, v, err = s.voiceAssetGeneration(ctx, tenant, v)
+	if err != nil {
+		return err
+	}
 	// Only immutable audio is shared; room/session checkpoints stay separate.
 	dir, err := scriptFirstCacheDir(tenant, room, v)
 	if err != nil {
@@ -224,7 +229,8 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 	}
 	signature := ""
 	for _, unit := range units {
-		signature += unit.Key
+		// Clearing audio must not reset the durable playback sequence/cursor.
+		signature += scriptFirstParagraphLegacyKey(v, unit.Text)
 	}
 	signature = volcengineParagraphKey(id, signature, v.VoiceIdentity.Rate)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -325,10 +331,6 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			if e := checkOwner(c); e != nil {
 				return e
 			}
-			url, e := s.recordingStreamAssetURL(c, tenant, block.AssetID)
-			if e != nil {
-				return e
-			}
 			id := pending.ID
 			if len(pending.Audio.Blocks) > 0 {
 				id = scriptFirstTrackID(session, cursor.Sequence, pending.Unit, blockIndex)
@@ -336,20 +338,55 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			if pending.Audio.UntimedTranscript {
 				id += "-raw"
 			}
+			if e := s.store.LeaseVoiceAsset(c, tenant, block.AssetID, room, session, cursor.ProgramID, id); e != nil {
+				return e
+			}
+			// Reconcile an ambiguous earlier response from Core before retrying a
+			// pending lease. Only this exact session/track is accepted evidence.
+			if p, e := s.core.GetRoomProgramSnapshot(c, tenant, room); e == nil && p.Task.SessionID == fmt.Sprintf("volcengine-long-%d", session) {
+				seen := p.TrackID == id
+				for _, t := range p.FutureWindow {
+					seen = seen || t.ID == id
+				}
+				for _, r := range p.PlaybackReceipts {
+					seen = seen || r.TrackID == id
+				}
+				for _, r := range p.MainlinePlaybackReceipts {
+					seen = seen || r.TrackID == id
+				}
+				if seen {
+					if e = s.store.ConfirmVoiceAssetLease(c, tenant, block.AssetID, session, id, p.ProgramID); e != nil {
+						return e
+					}
+					if cursor.ProgramID == "" {
+						cursor.ProgramID = p.ProgramID
+					}
+				}
+			}
+			url, e := s.recordingStreamLeasedAssetURL(c, tenant, block.AssetID, session, id)
+			if e != nil {
+				return e
+			}
 			track := coreclient.ProgramRefreshTrack{ID: id, Label: "话术主线整段", Text: block.Text, AudioURL: url, DurationMS: int(block.DurationMS), AllowConsecutiveRepeat: true,
 				UntimedTranscript: pending.Audio.UntimedTranscript,
 				Timeline:          recordingStreamTimeline(block.Timeline), SafePoints: recordingStreamSafePoints(volcengineSemanticSafePoints(block.Timeline))}
-			if cursor.ProgramID == "" {
-				p, e := s.startLiveReadyProgram(c, tenant, room, v, fmt.Sprintf("volcengine-long-%d", session), fmt.Sprintf("话术整段 V%d", v.VersionNo), track)
-				if e != nil {
-					return e
+			e = s.store.DispatchVoiceAsset(c, tenant, block.AssetID, session, id, func() (string, error) {
+				if cursor.ProgramID == "" {
+					p, e := s.startLiveReadyProgram(c, tenant, room, v, fmt.Sprintf("volcengine-long-%d", session), fmt.Sprintf("话术整段 V%d", v.VersionNo), track)
+					if e != nil {
+						return "", e
+					}
+					cursor.ProgramID = p.ProgramID
+					s.reportLiveStartup(c, tenant, room, session, "sending_audio")
+				} else {
+					if _, e = s.appendRecordingStreamTrack(c, tenant, room, v, cursor.ProgramID, track); e != nil {
+						return "", e
+					}
 				}
-				cursor.ProgramID = p.ProgramID
-				s.reportLiveStartup(c, tenant, room, session, "sending_audio")
-			} else {
-				if _, e = s.appendRecordingStreamTrack(c, tenant, room, v, cursor.ProgramID, track); e != nil {
-					return e
-				}
+				return cursor.ProgramID, nil
+			})
+			if e != nil {
+				return e
 			}
 			found := false
 			for _, sent := range cursor.Delivered {
@@ -504,6 +541,13 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		}
 		if cursor.Pending != nil {
 			if err = publish(ctx); err != nil {
+				if errors.Is(err, voiceasset.ErrCleared) {
+					cursor.Pending = nil
+					if err = save(); err != nil {
+						return err
+					}
+					continue
+				}
 				if errors.Is(err, errVolcengineLivePaused) {
 					if err = waitLiveProducer(ctx); err == nil {
 						continue
@@ -574,6 +618,14 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		// This check is the sole paid lookahead gate: no next submission until
 		// buffered mainline reaches its length-based lead. One paragraph is in flight.
 		work, done := context.WithCancel(ctx)
+		work, generationVersion, e = s.voiceAssetGeneration(work, tenant, generationVersion)
+		if e != nil {
+			done()
+			if err = waitLiveProducer(ctx); err != nil {
+				return err
+			}
+			continue
+		}
 		if !voicebatch.Same(generationVersion.VoiceIdentity, state.Active) {
 			// Switching hosts is optional production: keep the current host's
 			// cache playing if the existing cost admission defers this purchase.
@@ -660,6 +712,7 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			cursor.VoiceBatch = staged.Batch + 1
 			known = map[int]volcengineCachedAudio{}
 		}
+		activeV = generationVersion
 		known[index] = audio
 		// 把这次合成结果登记进片段版本池：音色、模型、音量、指纹与实际音频。
 		// 现在生成器只返回原文，所以登记的一定是原始版本；改写接入后自动记改写。
@@ -668,6 +721,13 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		}
 
 		if err = queue(ctx, index, audio, true); err != nil {
+			if errors.Is(err, voiceasset.ErrCleared) {
+				cursor.Pending = nil
+				if err = save(); err != nil {
+					return err
+				}
+				continue
+			}
 			return err
 		}
 	}

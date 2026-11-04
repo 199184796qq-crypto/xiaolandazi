@@ -8,9 +8,18 @@ import (
 	"strings"
 
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/voiceasset"
 )
 
 func (s *Store) CreateMediaAsset(ctx context.Context, input model.CreateMediaAssetInput) (model.MediaAsset, error) {
+	if input.AssetType == "generated_voice" {
+		if _, ok := voiceasset.MetadataStamp(input.TenantID, input.AssetType, input.Metadata); ok {
+			return s.createScopedVoiceAsset(ctx, input)
+		}
+		if _, tagged := input.Metadata["voice_cache_stamp"]; tagged {
+			return model.MediaAsset{}, voiceasset.ErrConflict
+		}
+	}
 	metadataJSON, err := json.Marshal(defaultJSONMap(input.Metadata))
 	if err != nil {
 		return model.MediaAsset{}, err
@@ -79,7 +88,7 @@ func (s *Store) ListMediaAssets(ctx context.Context, tenantID int64, assetType s
 }
 
 func (s *Store) GetMediaAsset(ctx context.Context, tenantID, assetID int64) (model.MediaAsset, error) {
-	return scanMediaAsset(s.db.QueryRowContext(ctx, `
+	item, err := scanMediaAsset(s.db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, agent_id, asset_type, original_name,
 		       storage_driver, storage_bucket, object_key, mime_type,
 		       size_bytes, duration_ms, checksum_sha256, status,
@@ -88,6 +97,13 @@ func (s *Store) GetMediaAsset(ctx context.Context, tenantID, assetID int64) (mod
 		WHERE id=? AND tenant_id=? AND status<>'deleted'
 		LIMIT 1
 	`, assetID, tenantID))
+	if err != nil {
+		return item, err
+	}
+	if err = s.VoiceAssetAllowed(ctx, item); err != nil {
+		return model.MediaAsset{}, err
+	}
+	return item, nil
 }
 
 func (s *Store) DeleteMediaAsset(ctx context.Context, tenantID, assetID int64) error {

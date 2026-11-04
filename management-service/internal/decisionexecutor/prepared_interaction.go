@@ -60,7 +60,7 @@ func (w *Worker) interactionContentScope(ctx context.Context, session model.Live
 			// identity. Preserve already synthesized audio during cut retries.
 			e.ExpiresAt = time.Time{}
 		}
-		voice, ready, err := w.readyVoice(ctx, session.TenantID, session.RoomID)
+		voice, ready, err := w.v2Voice(ctx, session, item)
 		if err != nil {
 			return "", err
 		}

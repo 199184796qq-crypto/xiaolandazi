@@ -145,10 +145,13 @@ func (s *Server) recoverScriptParagraphArchive(ctx context.Context, tenant int64
 			continue
 		}
 		cache.Audio[100] = audio
-		if ctx.Err() != nil {
+		if checkScriptGenerationGuard(ctx) != nil {
 			return volcengineCachedAudio{}, false
 		}
 		if err := writeVolcengineJSON(filepath.Join(unit.Dir, "cache.json"), *cache); err != nil {
+			return volcengineCachedAudio{}, false
+		}
+		if checkScriptGenerationGuard(ctx) != nil {
 			return volcengineCachedAudio{}, false
 		}
 		log.Printf("script archive recovered tenant=%d plan=%d key=%s asset=%d", tenant, v.PlanID, shortKey(unit.Key), audio.AssetID)

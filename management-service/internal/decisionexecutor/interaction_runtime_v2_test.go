@@ -128,8 +128,8 @@ func TestInteractionV2FrozenVoiceAndPlanIgnoreLaterAuthorEdits(t *testing.T) {
 	// 群称会前置到冻结正文之前，正文本身必须逐字保留，且不得再调模型。
 	if err != nil || !strings.HasSuffix(text, e.Body) || agent.calls != 0 {
 	}
-	voice, ok := w.v2Voice(context.Background(), session, item)
-	if !ok || voice.VoiceID != "voice-1" {
+	voice, ok, voiceErr := w.v2Voice(context.Background(), session, item)
+	if voiceErr != nil || !ok || voice.VoiceID != "voice-1" {
 		t.Fatal(voice, ok)
 	}
 }
@@ -147,8 +147,8 @@ func TestV2ExplicitSpeedAffectsNewSynthesisWithoutMutatingFrozenIdentity(t *test
 	raw, _ := json.Marshal(e)
 	item := decisionItem{PurposeKnowledge: raw}
 	w.store = &v2RateStore{store, 1.4}
-	voice, ok := w.v2Voice(context.Background(), session, item)
-	if !ok || voice.Config["rate"] != 1.4 || voice.VoiceID != "voice-1" {
+	voice, ok, voiceErr := w.v2Voice(context.Background(), session, item)
+	if voiceErr != nil || !ok || voice.Config["rate"] != 1.4 || voice.VoiceID != "voice-1" {
 		t.Fatal(voice, ok)
 	}
 	frozen, _ := interactionplan.Frozen.ForSession(session.TenantID, session.RoomID, session.ID)

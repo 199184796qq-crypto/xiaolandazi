@@ -32,6 +32,8 @@ func (w *Worker) isInteractionV2(item *decisionItem, session model.LiveRuntimeSe
 
 type v2TaskFailure struct{ error }
 
+func (e v2TaskFailure) Unwrap() error { return e.error }
+
 func (w *Worker) withdrawUnstartedV2(session model.LiveRuntimeSession, id string) {
 	if w.core == nil {
 		return
@@ -295,28 +297,43 @@ func (w *Worker) completeV2RecordedModel(ctx context.Context, session model.Live
 	}
 	return response, callErr
 }
-func (w *Worker) v2Voice(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (model.VoiceProfile, bool) {
+func (w *Worker) v2Voice(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (model.VoiceProfile, bool, error) {
 	e, ok := interactionplan.Decode(item.PurposeKnowledge)
 	if !ok {
-		return model.VoiceProfile{}, false
+		return model.VoiceProfile{}, false, nil
 	}
 	s, ok := interactionplan.Frozen.ForSession(session.TenantID, session.RoomID, session.ID)
-	if !ok || s.Fingerprint != e.Fingerprint {
-		return model.VoiceProfile{}, false
+	if !ok || s.Fingerprint != e.Fingerprint || e.Tenant != session.TenantID || e.Room != session.RoomID || e.Session != session.ID || e.Plan != s.Scope.Plan {
+		return model.VoiceProfile{}, true, fmt.Errorf("互动正文冻结身份不匹配，停止送播")
 	}
 	voice := s.Voice
-	// Explicit plan speed controls apply to new synthesis. The voice identity
-	// remains frozen; already prepared audio is reused without another TTS call.
+	// Freeze content and its plan/version, but resolve the actually audible host
+	// at synthesis time. A pending switch or read failure must never fall back
+	// to the opening voice. Do not read a later author's published version here.
+	if source, ok := w.store.(runtimeVoiceSource); ok {
+		identity, err := source.RuntimeVoiceIdentity(ctx, session.TenantID, session.RoomID, s.Scope.Version)
+		if err != nil {
+			return model.VoiceProfile{}, true, err
+		}
+		if strings.TrimSpace(identity.VoiceID) != "" {
+			if strings.TrimSpace(identity.Model) == "" {
+				return model.VoiceProfile{}, true, fmt.Errorf("本场实际主播声音缺少模型身份")
+			}
+			voice = runtimeVoiceProfile(identity)
+		}
+	}
+	// Speed is a live control; copy its map rather than mutate the frozen body.
 	if rates, ok := w.store.(planVoiceRateSource); ok {
 		if settings, err := rates.GetPlanVoiceRate(ctx, session.TenantID, s.Scope.Plan); err == nil && settings.Rate >= 0.5 && settings.Rate <= 2 {
-			voice.Config = make(map[string]any, len(s.Voice.Config))
-			for k, v := range s.Voice.Config {
-				voice.Config[k] = v
+			config := make(map[string]any, len(voice.Config))
+			for k, v := range voice.Config {
+				config[k] = v
 			}
+			voice.Config = config
 			voice.Config["rate"] = settings.Rate
 		}
 	}
-	return voice, true
+	return voice, true, nil
 }
 
 func hasInteractionV2Body(item decisionItem) bool {

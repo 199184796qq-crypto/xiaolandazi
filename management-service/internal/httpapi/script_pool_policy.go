@@ -258,6 +258,11 @@ func scriptPolicyGenerationForPiece(root string, v model.LiveAgentPlanVersion, u
 }
 
 func (s *Server) tickScriptPoolPolicy(ctx context.Context, tenant, room int64, v model.LiveAgentPlanVersion, units []volcengineScriptUnit) {
+	var epochErr error
+	ctx, v, epochErr = s.voiceAssetGeneration(ctx, tenant, v)
+	if epochErr != nil {
+		return
+	}
 	session := agentgateway.ContextRoomModelScope(ctx).RuntimeID
 	if ctx.Err() != nil || session <= 0 {
 		if session > 0 && ctx.Err() != nil {

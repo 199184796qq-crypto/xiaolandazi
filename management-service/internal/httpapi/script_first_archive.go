@@ -10,11 +10,13 @@ import (
 
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/storage"
+	"livecompanion/management/internal/voiceasset"
 )
 
 // Untimed audio is a playback asset with original text and an actual duration,
 // but without SRT/semantic timing inferred from character count.
 func (s *Server) archiveUntimedScriptFirstAudio(ctx context.Context, tenant, room int64, v model.LiveAgentPlanVersion, key, text, voice string, raw []byte, duration int64) (int64, error) {
+	ctx = s.voiceUploadContext(ctx, tenant, v.PlanID)
 	return archiveUntimedScriptFirstAsset(ctx, s.assetStorage, s.store.CreateMediaAsset, tenant, room, v, key, text, voice, raw, duration)
 }
 
@@ -36,6 +38,9 @@ func archiveUntimedScriptFirstAsset(ctx context.Context, registry *storage.Regis
 	if oss, e := registry.For("oss"); e == nil {
 		storage = oss
 	}
+	if err = recordVoiceUpload(ctx, storage.Driver(), storage.Bucket(), objectKey); err != nil {
+		return 0, err
+	}
 	if err = storage.Put(ctx, objectKey, bytes.NewReader(raw), "audio/wav"); err != nil {
 		return 0, err
 	}
@@ -45,6 +50,9 @@ func archiveUntimedScriptFirstAsset(ctx context.Context, registry *storage.Regis
 		"purpose": "live_agent_formal_voice_timeline", "plan_id": v.PlanID, "room_id": room, "voice_id": voice, "tts_model": v.VoiceIdentity.Model, "source": v.VoiceIdentity.Source, "voice_rate": v.VoiceIdentity.Rate, "paragraph_key": key, "original_transcript": strings.TrimSpace(text), "untimed_transcript": true, "timeline_precision": "none", "segment_head_ms": 0, "segment_tail_ms": 0,
 	}
 	applyScriptSharedAssetInfo(withScriptSharedAsset(ctx, v, room), metadata)
+	if stamp, ok := voiceasset.FromContext(ctx); ok {
+		stamp.Metadata(metadata)
+	}
 	asset, err := create(ctx, model.CreateMediaAssetInput{TenantID: tenant, AssetType: "generated_voice", OriginalName: "script-paragraph.wav", StorageDriver: storage.Driver(), StorageBucket: storage.Bucket(), ObjectKey: objectKey, MIMEType: "audio/wav", SizeBytes: uint64(len(raw)), DurationMS: &d, ChecksumSHA256: hex.EncodeToString(sum[:]), Metadata: metadata})
 	if err != nil {
 		_ = storage.Delete(ctx, objectKey)

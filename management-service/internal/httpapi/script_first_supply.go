@@ -74,6 +74,14 @@ func validateScriptFirstTexts(texts []string) error {
 }
 
 func scriptFirstParagraphKey(v model.LiveAgentPlanVersion, text string) string {
+	legacy := scriptFirstParagraphLegacyKey(v, text)
+	if stamp, ok := scriptVersionStamp(v); ok {
+		return stamp.Key(legacy)
+	}
+	return legacy
+}
+
+func scriptFirstParagraphLegacyKey(v model.LiveAgentPlanVersion, text string) string {
 	if v.VoiceIdentity.Model == ttsgateway.VolcengineICL2 {
 		return volcengineParagraphKey(v.VoiceIdentity.VoiceID, text, v.VoiceIdentity.Rate)
 	}
@@ -124,7 +132,7 @@ func scriptFirstUnits(v model.LiveAgentPlanVersion, dir string) ([]volcengineScr
 	for _, text := range texts {
 		for _, part := range splitVolcengineParagraphs(text) {
 			key := scriptFirstParagraphKey(v, part)
-			units = append(units, volcengineScriptUnit{Text: part, Key: key, Dir: filepath.Join(dir, key)})
+			units = append(units, volcengineScriptUnit{Text: part, Key: key, Pool: scriptFirstParagraphLegacyKey(v, part), Dir: filepath.Join(dir, key)})
 		}
 	}
 	return units, nil

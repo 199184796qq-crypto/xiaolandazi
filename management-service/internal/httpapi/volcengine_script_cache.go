@@ -16,6 +16,7 @@ import (
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/sharedfilelock"
 	"livecompanion/management/internal/ttsgateway"
+	"livecompanion/management/internal/voiceasset"
 )
 
 type volcengineCachedAudio struct {
@@ -34,14 +35,22 @@ type volcengineParagraphCache struct {
 }
 
 func lockVolcengineParagraph(ctx context.Context, path string) (func(), error) {
-	identity, err := filepath.Abs(path)
+	lockPath, err := volcengineParagraphLockPath(path)
 	if err != nil {
 		return nil, err
+	}
+	return sharedfilelock.Lock(ctx, lockPath)
+}
+
+func volcengineParagraphLockPath(path string) (string, error) {
+	identity, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
 	}
 	sum := sha256.Sum256([]byte(filepath.Clean(identity)))
 	// The lock lives beside the directory: taking it must not create a paid
 	// checkpoint directory that hydration would mistake for an existing task.
-	return sharedfilelock.Lock(ctx, filepath.Join(filepath.Dir(path), ".paragraph-locks", hex.EncodeToString(sum[:])+".lock"))
+	return filepath.Join(filepath.Dir(path), ".paragraph-locks", hex.EncodeToString(sum[:])+".lock"), nil
 }
 func writeVolcengineJSON(path string, value any) error {
 	raw, err := json.Marshal(value)
@@ -108,6 +117,12 @@ func withVolcengineArchiveInfo(ctx context.Context, percent int) context.Context
 }
 func applyVolcengineArchiveInfo(ctx context.Context, payload map[string]any) {
 	applyScriptSharedAssetInfo(ctx, payload)
+	if key, ok := ctx.Value(voiceParagraphKey{}).(string); ok {
+		payload["paragraph_key"] = key
+	}
+	if st, ok := voiceasset.FromContext(ctx); ok {
+		st.Metadata(payload)
+	}
 	if pct, ok := ctx.Value(volcengineArchiveInfoKey{}).(int); ok {
 		payload["segment_head_ms"], payload["segment_tail_ms"] = 0, 0
 		payload["timeline_precision"] = "supplier_timestamps"
@@ -272,6 +287,9 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 		return empty, err
 	}
 	audio := volcengineCachedAudio{AssetID: archive.AssetID, DurationMS: duration, VoiceID: generated.VoiceID, Timeline: timeline}
+	if err = checkScriptGenerationGuard(ctx); err != nil {
+		return empty, err
+	}
 	cache.Audio[percent] = audio
 	if err = writeVolcengineJSON(indexPath, cache); err != nil {
 		return empty, err

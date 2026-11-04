@@ -2,12 +2,17 @@ package db
 
 import (
 	"context"
+	"errors"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/voiceasset"
 )
 
 // FindScriptParagraphAssets is a bounded recovery lookup. The paragraph key
 // includes the complete synthesis identity; callers still validate the object.
 func (s *Store) FindScriptParagraphAssets(ctx context.Context, tenant, plan int64, key string) ([]model.MediaAsset, error) {
+	if err := s.CheckVoiceParagraph(ctx, tenant, plan, key); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_id, agent_id, asset_type, original_name,
  storage_driver, storage_bucket, object_key, mime_type, size_bytes, duration_ms, checksum_sha256,
  status, CAST(metadata_json AS CHAR), created_by_user_id, created_at, updated_at
@@ -17,14 +22,30 @@ func (s *Store) FindScriptParagraphAssets(ctx context.Context, tenant, plan int6
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var items []model.MediaAsset
 	for rows.Next() {
 		item, err := scanMediaAsset(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	var allowed []model.MediaAsset
+	for _, a := range items {
+		e := s.VoiceAssetAllowed(ctx, a)
+		if errors.Is(e, voiceasset.ErrCleared) {
+			continue
+		}
+		if e != nil {
+			return nil, e
+		}
+		allowed = append(allowed, a)
+	}
+	return allowed, nil
 }

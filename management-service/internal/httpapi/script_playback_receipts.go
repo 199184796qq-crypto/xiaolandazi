@@ -12,21 +12,22 @@ import (
 )
 
 type scriptDeliveredTrack struct {
-	PolicyRecordedMS int64                  `json:"policy_recorded_ms,omitempty"`
-	PolicyText       string                 `json:"policy_text,omitempty"`
-	PolicyDurationMS int64                  `json:"policy_duration_ms,omitempty"`
-	PolicyOffsetMS   int64                  `json:"policy_offset_ms,omitempty"`
-	Unit             int                    `json:"unit"`
-	TrackID          string                 `json:"track_id"`
-	InstanceID       string                 `json:"instance_id"`
-	AssetID          int64                  `json:"asset_id"`
-	VoiceID          string                 `json:"voice_id"`
-	Model            string                 `json:"model"`
-	Batch            uint64                 `json:"batch,omitempty"`
-	Completed        bool                   `json:"completed,omitempty"`
-	TotalBlocks      int                    `json:"total_blocks,omitempty"`
-	Block            scriptFirstCachedBlock `json:"block"`
-	Confirmed        bool                   `json:"confirmed,omitempty"`
+	GenerationObserved bool                   `json:"generation_observed,omitempty"`
+	PolicyRecordedMS   int64                  `json:"policy_recorded_ms,omitempty"`
+	PolicyText         string                 `json:"policy_text,omitempty"`
+	PolicyDurationMS   int64                  `json:"policy_duration_ms,omitempty"`
+	PolicyOffsetMS     int64                  `json:"policy_offset_ms,omitempty"`
+	Unit               int                    `json:"unit"`
+	TrackID            string                 `json:"track_id"`
+	InstanceID         string                 `json:"instance_id"`
+	AssetID            int64                  `json:"asset_id"`
+	VoiceID            string                 `json:"voice_id"`
+	Model              string                 `json:"model"`
+	Batch              uint64                 `json:"batch,omitempty"`
+	Completed          bool                   `json:"completed,omitempty"`
+	TotalBlocks        int                    `json:"total_blocks,omitempty"`
+	Block              scriptFirstCachedBlock `json:"block"`
+	Confirmed          bool                   `json:"confirmed,omitempty"`
 }
 
 func scriptSupplyCheckpointPath(tenant, room, session int64) string {
@@ -91,6 +92,11 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 		for i := range cursor.Delivered {
 			track := &cursor.Delivered[i]
 			if track.TrackID == receipt.TrackID && receipt.PlayedMS > track.PolicyRecordedMS {
+				if s.store != nil {
+					if err := s.store.RecordVoiceAssetPCM(ctx, tenant, track.AssetID, time.Now().UTC().Format("2006-01-02 15:04:05.000")); err != nil {
+						log.Printf("voice usage evidence unavailable tenant=%d asset=%d; automatic collection remains conservative", tenant, track.AssetID)
+					}
+				}
 				if err := recordScriptPolicyPCM(recordingCacheMediaRoot(), tenant, room, v.PlanID, *track, receipt.PlayedMS, started[track.TrackID], time.Now().UTC()); err != nil {
 					return err
 				}
@@ -139,11 +145,17 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 		generationScopeMatches := (snapshot.VersionID == 0 || snapshot.VersionID == v.ID) &&
 			(cursor.VersionID == 0 || cursor.VersionID == v.ID) &&
 			(snapshot.ProgramID == "" || cursor.ProgramID == "" || snapshot.ProgramID == cursor.ProgramID)
-		if generationScopeMatches && pcm[track.TrackID] && track.AssetID > 0 && track.Unit >= 0 && track.Unit < len(units) && ctx.Err() == nil {
+		if !track.GenerationObserved && generationScopeMatches && pcm[track.TrackID] && track.AssetID > 0 && track.Unit >= 0 && track.Unit < len(units) && ctx.Err() == nil {
 			voiceVersion := scriptVersionForVoice(v, recordingScriptVoice{VoiceID: track.VoiceID, Model: track.Model})
-			if err := recordScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, voiceVersion, units[track.Unit], track.InstanceID); err != nil {
-				// Optional replenishment cannot stop already playable mainline.
-				log.Printf("script generation play unavailable tenant=%d room=%d session=%d: %v", tenant, room, session, err)
+			_, voiceVersion, epochErr := s.voiceAssetGeneration(ctx, tenant, voiceVersion)
+			if epochErr == nil {
+				if err := recordScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, voiceVersion, units[track.Unit], track.InstanceID); err != nil {
+					// Optional replenishment cannot stop already playable mainline.
+					log.Printf("script generation play unavailable tenant=%d room=%d session=%d: %v", tenant, room, session, err)
+				} else {
+					track.GenerationObserved = true
+					changed = true
+				}
 			}
 		}
 		if track.Confirmed || !played[track.TrackID] || track.Unit < 0 || track.Unit >= len(units) {

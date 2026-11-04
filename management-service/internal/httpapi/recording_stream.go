@@ -523,6 +523,18 @@ func (s *Server) recordingStreamAssetURL(ctx context.Context, tenant, assetID in
 	if err != nil {
 		return "", err
 	}
+	return s.recordingAssetURL(ctx, asset)
+}
+
+func (s *Server) recordingStreamLeasedAssetURL(ctx context.Context, tenant, assetID, session int64, track string) (string, error) {
+	asset, err := s.store.VoiceLeasedAsset(ctx, tenant, assetID, session, track)
+	if err != nil {
+		return "", err
+	}
+	return s.recordingAssetURL(ctx, asset)
+}
+
+func (s *Server) recordingAssetURL(ctx context.Context, asset model.MediaAsset) (string, error) {
 	assetStore, err := s.assetStorage.For(asset.StorageDriver)
 	if err != nil {
 		return "", err

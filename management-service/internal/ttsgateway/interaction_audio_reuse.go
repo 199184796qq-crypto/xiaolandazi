@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"livecompanion/management/internal/sharedfilelock"
+	"livecompanion/management/internal/voiceasset"
 )
 
 const UsageAudioReuse = "existing_audio_reuse"
@@ -41,8 +42,9 @@ func WithInteractionAudioReuse(ctx context.Context, tenant, plan int64, policy f
 }
 
 type interactionAudioEntry struct {
-	Version              int    `json:"version"`
-	Key                  string `json:"key"`
+	Stamp                *voiceasset.Stamp `json:"voice_cache_stamp,omitempty"`
+	Version              int               `json:"version"`
+	Key                  string            `json:"key"`
 	CreatedAt, ExpiresAt time.Time
 	Audio                SynthesizeResponse `json:"audio"`
 }
@@ -52,11 +54,20 @@ type interactionAudioEntry struct {
 // Each hit must read actual audio bytes. Missing/expired/unrecoverable sources
 // fall back to synthesis, following the user's availability-first instruction.
 type InteractionAudioCache struct {
+	epochs voiceasset.EpochReader
 	root   string
 	client *http.Client
 	now    func() time.Time
 	mu     sync.Mutex
 	rescue map[string]interactionAudioEntry
+}
+
+func (c *InteractionAudioCache) WithEpochReader(reader voiceasset.EpochReader) *InteractionAudioCache {
+	c.epochs = reader
+	return c
+}
+func (c *InteractionAudioCache) cleared(ctx context.Context, entry interactionAudioEntry) bool {
+	return c.epochs != nil && entry.Stamp != nil && errors.Is(c.epochs.CheckVoiceCacheStamp(ctx, *entry.Stamp), voiceasset.ErrCleared)
 }
 
 func NewInteractionAudioCache(mediaRoot, realm string) *InteractionAudioCache {
@@ -94,7 +105,7 @@ func (c *InteractionAudioCache) Run(ctx context.Context) {
 func (c *InteractionAudioCache) prune(ctx context.Context) {
 	c.mu.Lock()
 	for key, entry := range c.rescue {
-		if !c.now().Before(entry.ExpiresAt) {
+		if !c.now().Before(entry.ExpiresAt) || c.cleared(ctx, entry) {
 			delete(c.rescue, key)
 		}
 	}
@@ -124,7 +135,7 @@ func (c *InteractionAudioCache) prune(ctx context.Context) {
 			}
 			path := filepath.Join(c.root, name)
 			entry, ok, e := c.read(path, key)
-			if e == nil && ok && entry.Version == 1 && entry.Key == key && !c.now().Before(entry.ExpiresAt) {
+			if e == nil && ok && entry.Version == 1 && entry.Key == key && (!c.now().Before(entry.ExpiresAt) || c.cleared(ctx, entry)) {
 				_ = os.Remove(path)
 			}
 			release()
@@ -141,6 +152,9 @@ func (c *InteractionAudioCache) synthesize(ctx context.Context, p Provider, requ
 		return next(ctx)
 	}
 	guard := func() error {
+		if err := voiceasset.Check(ctx); err != nil {
+			return err
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -165,6 +179,9 @@ func (c *InteractionAudioCache) synthesize(ctx context.Context, p Provider, requ
 	}
 	raw, _ := json.Marshal([]any{"interaction-audio-v1", s.TenantID, s.PlanID, account, identity, request.Provider, request.Model, request.VoiceID, request.Rate, request.Instruction, request.Text})
 	key := digestSynthesisText(string(raw))
+	if stamp, ok := voiceasset.FromContext(ctx); ok {
+		key = stamp.Key(key)
+	}
 	path := filepath.Join(c.root, key+".json")
 	release, err := sharedfilelock.Lock(ctx, filepath.Join(c.root, "locks", key+".lock"))
 	if err != nil {
@@ -237,8 +254,16 @@ func (c *InteractionAudioCache) synthesize(ctx context.Context, p Provider, requ
 	if err != nil || strings.TrimSpace(audio.AudioURL) == "" {
 		return audio, err
 	}
+	// Receipt/accounting is already complete. A clear cannot cancel that cost,
+	// but it must prevent the late paid result from reviving a reusable entry.
+	if err := voiceasset.Check(context.WithoutCancel(ctx)); err != nil {
+		return audio, err
+	}
 	now := c.now()
 	entry = interactionAudioEntry{Version: 1, Key: key, CreatedAt: now, ExpiresAt: interactionAudioExpiry(audio.AudioURL, now.Add(policy.Retention), now), Audio: audio}
+	if stamp, ok := voiceasset.FromContext(ctx); ok {
+		entry.Stamp = &stamp
+	}
 	// A late paid result is retained even if its original event has expired.
 	// A failed cache write must never discard a successful paid synthesis.
 	if err := writeInteractionAudioEntry(path, entry); err != nil {
@@ -299,6 +324,101 @@ func writeInteractionAudioEntry(path string, entry interactionAudioEntry) error 
 		err = os.Rename(tmp, path)
 	}
 	return err
+}
+
+// Only stamped metadata can be attributed to a selected plan/voice. Supplier
+// URLs are read for identity here, never fetched, logged or deleted.
+func (c *InteractionAudioCache) ScopedVoices(ctx context.Context, scope voiceasset.Scope) ([]map[string]string, error) {
+	files, e := os.ReadDir(c.root)
+	if os.IsNotExist(e) {
+		return nil, nil
+	}
+	if e != nil {
+		return nil, e
+	}
+	seen := map[string]bool{}
+	out := []map[string]string{}
+	for _, file := range files {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !file.Type().IsRegular() || !strings.HasSuffix(file.Name(), ".json") {
+			continue
+		}
+		key := strings.TrimSuffix(file.Name(), ".json")
+		if !voiceasset.DigestValid(key) {
+			continue
+		}
+		entry, ok, e := c.read(filepath.Join(c.root, file.Name()), key)
+		if e != nil {
+			return nil, e
+		}
+		if !ok || entry.Stamp == nil {
+			continue
+		}
+		st := entry.Stamp.Scope
+		if st.Validate() != nil {
+			return nil, voiceasset.ErrConflict
+		}
+		if st.Tenant != scope.Tenant || st.Plan != scope.Plan || st.Category != scope.Category || st.Voice == "" || seen[st.Voice] {
+			continue
+		}
+		seen[st.Voice] = true
+		out = append(out, map[string]string{"key": st.Voice, "label": entry.Audio.VoiceID + " · " + st.Voice[:12]})
+	}
+	return out, nil
+}
+func (c *InteractionAudioCache) ClearScopedFiles(ctx context.Context, j voiceasset.Job) error {
+	files, e := os.ReadDir(c.root)
+	if os.IsNotExist(e) {
+		return nil
+	}
+	if e != nil {
+		return e
+	}
+	for _, file := range files {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		key := strings.TrimSuffix(file.Name(), ".json")
+		if !file.Type().IsRegular() || !strings.HasSuffix(file.Name(), ".json") || !voiceasset.DigestValid(key) {
+			continue
+		}
+		release, ok, e := sharedfilelock.TryLock(filepath.Join(c.root, "locks", key+".lock"))
+		if e != nil {
+			return e
+		}
+		if !ok {
+			return voiceasset.ErrBusy
+		}
+		path := filepath.Join(c.root, file.Name())
+		entry, found, e := c.read(path, key)
+		if e == nil && found && entry.Stamp != nil {
+			scope := entry.Stamp.Scope
+			if scope.Validate() != nil {
+				release()
+				return voiceasset.ErrConflict
+			}
+			match := scope.Tenant == j.Scope.Tenant && scope.Plan == j.Scope.Plan && scope.Category == j.Scope.Category && (j.Scope.Voice == "" || scope.Voice == j.Scope.Voice)
+			remove := j.Mode == "local_only" && !entry.CreatedAt.After(j.Created)
+			if match && j.Mode != "local_only" && c.epochs != nil {
+				check := c.epochs.CheckVoiceCacheStamp(ctx, *entry.Stamp)
+				if check != nil && !errors.Is(check, voiceasset.ErrCleared) {
+					release()
+					return check
+				}
+				remove = errors.Is(check, voiceasset.ErrCleared)
+			}
+			if match && remove {
+				e = os.Remove(path)
+			}
+		}
+		release()
+		if e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 func interactionAudioExpiry(address string, until, now time.Time) time.Time {

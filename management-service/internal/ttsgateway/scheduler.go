@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"livecompanion/management/internal/ttsscheduler"
+	"livecompanion/management/internal/voiceasset"
 )
 
 type synthesisScheduler interface {
@@ -88,6 +89,17 @@ func (g *Gateway) scheduledSynthesis(ctx context.Context, p Provider, request Sy
 	if err = ctx.Err(); err != nil {
 		return result, notSent(err)
 	}
+	ctx, err = voiceasset.Bind(ctx, voiceasset.Digest([]any{account, interactionProviderIdentity(p), request.Provider, request.Model, request.VoiceID, request.Rate, request.Instruction}))
+	if err != nil {
+		return result, notSent(err)
+	}
+	defer func() {
+		if err == nil {
+			if e := voiceasset.Check(context.WithoutCancel(ctx)); e != nil {
+				err = e
+			}
+		}
+	}()
 	if timeout, _ := ctx.Value(synthesisTimeoutKey{}).(time.Duration); timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -104,6 +116,9 @@ func (g *Gateway) scheduledSynthesis(ctx context.Context, p Provider, request Sy
 		}
 	}
 	return g.interactionAudioCache.synthesize(ctx, p, request, account, func(callCtx context.Context) (SynthesizeResponse, error) {
+		if err := voiceasset.Check(callCtx); err != nil {
+			return SynthesizeResponse{}, notSent(err)
+		}
 		return observeSynthesis(callCtx, p, request)
 	})
 }

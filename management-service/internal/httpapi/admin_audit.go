@@ -298,6 +298,10 @@ func auditAction(method string, path string) string {
 	}
 	if isMutationMethod(method) {
 		switch {
+		case path == "/api/v1/liveops/voice-assets/clear":
+			return "liveops.voice_assets.clear"
+		case path == "/api/v1/liveops/voice-assets/scan":
+			return "liveops.voice_assets.inventory"
 		case strings.HasPrefix(path, "/api/v1/liveops/user-voice-cache-policies/"):
 			return "liveops.user_voice_cache.update"
 		case strings.HasPrefix(path, "/api/v1/customer-business/receipts"):

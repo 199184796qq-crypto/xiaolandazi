@@ -60,6 +60,9 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
+	if err := s.ensureVoiceAssetCleanupSchema(ctx); err != nil {
+		return fmt.Errorf("migrate voice asset cleanup: %w", err)
+	}
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS live_runtime_voice_batches (
 		 tenant_id BIGINT NOT NULL, room_id BIGINT NOT NULL, session_id BIGINT NOT NULL, version_id BIGINT NOT NULL,

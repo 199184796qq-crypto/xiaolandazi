@@ -133,7 +133,21 @@ func (w *Worker) dropPreparedControl(session model.LiveRuntimeSession, kind stri
 }
 func (w *Worker) interactionPreparationScope(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, error) {
 	scope, err := w.interactionContentScope(ctx, session, item)
-	if err != nil || manualControlBypass(item) {
+	if err != nil {
+		return scope, err
+	}
+	if reader, ok := w.store.(interface {
+		VoiceCacheRoomRevision(context.Context, int64, int64) (string, error)
+	}); ok {
+		revision, e := reader.VoiceCacheRoomRevision(ctx, session.TenantID, session.RoomID)
+		if e != nil {
+			return "", e
+		}
+		if revision != "" {
+			scope = interactionDigest([]any{scope, "voice-cache-clear", revision})
+		}
+	}
+	if manualControlBypass(item) {
 		return scope, err
 	}
 	controls, err := w.readInteractionControls(ctx, session)

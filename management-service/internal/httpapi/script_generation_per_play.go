@@ -13,6 +13,7 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/sharedfilelock"
+	"livecompanion/management/internal/voiceasset"
 )
 
 type scriptGenerationPlay struct {
@@ -34,6 +35,9 @@ type scriptGenerationGuardKey struct{}
 // The same guard accompanies all existing rewrite/repair calls. It changes
 // admission only; it does not add model requests, prompts or automatic retries.
 func checkScriptGenerationGuard(ctx context.Context) error {
+	if err := voiceasset.Check(ctx); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

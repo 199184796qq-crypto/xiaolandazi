@@ -37,6 +37,7 @@ import (
 	"livecompanion/management/internal/semantic"
 	"livecompanion/management/internal/speechmission"
 	"livecompanion/management/internal/ttsgateway"
+	"livecompanion/management/internal/voiceasset"
 	"livecompanion/management/internal/voicecatalog"
 )
 
@@ -1596,8 +1597,8 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if err := w.checkTimeReport(*item); err != nil {
 		return err
 	}
-	voice, ok := w.v2Voice(ctx, session, *item)
-	if !ok {
+	voice, ok, err := w.v2Voice(ctx, session, *item)
+	if !ok && err == nil {
 		voice, ok, err = w.readyVoice(ctx, session.TenantID, session.RoomID)
 	}
 	if err != nil {
@@ -1655,7 +1656,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		Rate:        voiceRate(voice),
 		Instruction: ttsInstruction,
 	})
-	if err != nil && ssmlUsed {
+	if err != nil && ssmlUsed && !errors.Is(err, voiceasset.ErrCleared) {
 		audio, err = w.synthesizeInteractionAudio(ttsCtx, item, ttsgateway.SynthesizeRequest{
 			Provider:    voiceProvider(voice),
 			Model:       ttsModel,
@@ -1732,6 +1733,15 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem, text, audioURL, scope, memory string, expiresAt time.Time) error {
 	if err := w.checkTimeReport(*item); err != nil {
 		return err
+	}
+	// Recheck after preparation/retry and immediately before Core handoff. An
+	// old paid audio URL cannot follow a host switch merely because its text fits.
+	latestScope, err := w.interactionPreparationScope(ctx, session, *item)
+	if err != nil {
+		return err
+	}
+	if latestScope != scope {
+		return fmt.Errorf("主播声音或播出身份已变化，撤销旧待播声音")
 	}
 	if retryableTimeReport(*item) {
 		if bounded := timeReportAudioExpiry(audioURL, item.TimeReportValidUntil, w.now()); bounded.Before(expiresAt) {

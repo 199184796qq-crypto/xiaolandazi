@@ -176,6 +176,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerWorkInboxRoutes(mux)
 	s.registerLiveContentPolicyRoutes(mux)
 	s.registerPlanAssetRoutes(mux)
+	s.registerVoiceAssetCleanupRoutes(mux)
 	s.registerLiveAgentPlanStyleOverlayRoutes(mux)
 	s.registerLiveAnchorStyleRoutes(mux)
 	s.registerAnchorRecommendationRoutes(mux)

@@ -19,6 +19,7 @@ import (
 
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
+	"livecompanion/management/internal/voiceasset"
 )
 
 const maxMediaAssetBytes int64 = 2 << 30
@@ -186,6 +187,10 @@ func (s *Server) liveGetMediaAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := s.store.GetMediaAsset(r.Context(), tenantID, assetID)
+	if errors.Is(err, voiceasset.ErrCleared) {
+		writeError(w, http.StatusGone, "声音已清除，不能再使用")
+		return
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "媒体资产不存在")
@@ -319,6 +324,10 @@ func (s *Server) liveMediaAssetContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := s.store.GetMediaAsset(r.Context(), tenantID, assetID)
+	if errors.Is(err, voiceasset.ErrCleared) {
+		writeError(w, http.StatusGone, "声音已清除，不能再使用")
+		return
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "媒体资产不存在")
@@ -367,6 +376,10 @@ func (s *Server) liveDeleteMediaAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := s.store.GetMediaAsset(r.Context(), tenantID, assetID)
+	if errors.Is(err, voiceasset.ErrCleared) {
+		writeError(w, http.StatusGone, "声音已清除，不能再使用")
+		return
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "媒体资产不存在")

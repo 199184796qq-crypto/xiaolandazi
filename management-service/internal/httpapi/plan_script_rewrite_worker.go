@@ -42,6 +42,12 @@ var rewriteWorker = struct {
 //
 // 校验不过就放弃本次，不写入版本池；失败只记日志，不影响直播。
 func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room int64, v model.LiveAgentPlanVersion, unit volcengineScriptUnit) {
+	var epochErr error
+	ctx, v, epochErr = s.voiceAssetGeneration(ctx, tenant, v)
+	if epochErr != nil {
+		return
+	}
+	unit = scriptUnitForVoice(v, unit)
 	if strings.TrimSpace(unit.Text) == "" {
 		return
 	}
@@ -247,7 +253,7 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		DurationMS:  audio.DurationMS,
 		SourcePath:  rewriteUnit.Dir,
 	}
-	if added, err := commitScriptRewriteVersion(recordingCacheMediaRoot(), v, unit, version, cap, full, retireRef); err != nil {
+	if added, err := s.commitVoiceRewrite(ctx, tenant, recordingCacheMediaRoot(), v, unit, version, cap, full, retireRef); err != nil {
 		log.Printf("script rewrite register failed plan=%d piece=%s: %v", v.PlanID, shortKey(unit.Key), err)
 		return
 	} else if !added {

@@ -124,6 +124,9 @@ func scriptPlaybackBefore(a, b string) bool {
 // Commit replacement atomically. An identical model reply can reuse a paid
 // original; that is not a newly added version and must not retire anything.
 func commitScriptRewriteVersion(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, version scriptplay.Version, cap int, refresh bool, retireRef ...string) (bool, error) {
+	return commitScriptRewriteVersionRetiring(root, v, unit, version, cap, refresh, nil, retireRef...)
+}
+func commitScriptRewriteVersionRetiring(root string, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, version scriptplay.Version, cap int, refresh bool, retire func(scriptplay.Version) error, retireRef ...string) (bool, error) {
 	release, err := lockScriptPoolStore(root)
 	if err != nil {
 		return false, err
@@ -149,7 +152,7 @@ func commitScriptRewriteVersion(root string, v model.LiveAgentPlanVersion, unit 
 			compatible = append(compatible, i)
 		}
 	}
-	retire := -1
+	retireIndex := -1
 	if len(compatible) >= cap {
 		if !refresh {
 			return false, errors.New("改写槽位已满，保留已付费声音")
@@ -162,11 +165,11 @@ func commitScriptRewriteVersion(root string, v model.LiveAgentPlanVersion, unit 
 			if len(retireRef) > 0 && old.CompleteCount < rewriteRetireAfterPlays {
 				continue
 			}
-			if old.Kind == scriptplay.KindRewrite && old.PlayCount >= rewriteRetireAfterPlays && (retire < 0 || scriptPlaybackBefore(old.LastPlayedAt, pool.Versions[retire].LastPlayedAt)) {
-				retire = i
+			if old.Kind == scriptplay.KindRewrite && old.PlayCount >= rewriteRetireAfterPlays && (retireIndex < 0 || scriptPlaybackBefore(old.LastPlayedAt, pool.Versions[retireIndex].LastPlayedAt)) {
+				retireIndex = i
 			}
 		}
-		if retire < 0 {
+		if retireIndex < 0 {
 			return false, errors.New("没有已播足次数的可替换版本")
 		}
 	}
@@ -176,8 +179,13 @@ func commitScriptRewriteVersion(root string, v model.LiveAgentPlanVersion, unit 
 	if err := pool.Add(version); err != nil {
 		return false, err
 	}
-	if retire >= 0 {
-		pool.Versions = append(pool.Versions[:retire], pool.Versions[retire+1:]...)
+	if retireIndex >= 0 {
+		if retire != nil {
+			if err := retire(pool.Versions[retireIndex]); err != nil {
+				return false, err
+			}
+		}
+		pool.Versions = append(pool.Versions[:retireIndex], pool.Versions[retireIndex+1:]...)
 	}
 	return true, saveScriptVoicePoolLocked(root, v.PlanID, unit.poolID(), pool)
 }
