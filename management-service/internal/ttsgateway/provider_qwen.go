@@ -122,9 +122,14 @@ func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequ
 		return SynthesizeResponse{}, err
 	}
 	defer resp.Body.Close()
+	synthesis := SynthesizeResponse{Provider: ProviderQwen, Model: request.Model, VoiceID: request.VoiceID, Rate: request.Rate}
+	synthesis.ProviderRequestID = safeProviderRequestID(resp.Header.Get("X-Request-Id"))
+	if synthesis.ProviderRequestID == "" {
+		synthesis.ProviderRequestID = safeProviderRequestID(resp.Header.Get("X-DashScope-Request-Id"))
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return SynthesizeResponse{}, err
+		return synthesis, err
 	}
 	var result struct {
 		RequestID string          `json:"request_id"`
@@ -137,9 +142,10 @@ func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequ
 		Message string `json:"message"`
 	}
 	parseErr := json.Unmarshal(body, &result)
-	synthesis := SynthesizeResponse{Provider: ProviderQwen, Model: request.Model, VoiceID: request.VoiceID, Rate: request.Rate}
+	if id := safeProviderRequestID(result.RequestID); id != "" {
+		synthesis.ProviderRequestID = id
+	}
 	if parseErr == nil {
-		synthesis.ProviderRequestID = safeProviderRequestID(result.RequestID)
 		synthesis.Usage = parseSynthesisUsage(result.Usage)
 		synthesis.UsageSource = synthesisUsageSource(synthesis.Usage)
 	}

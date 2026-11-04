@@ -47,7 +47,7 @@ const (
 	roomExecutionTimeout     = 90 * time.Second
 	missionActiveTimeout     = 3 * time.Minute
 	missionTerminalRetention = 5 * time.Minute
-	inFlightWatchdog         = roomExecutionTimeout + 5*time.Second
+	inFlightWatchdog         = roomExecutionTimeout + ttsgateway.PaidSynthesisDrainTimeout + 5*time.Second
 	maxSpeechRunes           = 300
 	addressingNameCooldown   = 5 * time.Minute
 )

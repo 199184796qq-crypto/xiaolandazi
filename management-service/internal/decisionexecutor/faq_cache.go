@@ -21,7 +21,7 @@ func interactionDigest(value any) string {
 // synthesizeInteractionAudio 提交一次互动 TTS 合成。
 //
 // 旧链路的「问答缓存（faq_cache）」已随「意图分析→规划→回答」一起下线，
-// 这里只保留合成本身：正文加保护前缀（TTS 前缀只属于请求，不进入缓存键），
+// 正文加保护前缀后进入TTS；跨事件声音缓存按完整实际发送文字匹配，
 // 并把实际递交文本打到日志，方便排查 cosyvoice 对前缀/开头的处理。
 func (w *Worker) synthesizeInteractionAudio(ctx context.Context, item *decisionItem, request ttsgateway.SynthesizeRequest) (ttsgateway.SynthesizeResponse, error) {
 	request.Text = prefixedInteractionText(request.Text)

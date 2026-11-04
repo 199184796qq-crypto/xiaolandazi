@@ -27,6 +27,9 @@ type SynthesizeRequest struct {
 	// LongText is internal to the script-first Volcengine producer. Interactive
 	// speech and other providers retain the existing short synthesis contract.
 	LongText *LongTextJob
+	// Once admitted and paid, drain the bounded supplier response even when the
+	// event expires. This does not authorize any subsequent request or playback.
+	DrainOnCancel bool `json:"-"`
 }
 
 type SynthesizeResponse struct {
@@ -38,6 +41,7 @@ type SynthesizeResponse struct {
 	ProviderRequestID string
 	Usage             SynthesisUsage
 	UsageSource       string
+	AudioReused       bool
 	// A completed synthesis remains usable if accounting could not be persisted.
 	// Callers must retain this audio instead of synthesizing it again.
 	AccountingPending bool
@@ -66,12 +70,13 @@ type Provider interface {
 }
 
 type Gateway struct {
-	scheduler       synthesisScheduler
-	mu              sync.RWMutex
-	providers       map[string]Provider
-	aliases         map[string]string
-	defaultProvider string
-	defaultModel    string
+	interactionAudioCache *InteractionAudioCache
+	scheduler             synthesisScheduler
+	mu                    sync.RWMutex
+	providers             map[string]Provider
+	aliases               map[string]string
+	defaultProvider       string
+	defaultModel          string
 }
 
 func New(defaultProvider, defaultModel string) *Gateway {

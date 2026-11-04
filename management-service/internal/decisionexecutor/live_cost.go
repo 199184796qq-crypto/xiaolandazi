@@ -80,5 +80,7 @@ func (w *Worker) synthesizePaidAudio(ctx context.Context, session model.LiveRunt
 	}
 	logical := fmt.Sprintf("interaction:%d:%s:%s:%s:%s", session.ID, session.ExternalID, scope.key, stage, key)
 	ctx = w.paidContextFactory(ctx, session, stage, scope.planID, logical)
+	ctx = w.interactionAudioReuseContext(ctx, scope)
+	request.DrainOnCancel = true
 	return w.tts.SynthesizeURL(ctx, request)
 }

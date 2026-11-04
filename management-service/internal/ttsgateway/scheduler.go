@@ -48,6 +48,7 @@ func WithSynthesisTimeout(ctx context.Context, timeout time.Duration) context.Co
 	return context.WithValue(ctx, synthesisTimeoutKey{}, timeout)
 }
 func (g *Gateway) scheduledSynthesis(ctx context.Context, p Provider, request SynthesizeRequest) (result SynthesizeResponse, err error) {
+	account := "configured"
 	if g.scheduler != nil && (request.Provider == ProviderQwen || request.Provider == ProviderCosyVoice || request.Provider == ProviderVolcengine) {
 		scope, _ := ctx.Value(queueScopeKey{}).(ttsscheduler.Scope)
 		required := ""
@@ -60,6 +61,7 @@ func (g *Gateway) scheduledSynthesis(ctx context.Context, p Provider, request Sy
 		if claimErr != nil {
 			return result, notSent(claimErr)
 		}
+		account = permit.AccountID
 		defer func() {
 			status := "completed"
 			if err != nil {
@@ -101,5 +103,7 @@ func (g *Gateway) scheduledSynthesis(ctx context.Context, p Provider, request Sy
 			return result, err
 		}
 	}
-	return observeSynthesis(ctx, p, request)
+	return g.interactionAudioCache.synthesize(ctx, p, request, account, func(callCtx context.Context) (SynthesizeResponse, error) {
+		return observeSynthesis(callCtx, p, request)
+	})
 }

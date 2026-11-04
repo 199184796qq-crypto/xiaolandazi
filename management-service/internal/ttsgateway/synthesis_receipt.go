@@ -177,6 +177,14 @@ func observeSynthesis(ctx context.Context, provider Provider, request Synthesize
 	if err = ctx.Err(); err != nil {
 		return result, notSent(err)
 	}
+	if request.DrainOnCancel {
+		// The event's remaining deadline must not truncate an already-admitted
+		// paid HTTP response. Keep its accounting/context values, drain at most
+		// 90 seconds and settle late usage; the caller still rejects stale audio.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), PaidSynthesisDrainTimeout)
+		defer cancel()
+	}
 	result, err = provider.SynthesizeURL(ctx, request)
 	finished = true
 	return result, err
