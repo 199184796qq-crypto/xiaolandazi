@@ -32,7 +32,8 @@ var rewriteWorker = struct {
 	slot     chan struct{}
 }{inFlight: map[string]bool{}, slot: make(chan struct{}, 1)}
 
-// maybeGenerateRewriteVersion services the shared plan supply decision.
+// maybeGenerateRewriteVersion consumes one real playback opportunity before
+// servicing the shared plan supply decision. Inventory polls alone cannot buy.
 //
 // 规则（对齐开发任务书 4.1–4.3）：
 //  1. 该音色下已有原始版本（原始优先）
@@ -47,6 +48,19 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	if frozen, ok := scriptRewriteSnapshotFor(v); ok && frozen.Prompt == "" {
 		return
 	}
+	session := agentgateway.ContextRoomModelScope(ctx).RuntimeID
+	play, playErr := pendingScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, v)
+	if ctx.Err() != nil || session <= 0 || playErr != nil || play == nil || play.Piece != unit.poolID() {
+		if ctx.Err() != nil {
+			discardScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, v, play)
+		}
+		return
+	}
+	defer func() {
+		if ctx.Err() != nil {
+			discardScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, v, play)
+		}
+	}()
 	voiceID := v.VoiceIdentity.VoiceID
 	// All voices share text: serialize by piece, not by person, so two rooms
 	// cannot purchase the same new rewrite concurrently for different voices.
@@ -94,8 +108,9 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	if unitsErr != nil {
 		return
 	}
-	index, wanted, retired, policyErr := scriptPolicyGeneration(recordingCacheMediaRoot(), v, units, time.Now().UTC(), true, scriptPolicyRoomWarmup(recordingCacheMediaRoot(), tenant, room, v.PlanID, time.Now().UTC()))
+	index, wanted, retired, policyErr := scriptPolicyGenerationForPiece(recordingCacheMediaRoot(), v, units, play.Piece, time.Now().UTC(), true, scriptPolicyRoomWarmup(recordingCacheMediaRoot(), tenant, room, v.PlanID, time.Now().UTC()))
 	if policyErr != nil || index < 0 || units[index].poolID() != unit.poolID() {
+		discardScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, v, play)
 		return
 	}
 	cap, retireRef, full = wanted, retired, retired != ""
@@ -113,16 +128,18 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	if ctx.Err() != nil {
 		return
 	}
-	if runtime := agentgateway.ContextRoomModelScope(ctx).RuntimeID; runtime > 0 {
-		paused, err := s.checkLiveAnchorOwner(ctx, tenant, room, runtime, v.ID)
-		if err != nil || paused {
-			return
-		}
-		state, err := s.store.RuntimeVoiceBatch(ctx, tenant, room, runtime, v.ID)
-		if err != nil || state.Pending != nil || !voicebatch.Same(state.Active, v.VoiceIdentity) {
-			return
-		}
+	guard := func(c context.Context) error { return s.checkScriptGenerationOwner(c, tenant, room, session, v) }
+	if err := guard(ctx); err != nil {
+		discardScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, v, play)
+		return
 	}
+	playRelease, claimed, claimErr := claimScriptGenerationPlay(ctx, recordingCacheMediaRoot(), tenant, room, session, v, unit, play)
+	if claimErr != nil || !claimed {
+		return
+	}
+	defer playRelease()
+	ctx = context.WithValue(ctx, scriptGenerationGuardKey{}, guard)
+	log.Printf("script generation play consumed tenant=%d room=%d session=%d piece=%s instance=%s", tenant, room, session, unit.poolID(), play.Instance)
 	ctx = withLiveCostScope(ctx, liveCostCallScope{TenantID: tenant, RoomID: room, PlanID: v.PlanID, Priority: "optional", Reason: "话术后台改写", Key: fmt.Sprintf("script-rewrite:%d:%s:%d", v.PlanID, unit.poolID(), time.Now().UnixNano())})
 	ctx = withScriptModelCostSteps(ctx)
 	pool = scriptCompatiblePool(recordingCacheMediaRoot(), v, unit)
@@ -133,6 +150,9 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		log.Printf("script shared text unavailable plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
 		return
 	} else if found {
+		if err := checkScriptGenerationGuard(ctx); err != nil {
+			return
+		}
 		if err := s.synthesizeSharedScriptText(ctx, tenant, room, v, unit, shared.Text, cap, full, retireRef); err != nil {
 			log.Printf("script shared text tts deferred plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
 		}
@@ -156,7 +176,7 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	}
 	work, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
-	result, err := s.completePaidScriptModel(work, agentgateway.Request{
+	result, err := s.completePlayedScriptModel(work, agentgateway.Request{
 		Stage:          "script_rewrite",
 		Messages:       scriptRewriteMessages(prompt),
 		ResponseFormat: agentgateway.ResponseText,
@@ -203,19 +223,16 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		dir = dir[:cut]
 	}
 	rewriteUnit := volcengineScriptUnit{Text: script, Key: scriptFirstParagraphKey(v, script), Dir: filepath.Join(dir, scriptFirstParagraphKey(v, script))}
-	if runtime := agentgateway.ContextRoomModelScope(work).RuntimeID; runtime > 0 {
-		paused, err := s.checkLiveAnchorOwner(work, tenant, room, runtime, v.ID)
-		if err != nil || paused {
-			return
-		}
-		state, err := s.store.RuntimeVoiceBatch(work, tenant, room, runtime, v.ID)
-		if err != nil || state.Pending != nil || !voicebatch.Same(state.Active, v.VoiceIdentity) {
-			return
-		}
+	if err := checkScriptGenerationGuard(work); err != nil {
+		return
 	}
 	audio, err := s.ensureScriptFirstParagraph(work, tenant, room, 0, v, rewriteUnit, true)
 	if err != nil || audio.AssetID <= 0 {
 		log.Printf("script rewrite tts failed plan=%d piece=%s: %v", v.PlanID, shortKey(unit.Key), err)
+		return
+	}
+	if err := checkScriptGenerationGuard(work); err != nil {
+		// Paid source/cache remains retained; late work cannot activate or retire.
 		return
 	}
 	version := scriptplay.Version{
@@ -243,6 +260,29 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		log.Printf("script rewrite time drift plan=%d piece=%s words=%v", v.PlanID, shortKey(unit.Key), hits)
 	}
 	log.Printf("script rewrite ready plan=%d piece=%s runes=%d budget_left=%d", v.PlanID, shortKey(unit.Key), utf8.RuneCountInString(script), scriptVoiceBudgetLeft(v.PlanID))
+}
+
+func (s *Server) checkScriptGenerationOwner(ctx context.Context, tenant, room, session int64, v model.LiveAgentPlanVersion) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.store == nil {
+		return fmt.Errorf("script generation owner unavailable")
+	}
+	paused, err := s.checkLiveAnchorOwner(ctx, tenant, room, session, v.ID)
+	if err != nil {
+		return err
+	}
+	state, err := s.store.RuntimeVoiceBatch(ctx, tenant, room, session, v.ID)
+	if err != nil {
+		return err
+	}
+	active := v
+	active.VoiceIdentity = state.Active
+	if paused || state.Pending != nil || !voicebatch.Same(state.Active, v.VoiceIdentity) || scriptGenerationIdentity(active) != scriptGenerationIdentity(v) {
+		return fmt.Errorf("script generation owner changed or paused")
+	}
+	return nil
 }
 
 // scriptRewritePrompt 取方案专属的改写提示词并填上样本。
@@ -397,7 +437,7 @@ func pickViolatingSentences(sentences, hits []string) []string {
 func (s *Server) askRewriteSentences(ctx context.Context, v model.LiveAgentPlanVersion, targets []string) ([]string, bool) {
 	prompt := "把下面这几句里的违规说法改掉，其他内容不要动：事实、价格、数字、规格、时效一律保持原样；" +
 		"不要加新信息；一行一句，只输出改好的句子，不要编号、不要解释。\n\n" + strings.Join(targets, "\n")
-	result, err := s.completePaidScriptModel(ctx, agentgateway.Request{
+	result, err := s.completePlayedScriptModel(ctx, agentgateway.Request{
 		Stage:     "script_rewrite_repair",
 		Messages:  []agentgateway.Message{{Role: "user", Content: prompt}},
 		MaxTokens: 800,
@@ -466,7 +506,7 @@ func (s *Server) extendRewriteScript(ctx context.Context, v model.LiveAgentPlanV
 		"保持原来的说法和顺序，只把没讲透的地方讲开；" +
 		"直接输出补好后的完整话术，一段连续文字，不要解释、不要小标题。\n\n" +
 		"【现有话术】\n" + strings.TrimSpace(script) + "\n\n【事实依据】\n" + facts
-	result, err := s.completePaidScriptModel(ctx, agentgateway.Request{
+	result, err := s.completePlayedScriptModel(ctx, agentgateway.Request{
 		Stage:     "script_rewrite_extend",
 		Messages:  []agentgateway.Message{{Role: "user", Content: prompt}},
 		MaxTokens: 2000,
@@ -591,7 +631,7 @@ func (s *Server) askRewriteOpening(ctx context.Context, script string) (string, 
 	prompt := "只改下面这段话术的第一句：换一个完全不同的切入角度，" +
 		"不要打招呼、不要自我介绍、不要叫观众称呼，直接落在具体内容上；" +
 		"其余部分原样保留，事实和数字一律不动；直接输出完整话术，不要解释。\n\n" + script
-	result, err := s.completePaidScriptModel(ctx, agentgateway.Request{
+	result, err := s.completePlayedScriptModel(ctx, agentgateway.Request{
 		Stage:     "script_rewrite_opening",
 		Messages:  []agentgateway.Message{{Role: "user", Content: prompt}},
 		MaxTokens: 2000,

@@ -70,6 +70,7 @@ func recoverScriptSupplyCheckpoint(tenant, room, session, version int64, snapsho
 // only proves queuing, and must not unlock paid rewrites or retirement.
 func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, session int64, v model.LiveAgentPlanVersion, units []volcengineScriptUnit, cursor *volcengineScriptCursor, snapshot coreclient.ProgramRefreshSnapshot, save func() error) error {
 	played := map[string]bool{}
+	pcm := map[string]bool{}
 	for _, receipt := range snapshot.MainlinePlaybackReceipts {
 		if receipt.StartedAt != "" {
 			played[receipt.TrackID] = true
@@ -78,6 +79,7 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 	for _, receipt := range snapshot.PlaybackReceipts {
 		if receipt.PlayedMS > 0 {
 			played[receipt.TrackID] = true
+			pcm[receipt.TrackID] = true
 		}
 	}
 	changed := false
@@ -134,6 +136,16 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 	}
 	for i := range cursor.Delivered {
 		track := &cursor.Delivered[i]
+		generationScopeMatches := (snapshot.VersionID == 0 || snapshot.VersionID == v.ID) &&
+			(cursor.VersionID == 0 || cursor.VersionID == v.ID) &&
+			(snapshot.ProgramID == "" || cursor.ProgramID == "" || snapshot.ProgramID == cursor.ProgramID)
+		if generationScopeMatches && pcm[track.TrackID] && track.AssetID > 0 && track.Unit >= 0 && track.Unit < len(units) && ctx.Err() == nil {
+			voiceVersion := scriptVersionForVoice(v, recordingScriptVoice{VoiceID: track.VoiceID, Model: track.Model})
+			if err := recordScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, voiceVersion, units[track.Unit], track.InstanceID); err != nil {
+				// Optional replenishment cannot stop already playable mainline.
+				log.Printf("script generation play unavailable tenant=%d room=%d session=%d: %v", tenant, room, session, err)
+			}
+		}
 		if track.Confirmed || !played[track.TrackID] || track.Unit < 0 || track.Unit >= len(units) {
 			continue
 		}
@@ -152,8 +164,7 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 		voiceVersion := scriptVersionForVoice(v, recordingScriptVoice{VoiceID: track.VoiceID, Model: track.Model})
 		recordPlaybackLedger(tenant, room, voiceVersion, track.Unit, track.Block, track.TrackID)
 		log.Printf("script playback confirmed tenant=%d room=%d session=%d track=%s asset=%d", tenant, room, session, track.TrackID, track.AssetID)
-		// Continuous policy ticks choose the next shared deficit; playback receipts
-		// only provide evidence, never buy a version per play.
+		// Positive PCM grants one coalesced opportunity; polling cannot mint more.
 	}
 	if changed {
 		if len(cursor.Delivered) > 128 {

@@ -191,6 +191,11 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 			work, finish = context.WithTimeout(ctx, scriptArchiveRecoveryTimeout)
 			r.LongText.RecoveryWait = scriptArchiveRecoveryTimeout
 		}
+		if err = checkScriptGenerationGuard(work); err != nil {
+			finish()
+			release(true)
+			return empty, err
+		}
 		generated, err = ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(work, scope), r)
 		finish()
 		release(ttsgateway.DefinitelyNotSent(err))
@@ -201,6 +206,9 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 			r.LongText.AccountID, r.LongText.RecoveryWait = "", 0
 			scope.Key = fmt.Sprintf("volcengine-long:%d:%s:%s", session, unit.Key, anchorcycle.ID())
 			log.Printf("script old cloud task unavailable key=%s; synthesize replacement", shortKey(unit.Key))
+			if err = checkScriptGenerationGuard(ctx); err != nil {
+				return empty, err
+			}
 			generated, err = ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(ctx, scope), r)
 		}
 		if err != nil {
@@ -209,7 +217,7 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 	}
 	// A cloud task may finish after stop. Its local paid WAV has been retained;
 	// never archive/publish late audio into a stopped/replaced session.
-	if err = ctx.Err(); err != nil {
+	if err = checkScriptGenerationGuard(ctx); err != nil {
 		return empty, err
 	}
 	duration, err := volcengineWAVDuration(generated.AudioFile)

@@ -48,6 +48,9 @@ func prepareScriptFirstPaid(ctx context.Context, unit volcengineScriptUnit, gene
 	if err = writeVolcengineJSON(path, state); err != nil {
 		return ttsgateway.SynthesizeResponse{}, err
 	}
+	if err = checkScriptGenerationGuard(ctx); err != nil {
+		return ttsgateway.SynthesizeResponse{}, err
+	}
 	out, err := generate(ctx, audioPath)
 	if err != nil {
 		var admission scriptBudgetAdmissionError
@@ -134,6 +137,10 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 			scope.Priority = "optional"
 			scope.Reason = parent.Reason
 		}
+		if err := checkScriptGenerationGuard(c); err != nil {
+			release(true)
+			return ttsgateway.SynthesizeResponse{}, err
+		}
 		out, err := ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(c, scope), request)
 		release(ttsgateway.DefinitelyNotSent(err))
 		return out, err
@@ -141,7 +148,7 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 	if err != nil {
 		return empty, err
 	}
-	if err = ctx.Err(); err != nil {
+	if err = checkScriptGenerationGuard(ctx); err != nil {
 		return empty, err
 	}
 	duration, err := volcengineWAVDuration(generated.AudioFile)

@@ -130,6 +130,9 @@ func (s *Server) synthesizeSharedScriptText(ctx context.Context, tenant, room in
 	if err != nil {
 		return err
 	}
+	if err = checkScriptGenerationGuard(ctx); err != nil {
+		return err
+	}
 	_, err = commitScriptRewriteVersion(recordingCacheMediaRoot(), v, unit, scriptplay.Version{FactsKey: scriptRewriteFactsKey(v), PieceID: unit.poolID(), Fingerprint: scriptplay.Fingerprint(text), Text: text, VoiceID: v.VoiceIdentity.VoiceID, Model: v.VoiceIdentity.Model, Kind: scriptplay.KindRewrite, AudioRef: strconv.FormatInt(audio.AssetID, 10), DurationMS: audio.DurationMS, SourcePath: target.Dir}, cap, replace, retireRef...)
 	if err == nil {
 		err = markScriptSharedTextRendered(recordingCacheMediaRoot(), v, unit, text)

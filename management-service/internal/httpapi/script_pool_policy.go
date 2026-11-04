@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/scriptplay"
 	"livecompanion/management/internal/sharedfilelock"
@@ -99,6 +100,10 @@ func scriptPoolPolicyPath(root string, v model.LiveAgentPlanVersion) string {
 // One finite batch belongs to the whole plan/voice, not independently to every
 // piece. The caller holds a plan-wide generation lock through synthesis/commit.
 func scriptPolicyGeneration(root string, v model.LiveAgentPlanVersion, units []volcengineScriptUnit, now time.Time, attempt bool, reuseWarmup ...bool) (index, cap int, retire string, err error) {
+	return scriptPolicyGenerationForPiece(root, v, units, "", now, attempt, reuseWarmup...)
+}
+
+func scriptPolicyGenerationForPiece(root string, v model.LiveAgentPlanVersion, units []volcengineScriptUnit, playedPiece string, now time.Time, attempt bool, reuseWarmup ...bool) (index, cap int, retire string, err error) {
 	index = -1
 	path := scriptPoolPolicyPath(root, v)
 	release, e := sharedfilelock.Lock(context.Background(), path+".lock")
@@ -117,13 +122,9 @@ func scriptPolicyGeneration(root string, v model.LiveAgentPlanVersion, units []v
 	}
 	p := scriptPlanPools(root, v, units)
 	inventory := int64(0)
-	originals := int64(0)
 	for _, pool := range p.Pools {
 		for _, x := range pool.Versions {
 			inventory += x.DurationMS
-			if x.Kind == scriptplay.KindOriginal {
-				originals += x.DurationMS
-			}
 		}
 	}
 	if st.InitialAudioMS == 0 {
@@ -136,10 +137,6 @@ func scriptPolicyGeneration(root string, v model.LiveAgentPlanVersion, units []v
 		err = writeVolcengineJSON(path, st)
 		return
 	}
-	// Five minutes of initial runway; replenish gradually toward the 80-minute
-	// target in 75 minutes. Existing inventory is reused, not purchased again.
-	fillDue := inventory < max(originals+75000, st.InitialAudioMS+5*60000+int64(now.Sub(st.FirstObserved).Milliseconds()*80/75))
-
 	// For very large original inventories, defer refresh-slot procurement during
 	// the first reusable 90 minutes. Afterwards reserve enough rewrites that a
 	// protected original does not permanently make 30% replacement impossible.
@@ -163,6 +160,9 @@ func scriptPolicyGeneration(root string, v model.LiveAgentPlanVersion, units []v
 	// unready originals remain the foreground producer's responsibility.
 	best := math.Inf(1)
 	for i, pool := range p.Pools {
+		if playedPiece != "" && units[i].poolID() != playedPiece {
+			continue
+		}
 		if len(pool.Versions) >= p.Caps[i] || !pool.HasOriginal(v.VoiceIdentity.VoiceID) {
 			continue
 		}
@@ -172,9 +172,6 @@ func scriptPolicyGeneration(root string, v model.LiveAgentPlanVersion, units []v
 			cap = p.Caps[i]
 			best = score
 		}
-	}
-	if index >= 0 && !fillDue && retire == "" {
-		index = -1
 	}
 	if index < 0 && p.Full {
 		present := map[string]bool{}
@@ -215,8 +212,10 @@ func scriptPolicyGeneration(root string, v model.LiveAgentPlanVersion, units []v
 			st.Retire = append([]scriptPolicyRetirement(nil), rotatePolicyRetirements(eligible, int(st.Batch)%len(eligible))[:count]...)
 			st.Batch++
 		}
-		if len(st.Retire) > 0 {
-			x := st.Retire[0]
+		for _, x := range st.Retire {
+			if playedPiece != "" && x.Piece != playedPiece {
+				continue
+			}
 			for i, u := range units {
 				if u.poolID() == x.Piece {
 					index = i
@@ -224,6 +223,9 @@ func scriptPolicyGeneration(root string, v model.LiveAgentPlanVersion, units []v
 					retire = x.Ref
 					break
 				}
+			}
+			if index >= 0 {
+				break
 			}
 		}
 	}
@@ -256,6 +258,18 @@ func scriptPolicyGeneration(root string, v model.LiveAgentPlanVersion, units []v
 }
 
 func (s *Server) tickScriptPoolPolicy(ctx context.Context, tenant, room int64, v model.LiveAgentPlanVersion, units []volcengineScriptUnit) {
+	session := agentgateway.ContextRoomModelScope(ctx).RuntimeID
+	if ctx.Err() != nil || session <= 0 {
+		if session > 0 && ctx.Err() != nil {
+			play, _ := pendingScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, v)
+			discardScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, v, play)
+		}
+		return
+	}
+	play, err := pendingScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, v)
+	if err != nil || play == nil {
+		return
+	}
 	key := "policy|" + scriptPoolPolicyPath(recordingCacheMediaRoot(), v)
 	scriptPolicyPoll.Lock()
 	if time.Since(scriptPolicyPoll.last[key]) < 5*time.Second {
@@ -264,8 +278,9 @@ func (s *Server) tickScriptPoolPolicy(ctx context.Context, tenant, room int64, v
 	}
 	scriptPolicyPoll.last[key] = time.Now()
 	scriptPolicyPoll.Unlock()
-	index, _, _, err := scriptPolicyGeneration(recordingCacheMediaRoot(), v, units, time.Now().UTC(), false, scriptPolicyRoomWarmup(recordingCacheMediaRoot(), tenant, room, v.PlanID, time.Now().UTC()))
+	index, _, _, err := scriptPolicyGenerationForPiece(recordingCacheMediaRoot(), v, units, play.Piece, time.Now().UTC(), false, scriptPolicyRoomWarmup(recordingCacheMediaRoot(), tenant, room, v.PlanID, time.Now().UTC()))
 	if err != nil || index < 0 {
+		discardScriptGenerationPlay(recordingCacheMediaRoot(), tenant, room, session, v, play)
 		return
 	}
 	// No background queue of stale per-piece decisions. Coalesce the whole plan.

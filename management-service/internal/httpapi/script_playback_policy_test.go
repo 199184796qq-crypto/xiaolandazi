@@ -329,7 +329,7 @@ func TestPolicyRetirementKeepsRoomLeaseUntilRoundEnd(t *testing.T) {
 	}
 }
 
-func TestPolicyFillPacingAndFailedSupplyBackoff(t *testing.T) {
+func TestPolicySupplyBackoffAndPlaybackOwnsPacing(t *testing.T) {
 	root := t.TempDir()
 	v := policyVersion()
 	u := volcengineScriptUnit{Pool: "p", Text: "原文"}
@@ -356,12 +356,12 @@ func TestPolicyFillPacingAndFailedSupplyBackoff(t *testing.T) {
 		policyFixture(t, root, v, u, int64(n), fmt.Sprintf("新版本%d", n), 75000, scriptplay.KindRewrite)
 	}
 	i, _, _, _ = scriptPolicyGeneration(root, v, units, at.Add(time.Minute), false)
-	if i >= 0 {
-		t.Fatal("not gradual fill", i)
+	if i != 0 {
+		t.Fatal("capacity decision unexpectedly depended on clock", i)
 	}
 	i, _, _, _ = scriptPolicyGeneration(root, v, units, at.Add(10*time.Minute), false)
 	if i < 0 {
-		t.Fatal("fill did not resume as supply target grew")
+		t.Fatal("capacity decision missing", i)
 	}
 }
 
