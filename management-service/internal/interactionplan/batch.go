@@ -91,6 +91,11 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 	}
 	// Shared plan and scene are sent once; each person's histories stay inside its item.
 	inputs := append([]BatchItem(nil), items...)
+	for i := range inputs {
+		if inputs[i].Kind != "time_report" {
+			inputs[i].ReportClock, inputs[i].ReportPeriod = "", ""
+		}
+	}
 	mainline := inputs[0].CurrentMainline
 	engagement := inputs[0].EngagementToken
 	for i := range inputs {

@@ -75,8 +75,20 @@ func TestPCMFinishedBroadcastCompletesQueueWithoutReceiverCallback(t *testing.T)
 	if !ok {
 		t.Fatal("claim")
 	}
-	cut := 300
-	inserted, err := client.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{RoomID: 42, ExpectedTaskID: start.Task.ID, AudioURL: source.URL + "/reply", Text: "回答。", SwitchAtMS: &cut, ResumeOffsetMS: &cut})
+	var cut int
+	readyDeadline := time.Now().Add(time.Second)
+	for time.Now().Before(readyDeadline) {
+		p, _ := client.ProgramSnapshot(context.Background(), 42)
+		if len(p.AcousticCuts) > 0 {
+			cut = p.AcousticCuts[0].CutMS
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if cut == 0 {
+		t.Fatal("no scanned PCM cut")
+	}
+	inserted, err := client.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{RoomID: 42, ExpectedTaskID: start.Task.ID, AcousticCut: true, AudioURL: source.URL + "/reply", Text: "回答。", SwitchAtMS: &cut, ResumeOffsetMS: &cut})
 	if err != nil {
 		t.Fatal(err)
 	}

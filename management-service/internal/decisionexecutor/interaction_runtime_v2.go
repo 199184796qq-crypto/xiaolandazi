@@ -228,7 +228,15 @@ func (w *Worker) generateInteractionV2(ctx context.Context, session model.LiveRu
 	} else {
 		// Explicit/manual requests also use this content protocol. Automatic events
 		// already have body_ready and never call the intent/body models a second time.
-		intent, body, err := interactionplan.Generate(ctx, snapshot, interactionplan.Input{Kind: item.MissionKind, Text: primaryQuestion(*item), AllowClarify: true, EventCount: item.MissionEventCount, CurrentMainline: item.CurrentMainline}, complete)
+		input := interactionplan.Input{Kind: item.MissionKind, Text: primaryQuestion(*item), AllowClarify: true, EventCount: item.MissionEventCount, CurrentMainline: item.CurrentMainline}
+		if isTimeReport(*item) {
+			// The timestamp belongs to this model request, not to the task's
+			// creation or a later TTS retry. Ordinary interactions omit it.
+			at := item.TimeReportGeneratedAt.In(beijingZone)
+			input.ReportClock = at.Format("2006-01-02 15:04")
+			input.ReportPeriod = timeOfDay(at)
+		}
+		intent, body, err := interactionplan.Generate(ctx, snapshot, input, complete)
 		if err != nil {
 			return "", err
 		}
@@ -332,6 +340,9 @@ func (w *Worker) SimulatePreparedInteractionV2(ctx context.Context, tenant, room
 }
 
 func (w *Worker) interactionV2Memory(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, error) {
+	if retryableTimeReport(item) {
+		return w.interactionMemoryFingerprint(ctx, session)
+	}
 	if e, ok := interactionplan.Decode(item.PurposeKnowledge); ok {
 		return e.Fingerprint, nil
 	}

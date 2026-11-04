@@ -18,7 +18,7 @@ func TestReportIsRevalidatedAfterActualPCMCutWait(t *testing.T) {
 	c, _ := newTestClient(t, 2000)
 	engine := roomaudio.New()
 	c.SetRoomAudioEngine(engine)
-	audio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(testWAV(2000)) }))
+	audio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(acousticTestWAV(2000, 700, 900, 5000)) }))
 	defer audio.Close()
 	captain := messagecaptain.New()
 	c.SetMessageCaptain(captain)
@@ -55,8 +55,9 @@ func TestReportIsRevalidatedAfterActualPCMCutWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.StopProgram(context.Background(), 96)
+	waitAcousticTestCut(t, c, 96)
 	cut, resume := 800, 800
-	_, err = c.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{RoomID: 96, ExpectedTaskID: start.Task.ID, DecisionID: "report", AudioURL: audio.URL, Text: "下午了。", SwitchAtMS: &cut, ResumeOffsetMS: &resume})
+	_, err = c.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{RoomID: 96, ExpectedTaskID: start.Task.ID, DecisionID: "report", AcousticCut: true, AudioURL: audio.URL, Text: "下午了。", SwitchAtMS: &cut, ResumeOffsetMS: &resume})
 	if !errors.Is(err, errInteractionV2Wait) || calls != 2 {
 		t.Fatal("cut wait bypassed final validity guard", err, calls)
 	}

@@ -60,7 +60,7 @@ func TestTimeReportEntitlementSettlesOnlyOnComplete(t *testing.T) {
 	}
 	q.Complete(29, id)
 	p.flushTimeReports(now)
-	if state.Decision != "" || state.Topic != "" || state.Due.Before(now.Add(90*time.Minute)) || state.Due.After(now.Add(240*time.Minute)) {
+	if state.Decision != "" || state.Topic != "" || state.Due.Before(now.Add(60*time.Minute)) || state.Due.After(now.Add(180*time.Minute)) {
 		t.Fatal("not settled from completion clock", state)
 	}
 	due = state.Due

@@ -16,6 +16,9 @@ var errTimeReportStale = errors.New("报时话术的原始时间已过期，保�
 type timeReportContextKey struct{}
 type timeReportIdentity struct{ Scope, Memory string }
 type timeReportDraft struct {
+	// Generation metadata travels with reused text, so a TTS retry keeps the
+	// same frozen V2 voice/style instead of reverting to legacy defaults.
+	Content                 decisionItem
 	Text, Scope, Memory     string
 	GeneratedAt, ValidUntil time.Time
 	AudioUntil              time.Time
@@ -42,6 +45,15 @@ func retryableTimeReport(item decisionItem) bool {
 }
 
 func (w *Worker) timeReportText(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem) string {
+	text, _ := w.timeReportDraftText(ctx, session, item, func(callCtx context.Context) (string, error) {
+		return (timeReportStrategy{worker: w}).Respond(callCtx, session, *item), nil
+	})
+	return text
+}
+
+// Both generation routes use the same program-owned clock, validity and paid
+// draft cache. A retry never relabels old text with a fresh generation time.
+func (w *Worker) timeReportDraftText(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem, generate func(context.Context) (string, error)) (string, error) {
 	identity, cachedScope := ctx.Value(timeReportContextKey{}).(timeReportIdentity)
 	key := preparationKey(session, *item)
 	w.mu.Lock()
@@ -49,13 +61,17 @@ func (w *Worker) timeReportText(ctx context.Context, session model.LiveRuntimeSe
 	w.mu.Unlock()
 	if !cachedScope || !retryableTimeReport(*item) || !ok || !w.now().Before(draft.ValidUntil) || draft.Scope != identity.Scope || draft.Memory != identity.Memory {
 		at := w.now().UTC()
-		text := (timeReportStrategy{worker: w}).Respond(timeReportPaidContext(ctx, at, nil), session, *item)
+		item.TimeReportGeneratedAt = at
+		text, err := generate(timeReportPaidContext(ctx, at, nil))
+		if err != nil {
+			return "", err
+		}
 		until, valid := timeReportValidity(text, at)
 		if !valid {
 			text = timeReportFallback(timeOfDay(at.In(beijingZone)))
 			until, _ = timeReportValidity(text, at)
 		}
-		draft = timeReportDraft{Text: text, Scope: identity.Scope, Memory: identity.Memory, GeneratedAt: at, ValidUntil: until}
+		draft = timeReportDraft{Content: *item, Text: text, Scope: identity.Scope, Memory: identity.Memory, GeneratedAt: at, ValidUntil: until}
 		if cachedScope && retryableTimeReport(*item) {
 			w.mu.Lock()
 			if w.timeReportDrafts == nil {
@@ -91,7 +107,11 @@ func (w *Worker) timeReportText(ctx context.Context, session model.LiveRuntimeSe
 	}
 	item.TimeReportGeneratedAt, item.TimeReportValidUntil = draft.GeneratedAt, draft.ValidUntil
 	item.TimeReportAudioVersion = draft.AudioVersion
-	return draft.Text
+	item.PurposeKnowledge = append([]byte(nil), draft.Content.PurposeKnowledge...)
+	item.EmotionDisabled = draft.Content.EmotionDisabled
+	item.SelectedInterrupt, item.SelectedResume = draft.Content.SelectedInterrupt, draft.Content.SelectedResume
+	item.BridgeText = draft.Content.BridgeText
+	return draft.Text, nil
 }
 
 func (w *Worker) rememberTimeReportAudio(session model.LiveRuntimeSession, item decisionItem, until time.Time) {

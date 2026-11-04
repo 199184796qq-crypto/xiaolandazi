@@ -2039,6 +2039,11 @@ func (w *Worker) generateDecisionTextMutable(ctx context.Context, session model.
 		return w.generateBehaviorTemplate(ctx, session, item, e)
 	}
 	if w.isInteractionV2(item, session) {
+		if isTimeReport(*item) {
+			return w.timeReportDraftText(ctx, session, item, func(callCtx context.Context) (string, error) {
+				return w.generateInteractionV2(callCtx, session, item)
+			})
+		}
 		return w.generateInteractionV2(ctx, session, item)
 	}
 	if item.BusinessCoreOnly {
@@ -2476,7 +2481,7 @@ func (w *Worker) dispatchOnce(
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		if resp.StatusCode == http.StatusConflict && (strings.Contains(string(raw), "主线已换段") || strings.Contains(string(raw), "安全句末切点已失效") || strings.Contains(string(raw), "当前35秒内没有安全句末切点") || strings.Contains(string(raw), "互动播出额度或原始期限暂不允许")) {
+		if resp.StatusCode == http.StatusConflict && (strings.Contains(string(raw), "主线已换段") || strings.Contains(string(raw), "安全句末切点已失效") || strings.Contains(string(raw), "当前35秒内没有安全句末切点") || strings.Contains(string(raw), "没有真实PCM声学切点") || strings.Contains(string(raw), "互动播出额度或原始期限暂不允许")) {
 			return dispatchResult{}, &safeSwitchRetry{message: string(raw)}
 		}
 		return dispatchResult{}, fmt.Errorf("audio dispatch http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))

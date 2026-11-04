@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
+
 	"strings"
 	"testing"
 	"time"
@@ -288,100 +288,20 @@ func TestDevAudioRoundTripState(t *testing.T) {
 	}
 }
 
-func TestDevAudioInteractionWritesTimelinePins(t *testing.T) {
-	t.Setenv("CORE_DEV_INTERACTION_LOG", filepath.Join(t.TempDir(), "interactions.jsonl"))
-	client := &fakeAudioTaskClient{}
-	brain := &fakeRoomBrain{}
-	server := New(nil, nil, nil, nil, nil, "development", "core-secret")
-	server.SetAudioClient(client, "http://core.local")
-	server.SetRoomBrain(brain)
-
-	body := `{
-		"room_id":44,
-		"session_id":"session-a",
-		"label":"真实TTS互动",
-		"audio_url":"https://tts.example/answer.wav",
-		"topic":"price",
-		"resume_mode":"FUSION_SKIP",
-		"resume_unit":"meat",
-		"skip_units":["feeding"],
-		"text_digest":"reply-digest",
-		"bridge_digest":"bridge-digest"
-	}`
-	req := httptest.NewRequest(http.MethodPost, "/internal/v1/dev/audio/interaction", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Core-Token", "core-secret")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("interaction status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if client.interactionInput.RoomID != 44 ||
-		client.interactionInput.AudioURL != "https://tts.example/answer.wav" ||
-		client.interactionInput.CallbackURL != "http://core.local/internal/v1/dev/audio/events" {
-		t.Fatalf("interaction input=%#v", client.interactionInput)
-	}
-
-	playing := httptest.NewRequest(
-		http.MethodPost,
-		"/internal/v1/dev/audio/events",
-		strings.NewReader(`{
-			"speech_task_id":"interaction-1",
-			"room_id":44,
-			"session_id":"session-a",
-			"receiver_id":"pc-a",
-			"status":"PLAYING",
-			"occurred_at":"2026-09-25T01:00:00Z"
-		}`),
-	)
-	playing.Header.Set("Content-Type", "application/json")
-	playing.Header.Set("X-Core-Token", "core-secret")
-	playingRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(playingRec, playing)
-	if playingRec.Code != http.StatusOK {
-		t.Fatalf("playing callback=%d body=%s", playingRec.Code, playingRec.Body.String())
-	}
-	if len(brain.pins) != 0 || len(brain.spends) != 0 {
-		t.Fatalf("PLAYING must not complete answer debt pins=%#v spends=%#v", brain.pins, brain.spends)
-	}
-
-	completed := httptest.NewRequest(
-		http.MethodPost,
-		"/internal/v1/dev/audio/events",
-		strings.NewReader(`{
-			"speech_task_id":"interaction-1",
-			"room_id":44,
-			"session_id":"session-a",
-			"receiver_id":"pc-a",
-			"status":"COMPLETED",
-			"progress_ms":900,
-			"occurred_at":"2026-09-25T01:00:01Z"
-		}`),
-	)
-	completed.Header.Set("Content-Type", "application/json")
-	completed.Header.Set("X-Core-Token", "core-secret")
-	completedRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(completedRec, completed)
-	if completedRec.Code != http.StatusOK {
-		t.Fatalf("completed callback=%d body=%s", completedRec.Code, completedRec.Body.String())
-	}
-	if len(brain.pins) != 2 || brain.pins[0].Kind != timeline.PinAnswer {
-		t.Fatalf("completed answer pins=%#v", brain.pins)
-	}
-	if brain.pins[0].Topic != "PRICE" || brain.pins[0].Strategy != "interaction.fusion_skip" {
-		t.Fatalf("answer pin=%#v", brain.pins[0])
-	}
-	if brain.spends[0] != timeline.DebtQuestion {
-		t.Fatalf("answer spend=%q", brain.spends[0])
-	}
-	if len(brain.pins) != 2 || brain.pins[1].Kind != timeline.PinResume {
-		t.Fatalf("resume pins=%#v", brain.pins)
-	}
-	if brain.pins[1].Strategy != "FUSION_SKIP" || brain.pins[1].Key != "meat" {
-		t.Fatalf("resume pin=%#v", brain.pins[1])
-	}
-	if brain.spends[1] != "" {
-		t.Fatalf("resume should not spend debt: %q", brain.spends[1])
+func TestLegacyDevTimelineEntryIsPermanentlyGone(t *testing.T) {
+	server := New(nil, nil, nil, nil, nil, "development", "probe-token")
+	for _, tc := range []struct{ method, path string }{{"POST", "/internal/v1/dev/audio/program/interaction"}, {"GET", "/internal/v1/dev/audio/mainline-map"}} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{}`))
+		req.Header.Set("X-Core-Token", "probe-token")
+		rec := httptest.NewRecorder()
+		if tc.method == "POST" {
+			server.insertDevAudioInteraction(rec, req)
+		} else {
+			server.getDevAudioMainlineMap(rec, req)
+		}
+		if rec.Code != http.StatusGone {
+			t.Fatal(tc.path, rec.Code, rec.Body.String())
+		}
 	}
 }
 

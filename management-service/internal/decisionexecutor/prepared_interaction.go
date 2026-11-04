@@ -43,6 +43,14 @@ func preparationKey(session model.LiveRuntimeSession, item decisionItem) prepare
 // Exclude playback cursors and heat, which move while TTS is being prepared.
 // Include the event, selected plan, published facts/voice and live corrections.
 func (w *Worker) interactionContentScope(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) (string, error) {
+	if retryableTimeReport(item) {
+		if e, ok := interactionplan.Decode(item.PurposeKnowledge); ok && (e.Session != session.ID || e.Tenant != session.TenantID || e.Room != session.RoomID) {
+			return "", fmt.Errorf("互动缓存场次不匹配")
+		}
+		// Core reclaims the outstanding report quota without the locally generated
+		// V2 envelope. It must still find the same paid text/audio preparation.
+		item.PurposeKnowledge = nil
+	}
 	if e, ok := interactionplan.Decode(item.PurposeKnowledge); ok {
 		if e.Session != session.ID || e.Tenant != session.TenantID || e.Room != session.RoomID {
 			return "", fmt.Errorf("互动缓存场次不匹配")
@@ -88,6 +96,13 @@ func (w *Worker) interactionContentScope(ctx context.Context, session model.Live
 	input := []any{session.ExternalID, session.ExecutionRealm, plan, facts, published, versions, voice, effective,
 		item.PurposeID, item.PurposeKnowledge, item.Topic, item.SampleQuestions, item.Nicknames, item.ReplyHint, item.ManualAction, item.ManualOrigin, item.ExecutionMode, item.FixedText, item.MissionKind, item.Schedule,
 		w.store.AgentPromptValue(ctx, "policy.runtime.execution", ""), w.store.AgentPromptValue(ctx, "live.final_review.system", "")}
+	if retryableTimeReport(item) && w.isInteractionV2(&item, session) {
+		snapshot, err := interactionplan.Freeze(ctx, w.store, session)
+		if err != nil {
+			return "", err
+		}
+		input = append(input, snapshot.Fingerprint)
+	}
 	if source, ok := w.store.(expressionConstraintStore); ok {
 		constraints, e := source.CurrentSpeechExpressionConstraints(ctx, session.TenantID, plan.ID)
 		if e != nil {

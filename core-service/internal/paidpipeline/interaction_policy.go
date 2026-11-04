@@ -133,6 +133,6 @@ func (p *Processor) decorateCandidate(roomID, tenantID int64, c *agentdecision.C
 }
 
 func nextTimeReportDelay() time.Duration {
-	// 2 hours plus a random -30..+120 minutes, independently each round.
-	return 2*time.Hour + time.Duration(rand.Intn(151)-30)*time.Minute
+	// 2 hours plus a random -60..+60 minutes, independently each round.
+	return 2*time.Hour + time.Duration(rand.Intn(121)-60)*time.Minute
 }

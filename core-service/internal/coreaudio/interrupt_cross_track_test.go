@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestActualPCMTrackEndInterruptCompletesAndReturnsToNextTrack(t *testing.T) {
+func TestAcousticInterruptCompletesExactTailThenAdvancesTrack(t *testing.T) {
 	client, _ := newTestClient(t, 600)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		duration := 600
@@ -55,8 +55,8 @@ func TestActualPCMTrackEndInterruptCompletesAndReturnsToNextTrack(t *testing.T) 
 	if err != nil || snapshot.ActualStartedAt.IsZero() || len(snapshot.FutureWindow) != 2 || snapshot.FutureWindow[1].OffsetMS != 600 {
 		t.Fatal("continuous stream snapshot missing", snapshot, err)
 	}
-	cut := 600
-	answer, err := client.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{RoomID: 91, ExpectedTaskID: start.Task.ID, AudioURL: server.URL + "/answer", Text: "完整问题回答。", SwitchAtMS: &cut, ResumeOffsetMS: &cut})
+	cut := waitAcousticTestCut(t, client, 91)
+	answer, err := client.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{RoomID: 91, ExpectedTaskID: start.Task.ID, AcousticCut: true, AudioURL: server.URL + "/answer", Text: "完整问题回答。", SwitchAtMS: &cut, ResumeOffsetMS: &cut})
 	if err != nil || !answer.Suspended {
 		t.Fatal("track end cut lost to mainline advance", answer, err)
 	}

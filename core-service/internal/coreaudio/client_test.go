@@ -3,6 +3,7 @@ package coreaudio
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -85,46 +86,21 @@ func TestProgramLoopsInsideCoreHub(t *testing.T) {
 	}
 }
 
-func TestInteractionSuspendsAndResumesMainline(t *testing.T) {
+func TestLegacyImmediateInsertCannotReplaceMainline(t *testing.T) {
 	client, hub := newTestClient(t, 220)
-	interactionPath := filepath.Join(t.TempDir(), "interaction.wav")
-	if err := os.WriteFile(interactionPath, testWAV(70), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// ProbeExternalWAV is HTTP based, so serve the interaction via a tiny local server.
-	server := newWAVServer(t, interactionPath)
-	defer server.Close()
-
 	start, err := client.StartTestProgram(context.Background(), 15, "s15", "main", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if start.Task == nil {
-		t.Fatal("missing mainline task")
+	defer client.StopTestProgram(context.Background(), 15)
+	audio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(testWAV(70)) }))
+	defer audio.Close()
+	_, err = client.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{RoomID: 15, AudioURL: audio.URL})
+	if !errors.Is(err, audioout.ErrInteractionSwitchStale) {
+		t.Fatal("legacy immediate insert was accepted", err)
 	}
-	time.Sleep(25 * time.Millisecond)
-	snapshot, err := client.InsertTestProgramInteraction(context.Background(), audioout.InsertInteractionInput{
-		RoomID:    15,
-		SessionID: "s15",
-		Label:     "answer",
-		AudioURL:  server.URL,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !snapshot.Suspended || snapshot.Task == nil || snapshot.Task.Kind != "interaction_audio" {
-		t.Fatalf("interaction not active: %#v", snapshot)
-	}
-	interactionID := snapshot.Task.ID
-	snapshot, err = client.CompleteProgramInteraction(context.Background(), 15, interactionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Suspended || snapshot.Task == nil || snapshot.Task.Kind != "test_wav_program" || snapshot.Task.ID == interactionID {
-		t.Fatalf("mainline did not resume: %#v", snapshot)
-	}
-	if active := hub.ActiveTask(15); active == nil || active.ID != snapshot.Task.ID {
-		t.Fatalf("hub did not resume mainline: %#v", active)
+	if active := hub.ActiveTask(15); active == nil || active.ID != start.Task.ID {
+		t.Fatal("rejected insert changed mainline")
 	}
 }
 
@@ -243,8 +219,8 @@ func TestNormalizeProgramTimelineRejectsCommaAsSafeCut(t *testing.T) {
 	if timeline[0].SafeCut {
 		t.Fatalf("comma chunk must not remain a safe cut: %#v", timeline[0])
 	}
-	if !timeline[1].SafeCut {
-		t.Fatalf("sentence ending should remain a safe cut: %#v", timeline[1])
+	if timeline[1].SafeCut || timeline[1].PauseCut {
+		t.Fatalf("caption punctuation cannot authorize a physical cut: %#v", timeline[1])
 	}
 }
 

@@ -44,6 +44,10 @@ type ContextMessage struct {
 	At   time.Time `json:"at,omitempty"`
 }
 type Input struct {
+	// Only time_report receives a program-owned wall clock. Ordinary events
+	// omit both fields; model output never supplies a validity timestamp.
+	ReportClock     string           `json:"当前北京时间,omitempty"`
+	ReportPeriod    string           `json:"当前时段,omitempty"`
 	Template        string           `json:"template,omitempty"`
 	Kind            string           `json:"kind"`
 	Correction      string           `json:"correction,omitempty"`

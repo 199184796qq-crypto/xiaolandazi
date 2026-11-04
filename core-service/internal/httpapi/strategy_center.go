@@ -274,21 +274,15 @@ func (s *Server) selectRoomStrategy(w http.ResponseWriter, r *http.Request) {
 				if currentMS <= 0 {
 					currentMS = program.Task.StartMS
 				}
-				cutMS := program.NextSafeCutMS
-				if cutMS <= currentMS {
-					if resolved, ok := resolveRoomProgramSafeCutAfterGeneration(program, 0, currentMS); ok {
-						cutMS = resolved
-					}
-				}
-				estimatedMS := input.EstimatedMS
-				if estimatedMS <= 0 {
-					estimatedMS = 10000
-				}
-				input.Candidates = resumeCandidatesForInteraction(program, cutMS, estimatedMS, input.Topic)
+				cutMS, _ := chooseAcousticInteractionCut(program.AcousticCuts, currentMS, 30000)
+				input.Candidates = []string{"DIRECT"}
 				resumeProgram = &program
 				plannedCutMS = cutMS
 			}
 		}
+	}
+	if strings.EqualFold(strings.TrimSpace(input.Category), "resume") {
+		input.Candidates = []string{"DIRECT"}
 	}
 	stageID, startedAt, stageActive := s.roomStrategyStage(r.Context(), roomID)
 	var selected strategycenter.Selection
@@ -306,30 +300,8 @@ func (s *Server) selectRoomStrategy(w http.ResponseWriter, r *http.Request) {
 	response := roomStrategySelectResponse{Selection: selected}
 	if resumeProgram != nil && strings.EqualFold(strings.TrimSpace(input.Category), "resume") {
 		response.PlannedCutMS = plannedCutMS
-		response.ResumeOffsetMS, response.ResumeReason = resumeOffsetForStrategy(*resumeProgram, plannedCutMS, selected.Key, input.Topic)
-		breakpoint := semanticResumeBreakpointFor(*resumeProgram, plannedCutMS, response.ResumeOffsetMS)
-		response.CutAfterSegmentID = breakpoint.CutAfterSegmentID
-		response.OriginalResumeSegmentID = breakpoint.OriginalResumeSegmentID
-		response.CoveredSegmentIDs = append([]string(nil), breakpoint.CoveredSegmentIDs...)
-		response.PlannedResumeSegmentID = breakpoint.PlannedResumeSegmentID
-		response.SkipCount = breakpoint.SkipCount
-		response.ResumeSegmentID = breakpoint.PlannedResumeSegmentID
-		if point, ok := resumePointAtOrAfter(*resumeProgram, response.ResumeOffsetMS); ok {
-			response.ResumePreview = resumePreview(*resumeProgram, point)
-			if response.ResumeSegmentID == "" {
-				response.ResumeSegmentID = point.SentenceID
-			}
-		}
-		if response.ResumeOffsetMS > plannedCutMS {
-			for _, point := range effectiveRoomProgramSafePoints(*resumeProgram) {
-				if point.CutMS <= plannedCutMS || point.CutMS >= response.ResumeOffsetMS {
-					continue
-				}
-				if preview := strings.TrimSpace(resumePreview(*resumeProgram, point)); preview != "" {
-					response.SkippedPreviews = append(response.SkippedPreviews, preview)
-				}
-			}
-		}
+		response.ResumeOffsetMS = plannedCutMS
+		response.ResumeReason = "exact_pcm_acoustic_boundary"
 	}
 	writeJSON(w, http.StatusOK, response)
 }

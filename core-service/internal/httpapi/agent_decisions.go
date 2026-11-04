@@ -8,7 +8,6 @@ import (
 
 	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/agentwork"
-	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/model"
 	"livecompanion/core/internal/speechruntime"
 )
@@ -216,32 +215,8 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 	resumeMainline := ""
 	resumeSegmentID := ""
 	var preparationPlans []interactionCutPlan
-	if queue[0].ManualAction != "quick" && !lowFlow && !hasInteractionV2Body(queue[0]) {
-		currentMS := program.CurrentMS
-		if currentMS <= 0 {
-			currentMS = program.Task.StartMS
-		}
-		if queue[0].AudioPrepared {
-			cutMS, exists := resolveRoomProgramSafeCutAfterGeneration(program, 0, currentMS)
-			if !exists {
-				writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "waiting_safe_point", "item": queue[0]})
-				return
-			}
-			plannedSwitchMS = cutMS
-			currentMainline, resumeMainline, resumeSegmentID = roomProgramCutContext(program, cutMS)
-		} else {
-			plan, plans, exists := preparationContext(program, currentMS)
-			if !exists {
-				writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "waiting_future_buffer", "item": queue[0], "buffered_mainline_ms": program.BufferedMainlineMS})
-				return
-			}
-			if plan.TrackID == program.TrackID {
-				plannedSwitchMS = plan.CutMS
-			}
-			currentMainline, resumeMainline, resumeSegmentID = plan.CurrentText, plan.ResumeText, plan.ResumeSegmentID
-			preparationPlans = plans
-		}
-	}
+	// Text timelines are display-only. Claiming generation never waits for
+	// a legacy text preparation window; dispatch rechecks physical PCM cuts.
 	item, claimed := s.agentDecisions.ClaimNext(roomID)
 	if lowFlow && item != nil {
 		// Low-flow rooms (including an empty room with only a greeting event) do
@@ -260,58 +235,6 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		"resume_segment_id": resumeSegmentID,
 		"cut_plans":         preparationPlans,
 	})
-}
-
-func plannedDecisionSafeCut(program audioout.RoomProgramSnapshot, currentMS int, item agentdecision.Item) (int, bool) {
-	if item.AudioPrepared {
-		// No model/TTS work remains; a nearby safe sentence end is enough.
-		return resolveRoomProgramSafeCutAfterGeneration(program, 0, currentMS)
-	}
-	if program.Task != nil && item.PreparedTaskID == program.Task.ID && validInteractionSwitchLead(currentMS, item.PreparedCutMS) {
-		for _, point := range effectiveRoomProgramSafePoints(program) {
-			if point.CutMS == item.PreparedCutMS {
-				return point.CutMS, true
-			}
-		}
-	}
-	return plannedRoomProgramSafeCut(program, currentMS)
-}
-
-func roomProgramCutContext(program audioout.RoomProgramSnapshot, cutMS int) (string, string, string) {
-	for index, segment := range program.Timeline {
-		if segment.EndMS != cutMS {
-			continue
-		}
-		before, after := []string{}, []string{}
-		for _, unit := range program.Timeline[:index+1] {
-			before = append(before, strings.TrimSpace(unit.Text))
-		}
-		segmentID := ""
-		for _, unit := range program.Timeline[index+1 : min(len(program.Timeline), index+3)] {
-			if segmentID == "" {
-				segmentID = unit.SegmentID
-			}
-			after = append(after, strings.TrimSpace(unit.Text))
-		}
-		if len(after) == 0 && program.NextTrackText != "" {
-			after = append(after, program.NextTrackText)
-		}
-		return strings.Join(before, " "), strings.Join(after, " "), segmentID
-	}
-	for _, point := range program.SafePoints {
-		if point.CutMS == cutMS {
-			before := strings.TrimSpace(point.LeftPreview)
-			if program.TrackText != "" {
-				before = program.TrackText
-			}
-			after := strings.TrimSpace(point.NextPreview)
-			if after == "" {
-				after = program.NextTrackText
-			}
-			return before, after, point.SentenceID
-		}
-	}
-	return "", "", ""
 }
 
 func speechSnapshotBusy(snapshot speechruntime.Snapshot) bool {

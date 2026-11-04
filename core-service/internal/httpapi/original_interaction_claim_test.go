@@ -95,7 +95,7 @@ func TestOriginalRecordingOrdinaryInteractionClaim(t *testing.T) {
 			if result.Claimed != tt.wantClaim || result.Item == nil || result.Item.ID != first.ID {
 				t.Fatalf("ordinary queue head claim: %s", response.Body.String())
 			}
-			if tt.wantClaim && (result.CutMS != cut || result.Item.ManualAction == "quick") {
+			if tt.wantClaim && (result.CutMS != 0 || result.Item.ManualAction == "quick") {
 				t.Fatalf("lost normal sentence-end scheduling: %s", response.Body.String())
 			}
 			if !tt.wantClaim && result.Reason != "mainline_low_buffer" {
