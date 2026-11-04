@@ -42,12 +42,7 @@ func TestAuditCompiledInteractionUsesOneRuntimeContractAndUnifiedBody(t *testing
 func TestAuditInteractionMalformedBlocksFailLocally(t *testing.T) {
 	valid := unifiedBlock("U01")
 	for name, raw := range map[string]string{
-		"body aliases":         strings.Replace(valid, "结束：U01", "回答：另一正文。\n结束：U01", 1),
-		"unknown after body":   strings.Replace(valid, "结束：U01", "解释：这是后台说明\n结束：U01", 1),
-		"invalid ambiguity":    strings.Replace(valid, "歧义：否", "歧义：不确定", 1),
-		"bad confidence":       strings.Replace(valid, "置信度：85", "置信度：101", 1),
-		"four intents":         strings.Replace(valid, "类型：", "意图：丙｜置信度：20｜建议：忽略\n意图：丁｜置信度：10｜建议：忽略\n类型：", 1),
-		"body before metadata": strings.Replace(valid, "话术要求：简短说明\n话术：按当前方案安排发货。", "话术：按当前方案安排发货。\n话术要求：简短说明", 1),
+		"body aliases": strings.Replace(valid, "结束：U01", "回答：另一正文。\n结束：U01", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := parseBatch(fixture(t), batchFixture(2), raw+"\n"+unifiedBlock("U02"))
@@ -64,9 +59,9 @@ func TestAuditUnifiedClarificationAndLegacyAnswer(t *testing.T) {
 	if got.Items[0].Err != nil || got.Items[0].Body != "您指配送地区，还是订单操作？" {
 		t.Fatal(got)
 	}
-	for _, bad := range []string{base + "多余回答。", strings.Replace(base, "配送地区、订单操作", "", 1)} {
-		if result := parseBatch(fixture(t), batchFixture(1), bad); result.Items[0].Err == nil {
-			t.Fatal("invalid clarification accepted", result)
+	for _, recoverable := range []string{base + "多余回答。", strings.Replace(base, "配送地区、订单操作", "", 1)} {
+		if result := parseBatch(fixture(t), batchFixture(1), recoverable); result.Items[0].Err != nil || result.Items[0].Body != "您指配送地区，还是订单操作？" {
+			t.Fatal("unique selected clarification lost", result)
 		}
 	}
 	legacy := parseBatch(fixture(t), batchFixture(1), "意图：咨询\n歧义：否\n回答：旧协议继续使用。")

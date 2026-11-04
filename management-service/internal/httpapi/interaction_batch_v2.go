@@ -11,10 +11,11 @@ import (
 )
 
 type interactionBatchResultV2 struct {
-	Task     string                   `json:"task"`
-	Revision uint64                   `json:"revision"`
-	Envelope interactionplan.Envelope `json:"knowledge"`
-	Error    string                   `json:"error,omitempty"`
+	Task     string                           `json:"task"`
+	Revision uint64                           `json:"revision"`
+	Envelope interactionplan.Envelope         `json:"knowledge"`
+	Error    string                           `json:"error,omitempty"`
+	Parse    interactionplan.ParseDiagnostics `json:"parse"`
 }
 
 func batchInputsV2(batchID string, inputs []interactionV2Input, now time.Time) ([]interactionplan.BatchItem, error) {
@@ -49,13 +50,14 @@ func preparedBatchResultsV2(ctx context.Context, snapshot interactionplan.Snapsh
 	results := make([]interactionBatchResultV2, len(inputs))
 	for i, in := range inputs {
 		item := generated.Items[i]
-		results[i] = interactionBatchResultV2{Task: in.Task, Revision: in.Revision}
+		results[i] = interactionBatchResultV2{Task: in.Task, Revision: in.Revision, Parse: item.Parse}
 		if item.Err != nil {
 			results[i].Error = item.Err.Error()
 			continue
 		}
 		if !in.ExpiresAt.IsZero() && !time.Now().Before(in.ExpiresAt) {
 			results[i].Error = "该人候选已过期"
+			results[i].Parse.Outcome, results[i].Parse.Reason = "rejected", "candidate_expired"
 			continue
 		}
 		results[i].Envelope = interactionplan.Envelope{Protocol: interactionplan.Protocol, Task: in.Task, Epoch: in.Epoch, Revision: in.Revision, Tenant: in.Tenant, Room: in.Room, Session: snapshot.Scope.Session, Plan: in.Plan, Fingerprint: snapshot.Fingerprint, Body: item.Body, Intent: item.Intent, ExpiresAt: in.ExpiresAt}
@@ -128,7 +130,7 @@ func (s *Server) prepareInteractionBatchV2(ctx context.Context, batchID string, 
 		result, _, err := s.completeAnchorStyleWorkbench(callCtx, "", req.Stage, req.ResponseFormat, req.Messages, req.MaxTokens, false)
 		return result, err
 	}
-	results, issues, err := preparedBatchResultsV2(ctx, snapshot, inputs, items, complete)
+	results, issues, err := preparedBatchResultsV2(interactionplan.WithParseRequest(ctx, batchID), snapshot, inputs, items, complete)
 	if err != nil {
 		return nil, nil, err
 	}

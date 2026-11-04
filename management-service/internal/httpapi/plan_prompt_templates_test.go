@@ -76,3 +76,30 @@ func TestTemplateMaintenanceEndpointsRequireAuthentication(t *testing.T) {
 		}
 	}
 }
+
+// The operator's installed mother must change together with the wire contract.
+// This reads the real project mother, not a duplicate fixture that can drift.
+func TestInstalledOperatorInteractionMotherMatchesFiveFieldContract(t *testing.T) {
+	value, err := installedPlanPromptTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(value.InteractionRequirementsMD, planprompt.InteractionOutputContract) {
+		t.Fatal("operator mother and program interaction contract drifted")
+	}
+	for _, old := range []string{"置信度：", "候选：", "回答：", "优先程度：", "对话关系：", "不到四成", "置信度不到 30"} {
+		if strings.Contains(value.InteractionRequirementsMD, old) {
+			t.Fatalf("retired contract in operator mother: %s", old)
+		}
+	}
+	if strings.Contains(value.RedLinesMD, "【输出格式") {
+		t.Fatal("interaction/speech contract leaked into shared red lines")
+	}
+	compiled := value.Sections.Interaction()
+	if strings.Count(compiled, planprompt.InteractionOutputContract) != 1 {
+		t.Fatal("saved plan must compile exactly one current interaction contract")
+	}
+	if strings.Contains(value.Sections.Speech(), "意图：") {
+		t.Fatal("interaction fields leaked into speech contract")
+	}
+}

@@ -91,10 +91,10 @@ func TestBatchPartialMalformedNeverOverwritesOrMisbinds(t *testing.T) {
 		{"duplicate", blockText("U01", "一。") + blockText("U01", "伪造的覆盖。") + blockText("U02", "二。"), []bool{false, true, false}, true},
 		{"unknown", blockText("U09", "未知。") + blockText("U01", "一。"), []bool{true, false, false}, true},
 		{"duplicate_field", "编号：U01\n意图：咨询\n回答：一。\n回答：不能覆盖。\n结束：U01\n" + blockText("U03", "三。"), []bool{false, false, true}, false},
-		{"truncated", blockText("U01", "一。") + "编号：U02\n意图：咨询\n回答：未结束。", []bool{true, false, false}, false},
+		{"missing_voice_value", blockText("U01", "一。") + "编号：U02\n意图：咨询\n回答：", []bool{true, false, false}, false},
 		{"flat_repeated", "意图：一\n回答：一。\n意图：二\n回答：二。", []bool{false, false, false}, false},
 		{"wrong_end", "编号：U01\n意图：咨询\n回答：一。\n结束：U02\n" + blockText("U03", "三。"), []bool{false, false, true}, true},
-		{"missing_type", "编号：U01\n意图：咨询\n歧义：否\n回答：一。\n结束：U01\n" + blockText("U03", "三。"), []bool{false, false, true}, false},
+		{"missing_type", "编号：U01\n意图：咨询\n歧义：否\n回答：一。\n结束：U01\n" + blockText("U03", "三。"), []bool{true, false, true}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := parseBatch(s, items, tc.raw)
@@ -131,7 +131,7 @@ func TestSingleCompatibilityUsesBatchAndRejectsRepeatedFlatFields(t *testing.T) 
 	}
 }
 
-func TestBatchClassifiesChatSpamClarificationAndModelPriorityHint(t *testing.T) {
+func TestBatchClassifiesChatSpamClarificationAndIgnoresRetiredPriority(t *testing.T) {
 	s := fixture(t)
 	items := batchFixture(4)
 	raw := "编号：U01\n意图：寒暄\n类型：闲聊\n歧义：否\n回答：晚上好。\n结束：U01\n" +
@@ -144,7 +144,7 @@ func TestBatchClassifiesChatSpamClarificationAndModelPriorityHint(t *testing.T) 
 			t.Fatal(v)
 		}
 	}
-	if got.Items[0].Intent.Question || got.Items[1].Intent.Relevant || got.Items[1].Body != "" || !got.Items[2].Intent.NeedClarify || got.Items[3].Intent.Priority != "紧急" {
+	if got.Items[0].Intent.Question || got.Items[1].Intent.Relevant || got.Items[1].Body != "" || !got.Items[2].Intent.NeedClarify || got.Items[3].Intent.Priority != "普通" || got.Items[3].Intent.PriorityReason != "" {
 		t.Fatal(got)
 	}
 	items[2].AllowClarify = false

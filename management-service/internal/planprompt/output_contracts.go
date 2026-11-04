@@ -36,48 +36,36 @@ const SpeechOutputContract = `【输出格式（系统保留，不可删除或�
 4. 话术要求只写这一段怎么讲，不写商品参数、不写价格数字，那些放在话术里。
 5. 口播符合口语断句，适合直接 TTS 朗读，停顿自然。`
 
-// InteractionOutputContract 是互动回答契约：直接给可播回答。
-const InteractionOutputContract = `【输出格式（系统保留，不可删除或修改）】
-一行一个字段，用中文冒号分开。
-不要 JSON、不要花括号、不要引号、不要代码块、不要任何解释。
-
-字段只能是下面这些，键名不许自创：
-意图：观众这句话最可能在问什么｜置信度：0 到 100 的整数｜建议：你打算怎么应对
-（意图可以写多行，一行一条，按可能性从高到低，最多三行）
-歧义：是 或 否
-候选：歧义为“是”时，写两三个互斥选项，用顿号隔开；否则冒号后留空
-澄清句：歧义为“是”时，写一句口播反问；否则冒号后留空
-话术要求：这段怎么讲
-话术：主播要说的口播正文
-
-硬性要求：
-1. 键名只能用上面这些，不许自创。
-2. 话术必须放在最后一行且正文内不换行；后面禁止追加说明、字段或其它文字。
-3. 置信度写 0 到 100 的整数。
-4. 歧义那一行只写“是”或“否”。
-5. 不歧义时，候选和澄清句留空，冒号后面什么都不写。
-6. 歧义为“是”时，候选写互斥选项，澄清句写一句口播反问，话术留空。`
-
-// BatchInteractionOutputContract owns only the wire protocol. Event routing
-// requirements remain in interaction-v2-batch.md, outside editable plan text.
-const BatchInteractionOutputContract = `【输出格式（系统保留，不可删除或修改）】
-每个人独立输出以下字段，一行一个字段，用中文冒号，不用 JSON、代码块、额外说明。
-编号和结束使用输入中的 item_id，仅隔离本批内容；必须原样成对返回，不能合并不同人的结果。
-编号：U01
-意图：此人最可能的意思｜置信度：85｜建议：如何应对
+// The five content fields are shared by single and multi-person requests.
+// Speaker/task identities, priority bands and expiry remain program-owned.
+const interactionFiveFields = `意图：对当前诉求的一句理解
 类型：提问、下单意向、催单、投诉、闲聊、主动互动、刷屏之一
-优先程度：普通、较高、紧急之一
-优先原因：判断轻重的简短依据
 歧义：是或否
-候选：歧义为是时写两三个互斥选项，用顿号分隔，否则留空
-澄清句：歧义为是时写一句反问，否则留空
-话术要求：只写怎么讲，不写商品参数和价格数字
-话术：可直接口播的正文，不写昵称或称呼
+澄清句：需要确认问题时可直接口播的一句反问，否则留空
+话术：可直接口播的回答正文，否则留空
+`
+
+const interactionFiveFieldRules = `每项从意图开始；意图只写一条。只返回上面五个字段，不加分析或额外字段。
+话术和澄清句只填一个，另一个留空；空字段先写，有值的可播字段放在本项最后。
+可以回答时：歧义写否，澄清句留空，以话术收尾。
+确实需要确认问题时：歧义写是，话术留空，以澄清句收尾；把待确认的选项直接说在澄清句里。
+主动互动或刷屏无需逐人口播时，话术和澄清句均留空。
+可播内容不加昵称或称呼；正文允许正常分行，不把其它人的内容写进本项。`
+
+// InteractionOutputContract is the single-person wire format.
+const InteractionOutputContract = `【输出格式（系统保留，不可删除或修改）】
+本次只有一项，不需要编号。使用中文键值字段，不用JSON、表格或额外解释。
+` + interactionFiveFields + interactionFiveFieldRules
+
+// BatchInteractionOutputContract adds only the opaque per-request item label.
+const BatchInteractionOutputContract = `【输出格式（系统保留，不可删除或修改）】
+每人独立返回一组，使用中文键值字段，不用JSON、表格或额外解释。
+每组前加输入中的item_id，编号只用于对应本批任务，原样返回，不能合并或补造身份。
+编号：U01
+` + interactionFiveFields + interactionFiveFieldRules + `
+每组以相同编号收尾：
 结束：U01
-意图可连续写一至三行，按置信度从高到低；置信度是 0 到 100 的整数。其它字段各写一次。
-对话任务可在话术之前另写对话关系（related或new）及继续对话（是或否）。
-歧义为是时只提供澄清句，话术留空；主动互动或刷屏时话术也留空，优先程度为普通。
-话术正文必须在同一行；它后面只能是匹配的结束字段，不能追加说明或分析。`
+下一人的编号另起一行；意图是内容开始，最后的话术或澄清句是内容收尾；结束字段只用于核对本组编号。`
 
 var stepHeading = regexp.MustCompile(`^第[一二三四五六七八九十百0-9]+步[：:]`)
 

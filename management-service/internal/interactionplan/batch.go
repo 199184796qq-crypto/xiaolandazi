@@ -26,10 +26,15 @@ type ItemResult struct {
 	Intent Intent
 	Body   string
 	Err    error
+	Parse  ParseDiagnostics
 }
 type BatchResult struct {
-	Items  []ItemResult
-	Issues []string
+	Items               []ItemResult
+	Issues              []string
+	Groups              int
+	SpeechGroups        int
+	ClarificationGroups int
+	UnmappedGroups      int
 }
 
 func ValidateBatch(items []BatchItem) error {
@@ -116,8 +121,12 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 	if err != nil {
 		return BatchResult{}, err
 	}
+	contract := planprompt.BatchInteractionOutputContract
+	if len(items) == 1 {
+		contract = planprompt.InteractionOutputContract
+	}
 	req := agentgateway.Request{Stage: "interaction_purpose_resolution", ResponseFormat: agentgateway.ResponseText, MaxTokens: 900 * len(items), Timeout: 27 * time.Second, EnableThinking: false, CacheSystemPrompt: true,
-		Messages: []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + stripFormatSection(s.Prompt) + "\n\n【本场有效P0】\n" + s.P0 + "\n\n" + stripFormatSection(string(md)) + "\n\n" + planprompt.BatchInteractionOutputContract}, {Role: "user", Content: string(raw)}}}
+		Messages: []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + stripFormatSection(s.Prompt) + "\n\n【本场有效P0】\n" + s.P0 + "\n\n" + stripFormatSection(string(md)) + "\n\n" + contract}, {Role: "user", Content: string(raw)}}}
 	response, err := complete(ctx, req)
 	if err != nil {
 		return BatchResult{}, err
@@ -125,153 +134,7 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 	if err := ctx.Err(); err != nil {
 		return BatchResult{}, err
 	}
-	return parseBatch(s, items, response.Text, response.FinishReason), nil
-}
-
-// Parse blocks without relying on return order. Bad/missing blocks are explicit
-// failures; duplicate labels invalidate that person, never overwrite a reply.
-func parseBatch(s Snapshot, items []BatchItem, raw string, finishReason ...string) BatchResult {
-	out := BatchResult{Items: make([]ItemResult, len(items))}
-	indices := map[string]int{}
-	for i, item := range items {
-		indices[item.ID] = i
-		out.Items[i] = ItemResult{ID: item.ID, Err: errors.New("模型遗漏该人结果")}
-	}
-	if len(raw) > 128<<10 {
-		out.Issues = append(out.Issues, "互动批次返回超出范围")
-		return out
-	}
-	type block struct {
-		fields   map[string]string
-		invalid  bool
-		closed   bool
-		bodySeen bool
-	}
-	blocks := map[string]*block{}
-	var active *block
-	activeID := ""
-	completion := agentgateway.Response{}
-	if len(finishReason) > 0 {
-		completion.FinishReason = finishReason[0]
-	}
-	// A new item header is a definite boundary for the previous one. EOF is
-	// definite only when the supplier confirms a normal completion. Neither
-	// boundary repairs missing fields, invalid values, or ambiguous identities.
-	closeInferred := func(reason string) {
-		if active == nil || active.closed || active.invalid || !active.bodySeen {
-			return
-		}
-		for _, key := range []string{"意图", "类型", "歧义"} {
-			if strings.TrimSpace(active.fields[key]) == "" {
-				return
-			}
-		}
-		active.closed = true
-		out.Issues = append(out.Issues, fmt.Sprintf("%s缺少结束标记，按%s确认边界", activeID, reason))
-	}
-	raw = strings.TrimPrefix(strings.TrimSpace(raw), "\ufeff")
-	raw = strings.ReplaceAll(strings.ReplaceAll(raw, "\r\n", "\n"), "\r", "\n")
-	legacy := len(items) == 1
-	for _, line := range strings.Split(raw, "\n") {
-		if key, _, ok := splitKVLine(line); ok && key == "编号" {
-			legacy = false
-			break
-		}
-	}
-	if legacy {
-		activeID = items[0].ID
-		active = &block{fields: map[string]string{}, closed: true}
-		blocks[activeID] = active
-	}
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "```") {
-			continue
-		}
-		at := strings.IndexAny(line, "：:")
-		if at <= 0 {
-			if active != nil {
-				active.invalid = true
-			}
-			continue
-		}
-		sep := 1
-		if strings.HasPrefix(line[at:], "：") {
-			sep = len("：")
-		}
-		key, value := strings.TrimSpace(line[:at]), strings.TrimSpace(line[at+sep:])
-		if key == "编号" {
-			if active != nil && !active.closed {
-				closeInferred("下一编号")
-				if !active.closed {
-					active.invalid = true
-				}
-			}
-			activeID = value
-			if _, ok := indices[value]; !ok {
-				active = nil
-				out.Issues = append(out.Issues, "模型返回未知编号")
-				continue
-			}
-			if old := blocks[value]; old != nil {
-				old.invalid = true
-				active = old
-				out.Issues = append(out.Issues, "模型返回重复编号")
-				continue
-			}
-			active = &block{fields: map[string]string{}}
-			blocks[value] = active
-			continue
-		}
-		if key == "结束" {
-			if active == nil || value != activeID {
-				if active != nil {
-					active.invalid = true
-				}
-				out.Issues = append(out.Issues, "互动结果结束编号不符")
-			} else {
-				active.closed = true
-			}
-			active = nil
-			continue
-		}
-		if active == nil {
-			continue
-		}
-		if !isInteractionField(key) || active.bodySeen {
-			active.invalid = true
-			continue
-		}
-		if _, exists := active.fields[key]; exists {
-			if key != "意图" {
-				active.invalid = true
-			} else {
-				active.fields[key] += "\n" + value
-				continue
-			}
-		}
-		active.fields[key] = value
-		active.bodySeen = bodyField(key)
-	}
-	if completion.CompletedNormally() {
-		closeInferred("供应商正常结束")
-	} else if legacy && strings.TrimSpace(completion.FinishReason) != "" && active != nil {
-		// Legacy single-item replies have no explicit boundary at all. Keep
-		// historical unknown-status compatibility, but never accept a known cut.
-		active.invalid = true
-	}
-	for id, b := range blocks {
-		i := indices[id]
-		if b.invalid || !b.closed {
-			out.Items[i].Err = errors.New("互动结果编号、字段重复或分段不完整")
-			continue
-		}
-		if !legacy && (strings.TrimSpace(b.fields["类型"]) == "" || strings.TrimSpace(b.fields["歧义"]) == "") {
-			out.Items[i].Err = errors.New("互动结果缺少类型或歧义判断")
-			continue
-		}
-		intent, body, err := parseSingleContent(s, items[i].Input, b.fields)
-		out.Items[i] = ItemResult{ID: id, Intent: intent, Body: body, Err: err}
-	}
-	return out
+	parsed := parseBatch(s, items, response.Text, response.FinishReason)
+	logParseDiagnostics(ctx, s.Scope, parsed)
+	return parsed, nil
 }

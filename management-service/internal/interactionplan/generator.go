@@ -257,7 +257,7 @@ func request(s Snapshot, template, stage string, payload any, format agentgatewa
 	// 任务的输出契约冲突，拼装时直接剥掉。完整冻结P0仍作为公共内容约束携带。
 	// 任务模板为空时不再附加任何指令，模型只按方案提示词回答。
 	prompt := stripFormatSection(s.Prompt)
-	// 批量模板自带完整输出格式（含编号/结束），不能再叠加单条契约，否则字段冲突。
+	// 批量模板的输出契约由 GenerateBatch 按人数追加，此处不叠加单条契约。
 	if template != "interaction-v2-batch.md" {
 		prompt += "\n\n" + OutputContract
 	}
@@ -356,15 +356,14 @@ func parseSingleContent(s Snapshot, in Input, kv map[string]string) (Intent, str
 	if err := validateContentFields(kv); err != nil {
 		return intent, "", err
 	}
-	meaning, ok := kvPick(kv, "意图")
-	if !ok || strings.TrimSpace(meaning) == "" {
-		return intent, "", errors.New("互动结果不是 KV 格式")
-	}
+	meaning, _ := kvPick(kv, "意图")
 	intent.Alternatives, err = parseIntentLines(meaning)
 	if err != nil {
 		return intent, "", err
 	}
-	intent.Meaning = intent.Alternatives[0].Meaning
+	if len(intent.Alternatives) > 0 {
+		intent.Meaning = intent.Alternatives[0].Meaning
+	}
 	intent.Requirements = kv["话术要求"]
 	intent.Candidates = kv["候选"]
 	intent.Relevant = true
@@ -376,11 +375,10 @@ func parseSingleContent(s Snapshot, in Input, kv map[string]string) (Intent, str
 		intent.Type = "提问"
 	}
 	intent.Question = intent.Type != "闲聊" && intent.Type != "刷屏" && intent.Type != "主动互动"
-	intent.PriorityReason = strings.TrimSpace(kv["优先原因"])
+	// Model-returned urgency hints are retired with the five-field protocol.
+	// Existing task bands and the Core type ordering remain program-owned.
+	intent.PriorityReason = ""
 	intent.Priority = "普通"
-	if (kv["优先程度"] == "较高" || kv["优先程度"] == "紧急") && intent.PriorityReason != "" {
-		intent.Priority = kv["优先程度"]
-	}
 	if intent.Type == "刷屏" {
 		intent.Relevant = false
 		return intent, "", nil
@@ -397,34 +395,28 @@ func parseSingleContent(s Snapshot, in Input, kv map[string]string) (Intent, str
 	}
 	intent.Relation = strings.TrimSpace(kv["对话关系"])
 	intent.Continue = kvBool(kv["继续对话"])
-	if v, ok := kvPick(kv, "歧义"); ok {
-		intent.NeedClarify = kvBool(v)
+	key, selected, err := spokenValue(kv)
+	if err != nil {
+		return intent, "", err
 	}
 	if in.Kind != "guide" {
 		intent.Command = ""
 	}
-	if intent.NeedClarify {
+	if key == "澄清句" {
 		if !in.AllowClarify {
 			return intent, "", errors.New("本任务不允许重复澄清")
 		}
-		clarify, _ := kvPick(kv, "澄清句")
-		clarify = strings.TrimSpace(clarify)
-		if clarify == "" {
-			return intent, "", errors.New("澄清内容为空")
-		}
-		// 歧义时只播澄清句，不播回答。
-		intent.Clarify = withoutAddress(clarify)
+		intent.NeedClarify = true
+		intent.Clarify = withoutAddress(selected)
 		if err = Validate(s, intent.Clarify); err != nil {
 			return intent, "", err
 		}
 		return intent, intent.Clarify, nil
 	}
-	answer, _ := kvPick(kv, "话术", "回答")
-	body := strings.TrimSpace(answer)
-	if body == "" {
-		return intent, "", errors.New("互动结果缺少回答")
+	if selected == "" {
+		return intent, "", errors.New("互动结果缺少非空话术或澄清句")
 	}
-	body = withoutAddress(body)
+	body := withoutAddress(selected)
 	if err = Validate(s, body); err != nil {
 		return intent, "", err
 	}

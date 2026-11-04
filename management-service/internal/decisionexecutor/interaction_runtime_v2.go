@@ -236,7 +236,7 @@ func (w *Worker) generateInteractionV2(ctx context.Context, session model.LiveRu
 			input.ReportClock = at.Format("2006-01-02 15:04")
 			input.ReportPeriod = timeOfDay(at)
 		}
-		intent, body, err := interactionplan.Generate(ctx, snapshot, input, complete)
+		intent, body, err := interactionplan.Generate(interactionplan.WithParseRequest(ctx, item.ID), snapshot, input, complete)
 		if err != nil {
 			return "", err
 		}

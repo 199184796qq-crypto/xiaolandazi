@@ -27,7 +27,7 @@ func TestBatchMissingEndRecoveredAtNextItemOrNormalEOF(t *testing.T) {
 }
 
 func TestBatchMissingEndAtUnknownOrTruncatedEOFOnlyDropsTail(t *testing.T) {
-	for _, reason := range []string{"", "length", "max_tokens", "incomplete", "content_filter", "unknown"} {
+	for _, reason := range []string{"length", "max_tokens", "incomplete", "content_filter", "unknown"} {
 		got := parseBatch(fixture(t), batchFixture(2), withoutEnd(unifiedBlock("U01"), "U01")+"\n"+withoutEnd(unifiedBlock("U02"), "U02"), reason)
 		if got.Items[0].Err != nil || got.Items[1].Err == nil || got.Items[1].Body != "" {
 			t.Fatalf("%q: must keep bounded predecessor and drop unproven tail: %+v", reason, got)
@@ -38,16 +38,9 @@ func TestBatchMissingEndAtUnknownOrTruncatedEOFOnlyDropsTail(t *testing.T) {
 func TestBatchRecoveryCannotRepairInvalidPerson(t *testing.T) {
 	valid := withoutEnd(unifiedBlock("U02"), "U02")
 	for name, bad := range map[string]string{
-		"missing metadata":   strings.Replace(valid, "类型：提问\n", "", 1),
-		"missing body":       strings.Replace(valid, "话术：按当前方案安排发货。", "", 1),
-		"empty body":         strings.Replace(valid, "话术：按当前方案安排发货。", "话术：", 1),
-		"unknown field":      valid + "\n备注：不能播出",
-		"duplicate field":    strings.Replace(valid, "类型：提问", "类型：提问\n类型：闲聊", 1),
-		"two bodies":         valid + "\n回答：不能覆盖。",
-		"wrong end":          valid + "\n结束：U01",
-		"invalid ambiguity":  strings.Replace(valid, "歧义：否", "歧义：不知道", 1),
-		"invalid confidence": strings.Replace(valid, "置信度：85", "置信度：101", 1),
-		"multiline body":     valid + "\n不能把额外一行也当正文。",
+		"missing body": strings.Replace(valid, "话术：按当前方案安排发货。", "", 1),
+		"empty body":   strings.Replace(valid, "话术：按当前方案安排发货。", "话术：", 1),
+		"two bodies":   valid + "\n回答：不能覆盖。",
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := parseBatch(fixture(t), batchFixture(3), withoutEnd(unifiedBlock("U01"), "U01")+"\n"+bad+"\n"+withoutEnd(unifiedBlock("U03"), "U03"), "stop")
@@ -97,9 +90,9 @@ func TestReportedYangDuckReplyMissingEndCanBeRecovered(t *testing.T) {
 
 func TestInvalidReturnedItemIsTerminalButProviderFailureIsNot(t *testing.T) {
 	for _, tc := range []struct{ raw, reason string }{
-		{"编号：U01\n意图：问题\n话术：残缺内容", "stop"},
+		{"编号：U01\n意图：问题\n话术：", "stop"},
 		{withoutEnd(unifiedBlock("U01"), "U01"), "length"},
-		{withoutEnd(unifiedBlock("U01"), "U01"), ""},
+		{withoutEnd(unifiedBlock("U01"), "U01") + "\n话术：不能覆盖。", ""},
 	} {
 		_, body, err := Generate(context.Background(), fixture(t), Input{Kind: "semantic", Text: "问题"}, func(context.Context, agentgateway.Request) (agentgateway.Response, error) {
 			return agentgateway.Response{Text: tc.raw, FinishReason: tc.reason}, nil

@@ -13,49 +13,94 @@ type IntentAlternative struct {
 	Suggestion string `json:"suggestion,omitempty"`
 }
 
+// Intent scores and suggestions are optional, non-spoken metadata. A malformed
+// hint cannot invalidate a complete answer or manufacture certainty.
 func parseIntentLines(value string) ([]IntentAlternative, error) {
-	lines := strings.Split(value, "\n")
-	if len(lines) < 1 || len(lines) > 3 {
-		return nil, errors.New("互动意图须为一至三条")
-	}
+	result, _ := parseIntentMetadata(value)
+	return result, nil
+}
+
+func parseIntentMetadata(value string) ([]IntentAlternative, []ParseWarning) {
 	var result []IntentAlternative
+	var warnings []ParseWarning
+	warn := func(code, field string, line int) { warnings = append(warnings, ParseWarning{code, field, line}) }
+	if strings.TrimSpace(value) == "" {
+		warn("missing_intent_metadata", "意图", 0)
+		return nil, warnings
+	}
 	last := 101
-	for _, line := range lines {
+	for i, line := range strings.Split(value, "\n") {
+		if len(result) == 3 {
+			warn("extra_intent_metadata", "意图", i+1)
+			break
+		}
 		parts := strings.Split(strings.ReplaceAll(line, "｜", "|"), "|")
 		entry := IntentAlternative{Meaning: strings.TrimSpace(parts[0])}
 		if entry.Meaning == "" {
-			return nil, errors.New("互动意图不能为空")
+			warn("empty_intent_metadata", "意图", i+1)
+			continue
 		}
+		confidenceSeen, confidenceInvalid, suggestionSeen, suggestionConflict := false, false, false, false
 		for _, part := range parts[1:] {
+			if strings.TrimSpace(part) == "" {
+				warn("empty_auxiliary_separator", "意图", i+1)
+				continue
+			}
 			key, val, ok := splitKVLine(part)
 			if !ok {
-				return nil, errors.New("互动意图附加字段格式错误")
+				warn("malformed_intent_auxiliary", "意图", i+1)
+				continue
 			}
 			switch key {
 			case "置信度":
 				n, err := strconv.Atoi(val)
-				if err != nil || n < 0 || n > 100 || entry.Confidence != nil {
-					return nil, errors.New("互动置信度须为0到100的整数")
+				if err != nil || n < 0 || n > 100 {
+					confidenceInvalid = true
+					warn("invalid_confidence", key, i+1)
+				} else if confidenceSeen && (entry.Confidence == nil || *entry.Confidence != n) {
+					confidenceInvalid = true
+					warn("conflicting_confidence", key, i+1)
+				} else if confidenceSeen {
+					warn("identical_auxiliary_repeated", key, i+1)
+				} else {
+					entry.Confidence = &n
 				}
-				entry.Confidence = &n
+				confidenceSeen = true
 			case "建议":
-				entry.Suggestion = val
+				if suggestionSeen && entry.Suggestion != val {
+					suggestionConflict = true
+					warn("conflicting_suggestion", key, i+1)
+				} else if suggestionSeen {
+					warn("identical_auxiliary_repeated", key, i+1)
+				} else {
+					entry.Suggestion = val
+				}
+				suggestionSeen = true
 			default:
-				return nil, errors.New("互动意图含未知字段")
+				warn("unknown_intent_auxiliary", "意图", i+1)
 			}
 		}
-		if len(lines) > 1 && entry.Confidence == nil {
-			return nil, errors.New("多条互动意图缺少置信度")
+		if confidenceInvalid {
+			entry.Confidence = nil
 		}
-		if entry.Confidence != nil {
+		if suggestionConflict {
+			entry.Suggestion = ""
+		}
+		if entry.Confidence == nil {
+			// A plain five-field intent has no confidence contract. Only warn
+			// when a legacy auxiliary section attempted to supply metadata.
+			if len(parts) > 1 {
+				warn("unknown_confidence", "置信度", i+1)
+			}
+		} else {
 			if *entry.Confidence > last {
-				return nil, errors.New("互动意图未按置信度降序")
+				warn("intent_order", "意图", i+1)
 			}
 			last = *entry.Confidence
 		}
 		result = append(result, entry)
 	}
-	return result, nil
+	return result, warnings
 }
 
 func splitKVLine(line string) (string, string, bool) {
@@ -80,35 +125,50 @@ func isInteractionField(key string) bool {
 
 func bodyField(key string) bool { return key == "话术" || key == "回答" }
 
+// A literal formatting instruction is an empty placeholder, not speech. Only
+// this explicit marker (optionally bracketed) is normalized; ordinary answers
+// such as 无 or a sentence containing 留空 retain their original meaning.
+func spokenFieldValue(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.TrimSpace(strings.Trim(value, "（）()[]【】")) == "留空" {
+		return ""
+	}
+	return value
+}
+
+// The two spoken values decide which branch is usable. Analysis metadata is
+// advisory: missing/invalid ambiguity or candidates cannot discard one unique
+// non-empty spoken value. Both non-empty values still need a clear selection.
+func spokenValue(kv map[string]string) (string, string, error) {
+	body := spokenFieldValue(kv["话术"])
+	old := spokenFieldValue(kv["回答"])
+	if body != "" && old != "" && body != old {
+		return "", "", errors.New("互动结果存在不同的正文值")
+	}
+	if body == "" {
+		body = old
+	}
+	clarify := spokenFieldValue(kv["澄清句"])
+	switch {
+	case body != "" && clarify != "":
+		switch strings.TrimSpace(kv["歧义"]) {
+		case "是":
+			return "澄清句", clarify, nil
+		case "否":
+			return "话术", body, nil
+		default:
+			return "", "", errors.New("互动话术和澄清句同时有值，无法确认采用哪一个")
+		}
+	case body != "":
+		return "话术", body, nil
+	case clarify != "":
+		return "澄清句", clarify, nil
+	default:
+		return "", "", nil
+	}
+}
+
 func validateContentFields(kv map[string]string) error {
-	_, unified := kv["话术"]
-	_, old := kv["回答"]
-	if unified && old {
-		return errors.New("互动结果含两个正文字段")
-	}
-	if v, ok := kv["歧义"]; ok && v != "是" && v != "否" {
-		return errors.New("互动歧义字段须为是或否")
-	}
-	if unified {
-		if _, ok := kv["歧义"]; !ok {
-			return errors.New("互动结果缺少歧义判断")
-		}
-		if kv["歧义"] == "是" {
-			candidates := strings.Split(kv["候选"], "、")
-			if len(candidates) < 2 || len(candidates) > 3 || strings.TrimSpace(kv["话术"]) != "" {
-				return errors.New("歧义结果需要两三个候选且话术留空")
-			}
-			seen := map[string]bool{}
-			for _, candidate := range candidates {
-				candidate = strings.TrimSpace(candidate)
-				if candidate == "" || seen[candidate] {
-					return errors.New("歧义候选为空或重复")
-				}
-				seen[candidate] = true
-			}
-		} else if strings.TrimSpace(kv["候选"]+kv["澄清句"]) != "" {
-			return errors.New("非歧义结果候选及澄清句须留空")
-		}
-	}
-	return nil
+	_, _, err := spokenValue(kv)
+	return err
 }
