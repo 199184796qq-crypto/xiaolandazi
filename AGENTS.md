@@ -1727,3 +1727,189 @@ Core正文批次、Management模型/TTS前检查当前运行身份、原期限�
 完整证据 `E:/直播伴播-local/interaction-audio-reuse-20261104`，实际完整源码归档SHA256 `be73466dc8e3d2be734d372c785d5b83bea646da6839a9452ae9afcab69d6d4f`。全部拥有路径编辑完成并交接释放，17份其它共享tracked差异逐字节保持。回退须重新共享锁、最新指纹和全场/Core/采集空闲，只反向替换本轮Management，保护后继版本和客户资料/付费媒体；前驱 `/opt/xiaolan/releases/20261104-interaction-playout-a096efe` 保留。
 
 今日全部修复日志：E:/直播伴播/docs/2026-11-04-当日直播问题修复汇总.md。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\AGENTS.md
+- E:\直播伴播\协作交接.md
+- E:\直播伴播\management-service\internal\voiceasset\state.go
+- E:\直播伴播\management-service\internal\voiceasset\state_test.go
+- E:\直播伴播\management-service\internal\db\voice_asset_cleanup.go
+- E:\直播伴播\management-service\internal\db\voice_asset_cleanup_test.go
+- E:\直播伴播\management-service\internal\db\db.go
+- E:\直播伴播\management-service\internal\db\media.go
+- E:\直播伴播\management-service\internal\db\script_paragraph_assets.go
+- E:\直播伴播\management-service\internal\httpapi\voice_asset_cleanup.go
+- E:\直播伴播\management-service\internal\httpapi\voice_asset_cleanup_test.go
+- E:\直播伴播\management-service\internal\httpapi\server.go
+- E:\直播伴播\management-service\internal\httpapi\media.go
+- E:\直播伴播\management-service\internal\httpapi\script_first_supply.go
+- E:\直播伴播\management-service\internal\httpapi\script_first_paragraph.go
+- E:\直播伴播\management-service\internal\httpapi\script_first_archive.go
+- E:\直播伴播\management-service\internal\httpapi\script_audio_recovery.go
+- E:\直播伴播\management-service\internal\httpapi\script_generation_per_play.go
+- E:\直播伴播\management-service\internal\httpapi\volcengine_script_cache.go
+- E:\直播伴播\management-service\internal\httpapi\volcengine_script_stream.go
+- E:\直播伴播\management-service\internal\httpapi\script_pool_validation.go
+- E:\直播伴播\management-service\internal\httpapi\script_voice_pool.go
+- E:\直播伴播\management-service\internal\httpapi\recording_stream.go
+- E:\直播伴播\management-service\internal\ttsgateway\interaction_audio_reuse.go
+- E:\直播伴播\management-service\internal\decisionexecutor\interaction_audio_reuse.go
+- E:\直播伴播\management-service\cmd\management\main.go
+- E:\直播伴播\web-console\src\components\VoiceAssetCleanupPanel.vue
+- E:\直播伴播\web-console\src\views\UserVoiceCacheSettingsView.vue
+- E:\直播伴播\docs\2026-11-04-OSS旧声音清理实现与验证.md
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\httpapi\voice_asset_generation.go
+- E:\直播伴播\management-service\internal\httpapi\plan_script_rewrite_worker.go
+- E:\直播伴播\management-service\internal\ttsgateway\scheduler.go
+- E:\直播伴播\management-service\internal\httpapi\script_pool_policy.go
+- E:\直播伴播\management-service\internal\httpapi\session_archive.go
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\storage\local.go
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\web-console\src\voiceAssetCleanup.ts
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\ttsgateway\voice_cleanup_test.go
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\httpapi\script_playback_receipts.go
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\decisionexecutor\interaction_controls.go
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\decisionexecutor\worker.go
+- E:\直播伴播\management-service\internal\decisionexecutor\voice_cleanup_test.go
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\decisionexecutor\interaction_runtime_v2.go
+- E:\直播伴播\management-service\internal\decisionexecutor\interaction_runtime_v2_test.go
+- E:\直播伴播\management-service\internal\decisionexecutor\runtime_voice_test.go
+- E:\直播伴播\management-service\internal\decisionexecutor\runtime_voice.go
+- E:\直播伴播\docs\2026-11-04-互动声线跟随实际主线修复.md
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\decisionexecutor\prepared_interaction.go
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## 2026-11-04 21:20 互动声线插入修复与OSS清理续接
+
+用户反馈“主线声线已经换了，但是互动线的声音不是”，优先修复。已在当前部署来源9c9c553确认V2 TTS从Frozen.Voice取开场声线、绕过实际主播身份，并通过真实processRoom隔离模拟先失败后通过。当前本地修复完成：正文冻结保留，合成与prepared资格共同读取冻结版本对应的实际主播；换声中/读取失败不回退，合成中换声不送旧音频，实时速率不覆盖回旧模型。相关7包2531通过/122环境跳过；独立6文件补丁隔离3包436通过/4跳过，vet与Linux构建通过。未提交、未上线、无生产写入/供应商调用。
+
+独立补丁 E:/直播伴播-local/oss-voice-cleanup-20261104/host-voice-follow-only.patch，逐文件hash和构建证据同目录。说明 E:/直播伴播/docs/2026-11-04-互动声线跟随实际主线修复.md。若后续只发布互动修复，必须隔离worker.go的OSS voiceasset导入/SSML修改以及其它OSS表/worker/UI差异，不能把当前整个工作树一起部署。
+
+OSS清理仍为未完成本地开发，保持本轮持有；未回滚、未覆盖外部修改，未执行清除。恢复清单已保存 E:/直播伴播/docs/2026-11-04-OSS旧声音清理实现与验证.md。历史WAV迁移/多引用本地保护/任务公平性/自动退役与闲置策略/桶版本字节口径/前端浏览器验证等尚待完成，当前OSS功能不得启用或上线。后续继续按用户已批准设计推进，不得冒认完成。
+
+第641场北京时间21:03:07.175手动结束，实际7502.990秒；monitoring_finished=true，automation-3已PAUSED，此后没有服务器连接。最终账本1.241504元含模型估价0.144380、在途及unknown均0；final-consolidated.json保留账本和实际播放/互动采样下界，最后有效Core样本早于结束，不能把下界当最终总量。不跟下一场。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\httpapi\script_playback_settings.go
+- E:\直播伴播\management-service\internal\httpapi\script_shared_text.go
+- E:\直播伴播\management-service\internal\db\voice_asset_retirement.go
+- E:\直播伴播\management-service\internal\httpapi\voice_asset_local.go
+- E:\直播伴播\management-service\internal\httpapi\voice_asset_policy.go
+- E:\直播伴播\management-service\internal\httpapi\voice_asset_retirement.go
+- E:\直播伴播\management-service\internal\httpapi\voice_asset_policy_test.go
+- E:\直播伴播\management-service\internal\storage\local_voice_cleanup_test.go
+- E:\直播伴播\web-console\scripts\test-voice-asset-cleanup.mjs
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## 2026-11-04 收尾与发布授权
+用户明确“该完成的完成，最后新的上线”。本轮继续持有baseline.json列明路径，完成OSS清理与互动实际主播跟随后选择性提交、推送、按实际current准确源码和全场空闲守卫发布；先前“尚未授权部署”由本条覆盖。发布功能不代表代客户执行全量声音删除，自动策略先只生成清单。保护共享未发布差异、付费台账及原始资料，第641场监控不恢复。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\storage\voice_inventory.go
+- E:\直播伴播\management-service\internal\httpapi\admin_audit.go
+- E:\直播伴播\management-service\internal\httpapi\full_show_voice_archive.go
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\httpapi\live_agent_plan_voice.go
+- E:\直播伴播\management-service\internal\db\voice_asset_inventory.go
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## OSS旧声音清理实施（2026-11-04，本轮接手）
+
+负责人Codex。用户批准设计并要求推进。基线00a67d7ecc6bdcf9496a22225dbba04fb6afb163，原件、共享差异与证据 E:/直播伴播-local/oss-voice-cleanup-20261104。仅本地实现清除代次、全部恢复入口隔离、持久删除/重试与共享播放引用保护及界面/模拟测试；第641场监控仍只读，未授权直接执行生产删除或部署。本轮新增领取完整路径：
+- E:\直播伴播\management-service\internal\storage\voice_inventory_test.go
+
+前轮相关文件已交接释放；现有外部共享差异保持，同文件只修改本轮增量。状态：实现与离线验证中。
+
+
+## 2026-11-04 OSS声音清理与互动实际声线已上线
+
+用户明确“该完成的完成，最后新的上线”。北京时间2026-11-04 22:21:36已激活 `20261104-voice-assets-7354b83`，源码 `7354b83b67c262574955b7f879e816068c92a627` 选择性提交推送。手动历史清除的持久代次、全部恢复/下发入口隔离、具体播放租约、共享实体保护、持久任务重试与完整盘点/界面已接通；互动V2从实际已出声主播读取声音，换声途中及迟到旧声线不送播。自动回收依批准首阶段只生成候选/盘点，不启用批量自动物理删除；未代客户执行历史批量清除，未改互动复用开关、报时间隔、小时预算、母版或正文事实。
+
+Management完整3659项测试通过/140条件跳过，71个有测试包通过；vet/Linux、真实隔离MySQL13组、浏览器8项及发布守卫10项通过。真实只读盘点25,674条声音记录、127,218个音频及关联对象，149页全部找到，7,240,687,008字节；没有下载音频、删除声音或调用真实供应商。
+
+仅重启Management PID2383523，SHA `a72fc13294a2541b18452febd97f398e1ebc6c374435fdb0013738eb222eb879`；Core2374311/网关2374312保持。只新增9张清理控制表，原有结构/索引、32保护表完整行列、配置/Nginx/母版与客户资料保持。三健康200、公网三端/资源SHA/鉴权和完整冒烟通过，5065项非目标文件及4016项完整前端备份核对，权威指针更新。只清理本轮核验上传暂存1处，历史发布和客户媒体保留；清理后完整复核通过。
+
+准确源码归档与全部证据 E:/直播伴播-local/oss-voice-cleanup-20261104；发布记录 E:/直播伴播/docs/2026-11-04-OSS声音清理与声线跟随发布记录.md。本条覆盖此前实现中/未发布状态，全部本轮拥有路径编辑结束并交接释放。共享其它差异保持原字节并未发布。后续回退须共享锁/全场空闲/最新指纹；产生新代次或租约状态后禁止直接回退到不识别状态的旧程序。未做新场实机听验。641监控继续结束、automation-3暂停，不跟下一场。
