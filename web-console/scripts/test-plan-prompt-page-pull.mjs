@@ -44,14 +44,21 @@ try {
   page = await context.newPage(); page.setDefaultTimeout(12000); page.on('pageerror', e => errors.push(e.message))
   const keys = ['persona_md','facts_md','red_lines_md','speech_requirements_md','interaction_requirements_md','rewrite_planning_md']
   const labels = ['主播人设','事实依据','红线禁止','直播话术要求','互动回答要求','话术规划']
-  const tab = key => page.getByRole('tab', { name: labels[keys.indexOf(key)], exact: true })
+  const rawMode = async () => {
+    const button = page.getByRole('button', {name:'编辑模型',exact:true})
+    if (await button.count() && await button.isEnabled()) await button.click()
+  }
+  const tab = key => {
+    const target = page.getByRole('tab', { name: labels[keys.indexOf(key)], exact: true })
+    return {click: async () => {await target.click(); await rawMode()}, getAttribute: name => target.getAttribute(name)}
+  }
   const editor = page.locator('#plan-prompt-content')
   const pull = page.getByRole('button', { name: '拉取提示词', exact: true })
   const confirm = page.getByRole('button', { name: '确认拉取', exact: true })
   const draft = () => page.evaluate(() => JSON.parse(JSON.stringify({ ...window.fixture.content.value, rewrite_planning_md: window.fixture.planning.value })))
   const count = () => page.evaluate(() => window.fixture.calls.length)
   const response = value => page.evaluate(value => window.fixture.response = value, value)
-  const ready = () => editor.locator('xpath=self::*[not(@readonly)]').waitFor()
+  const ready = async () => { await page.waitForFunction(()=>document.querySelector('.plan-prompt-editor')?.getAttribute('aria-busy')==='false'); await rawMode(); await editor.locator('xpath=self::*[not(@readonly)]').waitFor() }
   const start = async () => { await pull.click(); if (await confirm.isVisible()) await confirm.click() }
   const success = async () => { await start(); await ready(); await page.locator('.plan-prompt-notice').waitFor() }
   const original = {persona_md:'人设原稿',facts_md:'事实原稿',red_lines_md:'红线原稿',speech_requirements_md:'主线原稿',interaction_requirements_md:'互动原稿',rewrite_planning_md:'规划原稿'}

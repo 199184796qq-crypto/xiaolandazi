@@ -40,7 +40,7 @@ try{
  const saveCalls=()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.method==='PUT'&&c.path.endsWith('/prompt')))
  const switchTo=async id=>{await page.evaluate(id=>window.fixture.view.setPlan(id),id);await ready()}
  await page.goto(server.resolvedUrls.local[0]+'__persona-structure');await page.waitForFunction(()=>window.fixture?.view?.plan()===4)
- await page.getByRole('button',{name:'方案提示词',exact:true}).click();await ready();await page.getByRole('group',{name:'主播人设结构化编辑（测试）',exact:true}).waitFor()
+ await page.getByRole('button',{name:'方案提示词',exact:true}).click();await ready();await page.getByRole('group',{name:'主播人设编辑器',exact:true}).waitFor()
  assert.equal(await raw(),sample);const before=await sections(),initialKeys=await fieldNames(),initialNodes=await nodeNames()
  assert.deepEqual(initialKeys,['主播名','主播身份','语速','句子长度','默认称呼'])
  assert.equal(await page.locator('.prompt-node-heading input,.prompt-key input,.prompt-node-heading [contenteditable=true],.prompt-key [contenteditable=true]').count(),0)
@@ -84,7 +84,7 @@ try{
  const multiline='店主本人。\n【这是引用，不是新增节点】\n示例键：引用内容'
  await value('身份','主播身份').fill(multiline)
  assert.ok((await raw()).includes('    【这是引用，不是新增节点】'))
- await page.getByRole('tab',{name:'事实依据',exact:true}).click();assert.equal(await page.locator('.structured-prompt').count(),0)
+ await page.getByRole('tab',{name:'事实依据',exact:true}).click();assert.equal(await page.locator('.structured-prompt').count(),1)
  await page.getByRole('tab',{name:'主播人设',exact:true}).click()
  assert.equal(await value('身份','主播身份').inputValue(),multiline);assert.deepEqual(await fieldNames(),initialKeys)
  checks.push('粘贴多行中的节点/键样式只作为值保存，切页重读不冒出新节点')
@@ -175,7 +175,7 @@ try{
  checks.push('新增整页长度保护不部分提交、不丢输入；修正后可继续，多行值中的结构文字不变成节点')
 
  const current=await sections();for(const key of Object.keys(before).filter(k=>k!=='persona_md'))assert.equal(current[key],before[key])
- await page.getByRole('tab',{name:'话术规划',exact:true}).click();assert.equal(await page.locator('.structured-prompt').count(),0)
+ await page.getByRole('tab',{name:'话术规划',exact:true}).click();assert.equal(await page.locator('.structured-prompt').count(),1)
  await page.getByRole('tab',{name:'主播人设',exact:true}).click()
  await page.getByRole('button',{name:'给表达习惯添加键值',exact:true}).click();await draft('表达习惯').fill('保存时追加：先失焦再保存')
  await page.locator('#plan-save-button').click();await ready();await page.getByText('方案提示词已随方案保存，三份元提示词已更新',{exact:true}).waitFor();const savedRaw=await raw()
@@ -186,7 +186,7 @@ try{
  await switchTo(5);await switchTo(4)
  assert.equal(await raw(),savedRaw);assert.equal(await value('表达习惯','停顿').inputValue(),'句尾自然停顿。')
  await page.getByRole('button',{name:'删除表达习惯节点',exact:true}).waitFor()
- checks.push('仅主播人设使用结构化框；点击顶部保存先解析焦点内新增值再提交，切方案往返正确回显')
+ checks.push('六页共用结构化框；点击顶部保存先解析焦点内新增值再提交，切方案往返正确回显')
 
  await page.reload();await page.waitForFunction(()=>window.fixture?.view?.plan()===4);await page.getByRole('button',{name:'方案提示词',exact:true}).click();await ready()
  assert.equal(await raw(),savedRaw);await page.getByRole('button',{name:'删除表达习惯节点',exact:true}).waitFor()
@@ -207,9 +207,11 @@ try{
  assert.equal(await fieldDelete('身份','主播名').count(),1)
  checks.push('字段来源随方案保存并在刷新后保留；删除再保存刷新不复现，剩余键的来源不因位置变化错配')
 
- await page.getByText('查看完整原文（只读）',{exact:true}).click();assert.equal(await page.getByRole('textbox',{name:'主播人设完整原文（只读）',exact:true}).getAttribute('readonly'),'')
- await page.getByText('查看完整原文（只读）',{exact:true}).click()
- checks.push('完整原文可查看复制，保持只读，不能绕过锁定名称')
+ const toggleRawBefore=await raw()
+ await page.getByRole('button',{name:'编辑模型',exact:true}).click();assert.equal(await page.getByRole('textbox',{name:'主播人设完整内容',exact:true}).getAttribute('readonly'),null)
+ assert.equal(await page.getByRole('textbox',{name:'主播人设完整内容',exact:true}).inputValue(),toggleRawBefore)
+ await page.getByRole('button',{name:'结构化显示',exact:true}).click();assert.equal(await raw(),toggleRawBefore)
+ checks.push('完整内容以单一文本框编辑，切回结构化不改变原文')
 
  for(const width of [1440,777,390,320]){
   await page.setViewportSize({width,height:1100});await page.waitForTimeout(60)

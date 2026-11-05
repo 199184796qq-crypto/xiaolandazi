@@ -86,9 +86,16 @@ try {
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 }, reducedMotion: 'reduce' })
   await context.route('**/*', route => { const u = new URL(route.request().url()); if (u.hostname === '127.0.0.1') return route.continue(); external.push(u.hostname); return route.abort() })
   page = await context.newPage(); page.setDefaultTimeout(15000); page.on('pageerror', e => errors.push(e.message))
-  const tab = name => page.getByRole('tab', { name, exact: true })
+  const rawMode = async () => {
+    const button = page.getByRole('button', {name:'编辑模型',exact:true})
+    if (await button.count() && await button.isEnabled()) await button.click()
+  }
+  const tab = name => {
+    const target = page.getByRole('tab', { name, exact: true })
+    return {click: async () => {await target.click(); await rawMode()}, getAttribute: name => target.getAttribute(name)}
+  }
   const editor = page.locator('#plan-prompt-content')
-  const open = async () => { await page.getByRole('button', { name: '方案提示词', exact: true }).click(); await editor.locator('xpath=self::*[not(@readonly)]').waitFor() }
+  const open = async () => { await page.getByRole('button', { name: '方案提示词', exact: true }).click(); await editor.locator('xpath=self::*[not(@readonly)]').waitFor(); await rawMode() }
   const ready = () => page.waitForFunction(() => !window.fixture.view.busy() && !window.fixture.view.blocked() && !window.fixture.view.hydrating() && !window.fixture.view.loading())
   const switchTo = async id => { await page.evaluate(id => window.fixture.view.setPlan(id), id); await page.waitForFunction(id => window.fixture.view.loaded() === id && !window.fixture.view.loading() && !window.fixture.view.hydrating(), id) }
   const puts = () => page.evaluate(() => window.fixture.calls.filter(c => c.method === 'PUT' && c.path.endsWith('/prompt')))

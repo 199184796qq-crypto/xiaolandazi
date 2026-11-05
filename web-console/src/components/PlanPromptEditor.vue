@@ -17,28 +17,27 @@ const confirmationPage = ref<PlanPromptPage | null>(null)
 const confirmation = ref<HTMLDialogElement | null>(null)
 const cancelButton = ref<HTMLButtonElement | null>(null)
 const regenerateButton = ref<HTMLButtonElement | null>(null)
-const editor = ref<HTMLTextAreaElement | null>(null)
-const structuredEditor = ref<InstanceType<typeof StructuredPromptEditor> | null>(null)
+const panel = ref<HTMLElement | null>(null)
 const tabs = [...planPromptTabs, { key: 'rewrite_planning_md', label: '话术规划' }] as const
 const activeTab = ref<PlanPromptPage>('persona_md')
-const selectedTab = computed(() => tabs.find(tab => tab.key === activeTab.value)!)
 const pageLabel = (page: PlanPromptPage) => tabs.find(tab => tab.key === page)!.label
-const activeContent = computed({
-  get: () => activeTab.value === 'rewrite_planning_md' ? rewritePlanning.value : content.value[activeTab.value],
-  set: value => {
-    if (activeTab.value === 'rewrite_planning_md') rewritePlanning.value = value
-    else content.value = { ...content.value, [activeTab.value]: value }
-  },
-})
-// The cached persona editor must never write a late blur/IME event to another tab.
-const personaContent = computed(() => content.value.persona_md)
+const pageContent = (page: PlanPromptPage) => page === 'rewrite_planning_md' ? rewritePlanning.value : content.value[page]
+const activeContent = computed(() => pageContent(activeTab.value))
+const pageRevisions = ref(Object.fromEntries(tabs.map(tab => [tab.key, 0])) as Record<PlanPromptPage, number>)
 const personaMetadata = computed(() => content.value.persona_editor_json || '')
-function updatePersona(value: string, metadata: string) {
-  // Update originals and provenance together; two model setters can read the
-  // same previous prop before Vue renders and otherwise overwrite each other.
-  const next = { ...content.value, persona_md: value }
-  if (metadata) next.persona_editor_json = metadata
-  else delete next.persona_editor_json
+const pageChange = computed(() => {
+  const page = activeTab.value
+  return (value: string, metadata: string) => updatePage(page, value, metadata)
+})
+function updatePage(page: PlanPromptPage, value: string, metadata: string) {
+  // Cached pages bind their own key; stale blur/IME events cannot write another page.
+  if (unavailable.value || page !== activeTab.value) return
+  if (page === 'rewrite_planning_md') { rewritePlanning.value = value; return }
+  const next = { ...content.value, [page]: value }
+  if (page === 'persona_md') {
+    if (metadata) next.persona_editor_json = metadata
+    else delete next.persona_editor_json
+  }
   content.value = next
 }
 const compiled = computed(() => compilePlanPrompts(content.value))
@@ -121,6 +120,7 @@ async function generate(page: PlanPromptPage) {
       if (page === 'persona_md') delete next.persona_editor_json
       content.value = next
     }
+    pageRevisions.value[page]++
     const warnings = result.warnings?.[page]
     generationWarnings.value = Array.isArray(warnings) ? warnings.filter((note): note is string => typeof note === 'string' && !!note.trim()) : []
     const action = result.sources?.[page] === 'model' ? '已生成' : '已拉取'
@@ -136,8 +136,8 @@ async function generate(page: PlanPromptPage) {
       if (!generationError.value) {
         await nextTick()
         if (current() && activeTab.value === page) {
-          if (page === 'persona_md') structuredEditor.value?.focus()
-          else editor.value?.focus({ preventScroll: true })
+          const target = panel.value?.querySelector<HTMLElement>('textarea:not([readonly])') || panel.value?.querySelector<HTMLElement>('button:not(:disabled)')
+          target?.focus({ preventScroll: true })
         }
       }
     }
@@ -217,11 +217,12 @@ function backdrop(event: MouseEvent) {
       <div class="plan-prompt-tabs" role="tablist" aria-label="方案提示词分区">
         <button v-for="(tab, index) in tabs" :id="'plan-prompt-tab-' + tab.key" :key="tab.key" type="button" role="tab" :aria-selected="activeTab === tab.key" aria-controls="plan-prompt-panel" :tabindex="activeTab === tab.key ? 0 : -1" @click="activeTab = tab.key" @keydown="moveTab($event, index)">{{ tab.label }}</button>
       </div>
-      <div class="plan-prompt-content-heading"><label for="plan-prompt-content">{{ selectedTab.label }}</label><span>{{ Array.from(activeContent).length }} 字</span></div>
+      <div class="plan-prompt-content-heading"><span>{{ Array.from(activeContent).length }} 字</span></div>
       <p v-if="generating" class="plan-prompt-progress" role="status"><i aria-hidden="true"></i>正在拉取「{{ pageLabel(generationPage) }}」…</p>
-      <div id="plan-prompt-panel" role="tabpanel" :aria-labelledby="'plan-prompt-tab-' + activeTab">
-        <KeepAlive :max="1"><StructuredPromptEditor v-if="activeTab === 'persona_md'" :key="planId ?? 'none'" ref="structuredEditor" :model-value="personaContent" :metadata="personaMetadata" input-id="plan-prompt-content" :readonly="unavailable" @change="updatePersona" @input="edited" /></KeepAlive>
-        <textarea v-if="activeTab !== 'persona_md'" id="plan-prompt-content" ref="editor" v-model="activeContent" :readonly="unavailable" maxlength="20000" rows="18" spellcheck="false" :placeholder="'请填写' + selectedTab.label" @input="edited"></textarea>
+      <div id="plan-prompt-panel" ref="panel" role="tabpanel" :aria-labelledby="'plan-prompt-tab-' + activeTab">
+        <KeepAlive :key="planId ?? 'none'" :max="6">
+          <StructuredPromptEditor :key="activeTab" :label="pageLabel(activeTab)" :model-value="activeContent" :metadata="activeTab === 'persona_md' ? personaMetadata : undefined" :reset-key="pageRevisions[activeTab]" input-id="plan-prompt-content" :readonly="unavailable" @change="pageChange" @input="edited" />
+        </KeepAlive>
       </div>
       <p v-if="validation" class="plan-prompt-error" role="alert">{{ validation }}</p>
       <details class="plan-prompt-preview">
@@ -250,7 +251,7 @@ function backdrop(event: MouseEvent) {
 .plan-prompt-editor button,.plan-prompt-confirm button{box-sizing:border-box;min-height:44px;padding:10px 16px;border:1px solid transparent;border-radius:12px;font:inherit;font-size:16px;font-weight:650;line-height:1.4;white-space:nowrap;cursor:pointer}
 .plan-prompt-primary{background:#6554ec;color:#fff;box-shadow:0 6px 16px #6554ec20}.plan-prompt-secondary{background:#fff;color:#596682;border-color:#dce2f4!important}
 .plan-prompt-editor button:disabled{opacity:.55;cursor:wait;box-shadow:none}.plan-prompt-editor button:focus-visible,.plan-prompt-confirm button:focus-visible{outline:3px solid #c5bfff;outline-offset:3px}
-.plan-prompt-content{display:grid;gap:10px;min-width:0}.plan-prompt-content-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:16px}.plan-prompt-content-heading label{font-weight:650}.plan-prompt-content-heading span{color:#78859d;white-space:nowrap}
+.plan-prompt-content{display:grid;gap:10px;min-width:0}.plan-prompt-content-heading{display:flex;align-items:center;justify-content:flex-end;gap:12px;font-size:16px}.plan-prompt-content-heading span{color:#78859d;white-space:nowrap}
 .plan-prompt-tabs{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:6px}.plan-prompt-tabs button{background:#f5f6ff;color:#596682;border-color:#e4e8fa}.plan-prompt-tabs button[aria-selected=true]{background:#6554ec;color:white;border-color:#6554ec}.plan-prompt-preview{min-width:0;padding:16px;border:1px solid #dfe3f4;border-radius:12px}.plan-prompt-preview summary{cursor:pointer;font-weight:650}.plan-prompt-preview p{color:#71819d}.plan-prompt-preview label{display:block;margin-top:16px}.plan-prompt-preview textarea{min-height:180px;margin-top:8px;font-size:16px}
 .plan-prompt-content textarea{box-sizing:border-box;display:block;min-width:0;width:100%;min-height:460px;max-width:100%;padding:20px;border:1px solid #dfe3f4;border-radius:14px;background:#fff;color:#26324d;font:inherit;font-size:20px;line-height:1.8;resize:vertical;outline:none}.plan-prompt-content textarea:focus{border-color:#8273f6;box-shadow:0 0 0 3px #6554ec15}.plan-prompt-content textarea[readonly]{background:#f8f9fd}.plan-prompt-content textarea::placeholder{color:#8894aa;font-size:16px}
 .plan-prompt-error{padding:14px 18px;border:1px solid #f1cbd2;border-radius:12px;background:#fff5f6;color:#a64256;font-size:16px;overflow-wrap:anywhere}.plan-prompt-error p{margin:4px 0 0}.plan-prompt-error button{margin-top:10px;background:white;color:inherit;border-color:#e8bcc6}
