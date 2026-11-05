@@ -88,13 +88,7 @@ function moveTab(event: KeyboardEvent, index: number) {
 </script>
 
 <template>
-  <section class="plan-prompt-editor" aria-labelledby="plan-prompt-heading" :aria-busy="busy">
-    <header class="plan-prompt-heading">
-      <div>
-        <h3 id="plan-prompt-heading">方案提示词</h3>
-        <p>选择当前标签的模板，确认后写入当前页。检查后请点击顶部“保存方案”。</p>
-      </div>
-    </header>
+  <section class="plan-prompt-editor" aria-label="方案提示词" :aria-busy="busy">
 
     <div v-if="error" class="plan-prompt-error" role="alert">
       <strong>{{ loaded ? '保存未完成' : '读取未完成' }}</strong>
@@ -117,7 +111,11 @@ function moveTab(event: KeyboardEvent, index: number) {
       <div class="plan-prompt-tabs" role="tablist" aria-label="方案提示词分区">
         <button v-for="(tab, index) in tabs" :id="'plan-prompt-tab-' + tab.key" :key="tab.key" type="button" role="tab" :aria-selected="activeTab === tab.key" aria-controls="plan-prompt-panel" :tabindex="activeTab === tab.key ? 0 : -1" @click="activeTab = tab.key" @keydown="moveTab($event, index)">{{ tab.label }}</button>
       </div>
-      <button ref="templateButton" type="button" class="plan-prompt-secondary" :disabled="unavailable" @click="requestTemplates">模板选择</button>
+      <button ref="templateButton" type="button" class="plan-prompt-template-button" aria-haspopup="dialog" :disabled="unavailable" @click="requestTemplates">
+        <svg class="template-button-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 15h7m-7 5h7" stroke-linecap="round"/></svg>
+        <span>模板选择</span>
+        <svg class="template-button-arrow" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m5 7.5 5 5 5-5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
       </div>
       <div class="plan-prompt-content-heading"><span>{{ Array.from(activeContent).length }} 字</span></div>
       <div id="plan-prompt-panel" ref="panel" role="tabpanel" :aria-labelledby="'plan-prompt-tab-' + activeTab">
@@ -140,12 +138,11 @@ function moveTab(event: KeyboardEvent, index: number) {
 
 <style scoped>
 .plan-prompt-editor{box-sizing:border-box;display:grid;gap:20px;min-width:0;width:100%;color:#26324d;font-size:16px;line-height:1.65}
-.plan-prompt-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;min-width:0}
-.plan-prompt-heading>div:first-child{min-width:0;max-width:780px}.plan-prompt-heading h3{margin:0;font-size:24px;line-height:1.4}.plan-prompt-heading p{margin:10px 0 0;color:#71819d;font-size:16px;overflow-wrap:anywhere}
 .plan-prompt-actions{display:flex;flex:none;align-items:center;gap:10px;max-width:100%}
 .plan-prompt-editor button,.plan-prompt-confirm button{box-sizing:border-box;min-height:44px;padding:10px 16px;border:1px solid transparent;border-radius:12px;font:inherit;font-size:16px;font-weight:650;line-height:1.4;white-space:nowrap;cursor:pointer}
 .plan-prompt-primary{background:#6554ec;color:#fff;box-shadow:0 6px 16px #6554ec20}.plan-prompt-secondary{background:#fff;color:#596682;border-color:#dce2f4!important}
 .plan-prompt-editor button:disabled{opacity:.55;cursor:wait;box-shadow:none}.plan-prompt-editor button:focus-visible,.plan-prompt-confirm button:focus-visible{outline:3px solid #c5bfff;outline-offset:3px}
+.plan-prompt-editor .plan-prompt-template-button{display:inline-flex;align-items:center;justify-content:center;gap:9px;margin-left:8px;padding:10px 20px;border-color:#91d5cc;border-radius:999px;background:linear-gradient(135deg,#edfcf7,#dcf5f1);color:#116f69;font-size:18px;box-shadow:0 3px 10px #187b7110}.plan-prompt-template-button:hover:not(:disabled){border-color:#45aa9e;background:#d4f1e9;color:#095a54}.template-button-icon{width:21px;height:21px;flex:none}.template-button-arrow{width:16px;height:16px;flex:none}
 .plan-prompt-content{display:grid;gap:10px;min-width:0}.plan-prompt-content-heading{display:flex;align-items:center;justify-content:flex-end;gap:12px;font-size:16px}.plan-prompt-content-heading span{color:#78859d;white-space:nowrap}
 .plan-prompt-tab-toolbar{display:flex;flex-wrap:wrap;align-items:flex-start;gap:16px;margin-bottom:6px}.plan-prompt-tabs{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:6px}.plan-prompt-tabs button{background:#f5f6ff;color:#596682;border-color:#e4e8fa}.plan-prompt-tabs button[aria-selected=true]{background:#6554ec;color:white;border-color:#6554ec}.plan-prompt-preview{min-width:0;padding:16px;border:1px solid #dfe3f4;border-radius:12px}.plan-prompt-preview summary{cursor:pointer;font-weight:650}.plan-prompt-preview p{color:#71819d}.plan-prompt-preview label{display:block;margin-top:16px}.plan-prompt-preview textarea{min-height:180px;margin-top:8px;font-size:16px}
 .plan-prompt-content textarea{box-sizing:border-box;display:block;min-width:0;width:100%;min-height:460px;max-width:100%;padding:20px;border:1px solid #dfe3f4;border-radius:14px;background:#fff;color:#26324d;font:inherit;font-size:20px;line-height:1.8;resize:vertical;outline:none}.plan-prompt-content textarea:focus{border-color:#8273f6;box-shadow:0 0 0 3px #6554ec15}.plan-prompt-content textarea[readonly]{background:#f8f9fd}.plan-prompt-content textarea::placeholder{color:#8894aa;font-size:16px}
@@ -156,6 +153,6 @@ function moveTab(event: KeyboardEvent, index: number) {
 .plan-prompt-progress{display:flex;align-items:center;gap:10px;margin:0;color:#6554d8;font-size:16px}.plan-prompt-progress i{width:16px;height:16px;flex:none;border:2px solid #d8d2fc;border-top-color:#6554ec;border-radius:50%;animation:prompt-spin .8s linear infinite}
 .plan-prompt-confirm{box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 32px);margin:auto;padding:28px;border:1px solid #dfe3f4;border-radius:22px;background:#fff;color:#26324d;font:inherit;font-size:16px;line-height:1.7;box-shadow:0 24px 80px #26324d33;overflow:auto}.plan-prompt-confirm::backdrop{background:#26324d66;backdrop-filter:blur(4px)}.plan-prompt-confirm h2{margin:0;font-size:22px}.plan-prompt-confirm p{margin:14px 0 24px;color:#68758e;font-size:16px;overflow-wrap:anywhere}.plan-prompt-confirm footer{display:flex;justify-content:flex-end;gap:10px}
 @keyframes prompt-loading{to{background-position:-200% 0}}@keyframes prompt-spin{to{transform:rotate(360deg)}}
-@media(max-width:900px){.plan-prompt-heading{flex-direction:column;gap:16px}.plan-prompt-content textarea{padding:16px}.plan-prompt-confirm{padding:22px}.plan-prompt-heading h3{font-size:22px}}
+@media(max-width:900px){.plan-prompt-content textarea{padding:16px}.plan-prompt-confirm{padding:22px}}
 @media(prefers-reduced-motion:reduce){.plan-prompt-skeleton span,.plan-prompt-progress i{animation:none}}
 </style>
