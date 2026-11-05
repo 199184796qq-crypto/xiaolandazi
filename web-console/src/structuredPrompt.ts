@@ -28,8 +28,15 @@ function headingName(line: string): string | null {
   return markdown?.[1]?.trim() || null
 }
 
+function numberedItem(line: string): boolean {
+  // A list item remains a whole sentence even when it contains a colon.
+  // Four-space/tab continuations belong to an existing value, not a new item.
+  return /^ {0,3}(?:\*\*)?(?:\d+[.．](?!\d)|\d+[、)）]|[（(]\d+[)）]|[一二三四五六七八九十百零〇]+[、)）])/.test(line)
+}
+
 function fieldStart(line: string): { key: string; prefix: string; rest: string } | null {
   if (/^ {4}|^\t/.test(line)) return null
+  if (numberedItem(line)) return null
   const match = /^( {0,3}(?:[-*+][ \t]+)?(?:\*\*([^*\r\n]{1,40})\*\*|([^:：\r\n]{1,40}?))[ \t]*[:：][ \t]*)(.*)$/.exec(line)
   if (!match) return null
   const key = (match[2] || match[3] || '').trim()
@@ -71,6 +78,9 @@ export function parseStructuredPrompt(text: string, metadata = ''): StructuredPr
       if (field) {
         flush()
         pending = { key: field.key, prefix: field.prefix, text: raw.slice(field.prefix.length) }
+      } else if (pending && pending.key !== null && numberedItem(line)) {
+        flush()
+        pending = { key: null, prefix: '', text: raw }
       } else if (pending) pending.text += raw
       else pending = { key: null, prefix: '', text: raw }
     }

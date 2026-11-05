@@ -3,6 +3,42 @@ import test from 'node:test'
 import { appendPromptField, appendPromptFieldsFromText, appendPromptNode, appendPromptNodesFromText, parseStructuredPrompt, promptNameError, removePromptField, removePromptNode, replacePromptValue, serializePromptMetadata, serializeStructuredPrompt } from '../src/structuredPrompt.ts'
 import { compilePlanPrompts, compilePlanRewritePrompt, emptyPlanPromptSections, readPlanPromptSections } from '../src/planPrompt.ts'
 
+test('Numbered lists including colon sentences stay whole keyless content without altering source', () => {
+  for (const newline of ['\n','\r\n','\r']) {
+    const body=['1. 清晰讲解产品卖点、使用方法；','2. 承接公屏互动，引导停留；','3. 自然引导下单；','4. 维持直播间氛围稳定；','5. 每一轮讲解循环：痛点引入→展示产品→卖点拆解。'].join(newline)
+    const raw='【直播目标】'+newline+body+newline
+    const doc=parseStructuredPrompt(raw)
+    assert.equal(doc.nodes[0].fields.length,1)
+    assert.equal(doc.nodes[0].fields[0].key,null)
+    assert.equal(doc.nodes[0].fields[0].value,body.replace(/\r\n|\r/g,'\n'))
+    assert.equal(serializeStructuredPrompt(doc),raw)
+    assert.equal(serializeStructuredPrompt(removePromptField(doc,doc.nodes[0].fields[0].id)),'【直播目标】'+newline)
+  }
+})
+
+test('List markers are not keys; standard KV and indented list continuations retain their meanings', () => {
+  for (const marker of ['1.','2．','3、','4)','5）','(6)','（7）','一、','十）','**8.']) {
+    const raw='【规则】\n语速：正常\n'+marker+' 注意：不要夸大。\n称呼：各位\n'
+    const doc=parseStructuredPrompt(raw)
+    assert.deepEqual(doc.nodes[0].fields.map(f=>f.key),['语速',null,'称呼'])
+    assert.equal(doc.nodes[0].fields[1].value,marker+' 注意：不要夸大。')
+    assert.equal(serializeStructuredPrompt(doc),raw)
+  }
+  const doc=parseStructuredPrompt('【规则】\n说明：第一句\n    1. 注意：这是说明内容\n1.5米规格：有货\n- **主播名**：小林\n')
+  assert.deepEqual(doc.nodes[0].fields.map(f=>f.key),['说明','1.5米规格','主播名'])
+  assert.ok(doc.nodes[0].fields[0].value.includes('1. 注意：这是说明内容'))
+})
+
+test('Editing and re-reading a keyless list preserves its numbered text and does not promote its colons to keys', () => {
+  const doc=parseStructuredPrompt('【目标】\n1. 第一条：原文\n2. 第二条：原文\n')
+  const value='1. 第一条：修改😀\n2. 第二条：原文\n3. 补充：内容'
+  const changed=replacePromptValue(doc,doc.nodes[0].fields[0].id,value)
+  const reread=parseStructuredPrompt(serializeStructuredPrompt(changed),serializePromptMetadata(changed))
+  assert.equal(reread.nodes[0].fields.length,1)
+  assert.equal(reread.nodes[0].fields[0].key,null)
+  assert.equal(reread.nodes[0].fields[0].value,value)
+})
+
 test('Lossless parsing preserves headings, colon styles, ordering, whitespace, Unicode and all newline forms', () => {
   for (const text of ['', '  ', '\n\n', '普通正文😀\n第二行\n', '\ufeff正文\r\n', '【身份】\n主播名： 小林\n身份:店主\n\n【称呼】\n默认称呼：朋友\n', '# 主播人设\r\n## 身份\r\n- **主播名**：小林\r\n\r\n语速:中等\r\n', '【名称】\r键：值\r', '【空节点】', '## 标题 ##\n未带键的正文\n', '【重复】\n同名：一\n同名：二\n【重复】\n正文']) {
     assert.equal(serializeStructuredPrompt(parseStructuredPrompt(text)), text)
