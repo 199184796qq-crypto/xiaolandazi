@@ -2106,3 +2106,21 @@ Codex本轮7个拥有路径已编辑完成并交接释放。接续用户交来�
 完整说明 E:/直播伴播/docs/2026-11-05-主播人设结构化编辑测试.md；实现证据 E:/直播伴播-local/persona-node-origin-20261105；发布/回执/清理 E:/直播伴播-local/persona-node-origin-release-20261105。新准确源码fixed-runtime-source.tar.gz SHA0387a3385ed96c42ad439e9bef705c9b1fb451b6d7f1329aecee73645e780112；准确DS前驱preserved-concurrent-management-source.tar.gz SHA67f4b6df54b34ceec56ba918f204ffd92d036a37a107fdefce7cb2aa261f071a。完整来源见对应JSON，不将该归档冒认为完整Core/网关源码。
 
 15个拥有路径见persona-node-origin-20261105/baseline.json的owned_full_paths，全部编辑结束，现交接释放。API原外部9行save-check/风险注解及LiveStrategy/P0/Core/DS等其它共享工作逐字节保留，未代提交。线上无客户方案/缓存/队列写入、无付费模型/TTS/ASR或新直播设备验收、旧监控未恢复。回滚仅逆向本轮Management/前端增量，并继承当时最新服务和数据，不覆盖后续变更；仍须共享锁、最新指纹和全场/Core/采集空闲。该记录覆盖本功能先前实施中及未上线状态。
+
+
+## 自建键值可删除（2026-11-05，实施中）
+
+负责人Codex。用户补充自己添加的键名与键内容可以删除，接续上轮“改好后上线发布测试”的配套授权。领取 E:/直播伴播-local/persona-field-delete-20261105/baseline.json 所列10个完整路径，基线578ca32f8f7726e125456958ebbbc9301f15c5c7；前轮已交接释放，重读当前终件与差异后接手。在原编辑来源元数据中补字段级来源，自建节点或模型节点中手动添加的键值均整组删除，模型既有键保留；保存刷新、顺序变化、旧来源兼容、重拉清除及只读保护回归。不增加模型输入/token、不改契约/母版、无DB迁移。沿actual current准确源码发布，仅更新相关Management与前端，保留DS/Core/网关/客户数据及所有共享工作，执行共享锁/最新指纹/全场-Core-采集空闲及完整前端备份。状态：实现与测试中。
+
+
+## 自建键值删除已上线并交接释放（2026-11-05）
+
+北京时间2026-11-05 17:48:23发布 `20261105-persona-fields-0c924aa`，源码 `0c924aa9c101f40d20aca9dfe136f1c1365eaa65` 已选择性提交推送。自建键名和内容可整组删除，包括模型节点内手动添加的键值；内联确认可取消，顶部保存后生效，刷新/切方案保持。模型原键名保持，只改/清空值；来源未知的旧键保守锁定，旧自建节点内键可删。可选user_fields兼容既有版本1元数据，重新生成清除来源，三份模型编译排除；无DB迁移和模型token增加。
+
+首次发布准备时mgmt_system_settings摘要变化，保护检查在激活前中止；重新采集客户最新配置、确认程序/前端/服务/全部空闲状态不变后，再持原保护检查发布成功，没有绕过守卫或回退客户配置。原拒绝和重采回执保留在deploy-error、retry-preflight及rejected-preflight。
+
+20项解析、56组浏览器、后台3720项通过/140条件跳过/71测试包、全量vet/类型/生产构建及10项空闲守卫通过。准确重建前驱完整Management和两端前端SHA一致后仅合入本轮8个业务/测试/说明路径；保留DS及API/LiveStrategy/P0/Core其它共享差异。共享锁/最新指纹/重复全场-Core-采集空闲后只重启Management PID2414010，Core/网关PID和完整程序保持，三健康200。33张保护表完整内容/结构索引、母版/配置/Nginx及5406个非目标文件保持，4348项完整前端备份逐项匹配。公网资源/鉴权/标准冒烟通过；仅清本轮上传暂存1个及本轮自有Go缓存，历史发布/客户媒体保持，清理后复核通过。
+
+完整准确源码 E:/直播伴播-local/persona-field-delete-release-20261105/fixed-runtime-source.tar.gz，SHA256 `d6f49e29c2ec758e47aa61192b1d9d7fa276502316e9dcef114ff19aaf83a9a9`；前驱来源继承persona-node-origin-release-20261105准确归档，完整源码清单/测试/发布/核验/清理回执位于新目录。实现原件/终件/增量 E:/直播伴播-local/persona-field-delete-20261105。线上未写客户方案/缓存/队列，未调用真实模型/TTS/ASR，没有新直播设备验收，旧监控未恢复。
+
+10个拥有路径见persona-field-delete-20261105/baseline.json的owned_full_paths，已编辑结束并交接释放。本条覆盖该功能此前实施中状态；回滚仅逆向本轮Management/前端增量，须继承当时最新服务/数据，遵守共享锁/空闲/最新指纹，不能覆盖后继。
