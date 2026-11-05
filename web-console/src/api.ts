@@ -4481,7 +4481,7 @@ export function renderLiveAgentPlanPrompt(planId: number) {
 }
 
 export type PlanPromptTemplates = import('./planPrompt').PlanPromptSections & { rewrite_planning_md: string }
-export type PlanPromptTemplatesDocument = { templates: PlanPromptTemplates; revision: string }
+export type PlanPromptTemplatesDocument = { templates: PlanPromptTemplates; revision: string; placeholders?: import('./planPromptPlaceholders').PlanPromptPlaceholder[] }
 
 export function getPlanPromptTemplates() {
   return request<PlanPromptTemplatesDocument>('/api/v1/system/plan-prompt-templates', { method: 'GET', suppressErrorDialog: true })
