@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getPlanPromptTemplateCatalog, savePlanPromptTemplateCatalog, type PlanPromptPage } from '../api'
-import { catalogError, emptyTemplateCatalog, validTemplateRevision, type PromptTemplateCatalogDocument } from '../planPromptTemplateCatalog'
+import { catalogError, emptyTemplateCatalog, templateListError, validTemplateRevision, type PromptTemplateCatalogDocument } from '../planPromptTemplateCatalog'
 import { planPromptTabs } from '../planPrompt'
 import PromptPlaceholderTextarea from '../components/PromptPlaceholderTextarea.vue'
 import { promptPlaceholdersForDocument } from '../planPromptPlaceholders'
@@ -18,9 +18,16 @@ const error = ref('')
 const notice = ref('')
 const confirmation = ref<HTMLDialogElement | null>(null)
 const deletePending = ref('')
+const saveFeedback = ref<HTMLParagraphElement | null>(null)
 const busy = computed(() => loading.value || saving.value)
 const dirty = computed(() => JSON.stringify(draft.value) !== original.value)
-const validation = computed(() => catalogError(draft.value))
+const validation = computed(() => {
+  for (const tab of tabs) {
+    const issue = templateListError(draft.value.pages[tab.key])
+    if (issue) return tab.label + '：' + issue
+  }
+  return catalogError(draft.value)
+})
 const activeLabel = computed(() => tabs.find(tab => tab.key === selected.value)!.label)
 const items = computed(() => draft.value.pages[selected.value])
 const active = computed(() => items.value.find(item => item.id === templateID.value))
@@ -58,7 +65,14 @@ async function load() {
 function reload() { if (busy.value) return; if (dirty.value && revision.value) { confirmation.value?.showModal(); return }; void load() }
 function confirmReload() { confirmation.value?.close(); void load() }
 async function save() {
-  if (busy.value || !revision.value || validation.value) return
+  if (busy.value || !revision.value) return
+  if (validation.value) {
+    error.value = validation.value; notice.value = ''
+    await nextTick()
+    saveFeedback.value?.focus({ preventScroll: true })
+    saveFeedback.value?.scrollIntoView({ block: 'nearest' })
+    return
+  }
   const snapshot = JSON.parse(JSON.stringify(draft.value))
   saving.value = true; error.value = ''; notice.value = ''
   try {
@@ -75,10 +89,10 @@ onMounted(load)
   <section class="prompt-templates" :aria-busy="busy">
     <header>
       <div><h1>提示词维护</h1><p>按标签管理多份命名模板，前台选择模板后写入当前页。</p></div>
-      <div class="actions"><button type="button" :disabled="busy" @click="reload">重新读取</button><button type="button" class="primary" :disabled="busy || !revision || !!validation" @click="save">{{ saving ? '保存中…' : '保存模板' }}</button></div>
+      <div class="actions"><button type="button" :disabled="busy" @click="reload">重新读取</button><button type="button" class="primary" :disabled="busy || !revision" @click="save">{{ saving ? '保存中…' : '保存模板' }}</button></div>
     </header>
+    <p v-if="error || validation" ref="saveFeedback" class="error" role="alert" tabindex="-1">{{ error || validation }}<span> 当前草稿已保留。</span></p>
     <p class="hint">每个标签最多20份、合计60000字节（含格式）；模板按原文使用，前台仍需点击“保存方案”采用。</p>
-    <p v-if="error" class="error" role="alert">{{ error }}<span> 当前草稿已保留。</span></p>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <p v-if="loading" role="status">正在读取模板目录…</p>
     <nav class="tabs" aria-label="六个模板标签"><button v-for="tab in tabs" :key="tab.key" type="button" :class="{ active: selected === tab.key }" :aria-pressed="selected === tab.key" @click="selectPage(tab.key)">{{ tab.label }}</button></nav>
@@ -89,13 +103,12 @@ onMounted(load)
       <button v-if="deletePending" type="button" :disabled="busy" @click="deletePending = ''">取消删除</button>
     </div>
     <template v-if="active">
-      <label class="template-name">模板名称<input v-model="active.name" :readonly="busy" maxlength="60" aria-label="模板名称" @input="notice = ''" /></label>
+      <label class="template-name">模板名称<input v-model="active.name" :readonly="busy" maxlength="60" aria-label="模板名称" @input="notice = ''; error = ''" /></label>
       <div class="editor-heading"><label for="prompt-template-content">{{ activeLabel }} · 模板内容</label><span>{{ Array.from(active.content).length }} 字</span></div>
       <p class="placeholder-help">输入 @ 可插入内置占位符；模板中的占位符会按原文写入方案，选用时不调用模型或自动填充。</p>
-      <PromptPlaceholderTextarea :key="active.id" id="prompt-template-content" v-model="active.content" :label="activeLabel + '模板内容'" :placeholders="availablePlaceholders" :readonly="busy || !revision" @input="notice = ''" />
+      <PromptPlaceholderTextarea :key="active.id" id="prompt-template-content" v-model="active.content" :label="activeLabel + '模板内容'" :placeholders="availablePlaceholders" :readonly="busy || !revision" @input="notice = ''; error = ''" />
     </template>
     <p v-else-if="!loading" class="hint">「{{ activeLabel }}」暂无模板，点击“添加模板”开始维护。</p>
-    <p v-if="validation" class="error" role="alert">{{ validation }}</p>
     <dialog ref="confirmation" aria-labelledby="template-reload-title">
       <h2 id="template-reload-title">重新读取模板？</h2><p>六个标签未保存的修改将被替换。</p><div class="actions"><button type="button" autofocus @click="confirmation?.close()">取消</button><button type="button" class="primary" @click="confirmReload">确认读取</button></div>
     </dialog>
