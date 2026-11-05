@@ -146,6 +146,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /internal/v1/rooms/runtime-states", s.internal(http.HandlerFunc(s.batchRoomRuntimeStates)))
 	mux.Handle("POST /internal/v1/rooms", s.internal(http.HandlerFunc(s.createRoom)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}", s.internal(http.HandlerFunc(s.getRoom)))
+	mux.Handle("PATCH /internal/v1/rooms/{roomID}/number", s.internal(http.HandlerFunc(s.updateRoomNumber)))
 	mux.Handle("PATCH /internal/v1/rooms/{roomID}/runtime", s.internal(http.HandlerFunc(s.updateRoomRuntime)))
 	mux.Handle("DELETE /internal/v1/rooms/{roomID}", s.internal(http.HandlerFunc(s.deleteRoom)))
 	mux.Handle("GET /internal/v1/rooms/{roomID}/events", s.internal(http.HandlerFunc(s.listEvents)))

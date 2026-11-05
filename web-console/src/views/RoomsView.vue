@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { useFeedbackErrorRef } from '../uiFeedback'
 import { confirmAction, showToast } from '../uiFeedback'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { createRoom, deleteRoom, getLiveOpsSupportAuthorizations, getRoomCustomerContact, getRooms, getTenants, setRoomMonitor } from '../api'
+import { createRoom, deleteRoom, getLiveOpsSupportAuthorizations, getRoomCustomerContact, getRooms, getTenants, setRoomMonitor, updateRoomNumber } from '../api'
 import RoomListIcon from '../components/RoomListIcon.vue'
 import DataListControls from '../components/DataListControls.vue'
 import PaginationBar from '../components/PaginationBar.vue'
@@ -29,6 +29,69 @@ const deletingRoomIds = ref<number[]>([])
 const contactRoomId = ref<number | null>(null)
 const contactLoading = ref(false), contactError = ref(''), contactPhone = ref('')
 let contactRequest = 0
+const editingRoom = ref<{ id: number; title: string; original: string; connected: boolean } | null>(null)
+const editedRoomNumber = ref(''), roomNumberError = ref(''), savingRoomNumber = ref(false)
+const roomNumberInput = ref<HTMLInputElement | null>(null)
+const roomNumberDialog = ref<HTMLFormElement | null>(null)
+let roomNumberRequest = 0
+let roomListRequest = 0
+let roomNumberTrigger: HTMLElement | null = null
+
+async function openRoomNumberEditor(room: Room, event: MouseEvent) {
+  event.stopPropagation()
+  if (!canManageRooms.value || !coreActionsAvailable.value || savingRoomNumber.value) return
+  roomNumberRequest++
+  roomListRequest++
+  loading.value = false
+  roomNumberTrigger = event.currentTarget as HTMLElement
+  editingRoom.value = { id: room.id, title: roomTitle(room), original: room.external_room_id, connected: Boolean(room.monitor_enabled) }
+  editedRoomNumber.value = room.external_room_id
+  roomNumberError.value = ''
+  await nextTick()
+  roomNumberInput.value?.focus()
+  roomNumberInput.value?.select()
+  if (roomNumberInput.value?.disabled) roomNumberDialog.value?.querySelector<HTMLElement>('button:not(:disabled)')?.focus()
+}
+
+function closeRoomNumberEditor() {
+  if (savingRoomNumber.value) return
+  roomNumberRequest++
+  editingRoom.value = null
+  roomNumberError.value = ''
+  if (roomNumberTrigger?.isConnected) roomNumberTrigger.focus()
+}
+
+function trapRoomNumberFocus(event: KeyboardEvent) {
+  if (event.key !== 'Tab') return
+  const nodes = (event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('input:not(:disabled), button:not(:disabled)')
+  const first = nodes[0], last = nodes[nodes.length - 1]
+  if (first && last && event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+  else if (first && last && !event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+}
+
+async function saveRoomNumber() {
+  const target = editingRoom.value
+  if (!target || savingRoomNumber.value || !canManageRooms.value || !coreActionsAvailable.value || target.connected) return
+  const value = editedRoomNumber.value.trim()
+  if (!value) { roomNumberError.value = '请输入房间号'; roomNumberInput.value?.focus(); return }
+  if (value === target.original) { closeRoomNumberEditor(); return }
+  const sequence = ++roomNumberRequest
+  savingRoomNumber.value = true
+  roomNumberError.value = ''
+  try {
+    const updated = await updateRoomNumber(target.id, value, target.original)
+    if (sequence !== roomNumberRequest || editingRoom.value?.id !== target.id) return
+    rooms.value = rooms.value.map(room => room.id === target.id ? { ...room, ...updated } : room)
+    saveRoomCache(rooms.value)
+    savingRoomNumber.value = false
+    closeRoomNumberEditor()
+    showToast('房间号已修改', '下次连接将使用新的房间号。', 'success')
+  } catch (err) {
+    if (sequence === roomNumberRequest) roomNumberError.value = err instanceof Error ? err.message : '修改房间号失败，请重试'
+  } finally {
+    if (sequence === roomNumberRequest || !editingRoom.value) savingRoomNumber.value = false
+  }
+}
 
 function closeContact() {
   contactRoomId.value = null; contactPhone.value = ''; contactError.value = ''; contactLoading.value = false
@@ -58,6 +121,7 @@ function dismissOverlays(event: Event) {
 }
 function closeOverlaysOnEscape(event: KeyboardEvent) {
   if (event.key !== 'Escape') return
+  if (editingRoom.value) { closeRoomNumberEditor(); return }
   closeContact()
   for (const menu of document.querySelectorAll<HTMLDetailsElement>('.ops-more[open]')) {
     menu.open = false
@@ -326,20 +390,23 @@ async function loadRooms() {
 
   loading.value = true
   error.value = ''
+  const sequence = ++roomListRequest
   try {
     const [response] = await Promise.all([
       getRooms(isAdmin.value ? selectedTenantId.value : undefined),
       loadSupportAuthorizations(),
     ])
+    if (sequence !== roomListRequest) return
     rooms.value = response.items
     saveRoomCache(response.items)
   } catch (err) {
+    if (sequence !== roomListRequest) return
     if (!rooms.value.length) restoreRoomCache()
     if (!coreIsOffline()) {
       error.value = err instanceof Error ? err.message : '读取直播间失败'
     }
   } finally {
-    loading.value = false
+    if (sequence === roomListRequest) loading.value = false
   }
 }
 
@@ -416,6 +483,9 @@ watch(
   () => session.bootstrap,
   (bootstrap) => {
     closeContact()
+    roomNumberRequest++
+    editingRoom.value = null
+    savingRoomNumber.value = false
     if (!bootstrap) return
     if (!bootstrap.actor || bootstrap.actor.role !== 'platform_admin') {
       selectedTenantId.value = undefined
@@ -443,13 +513,15 @@ onMounted(() => {
   window.addEventListener('pointerdown', dismissOverlays)
   window.addEventListener('keydown', closeOverlaysOnEscape)
   refreshTimer = window.setInterval(() => {
-    if (session.bootstrap && !loading.value && !showCreate.value) {
+    if (session.bootstrap && !loading.value && !showCreate.value && !editingRoom.value) {
       loadRooms()
     }
   }, 5000)
 })
 
 onBeforeUnmount(() => {
+  roomNumberRequest++
+  roomListRequest++
   window.removeEventListener('pointerdown', dismissOverlays)
   window.removeEventListener('keydown', closeOverlaysOnEscape)
   closeContact()
@@ -460,7 +532,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="rooms-page" :class="{ 'ops-rooms-page': isInternalViewer }">
+  <div class="rooms-page room-list-readable" :class="{ 'ops-rooms-page': isInternalViewer }">
     <ModulePageNav
       context="live"
       active-title="直播间列表"
@@ -565,6 +637,17 @@ onBeforeUnmount(() => {
               </div>
               <div class="room-number-line">
                 <span>房间号 {{ room.external_room_id }}</span>
+                <button
+                  v-if="canManageRooms"
+                  class="room-number-edit"
+                  type="button"
+                  title="修改房间号"
+                  aria-label="修改房间号"
+                  :disabled="!coreActionsAvailable"
+                  @click="openRoomNumberEditor(room, $event)"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16.75V20h3.25L17.8 9.45l-3.25-3.25L4 16.75Zm16.7-10.04a1 1 0 0 0 0-1.42l-2-2a1 1 0 0 0-1.42 0l-1.56 1.56 3.25 3.25 1.73-1.39Z" /></svg>
+                </button>
                 <button type="button" title="复制房间号" aria-label="复制房间号" @click="copyRoomNumber(room, $event)">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M8 7V5a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-2v3a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-8a3 3 0 0 1 3-3h2Zm3-2v3h3a3 3 0 0 1 3 3v2h2V5h-8Zm3 6H6v8h8v-8Z" />
@@ -770,6 +853,26 @@ onBeforeUnmount(() => {
       />
     </section>
 
+    <div v-if="editingRoom" class="modal-backdrop room-number-backdrop" @click.self="closeRoomNumberEditor">
+      <form ref="roomNumberDialog" class="modal-card room-number-dialog" role="dialog" aria-modal="true" aria-labelledby="room-number-dialog-title" @submit.prevent="saveRoomNumber" @keydown="trapRoomNumberFocus">
+        <div class="modal-header">
+          <h3 id="room-number-dialog-title">修改房间号</h3>
+          <button type="button" class="close-button" aria-label="关闭修改房间号" :disabled="savingRoomNumber" @click="closeRoomNumberEditor">×</button>
+        </div>
+        <p>{{ editingRoom.title }}</p>
+        <div class="form-stack">
+          <label for="edited-room-number">房间号 / 抖音直播链接</label>
+          <input id="edited-room-number" ref="roomNumberInput" v-model="editedRoomNumber" autocomplete="off" :disabled="savingRoomNumber || editingRoom.connected" :aria-invalid="Boolean(roomNumberError)" aria-describedby="room-number-help room-number-error" />
+          <small id="room-number-help">{{ editingRoom.connected ? '请先结束直播并停止直播间连接，再修改房间号。' : '保存后，下次连接将使用新的房间号。' }}</small>
+          <p v-if="roomNumberError" id="room-number-error" class="room-number-error" role="alert">{{ roomNumberError }}</p>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="ghost-button" :disabled="savingRoomNumber" @click="closeRoomNumberEditor">取消</button>
+          <button class="primary-button" :disabled="savingRoomNumber || editingRoom.connected || !coreActionsAvailable">{{ savingRoomNumber ? '保存中…' : '保存' }}</button>
+        </div>
+      </form>
+    </div>
+
     <div v-if="showCreate && !isAdmin" class="modal-backdrop" @click.self="showCreate = false">
       <form class="modal-card" @submit.prevent="submitCreate">
         <div class="modal-header">
@@ -830,7 +933,32 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.ops-rooms-page{color:#202a44;gap:24px}.ops-room-hero.feature-workspace-hero{padding:22px 4px!important;min-height:100px!important;border:0!important;background:transparent!important;box-shadow:none!important;display:flex;align-items:center;justify-content:flex-start;gap:22px!important}.ops-room-hero .ops-hero-icon{width:68px;height:68px;border-radius:20px;display:grid;place-items:center;color:white;background:linear-gradient(150deg,#b5b7ff,#5b60ff);box-shadow:0 10px 26px #6166e929,inset 0 1px 0 #ffffff80;flex-shrink:0}.ops-hero-icon svg{width:34px;height:34px}.ops-room-hero h2{font-size:30px!important;line-height:1.3!important;margin:0!important;letter-spacing:-.02em}.ops-room-hero.feature-workspace-hero>div>p{display:block!important;margin:6px 0 0!important;font-size:17px!important;color:#8b95ad}.ops-refresh{margin-left:auto;font-size:15px!important;padding:12px 22px!important}.ops-rooms-page .room-section{padding:0!important;overflow:visible!important;border-radius:22px!important;border:1px solid #e8edf8!important;background:linear-gradient(135deg,#fff,#f9fbff)!important;box-shadow:0 12px 34px #425b9709!important}.ops-rooms-page .section-toolbar{padding:18px 24px 0;justify-content:flex-end}.ops-rooms-page :deep(.data-list-controls){padding:18px 26px;margin:0;border:0;border-bottom:1px solid #edf1f9;background:transparent;border-radius:22px 22px 0 0}.ops-rooms-page :deep(.data-list-controls label>span){font-size:13px!important;color:#8b95ad}.ops-rooms-page :deep(.data-list-controls input),.ops-rooms-page :deep(.data-list-controls select){font-size:16px!important;min-height:42px;border-radius:12px}.ops-table-wrap{overflow:visible!important;border-radius:0!important}.ops-room-table{table-layout:auto;width:100%;min-width:1040px;border-collapse:collapse}.ops-room-table thead th{background:#f6f8fe!important;padding:23px 26px!important;color:#8b93a7!important;font-size:16px!important;font-weight:700!important;white-space:nowrap;border-bottom:1px solid #edf1fa}.ops-room-table td{padding:28px 26px!important;vertical-align:middle;font-size:17px!important;border-bottom:1px solid #edf1fa!important}.ops-room-table tr:last-child td{border-bottom:0!important}.ops-room-table td strong{font-size:19px!important;font-weight:750;line-height:1.5}.ops-room-table td small{display:block;font-size:14px!important;color:#929db4!important;line-height:1.6;margin-top:3px!important}.ops-room-identity{display:flex;align-items:center;gap:16px;min-width:230px}.ops-room-mark{display:grid;place-items:center;width:54px;height:54px;flex-shrink:0;border-radius:16px;color:#c77604;background:linear-gradient(145deg,#ffe5bc,#fff0d9);font-size:26px;font-weight:800}.ops-room-number{display:flex;align-items:center;gap:10px;white-space:nowrap}.ops-room-number button{border:0;padding:3px;background:none;color:#8d98b5;cursor:pointer;display:flex}.ops-room-number svg{width:18px;height:18px}.ops-customer-cell{position:relative;min-width:170px}.ops-customer-contact{position:relative}.ops-customer-name{display:flex;align-items:center;gap:9px}.ops-customer-name strong{max-width:220px;overflow-wrap:anywhere}.ops-phone-button{border:1px solid #e4e8ff;background:#f3f5ff;color:#777cdd;width:32px;height:32px;border-radius:10px;display:grid;place-items:center;cursor:pointer;flex-shrink:0}.ops-phone-button[aria-expanded=true]{background:#e8eaff;border-color:#afb5fa}.ops-phone-button svg{width:17px;height:17px}.ops-phone-panel{position:absolute;z-index:60;top:calc(100% + 12px);left:0;min-width:220px;max-width:280px;padding:18px 36px 18px 18px;border:1px solid #dfe5fc;border-radius:16px;background:#fff;box-shadow:0 14px 40px #5267b22b}.ops-phone-panel strong{display:block;color:#5f65ca;overflow-wrap:anywhere;font-size:18px!important}.ops-phone-panel button{position:absolute;right:8px;top:6px;border:0;background:transparent;font-size:22px;color:#8792aa;cursor:pointer}.ops-phone-error{color:#bf586a;font-size:14px}.ops-platform{display:flex;align-items:center;gap:10px;white-space:nowrap}.ops-douyin-mark{width:40px;height:40px;border-radius:11px;background:#080a11;color:white;display:grid;place-items:center;font-size:35px;font-weight:900;text-shadow:-2px -1px #00e6df,2px 1px #ff3163}.ops-online-count{display:flex;align-items:center;gap:12px}.ops-people-icon{display:grid;place-items:center;width:42px;height:42px;border-radius:13px;background:#eeeefe;color:#6268e8;flex-shrink:0}.ops-people-icon svg{width:25px;height:25px}.ops-online-count strong{font-size:27px!important;line-height:1.2}.ops-room-table .status-pill,.ops-room-table .room-cooperation-table-badge{padding:10px 14px!important;display:inline-flex;align-items:center;gap:9px;font-size:16px!important;font-weight:750;border:0!important;border-radius:13px!important;white-space:nowrap;width:auto!important;line-height:1.4}.ops-room-table .status-pill i,.ops-room-table .room-cooperation-table-badge i{width:10px;height:10px;flex-shrink:0;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px #ffffff60}.ops-room-table .status-live{color:#18865f;background:#e5f7ee}.ops-room-table .room-cooperation-table-badge{color:#129797;background:#e2f6f9}.ops-room-table .room-cooperation-table-badge.danger{color:#c76472;background:#fff0f3}.ops-table-actions{display:flex;align-items:center;gap:14px;white-space:nowrap}.ops-enter-button{border:0;border-radius:13px;background:linear-gradient(135deg,#7072ff,#5555e6);box-shadow:0 9px 24px #5758e329;color:#fff;padding:15px 20px;font-size:17px;font-weight:750;display:flex;align-items:center;gap:12px;cursor:pointer}.ops-enter-button svg{width:22px;height:22px}.ops-more{position:relative}.ops-more summary{display:grid;place-items:center;cursor:pointer;list-style:none;width:54px;height:54px;border:1px solid #cdd2ff;border-radius:13px;background:#f1f2ff;color:#666bef}.ops-more summary::-webkit-details-marker{display:none}.ops-more summary svg{width:25px;height:25px}.ops-more[open] summary{background:#e9ebff;border-color:#aeb5ff}.ops-action-menu{position:absolute;top:calc(100% + 10px);right:0;z-index:50;min-width:206px;padding:12px;background:#fff;border:1px solid #ecedf8;border-radius:18px;box-shadow:0 20px 45px #43538422;display:grid;gap:4px}.ops-action-menu button{display:flex;align-items:center;gap:13px;width:100%;padding:12px 13px;border:0;border-radius:10px;background:transparent;text-align:left;color:#596782;font:inherit;font-size:16px;cursor:pointer}.ops-action-menu button svg{width:21px;height:21px}.ops-action-menu button:hover:not(:disabled){background:#f2f4ff;color:#6166d9}.ops-action-menu button:disabled{opacity:.4;cursor:not-allowed}.ops-action-menu .ops-delete-button{color:#f04e5c;border-top:1px solid #edf0fa;border-radius:0;margin-top:5px;padding-top:15px}.ops-rooms-page :deep(.pagination-bar){border-top:1px solid #edf1f9;padding:24px 28px;margin:0;min-height:88px}.ops-rooms-page :deep(.pagination-bar-summary){font-size:16px!important;color:#919bb1}.ops-rooms-page :deep(.pagination-bar button){font-size:15px!important;min-height:40px;border-radius:11px}.ops-rooms-page button:focus-visible,.ops-more summary:focus-visible{outline:3px solid #b3bcff;outline-offset:3px}
-@media(max-width:1300px){.ops-room-table td,.ops-room-table thead th{padding-left:18px!important;padding-right:18px!important}.ops-room-identity{min-width:200px}.ops-enter-button{font-size:15px;padding:14px}.ops-table-actions{gap:9px}}
-@media(max-width:1050px){.ops-table-wrap{overflow-x:auto!important;padding-bottom:220px;margin-bottom:-220px}.ops-room-hero.feature-workspace-hero{flex-wrap:wrap}.ops-room-hero h2{font-size:26px!important}.ops-room-hero.feature-workspace-hero>div>p{font-size:15px!important}.ops-hero-icon{width:54px!important;height:54px!important}.ops-refresh{padding:10px 16px!important}.ops-rooms-page :deep(.data-list-controls){padding:16px}}
+.ops-rooms-page{color:#202a44;gap:24px}.ops-room-hero.feature-workspace-hero{padding:22px 4px!important;min-height:100px!important;border:0!important;background:transparent!important;box-shadow:none!important;display:flex;align-items:center;justify-content:flex-start;gap:22px!important}.ops-room-hero .ops-hero-icon{width:68px;height:68px;border-radius:20px;display:grid;place-items:center;color:white;background:linear-gradient(150deg,#b5b7ff,#5b60ff);box-shadow:0 10px 26px #6166e929,inset 0 1px 0 #ffffff80;flex-shrink:0}.ops-hero-icon svg{width:34px;height:34px}.ops-room-hero h2{font-size:18px!important;line-height:1.3!important;margin:0!important;letter-spacing:-.02em}.ops-room-hero.feature-workspace-hero>div>p{display:block!important;margin:6px 0 0!important;font-size:18px!important;color:#8b95ad}.ops-refresh{margin-left:auto;font-size:18px!important;padding:12px 22px!important}.ops-rooms-page .room-section{padding:0!important;overflow:visible!important;border-radius:22px!important;border:1px solid #e8edf8!important;background:linear-gradient(135deg,#fff,#f9fbff)!important;box-shadow:0 12px 34px #425b9709!important}.ops-rooms-page .section-toolbar{padding:18px 24px 0;justify-content:flex-end}.ops-rooms-page :deep(.data-list-controls){padding:18px 26px;margin:0;border:0;border-bottom:1px solid #edf1f9;background:transparent;border-radius:22px 22px 0 0}.ops-rooms-page :deep(.data-list-controls label>span){font-size:18px!important;color:#8b95ad}.ops-rooms-page :deep(.data-list-controls input),.ops-rooms-page :deep(.data-list-controls select){font-size:18px!important;min-height:42px;border-radius:12px}.ops-table-wrap{overflow:visible!important;border-radius:0!important}.ops-room-table{table-layout:auto;width:100%;min-width:1040px;border-collapse:collapse}.ops-room-table thead th{background:#f6f8fe!important;padding:23px 26px!important;color:#8b93a7!important;font-size:18px!important;font-weight:700!important;white-space:nowrap;border-bottom:1px solid #edf1fa}.ops-room-table td{padding:28px 26px!important;vertical-align:middle;font-size:18px!important;border-bottom:1px solid #edf1fa!important}.ops-room-table tr:last-child td{border-bottom:0!important}.ops-room-table td strong{font-size:18px!important;font-weight:750;line-height:1.5}.ops-room-table td small{display:block;font-size:18px!important;color:#929db4!important;line-height:1.6;margin-top:3px!important}.ops-room-identity{display:flex;align-items:center;gap:16px;min-width:230px}.ops-room-mark{display:grid;place-items:center;width:54px;height:54px;flex-shrink:0;border-radius:16px;color:#c77604;background:linear-gradient(145deg,#ffe5bc,#fff0d9);font-size:18px;font-weight:800}.ops-room-number{display:flex;align-items:center;gap:10px;white-space:nowrap}.ops-room-number button{border:0;padding:3px;background:none;color:#8d98b5;cursor:pointer;display:flex}.ops-room-number svg{width:18px;height:18px}.ops-customer-cell{position:relative;min-width:170px}.ops-customer-contact{position:relative}.ops-customer-name{display:flex;align-items:center;gap:9px}.ops-customer-name strong{max-width:220px;overflow-wrap:anywhere}.ops-phone-button{border:1px solid #e4e8ff;background:#f3f5ff;color:#777cdd;width:32px;height:32px;border-radius:10px;display:grid;place-items:center;cursor:pointer;flex-shrink:0}.ops-phone-button[aria-expanded=true]{background:#e8eaff;border-color:#afb5fa}.ops-phone-button svg{width:17px;height:17px}.ops-phone-panel{position:absolute;z-index:60;top:calc(100% + 12px);left:0;min-width:220px;max-width:280px;padding:18px 36px 18px 18px;border:1px solid #dfe5fc;border-radius:16px;background:#fff;box-shadow:0 14px 40px #5267b22b}.ops-phone-panel strong{display:block;color:#5f65ca;overflow-wrap:anywhere;font-size:18px!important}.ops-phone-panel button{position:absolute;right:8px;top:6px;border:0;background:transparent;font-size:18px;color:#8792aa;cursor:pointer}.ops-phone-error{color:#bf586a;font-size:18px}.ops-platform{display:flex;align-items:center;gap:10px;white-space:nowrap}.ops-douyin-mark{width:40px;height:40px;border-radius:11px;background:#080a11;color:white;display:grid;place-items:center;font-size:18px;font-weight:900;text-shadow:-2px -1px #00e6df,2px 1px #ff3163}.ops-online-count{display:flex;align-items:center;gap:12px}.ops-people-icon{display:grid;place-items:center;width:42px;height:42px;border-radius:13px;background:#eeeefe;color:#6268e8;flex-shrink:0}.ops-people-icon svg{width:25px;height:25px}.ops-online-count strong{font-size:18px!important;line-height:1.2}.ops-room-table .status-pill,.ops-room-table .room-cooperation-table-badge{padding:10px 14px!important;display:inline-flex;align-items:center;gap:9px;font-size:18px!important;font-weight:750;border:0!important;border-radius:13px!important;white-space:nowrap;width:auto!important;line-height:1.4}.ops-room-table .status-pill i,.ops-room-table .room-cooperation-table-badge i{width:10px;height:10px;flex-shrink:0;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px #ffffff60}.ops-room-table .status-live{color:#18865f;background:#e5f7ee}.ops-room-table .room-cooperation-table-badge{color:#129797;background:#e2f6f9}.ops-room-table .room-cooperation-table-badge.danger{color:#c76472;background:#fff0f3}.ops-table-actions{display:flex;align-items:center;gap:14px;white-space:nowrap}.ops-enter-button{border:0;border-radius:13px;background:linear-gradient(135deg,#7072ff,#5555e6);box-shadow:0 9px 24px #5758e329;color:#fff;padding:15px 20px;font-size:18px;font-weight:750;display:flex;align-items:center;gap:12px;cursor:pointer}.ops-enter-button svg{width:22px;height:22px}.ops-more{position:relative}.ops-more summary{display:grid;place-items:center;cursor:pointer;list-style:none;width:54px;height:54px;border:1px solid #cdd2ff;border-radius:13px;background:#f1f2ff;color:#666bef}.ops-more summary::-webkit-details-marker{display:none}.ops-more summary svg{width:25px;height:25px}.ops-more[open] summary{background:#e9ebff;border-color:#aeb5ff}.ops-action-menu{position:absolute;top:calc(100% + 10px);right:0;z-index:50;min-width:206px;padding:12px;background:#fff;border:1px solid #ecedf8;border-radius:18px;box-shadow:0 20px 45px #43538422;display:grid;gap:4px}.ops-action-menu button{display:flex;align-items:center;gap:13px;width:100%;padding:12px 13px;border:0;border-radius:10px;background:transparent;text-align:left;color:#596782;font:inherit;font-size:18px;cursor:pointer}.ops-action-menu button svg{width:21px;height:21px}.ops-action-menu button:hover:not(:disabled){background:#f2f4ff;color:#6166d9}.ops-action-menu button:disabled{opacity:.4;cursor:not-allowed}.ops-action-menu .ops-delete-button{color:#f04e5c;border-top:1px solid #edf0fa;border-radius:0;margin-top:5px;padding-top:15px}.ops-rooms-page :deep(.pagination-bar){border-top:1px solid #edf1f9;padding:24px 28px;margin:0;min-height:88px}.ops-rooms-page :deep(.pagination-bar-summary){font-size:18px!important;color:#919bb1}.ops-rooms-page :deep(.pagination-bar button){font-size:18px!important;min-height:40px;border-radius:11px}.ops-rooms-page button:focus-visible,.ops-more summary:focus-visible{outline:3px solid #b3bcff;outline-offset:3px}
+@media(max-width:1300px){.ops-room-table td,.ops-room-table thead th{padding-left:18px!important;padding-right:18px!important}.ops-room-identity{min-width:200px}.ops-enter-button{font-size:18px;padding:14px}.ops-table-actions{gap:9px}}
+@media(max-width:1050px){.ops-table-wrap{overflow-x:auto!important;padding-bottom:220px;margin-bottom:-220px}.ops-room-hero.feature-workspace-hero{flex-wrap:wrap}.ops-room-hero h2{font-size:18px!important}.ops-room-hero.feature-workspace-hero>div>p{font-size:18px!important}.ops-hero-icon{width:54px!important;height:54px!important}.ops-refresh{padding:10px 16px!important}.ops-rooms-page :deep(.data-list-controls){padding:16px}}
+</style>
+
+<style scoped>
+/* Keep this page, its controls and its dialogs at the requested readable size. */
+.rooms-page.room-list-readable,
+.rooms-page.room-list-readable :deep(*) { font-size:18px !important; }
+.room-list-readable .room-card-premium .room-number-line { flex-wrap: wrap; gap: 6px; }
+.room-list-readable .room-card-premium .room-number-line span { overflow: visible; overflow-wrap: anywhere; white-space: normal; line-height: 1.5; }
+.room-list-readable .room-card-premium .room-number-line button { width: 28px; height: 28px; }
+.room-list-readable .room-card-premium .room-number-line button svg { width: 18px; height: 18px; }
+.room-list-readable .room-card-premium .room-number-line button:disabled { opacity: .4; cursor: not-allowed; }
+.room-list-readable .room-card-premium .room-card-footer { display: flex; flex-wrap: wrap; gap: 12px; }
+.room-list-readable .room-card-premium .card-actions { display: flex; flex: 1 1 360px; flex-wrap: wrap; gap: 8px; }
+.room-list-readable .room-card-premium .room-action-button { flex: 1 1 90px; min-height: 44px; padding: 8px 12px; }
+.room-list-readable .room-card-premium .room-action-enter { flex-grow: 1.3; min-width: 135px; }
+.room-list-readable .room-status-block small { max-width: 165px; }
+.room-number-dialog { width: min(540px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; }
+.room-number-dialog > p { margin: 0 0 20px; overflow-wrap: anywhere; }
+.room-number-dialog input { width: 100%; min-width: 0; }
+.room-number-dialog .room-number-error { display: block; margin: 0; overflow-wrap: anywhere; color: #c43f54; }
+.room-list-readable button:focus-visible { outline: 3px solid #b3bcff; outline-offset: 3px; }
+@media (max-width: 700px) {
+  .room-list-readable .room-card-premium .room-card-top { grid-template-columns: 48px minmax(0, 1fr); }
+  .room-list-readable .room-card-premium .room-brand-mark { width: 48px; height: 48px; }
+}
 </style>

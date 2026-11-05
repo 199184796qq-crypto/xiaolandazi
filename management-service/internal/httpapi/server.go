@@ -488,6 +488,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms", s.listRooms)
 	mux.HandleFunc("POST /api/v1/rooms", s.createRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}", s.getRoom)
+	mux.HandleFunc("PATCH /api/v1/rooms/{roomID}/number", s.updateRoomNumber)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/customer-contact", s.roomCustomerContact)
 	mux.HandleFunc("PATCH /api/v1/rooms/{roomID}/monitor", s.updateRoomMonitor)
 	mux.HandleFunc("DELETE /api/v1/rooms/{roomID}", s.deleteRoom)
