@@ -3,7 +3,8 @@ import type { PlanPromptPage } from './api'
 export interface PromptTextTemplate { id: string; name: string; content: string }
 export interface PromptTemplateCatalog { version: 1; pages: Record<PlanPromptPage, PromptTextTemplate[]> }
 export interface PromptTemplateCatalogDocument { catalog: PromptTemplateCatalog; revision: string }
-export interface PromptTemplateSelection { page: PlanPromptPage; templates: PromptTextTemplate[]; revision: string }
+export interface SelectedPromptTemplate extends PromptTextTemplate { rendered_content?: string; render_error?: string }
+export interface PromptTemplateSelection { page: PlanPromptPage; templates: SelectedPromptTemplate[]; revision: string }
 export const templatePages: PlanPromptPage[] = ['persona_md', 'facts_md', 'red_lines_md', 'speech_requirements_md', 'interaction_requirements_md', 'rewrite_planning_md']
 export const emptyTemplateCatalog = (): PromptTemplateCatalog => ({ version: 1, pages: Object.fromEntries(templatePages.map(page => [page, [] as PromptTextTemplate[]])) as PromptTemplateCatalog['pages'] })
 export function templateListError(items: unknown): string {

@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getLiveAgentPlanPromptTemplates, type PlanPromptPage } from '../api'
-import { templateListError, validTemplateRevision, type PromptTextTemplate } from '../planPromptTemplateCatalog'
+import { templateListError, validTemplateRevision, type PromptTextTemplate, type SelectedPromptTemplate } from '../planPromptTemplateCatalog'
 
 const props = defineProps<{ planId: number; page: PlanPromptPage; label: string }>()
 const emit = defineEmits<{ cancel: []; apply: [template: PromptTextTemplate] }>()
 const dialog = ref<HTMLDialogElement | null>(null)
-const items = ref<PromptTextTemplate[]>([])
+const items = ref<SelectedPromptTemplate[]>([])
 const selected = ref('')
 const loading = ref(false)
 const error = ref('')
 const active = computed(() => items.value.find(item => item.id === selected.value))
+const preview = computed(() => active.value?.rendered_content ?? active.value?.content ?? '')
 let mounted = true
 let sequence = 0
 let controller: AbortController | undefined
@@ -23,8 +24,11 @@ async function load() {
     const value = await getLiveAgentPlanPromptTemplates(props.planId, props.page, controller.signal)
     if (!mounted || request !== sequence) return
     if (value.page !== props.page || !validTemplateRevision(value.revision)) throw new Error('模板目录回执无效，请重新读取')
-    const invalid = templateListError(value.templates)
+    // Catalog capacity counts stored originals, never the extra preview bytes.
+    const originals = Array.isArray(value.templates) ? value.templates.map(item => item && ({ id: item.id, name: item.name, content: item.content })) : value.templates
+    const invalid = templateListError(originals)
     if (invalid) throw new Error(invalid)
+    if (value.templates.some(item => (item.rendered_content !== undefined && typeof item.rendered_content !== 'string') || (item.render_error !== undefined && typeof item.render_error !== 'string'))) throw new Error('模板填充回执无效，请重新读取')
     items.value = value.templates.map(item => ({ ...item }))
   } catch (err) {
     if (mounted && request === sequence) error.value = err instanceof Error ? err.message : '读取模板失败'
@@ -43,7 +47,7 @@ onBeforeUnmount(() => { mounted = false; sequence++; controller?.abort(); dialog
   <Teleport to="body">
     <dialog ref="dialog" class="prompt-template-picker" aria-labelledby="prompt-template-picker-title" :aria-busy="loading" @cancel.prevent="emit('cancel')" @click="backdrop">
       <h2 id="prompt-template-picker-title">模板选择 · {{ label }}</h2>
-      <p>确认后替换当前页内容，检查后点击顶部“保存方案”。</p>
+      <p>按已保存的方案资料填充占位符，无法填充的保留原样。确认后写入当前页，检查后点击顶部“保存方案”。</p>
       <p v-if="loading" role="status">正在读取模板…</p>
       <div v-else-if="error" class="picker-error" role="alert"><p>{{ error }}</p><button type="button" @click="load">重新读取</button></div>
       <p v-else-if="!items.length" role="status">当前标签暂无模板，请先在后台“提示词维护”中添加并保存。</p>
@@ -51,9 +55,9 @@ onBeforeUnmount(() => { mounted = false; sequence++; controller?.abort(); dialog
         <div class="picker-list" role="radiogroup" aria-label="可用模板">
           <label v-for="item in items" :key="item.id" :class="{ selected: selected === item.id }"><input v-model="selected" type="radio" name="prompt-template" :value="item.id" />{{ item.name }}</label>
         </div>
-        <div class="picker-preview"><strong>模板预览</strong><pre v-if="active">{{ active.content || '（空模板：确认后将清空当前页）' }}</pre><p v-else>请选择一份模板查看内容。</p></div>
+        <div class="picker-preview"><strong>模板预览</strong><p v-if="active?.render_error" class="picker-error" role="alert">{{ active.render_error }}</p><pre v-if="active">{{ preview || '（空模板：确认后将清空当前页）' }}</pre><p v-else>请选择一份模板查看内容。</p></div>
       </div>
-      <footer><button type="button" autofocus @click="emit('cancel')">取消</button><button type="button" class="primary" :disabled="loading || !active" @click="active && emit('apply', { ...active })">确认使用</button></footer>
+      <footer><button type="button" autofocus @click="emit('cancel')">取消</button><button type="button" class="primary" :disabled="loading || !active || !!active.render_error" @click="active && !active.render_error && emit('apply', { id: active.id, name: active.name, content: preview })">确认使用</button></footer>
     </dialog>
   </Teleport>
 </template>

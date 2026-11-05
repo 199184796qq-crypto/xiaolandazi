@@ -50,7 +50,8 @@ func (s *Server) planPromptCatalogPut(w http.ResponseWriter, r *http.Request) {
 }
 
 // Selection is read-only and uses the same plan ownership check as prompt reads.
-// No render/generation, placeholder substitution or customer writes occur here.
+// Template originals remain unchanged; resolved previews use this plan's data.
+// Selection never invokes generation or writes customer/template records.
 func (s *Server) liveAgentPlanPromptTemplates(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
@@ -64,7 +65,8 @@ func (s *Server) liveAgentPlanPromptTemplates(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	if _, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID); err != nil {
+	plan, err := s.store.GetLiveAgentPlan(r.Context(), tenantID, planID)
+	if err != nil {
 		writeError(w, 404, "方案不存在")
 		return
 	}
@@ -78,5 +80,20 @@ func (s *Server) liveAgentPlanPromptTemplates(w http.ResponseWriter, r *http.Req
 		writeError(w, 500, "读取模板目录失败")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"page": page, "templates": c.Pages[page], "revision": c.Revision()})
+	values, err := s.planPromptSelectionValues(r.Context(), tenantID, plan)
+	if err != nil {
+		writeError(w, 500, "读取模板填充资料失败，当前内容已保留")
+		return
+	}
+	items := make([]planPromptSelectedTemplate, 0, len(c.Pages[page]))
+	for _, item := range c.Pages[page] {
+		text, renderErr := fillSelectedPlanPrompt(item.Content, values)
+		selected := planPromptSelectedTemplate{ID: item.ID, Name: item.Name, Content: item.Content, RenderedContent: text}
+		if renderErr != nil {
+			selected.RenderedContent = item.Content
+			selected.RenderError = renderErr.Error()
+		}
+		items = append(items, selected)
+	}
+	writeJSON(w, 200, map[string]any{"page": page, "templates": items, "revision": c.Revision()})
 }

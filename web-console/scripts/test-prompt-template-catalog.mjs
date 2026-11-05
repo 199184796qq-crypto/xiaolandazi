@@ -9,7 +9,9 @@ await mkdir(output, { recursive: true })
 const source = (await readFile(new URL('./test-plan-prompt-editor.mjs', import.meta.url), 'utf8')).replace(/\r\n/g, '\n')
 const parent = (await readFile(new URL('./test-plan-rewrite-prompt-editor.mjs', import.meta.url), 'utf8')).replace(/\r\n/g, '\n')
 let fixture = source.split('const fixture=String.raw`')[1].split('`\nconst server=')[0]
-const setup = parent.split('const setup = String.raw`')[1].split('\n`\nfixture =')[0]
+let setup = parent.split('const setup = String.raw`')[1].split('\n`\nfixture =')[0]
+// Only selection GET receives resolved previews. The persisted catalog stays raw.
+setup = setup.replace('templates:f.catalog?f.catalog.pages[key]:[{id:', 'templates:f.catalog?f.catalog.pages[key].map(item=>({...item,...(f.selectionPreviews?.[item.id]||{})})):[{id:')
 fixture = fixture.replace('applySession(', setup + '\napplySession(').replace('render:()=>h(View)', 'render:()=>h(window.fixture.showTemplates.value?TemplateView:View)')
 const keys = ['persona_md','facts_md','red_lines_md','speech_requirements_md','interaction_requirements_md','rewrite_planning_md']
 const labels = ['主播人设','事实依据','红线禁止','直播话术要求','互动回答要求','话术规划']
@@ -130,6 +132,23 @@ try {
   checks.push('选取期间当前页外部变化时拒绝覆盖新草稿')
   await page.evaluate(()=>window.fixture.holdRender=true);await showPicker();await page.waitForFunction(()=>!!window.fixture.releaseRender);await page.evaluate(()=>window.fixture.view.setPlan(5));await ready();await page.evaluate(()=>{window.fixture.releaseRender();window.fixture.releaseRender=null});await page.waitForTimeout(100);assert.equal((await draft()).persona_md,'方案5人设');assert.equal(await picker().count(),0)
   checks.push('切方案作废目录请求与旧选择，租户方案草稿隔离')
+  const filledText='【身份】\n你是小林，店主本人。\n直播间是荣昌卤鹅，做的是食品。\n{{未知字段}} {{开场方式}}'
+  const templateRaw='【身份】\n你是{{主播名}}，{{主播身份}}。\n直播间是{{直播间名}}，做的是{{直播赛道}}。\n{{未知字段}} {{开场方式}}'
+  await page.evaluate(({filledText,templateRaw})=>{window.fixture.catalog.pages.persona_md=[{id:'filled',name:'占位符模板',content:templateRaw}];window.fixture.selectionPreviews={filled:{rendered_content:filledText}}},{filledText,templateRaw})
+  await showPicker();await picker().getByRole('radio',{name:'占位符模板',exact:true}).check()
+  assert.equal(await picker().locator('pre').textContent(),filledText);await picker().screenshot({path:output+'/filled-preview.png'})
+  await choose('占位符模板');assert.equal((await draft()).persona_md,filledText)
+  assert.equal(await page.evaluate(()=>window.fixture.catalog.pages.persona_md[0].content),templateRaw)
+  checks.push('有值的占位符预览和确认一致，未知及运行期槽原样保留，后台模板原文保持')
+  await page.evaluate(()=>window.fixture.selectionPreviews.filled={rendered_content:'{{直播间名}}',render_error:'替换后的模板超过20000字或60000字节，请精简模板或方案资料'})
+  await showPicker();await picker().getByRole('radio',{name:'占位符模板',exact:true}).check();await picker().getByRole('alert').filter({hasText:'替换后的模板超过'}).waitFor();assert.ok(await picker().getByRole('button',{name:'确认使用'}).isDisabled());await cancel();assert.equal((await draft()).persona_md,filledText)
+  checks.push('替换后超长明确显示原因并禁止确认，取消保持原稿')
+  await page.evaluate(()=>window.fixture.selectionPreviews.filled={rendered_content:17})
+  await showPicker();await picker().getByRole('alert').filter({hasText:'模板填充回执无效'}).waitFor();await cancel();assert.equal((await draft()).persona_md,filledText)
+  checks.push('畸形填充回执不作为正文，原稿保持')
+  await page.evaluate(()=>{window.fixture.catalog.pages.persona_md=[{id:'capacity',name:'大模板',content:'字'.repeat(10050)}];window.fixture.selectionPreviews={capacity:{rendered_content:'大'.repeat(10050)}}})
+  await showPicker();await picker().getByRole('radio',{name:'大模板',exact:true}).check();assert.equal((await picker().locator('pre').textContent()).length,10050);await choose('大模板');assert.equal((await draft()).persona_md,'大'.repeat(10050))
+  checks.push('预览附加字节不占后台目录容量，合法大模板仍可预览并采用')
   await page.evaluate(()=>{window.fixture.catalog.pages.persona_md=[{id:'empty',name:'空白模板',content:''}]});await showPicker();await picker().getByRole('radio',{name:'空白模板'}).check();await picker().getByText(/空模板：确认后将清空当前页/).waitFor();await choose('空白模板');assert.equal((await draft()).persona_md,'')
   checks.push('显式空模板可确认清空当前页，预览说明清空效果')
   await page.evaluate(()=>{window.fixture.catalog.pages.persona_md=[{id:'large',name:'超长模板',content:'字'.repeat(20001)}]});await showPicker();await picker().getByRole('alert').waitFor();await cancel();assert.equal((await draft()).persona_md,'')
