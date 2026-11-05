@@ -4843,3 +4843,14 @@ export function classifyQuestionType(roomId: number, question: string) {
     body: JSON.stringify({ question }),
   })
 }
+
+// Ready-to-edit templates are independent of legacy model-generation mothers.
+export function getPlanPromptTemplateCatalog() {
+  return request<import('./planPromptTemplateCatalog').PromptTemplateCatalogDocument>('/api/v1/system/plan-prompt-template-catalog')
+}
+export function savePlanPromptTemplateCatalog(catalog: import('./planPromptTemplateCatalog').PromptTemplateCatalog, revision: string) {
+  return request<import('./planPromptTemplateCatalog').PromptTemplateCatalogDocument>('/api/v1/system/plan-prompt-template-catalog', { method: 'PUT', body: JSON.stringify({ catalog, revision }) })
+}
+export function getLiveAgentPlanPromptTemplates(planId: number, page: PlanPromptPage, signal?: AbortSignal) {
+  return request<import('./planPromptTemplateCatalog').PromptTemplateSelection>('/api/v1/live-agent-plans/' + planId + '/prompt/templates?page=' + encodeURIComponent(page), { signal })
+}

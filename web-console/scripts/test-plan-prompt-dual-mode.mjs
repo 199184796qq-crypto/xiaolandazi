@@ -122,11 +122,11 @@ try{
  const current=(await draft()).persona_md
  await page.evaluate(text=>window.fixture.templates.persona_md=text,current)
  await page.evaluate(()=>window.fixture.holdRender=true)
- await page.getByRole('button',{name:'拉取提示词',exact:true}).click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.waitForFunction(()=>!!window.fixture.releaseRender)
+ await page.getByRole('button',{name:'模板选择',exact:true}).click();await page.waitForFunction(()=>!!window.fixture.releaseRender)
  assert.equal(await page.getByRole('button',{name:'编辑模型',exact:true}).isDisabled(),true)
- await page.evaluate(()=>window.fixture.releaseRender());await ready()
+ await page.evaluate(()=>window.fixture.releaseRender());await page.getByRole('radio',{name:'测试模板',exact:true}).check();await page.getByRole('button',{name:'确认使用',exact:true}).click();await ready()
  assert.equal((await draft()).persona_md,current);assert.equal(await page.getByRole('textbox',{name:'新增节点内容',exact:true}).count(),0)
- checks.push('拉取时禁止模式/内容修改；同文重新拉取也清除旧新增草稿')
+ checks.push('选择模板时禁止模式/内容修改；同文重新选用也清除旧新增草稿')
 
  for(let i=0;i<6;i++){
   await select(i);await mode(true);await raw(i).fill('无标题\n<自定义>{"原样":true}😀\n  末尾  ')

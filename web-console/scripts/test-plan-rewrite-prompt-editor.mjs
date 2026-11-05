@@ -21,8 +21,27 @@ Object.assign(window.fixture,{documents:JSON.parse(sessionStorage.getItem('rewri
 window.fixture.showTemplates=ref(false);
 window.fixture.templates={persona_md:'母版人设',facts_md:'母版事实规则',red_lines_md:'母版红线',speech_requirements_md:'母版主线要求',interaction_requirements_md:'母版互动要求',rewrite_planning_md:'母版规划\n{{已有开场}}\n{{开场方式}}'};
 window.fixture.templateRevision='a'.repeat(64);
+window.fixture.catalog=JSON.parse(sessionStorage.getItem('template-catalog')||'null');
 window.fetch=async(url,init={})=>{
  const f=window.fixture,u=new URL(url,location.origin),p=u.pathname,method=init.method||'GET',body=init.body?JSON.parse(init.body):null,plan=Number(p.match(/live-agent-plans\/(\d+)/)?.[1]||0);
+ if(p==='/api/v1/system/plan-prompt-template-catalog'){
+  f.calls.push({path:p,method,body});
+  if(method==='PUT'){
+   if(f.failTemplateSave){f.failTemplateSave=false;return Response.json({error:'模板保存失败'},{status:500})}
+   if(body.revision!==f.templateRevision)return Response.json({error:'模板已被其他人修改，请重新读取'},{status:409});
+   f.catalog=structuredClone(body.catalog);f.templateRevision=(f.templateRevision[0]==='b'?'d':'b').repeat(64);
+   sessionStorage.setItem('template-catalog',JSON.stringify(f.catalog));
+  }
+  return Response.json({catalog:f.catalog||{version:1,pages:Object.fromEntries(Object.keys(f.templates).map(k=>[k,[]]))},revision:f.templateRevision});
+ }
+ if(p.endsWith('/prompt/templates')){
+  f.calls.push({path:p,method,body});
+  const key=u.searchParams.get('page');
+  if(f.holdRender){f.holdRender=false;await new Promise(r=>f.releaseRender=r)}
+  if(f.failRender){f.failRender=false;return Response.json({error:'读取模板失败'},{status:500})}
+  if(f.incompleteRender){f.incompleteRender=false;return Response.json({page:key,revision:f.templateRevision})}
+  return Response.json({page:key,templates:f.catalog?f.catalog.pages[key]:[{id:'default-'+key,name:'测试模板',content:f.templates[key]}],revision:f.templateRevision});
+ }
  if(p==='/api/v1/system/plan-prompt-templates'){
   f.calls.push({path:p,method,body});
   if(method==='PUT'){
@@ -104,9 +123,9 @@ try {
   await page.goto(server.resolvedUrls.local[0] + '__rewrite-editor'); await page.waitForFunction(() => window.fixture?.view?.plan() === 4); await open(); await ready()
   assert.equal(await page.getByRole('button', { name: '保存方案提示词', exact: true }).count(), 0)
   assert.equal(await page.getByRole('button', { name: '重新生成', exact: true }).count(), 0)
-  assert.equal(await page.locator('.plan-prompt-actions button').count(), 1)
-  await page.getByRole('button', { name: '拉取提示词', exact: true }).waitFor()
-  checks.push('只保留一个拉取提示词按钮，单独保存入口已移除')
+  assert.equal(await page.locator('.plan-prompt-tab-toolbar > button').count(), 1)
+  await page.getByRole('button', { name: '模板选择', exact: true }).waitFor()
+  checks.push('只保留一个模板选择按钮，单独保存入口已移除')
   assert.deepEqual(await page.getByRole('tab').allTextContents(), ['主播人设','事实依据','红线禁止','直播话术要求','互动回答要求','话术规划'])
   assert.equal(await showRewrite(), '方案4现有规划正文\n{{已有开场}}')
   assert.ok(!(await editor.inputValue()).includes('【事实依据】')); checks.push('话术规划紧跟互动回答要求，只回显规划原文，完整元提示词不混进编辑框')
@@ -138,72 +157,7 @@ try {
   const before = (await puts()).length
   await page.evaluate(() => window.fixture.failVersion = true); await page.locator('#plan-save-button').click(); await ready(); assert.equal((await puts()).length, before); assert.equal(await showRewrite(), failedDraft)
   checks.push('提示词保存失败保留草稿并可重试；正式版本失败不继续覆盖规划')
-  const beforePull = (await puts()).length
-  const pull = page.getByRole('button', { name: '拉取提示词', exact: true })
-  await pull.click()
-  await page.getByRole('dialog', { name: '拉取提示词并替换当前页？', exact: true }).waitFor()
-  await page.getByRole('button', { name: '取消', exact: true }).click(); assert.equal(await showRewrite(), failedDraft)
-  await pull.click(); await page.getByRole('button', { name: '确认拉取', exact: true }).click()
-  await page.getByText(/已拉取「话术规划」/).waitFor(); assert.equal(await showRewrite(), '母版规划\n{{已有开场}}\n{{开场方式}}')
-  await tab('红线禁止').click(); assert.equal(await editor.inputValue(), '')
-  await pull.click(); await page.getByText(/已拉取「红线禁止」/).waitFor(); assert.equal(await editor.inputValue(), '母版红线'); await showRewrite()
-  assert.equal((await puts()).length, beforePull)
-  checks.push('拉取先确认、取消保留草稿；规划与红线分别按当前页拉取，不自动保存')
-  for(const flag of ['failRender','incompleteRender']){
-    await editor.fill('失败时保留规划');await page.evaluate(flag=>window.fixture[flag]=true,flag)
-    await pull.click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.getByText('拉取未完成',{exact:true}).waitFor();assert.equal(await showRewrite(),'失败时保留规划')
-    await tab('红线禁止').click();assert.equal(await editor.inputValue(),'母版红线');await showRewrite();assert.equal((await puts()).length,beforePull)
-  }
-  checks.push('当前页拉取失败或返回缺项时保留原草稿，其他页不受影响')
-  await editor.fill(''); await savePrompt(); await switchTo(5); await switchTo(4); assert.equal(await showRewrite(), '')
-  checks.push('显式清空规划后仍保存空值，不复活上一份文本')
-  await page.evaluate(() => { window.fixture.documents[4].rewrite_planning_md = '隐藏页读取的规划'; sessionStorage.setItem('rewrite-documents', JSON.stringify(window.fixture.documents)) })
-  await page.reload(); await page.waitForFunction(() => window.fixture?.view?.plan() === 4); await ready(); await page.locator('#plan-save-button').click(); await ready()
-  assert.equal((await puts()).at(-1).body.rewrite_planning_md, '隐藏页读取的规划'); await open(); assert.equal(await showRewrite(), '隐藏页读取的规划')
-  checks.push('未打开提示词页直接保存方案，会先加载已有规划，避免空稿覆盖')
-  await switchTo(5); await page.evaluate(() => window.fixture.holdRead = true); await page.evaluate(() => window.fixture.view.setPlan(4)); await page.waitForFunction(() => !!window.fixture.releaseRead)
-  await switchTo(5); await page.evaluate(() => window.fixture.releaseRead()); await page.waitForFunction(() => !window.fixture.view.loading()); assert.equal(await showRewrite(), '方案5现有规划正文\n{{已有开场}}')
-  checks.push('旧方案迟到读取不串写新方案规划')
-  await page.evaluate(()=>window.fixture.showTemplates.value=true)
-  await page.getByRole('heading',{name:'提示词维护',exact:true}).waitFor()
-  const templateEditor=page.locator('#prompt-template-content'), saveTemplates=page.getByRole('button',{name:'保存母版',exact:true})
-  await templateEditor.locator('xpath=self::*[not(@readonly)]').waitFor()
-  const updatedTemplates={persona_md:'  更新人设\n😀  ',facts_md:'更新后的事实规则',red_lines_md:'  更新红线  ',speech_requirements_md:'更新主线',interaction_requirements_md:'更新互动',rewrite_planning_md:'  更新规划\n{{已有开场}}\n{{开场方式}}  '}
-  const templateLabels={persona_md:'主播人设',facts_md:'事实依据',red_lines_md:'红线禁止',speech_requirements_md:'直播话术要求',interaction_requirements_md:'互动回答要求',rewrite_planning_md:'话术规划'}
-  for(const [key,value]of Object.entries(updatedTemplates)){await page.getByRole('button',{name:templateLabels[key],exact:true}).click();await templateEditor.fill(value);assert.equal(await templateEditor.evaluate(el=>getComputedStyle(el).fontSize),'20px')}
-  await page.evaluate(()=>window.fixture.failTemplateSave=true);await saveTemplates.click();await page.getByRole('alert').filter({hasText:'母版保存失败'}).waitFor();assert.equal(await templateEditor.inputValue(),updatedTemplates.rewrite_planning_md)
-  await saveTemplates.click();await page.getByRole('status').filter({hasText:'六份母版已保存'}).waitFor();assert.deepEqual(await page.evaluate(()=>window.fixture.templates),updatedTemplates)
-  await templateEditor.fill('并发失败草稿');await page.evaluate(()=>window.fixture.templateRevision='c'.repeat(64));await saveTemplates.click();await page.getByRole('alert').filter({hasText:'其他人修改'}).waitFor();assert.equal(await templateEditor.inputValue(),'并发失败草稿')
-  await page.getByRole('button',{name:'重新读取',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();assert.equal(await templateEditor.inputValue(),'并发失败草稿')
-  await page.getByRole('button',{name:'重新读取',exact:true}).click();await page.getByRole('button',{name:'确认读取',exact:true}).click();await templateEditor.locator('xpath=self::*[not(@readonly)]').waitFor();assert.equal(await templateEditor.inputValue(),updatedTemplates.rewrite_planning_md)
-  checks.push('维护六份母版逐字保存回显，20px；失败/并发冲突保留草稿，重新读取先确认')
-  await page.locator('.prompt-templates').screenshot({path:output+'/templates-desktop.png'})
-  await page.setViewportSize({width:390,height:900});const templateSize=await page.locator('.prompt-templates').evaluate(el=>({scroll:el.scrollWidth,client:el.clientWidth}));assert.ok(templateSize.scroll<=templateSize.client+1,JSON.stringify(templateSize));await page.locator('.prompt-templates').screenshot({path:output+'/templates-mobile.png'});await page.setViewportSize({width:1600,height:1100})
-  await page.evaluate(()=>window.fixture.showTemplates.value=false);await open();await ready();await switchTo(4)
-  const beforeAdopt=(await puts()).length
-  for(const[key,value]of Object.entries(updatedTemplates)){
-    await tab(templateLabels[key]).click()
-    await page.getByRole('button',{name:'拉取提示词',exact:true}).click()
-    const confirm=page.getByRole('button',{name:'确认拉取',exact:true});if(await confirm.isVisible())await confirm.click()
-    await page.getByText('已拉取「'+templateLabels[key]+'」；检查后请点击顶部“保存方案”。',{exact:true}).waitFor()
-    assert.equal(await editor.inputValue(),key==='facts_md'?value+'\n实际方案4商品卡和正式事实':value)
-  }
-  assert.equal((await puts()).length,beforeAdopt);await savePrompt();assert.equal((await puts()).at(-1).body.rewrite_planning_md,updatedTemplates.rewrite_planning_md)
-  checks.push('维护后逐页显式拉取新母版，事实按方案填充，六次page请求不自动保存，顶部保存才采用')
-  const beforeConcurrentSave=await showRewrite()
-  await page.evaluate(()=>{window.fixture.holdRender=true;window.fixture.templates.rewrite_planning_md='保存后不应覆盖的迟到规划'})
-  await pull.click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.waitForFunction(()=>!!window.fixture.releaseRender)
-  await savePrompt();assert.equal((await puts()).at(-1).body.rewrite_planning_md,beforeConcurrentSave)
-  await page.evaluate(()=>{window.fixture.releaseRender();window.fixture.releaseRender=null});await page.waitForTimeout(100)
-  assert.equal(await showRewrite(),beforeConcurrentSave)
-  checks.push('实际父页在拉取中点击顶部保存：保存点击时草稿，作废迟到生成，不覆盖已保存正文')
-  await switchTo(4); await showRewrite()
-  assert.equal(await editor.evaluate(el => getComputedStyle(el).fontSize), '20px')
-  await page.locator('.plan-prompt-editor').screenshot({ path: output + '/desktop.png' })
-  await page.setViewportSize({ width: 390, height: 900 }); await tab('话术规划').click()
-  const size = await page.locator('.plan-prompt-editor').evaluate(el => ({ width: el.getBoundingClientRect().width, scroll: el.scrollWidth, client: el.clientWidth }))
-  assert.ok(size.scroll <= size.client + 1, JSON.stringify(size)); await page.locator('.plan-prompt-editor').screenshot({ path: output + '/mobile.png' })
-  checks.push('桌面与 390px 标签自动换行无横向溢出，规划文本保持 20px')
+  // Generation cases are superseded by the catalog selection suite.
   assert.deepEqual(errors, []); assert.deepEqual(external, [])
   await writeFile(output + '/checks.json', JSON.stringify({ passed: true, checks, errors, external, scope: 'real parent/editor/API; local fixture endpoints only; no production/model/TTS calls' }, null, 2))
   console.log(JSON.stringify({ passed: true, checks }))

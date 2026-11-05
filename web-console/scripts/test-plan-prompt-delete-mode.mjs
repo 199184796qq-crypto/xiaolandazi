@@ -100,10 +100,10 @@ try{
  assert.equal(await page.getByRole('button',{name:'删除模式',exact:true}).isDisabled(),true);assert.equal(await page.locator('.delete-badge').count(),0)
  await page.evaluate(()=>{window.fixture.releaseVersion();window.fixture.releaseVersion=null});await ready();assert.deepEqual(await draft(),beforeSave)
  await enter();const current=(await draft()).persona_md;await page.evaluate(text=>{window.fixture.templates.persona_md=text;window.fixture.holdRender=true},current)
- await page.getByRole('button',{name:'拉取提示词',exact:true}).click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.waitForFunction(()=>!!window.fixture.releaseRender)
+ await page.getByRole('button',{name:'模板选择',exact:true}).click();await page.waitForFunction(()=>!!window.fixture.releaseRender)
  assert.equal(await page.locator('.delete-badge').count(),0);assert.equal(await page.getByRole('button',{name:'删除模式',exact:true}).isDisabled(),true)
- await page.evaluate(()=>{window.fixture.releaseRender();window.fixture.releaseRender=null});await ready();assert.equal(await page.locator('.delete-badge').count(),0);assert.equal((await draft()).persona_md,current)
- checks.push('保存/拉取期间关闭并禁用删除模式，同文重拉结束后不恢复角标')
+ await page.evaluate(()=>{window.fixture.releaseRender();window.fixture.releaseRender=null});await page.getByRole('radio',{name:'测试模板',exact:true}).check();await page.getByRole('button',{name:'确认使用',exact:true}).click();await ready();assert.equal(await page.locator('.delete-badge').count(),0);assert.equal((await draft()).persona_md,current)
+ checks.push('保存/选择模板期间关闭并禁用删除模式，同文选用结束后不恢复角标')
 
  await enter();await page.locator('.field-delete-badge').first().evaluate(el=>window.fixture.oldBadge=el)
  await page.evaluate(()=>window.fixture.view.setPlan(5));await ready();const plan5=await draft()
