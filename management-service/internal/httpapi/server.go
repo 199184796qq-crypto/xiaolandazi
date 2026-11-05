@@ -509,8 +509,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/rooms/{roomID}/reading-rules", s.roomReadingRules)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/addressing-preferences", s.roomAddressingPreferences)
 	mux.HandleFunc("PUT /api/v1/rooms/{roomID}/addressing-preferences", s.roomAddressingPreferences)
-	mux.HandleFunc("GET /api/v1/rooms/{roomID}/human-behavior-profile", s.roomHumanBehaviorProfile)
-	mux.HandleFunc("PUT /api/v1/rooms/{roomID}/human-behavior-profile", s.roomHumanBehaviorProfile)
 	mux.HandleFunc("POST /api/v1/rooms/{roomID}/session-decision", s.resolveRoomSessionDecision)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/brain", s.getRoomBrain)
 	mux.HandleFunc("GET /api/v1/rooms/{roomID}/speech-runtime", s.getRoomSpeechRuntime)

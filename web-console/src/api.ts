@@ -103,8 +103,6 @@ import type {
   RoomInteractionPreferencesInput,
   RoomAddressingPreferences,
   RoomAddressingPreferencesInput,
-  RoomHumanBehaviorProfile,
-  RoomHumanBehaviorProfileInput,
   LiveReviewResponse,
   RoomBlockedUser,
   RoomBlockedContent,
@@ -601,17 +599,6 @@ export function getRoomAddressingPreferences(roomId: number) {
 
 export function updateRoomAddressingPreferences(roomId: number, payload: RoomAddressingPreferencesInput) {
   return request<RoomAddressingPreferences>('/api/v1/rooms/' + roomId + '/addressing-preferences', {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function getRoomHumanBehaviorProfile(roomId: number) {
-  return request<RoomHumanBehaviorProfile>('/api/v1/rooms/' + roomId + '/human-behavior-profile')
-}
-
-export function updateRoomHumanBehaviorProfile(roomId: number, payload: RoomHumanBehaviorProfileInput) {
-  return request<RoomHumanBehaviorProfile>('/api/v1/rooms/' + roomId + '/human-behavior-profile', {
     method: 'PUT',
     body: JSON.stringify(payload),
   })

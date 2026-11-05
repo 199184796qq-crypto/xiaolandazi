@@ -33,31 +33,6 @@ func (w *Worker) cosyVoiceInstructionForMission(item *decisionItem) (string, err
 		return "", errors.New("CosyVoice表达母版缺少默认指令")
 	}
 	if mission, ok := w.missionSnapshot(item); ok {
-		state := mission.HumanStyle.State.HostState
-		for _, spec := range []struct {
-			key   string
-			words []string
-		}{
-			{"state_ill", []string{"咳嗽", "感冒", "嗓子", "喉咙", "不舒服", "生病"}},
-			{"state_tired", []string{"累", "疲惫", "困", "没精神"}},
-			{"state_happy", []string{"兴奋", "开心", "状态好", "精神好"}},
-			{"state_anxious", []string{"紧张", "焦虑"}},
-		} {
-			found := false
-			for _, word := range spec.words {
-				if strings.Contains(state, word) {
-					found = true
-					break
-				}
-			}
-			if found {
-				if profiles[spec.key] == "" {
-					return "", errors.New("CosyVoice表达母版缺少主播状态指令")
-				}
-				base += "；" + profiles[spec.key]
-				break
-			}
-		}
 		if ttsgateway.CharacterCount(base) > 100 {
 			return "", errors.New("CosyVoice表达母版超过100字符")
 		}

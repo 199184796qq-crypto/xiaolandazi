@@ -5620,11 +5620,10 @@ onBeforeUnmount(() => {
                   <span>队列优先 {{ Math.round(latestSpeechMission.interaction.decision.question_debt.current_priority || 0) }}</span>
                 </div>
                 <div
-                  v-if="latestSpeechMission.human_style.trait?.instruction || latestSpeechMission.human_style.state?.host_state || latestSpeechMission.human_style.reaction?.rule_id"
+                  v-if="latestSpeechMission.human_style.trait?.instruction || latestSpeechMission.human_style.reaction?.rule_id"
                   class="speech-mission-meta"
                 >
                   <span v-if="latestSpeechMission.human_style.trait?.instruction">长期习惯 {{ latestSpeechMission.human_style.trait.instruction }}</span>
-                  <span v-if="latestSpeechMission.human_style.state?.host_state">当前状态 {{ latestSpeechMission.human_style.state.host_state }}</span>
                   <span v-if="latestSpeechMission.human_style.reaction?.rule_id">规则 {{ latestSpeechMission.human_style.reaction.rule_id }}</span>
                   <span v-if="latestSpeechMission.human_style.reaction?.source">来源 {{ latestSpeechMission.human_style.reaction.source }}</span>
                   <span v-if="latestSpeechMission.human_style.reaction?.channel">渠道 {{ latestSpeechMission.human_style.reaction.channel }}</span>

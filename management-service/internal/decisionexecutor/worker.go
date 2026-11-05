@@ -62,7 +62,6 @@ type store interface {
 	ListLiveAgentPlanFacts(context.Context, int64, int64) ([]model.LiveAgentPlanFact, error)
 	ListLiveAgentPlanScripts(context.Context, int64, int64) ([]model.LiveAgentPlanScript, error)
 	ListActiveAgentMemories(context.Context, int64, int64) ([]model.AgentMemoryItem, error)
-	GetRoomHumanBehaviorProfile(context.Context, int64, int64) (model.RoomHumanBehaviorProfile, error)
 	GetRoomAddressingPreferences(context.Context, int64, int64) (model.RoomAddressingPreferences, error)
 	RecordGeneratedSpeechHistory(context.Context, model.GeneratedSpeechHistoryInput) error
 	AgentPromptValue(context.Context, string, string) string
@@ -804,12 +803,6 @@ func (w *Worker) applyHumanizeStrategyStage(
 		return
 	}
 	baseGuidance := "把整段话说成真人主播现场自然接话；允许短句和自然停顿，但不要固定口癖，不要为了仿真改变任何事实。"
-	profile, profileErr := w.store.GetRoomHumanBehaviorProfile(ctx, session.TenantID, session.RoomID)
-	if profileErr == nil {
-		if state := strings.TrimSpace(profile.StateText); state != "" && (profile.StateExpiresAt == nil || w.now().UTC().Before(profile.StateExpiresAt.UTC())) {
-			baseGuidance += " 主播当前状态属于后台控制参数，不是直播内容。" + hostStateDeliveryGuidance(state) + " 严禁在正文中主动解释、复述或透露主播身体、情绪状态及原因。"
-		}
-	}
 	plan, err := w.loadCoreHumanizationPlan(ctx, session)
 	if err != nil {
 		item.addStrategyConstraint(strategyConstraint{
@@ -820,7 +813,7 @@ func (w *Worker) applyHumanizeStrategyStage(
 			m.HumanStyle = buildHumanStyleMissionPlan(*item, selectedHumanizationPlan{
 				Strategy: "fallback.natural",
 				Reason:   "core_humanization_unavailable",
-			}, profile, baseGuidance, false)
+			}, baseGuidance, false)
 		})
 		return
 	}
@@ -846,7 +839,7 @@ func (w *Worker) applyHumanizeStrategyStage(
 		Stage: "humanize", Key: key, Name: humanizationKindName(item.HumanizationKind), Guidance: guidance, Required: true,
 	})
 	w.updateMission(item, func(m *speechmission.Mission) {
-		m.HumanStyle = buildHumanStyleMissionPlan(*item, plan, profile, guidance, applied)
+		m.HumanStyle = buildHumanStyleMissionPlan(*item, plan, guidance, applied)
 	})
 }
 
@@ -927,7 +920,7 @@ func (w *Worker) loadCoreHumanizationPlan(ctx context.Context, session model.Liv
 	}, nil
 }
 
-func buildHumanStyleMissionPlan(item decisionItem, plan selectedHumanizationPlan, profile model.RoomHumanBehaviorProfile, guidance string, applied bool) speechmission.HumanStylePlan {
+func buildHumanStyleMissionPlan(item decisionItem, plan selectedHumanizationPlan, guidance string, applied bool) speechmission.HumanStylePlan {
 	maxCount := plan.MaxCount
 	if maxCount <= 0 && applied {
 		maxCount = 1
@@ -961,7 +954,7 @@ func buildHumanStyleMissionPlan(item decisionItem, plan selectedHumanizationPlan
 			Humor:            "adaptive_restrained",
 			MaxReactionCount: 1,
 			// Long-term persona rules are plan-owned and compiled by the anchor
-			// style overlay. Room behavior retains only the expiring host state.
+			// style overlay; room-level temporary host state has been retired.
 			Instruction: "",
 		},
 		State: speechmission.HumanStatePlan{
@@ -969,8 +962,6 @@ func buildHumanStyleMissionPlan(item decisionItem, plan selectedHumanizationPlan
 			Progress:    strings.TrimSpace(plan.Progress),
 			Atmosphere:  strings.TrimSpace(plan.Atmosphere),
 			MissionKind: strings.TrimSpace(item.MissionKind),
-			HostState:   strings.TrimSpace(profile.StateText),
-			ExpiresAt:   profile.StateExpiresAt,
 		},
 		Reaction: speechmission.HumanReactionPlan{
 			Strategy:        strategy,
@@ -2004,34 +1995,6 @@ func estimatedAnswerDurationMS(item decisionItem) int {
 	}
 }
 
-func hostStateDeliveryGuidance(state string) string {
-	state = strings.TrimSpace(state)
-	if state == "" {
-		return ""
-	}
-	lower := strings.ToLower(state)
-	containsAny := func(values ...string) bool {
-		for _, value := range values {
-			if value != "" && strings.Contains(lower, strings.ToLower(value)) {
-				return true
-			}
-		}
-		return false
-	}
-	switch {
-	case containsAny("咳嗽", "感冒", "嗓子", "喉咙", "不舒服", "生病"):
-		return "表达动作：语速稍慢、句子缩短、声音略轻、停顿更自然；必要时允许轻微清嗓或短暂停顿，但不要解释原因，也不要把身体状态说成台词。"
-	case containsAny("累", "疲惫", "困", "没精神"):
-		return "表达动作：语速略慢、句子更短、减少连续长句和高强度情绪，停顿自然；不要向观众解释主播疲惫状态。"
-	case containsAny("兴奋", "开心", "状态好", "精神好"):
-		return "表达动作：语气更有精神、更明快，但保持自然，不刻意喊叫或夸张。"
-	case containsAny("紧张", "焦虑"):
-		return "表达动作：语速稳一点、句子清楚、停顿更从容，避免连续急促表达；不要主动说明主播紧张。"
-	default:
-		return "表达动作：只根据当前状态微调语速、句长、停顿、声音力度和情绪，不改变正文事实；后台状态本身绝不能说出口。"
-	}
-}
-
 func (w *Worker) ttsInstructionForMission(item *decisionItem, base string) string {
 	parts := make([]string, 0, 6)
 	if value := strings.TrimSpace(base); value != "" {
@@ -2040,9 +2003,6 @@ func (w *Worker) ttsInstructionForMission(item *decisionItem, base string) strin
 	if mission, ok := w.missionSnapshot(item); ok {
 		if strings.TrimSpace(mission.HumanStyle.Guidance) != "" {
 			parts = append(parts, "整体表达自然、温和、有真人直播临场感；语速保持自然，不要朗读腔，也不要刻意夸张情绪。")
-		}
-		if state := strings.TrimSpace(mission.HumanStyle.State.HostState); state != "" {
-			parts = append(parts, hostStateDeliveryGuidance(state))
 		}
 		reaction := mission.HumanStyle.Reaction
 		if reaction.Enabled && (strings.EqualFold(reaction.Channel, "TTS_STYLE") || strings.EqualFold(reaction.Channel, "MIXED")) {

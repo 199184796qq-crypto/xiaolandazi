@@ -11,6 +11,14 @@ const pendingDeleteID = ref<string | null>(null)
 const cancelledDeleteTarget = ref<HTMLElement | null>(null)
 const total = computed(() => props.entries.reduce((sum, entry) => sum + scriptCharacters(entry.text), 0))
 const errors = computed(() => scriptEntryErrors(props.entries))
+// Keep the editor preview aligned with the mainline's 320-rune/minute estimate.
+// This is only a normal-speed preview; synthesized audio supplies actual duration.
+function normalSpeechDuration(text: string): string {
+  const seconds = Math.ceil(scriptCharacters(text) * 60 / 320)
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return minutes > 0 ? `${minutes} 分 ${remainder} 秒` : `${seconds} 秒`
+}
 function cancelPendingDelete() {
   pendingDeleteID.value = null
 }
@@ -176,6 +184,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', cancelDeleteFr
       <header>
         <label :for="`script-entry-${entry.id}`">话术 {{ index + 1 }}</label>
         <span>{{ scriptCharacters(entry.text) }} 字符</span>
+        <span class="recording-script-entry-duration" title="按正常语速约 320 字/分钟估算，实际时长以合成音频为准。">· 正常语速约 {{ normalSpeechDuration(entry.text) }}</span>
         <button
           v-if="entries.length > 1"
           type="button"

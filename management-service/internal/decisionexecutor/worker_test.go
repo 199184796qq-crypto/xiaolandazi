@@ -155,20 +155,6 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-func TestHostStateDeliveryGuidanceConvertsSymptomsToBehavior(t *testing.T) {
-	guidance := hostStateDeliveryGuidance("今天有点不舒服，有点咳嗽")
-	for _, expected := range []string{"语速稍慢", "句子缩短", "声音略轻", "停顿更自然"} {
-		if !strings.Contains(guidance, expected) {
-			t.Fatalf("state guidance missing %q: %s", expected, guidance)
-		}
-	}
-	for _, forbidden := range []string{"今天有点不舒服", "咳嗽", "感冒"} {
-		if strings.Contains(guidance, forbidden) {
-			t.Fatalf("raw symptom text must not be used as delivery guidance: %q in %s", forbidden, guidance)
-		}
-	}
-}
-
 func TestBuildHumanStyleMissionPlanSeparatesTraitStateReaction(t *testing.T) {
 	plan := buildHumanStyleMissionPlan(
 		decisionItem{MissionKind: "reply_chat"},
@@ -184,14 +170,13 @@ func TestBuildHumanStyleMissionPlanSeparatesTraitStateReaction(t *testing.T) {
 			Progress:    "CONVERSION",
 			Atmosphere:  "ACTIVE",
 		},
-		model.RoomHumanBehaviorProfile{TraitText: "旧版直播间习惯不再参与生成", StateText: "今天声音偏轻"},
 		"保持真人直播临场感",
 		true,
 	)
 	if plan.Trait.Persona != "natural_live_anchor" || plan.Trait.MaxReactionCount != 1 || plan.Trait.Instruction != "" {
 		t.Fatalf("trait not frozen correctly: %#v", plan.Trait)
 	}
-	if plan.State.Heat != "warm" || plan.State.Progress != "CONVERSION" || plan.State.MissionKind != "reply_chat" || plan.State.HostState != "今天声音偏轻" {
+	if plan.State.Heat != "warm" || plan.State.Progress != "CONVERSION" || plan.State.MissionKind != "reply_chat" {
 		t.Fatalf("state not frozen correctly: %#v", plan.State)
 	}
 	if !plan.Reaction.Enabled || plan.Reaction.Kind != "REPEAT_FRAGMENT" || plan.Reaction.MaxCount != 1 {
@@ -203,7 +188,6 @@ func TestBuildHumanStyleMissionPlanDisablesReactionInFallback(t *testing.T) {
 	plan := buildHumanStyleMissionPlan(
 		decisionItem{MissionKind: "reply_follow"},
 		selectedHumanizationPlan{Strategy: "fallback.natural", Reason: "core_humanization_unavailable"},
-		model.RoomHumanBehaviorProfile{},
 		"保持干净自然",
 		false,
 	)
@@ -257,7 +241,6 @@ type fakeStore struct {
 	facts            []model.LiveAgentPlanFact
 	scripts          []model.LiveAgentPlanScript
 	publishedVersion *model.LiveAgentPlanVersion
-	humanProfile     model.RoomHumanBehaviorProfile
 	addressingPrefs  model.RoomAddressingPreferences
 }
 
@@ -314,10 +297,6 @@ func (f *fakeStore) ListLiveAgentPlanScripts(context.Context, int64, int64) ([]m
 
 func (f *fakeStore) ListActiveAgentMemories(context.Context, int64, int64) ([]model.AgentMemoryItem, error) {
 	return nil, nil
-}
-
-func (f *fakeStore) GetRoomHumanBehaviorProfile(context.Context, int64, int64) (model.RoomHumanBehaviorProfile, error) {
-	return f.humanProfile, nil
 }
 
 func (f *fakeStore) GetRoomAddressingPreferences(context.Context, int64, int64) (model.RoomAddressingPreferences, error) {
@@ -937,13 +916,12 @@ func TestProcessRoomReschedulesPreparedAudioWhenSafeCutExpires(t *testing.T) {
 	}
 }
 
-func TestTTSInstructionIncludesHostStateAndTTSStyleReaction(t *testing.T) {
+func TestTTSInstructionPreservesTTSStyleReaction(t *testing.T) {
 	missions := speechmission.New()
 	missions.Ensure(speechmission.Mission{
 		ID: "mission-human-state",
 		HumanStyle: speechmission.HumanStylePlan{
 			Guidance: "自然表达",
-			State:    speechmission.HumanStatePlan{HostState: "今天嗓子不舒服，声音轻一点"},
 			Reaction: speechmission.HumanReactionPlan{
 				Enabled:     true,
 				Channel:     "TTS_STYLE",
@@ -954,7 +932,7 @@ func TestTTSInstructionIncludesHostStateAndTTSStyleReaction(t *testing.T) {
 	worker := &Worker{missions: missions}
 	item := &decisionItem{MissionID: "mission-human-state"}
 	got := worker.ttsInstructionForMission(item, "开头保持清楚")
-	for _, expected := range []string{"开头保持清楚", "语速稍慢", "句子缩短", "声音略轻"} {
+	for _, expected := range []string{"开头保持清楚", "语速稍慢", "声音略轻"} {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("tts instruction missing %q: %s", expected, got)
 		}

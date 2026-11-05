@@ -741,22 +741,6 @@ export interface RoomInteractionPreferencesInput {
   auto_heat: boolean
 }
 
-export interface RoomHumanBehaviorProfile {
-  tenant_id: number
-  room_id: number
-  trait_text: string
-  state_text: string
-  state_expires_at?: string
-  updated_by_user_id?: number
-  updated_at?: string
-}
-
-export interface RoomHumanBehaviorProfileInput {
-  trait_text: string
-  state_text: string
-  state_expires_at?: string
-}
-
 export type AddressingPreferenceLevel = 'less' | 'natural' | 'more'
 
 export interface RoomAddressingPreferences {
@@ -1113,8 +1097,6 @@ export interface SpeechMission {
       progress?: string
       atmosphere?: string
       mission_kind?: string
-      host_state?: string
-      expires_at?: string
     }
     reaction?: {
       strategy?: string

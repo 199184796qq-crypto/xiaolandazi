@@ -2,9 +2,8 @@
 import { computed, markRaw, ref } from 'vue'
 import RoomInteractionPreferences from './RoomInteractionPreferences.vue'
 import RoomAddressingPreferences from './RoomAddressingPreferences.vue'
-import RoomHumanBehaviorProfile from './RoomHumanBehaviorProfile.vue'
 
-type PreferenceTab = 'interaction' | 'addressing' | 'human'
+type PreferenceTab = 'interaction' | 'addressing'
 
 const props = withDefaults(defineProps<{
   roomId: number
@@ -33,15 +32,6 @@ const tabs = [
     status: '热生效',
     tone: 'violet',
     component: markRaw(RoomAddressingPreferences),
-  },
-  {
-    key: 'human' as const,
-    label: '主播状态',
-    english: 'HOST STATUS',
-    desc: '告诉小蓝你的长期表达习惯和当前状态，让口播更贴近现场。',
-    status: '热生效',
-    tone: 'mint',
-    component: markRaw(RoomHumanBehaviorProfile),
   },
 ]
 
@@ -170,7 +160,7 @@ function selectTab(next: PreferenceTab) {
 }
 .preference-hub-tabs{
   display:grid;
-  grid-template-columns:repeat(3,minmax(0,1fr));
+  grid-template-columns:repeat(2,minmax(0,1fr));
   gap:12px;
   padding-top:2px;
 }
@@ -204,7 +194,6 @@ function selectTab(next: PreferenceTab) {
 }
 .preference-hub-tab.tone-blue i{background:linear-gradient(90deg,#5b74f5,#7990ff)}
 .preference-hub-tab.tone-violet i{background:linear-gradient(90deg,#8d62ee,#b58aff)}
-.preference-hub-tab.tone-mint i{background:linear-gradient(90deg,#36b889,#66d5ad)}
 .preference-hub-tab.active .tab-chinese{color:#1d345d;transform:translateY(-1px)}
 .preference-hub-tab.active i{
   height:6px;
@@ -213,7 +202,6 @@ function selectTab(next: PreferenceTab) {
 }
 .preference-hub-tab.tone-blue.active i{box-shadow:0 6px 16px rgba(91,116,245,.22)}
 .preference-hub-tab.tone-violet.active i{box-shadow:0 6px 16px rgba(141,98,238,.22)}
-.preference-hub-tab.tone-mint.active i{box-shadow:0 6px 16px rgba(54,184,137,.22)}
 .preference-hub-viewport{
   position:relative;
   min-width:0;

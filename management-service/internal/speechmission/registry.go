@@ -148,12 +148,10 @@ type HumanTraitPlan struct {
 }
 
 type HumanStatePlan struct {
-	Heat        string     `json:"heat,omitempty"`
-	Progress    string     `json:"progress,omitempty"`
-	Atmosphere  string     `json:"atmosphere,omitempty"`
-	MissionKind string     `json:"mission_kind,omitempty"`
-	HostState   string     `json:"host_state,omitempty"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	Heat        string `json:"heat,omitempty"`
+	Progress    string `json:"progress,omitempty"`
+	Atmosphere  string `json:"atmosphere,omitempty"`
+	MissionKind string `json:"mission_kind,omitempty"`
 }
 
 type HumanReactionPlan struct {
@@ -471,10 +469,6 @@ func cloneMission(input Mission) Mission {
 	input.Addressing.SelectedNames = append([]string(nil), input.Addressing.SelectedNames...)
 	input.Addressing.PreferredTerms = append([]string(nil), input.Addressing.PreferredTerms...)
 	input.Addressing.BlockedTerms = append([]string(nil), input.Addressing.BlockedTerms...)
-	if input.HumanStyle.State.ExpiresAt != nil {
-		value := input.HumanStyle.State.ExpiresAt.UTC()
-		input.HumanStyle.State.ExpiresAt = &value
-	}
 	input.Trace = append([]TraceEvent(nil), input.Trace...)
 	if input.PlanFrozenAt != nil {
 		value := input.PlanFrozenAt.UTC()
