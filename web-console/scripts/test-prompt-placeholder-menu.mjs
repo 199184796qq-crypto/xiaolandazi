@@ -121,16 +121,21 @@ try {
   assert.equal(await editor.inputValue(), '待保存{{口号}}')
   checks.push('20,000字符上限不破坏原文；保存时只读、原六份/CAS提交；失败和取消重读保留草稿')
 
+  await page.evaluate(() => window.fixture.catalog = []); await tab('重新读取').click(); await ready()
+  await editor.fill('显式空目录@'); await menu.waitFor({ state: 'detached' })
+  await tab('重新读取').click(); await page.getByRole('dialog').getByRole('button', { name: '确认读取' }).click(); await ready()
   await page.evaluate(() => window.fixture.omitCatalog = true); await tab('重新读取').click(); await ready()
-  await page.getByText('当前服务未提供本页占位符目录，编辑和保存不受影响。', { exact: true }).waitFor()
-  await editor.fill('旧服务@'); await menu.waitFor({ state: 'detached' }); await tab('保存母版').click(); await ready()
-  assert.equal((await puts()).at(-1).body.templates.persona_md, '旧服务@')
-  await page.evaluate(() => {
+  await open('旧服务@直播间名'); await editor.press('Enter')
+  assert.equal(await editor.inputValue(), '旧服务{{直播间名}}')
+  await tab('保存母版').click(); await ready()
+  assert.equal((await puts()).at(-1).body.templates.persona_md, '旧服务{{直播间名}}')
+  await page.evaluate(catalog => {
     window.fixture.omitCatalog = false
+    window.fixture.catalog = catalog
     window.fixture.catalog.push(window.fixture.catalog[0], { key: '伪造', label: '无效', insert_text: '{{伪造}}', description: '', group: '', templates: ['unsupported'] })
-  }); await tab('重新读取').click(); await ready()
+  }, catalog); await tab('重新读取').click(); await ready()
   await open('@'); assert.equal(await menu.getByRole('option').count(), 18)
-  checks.push('旧服务缺目录仍可编辑保存；重复或无效目录项过滤，不臆造可用项')
+  checks.push('旧服务缺目录使用已验证的兼容目录，可插入保存；重复或无效目录项过滤')
 
   for (const width of [1440, 777, 390, 320]) {
     await page.setViewportSize({ width, height: 900 })

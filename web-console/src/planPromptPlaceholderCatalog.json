@@ -1,0 +1,314 @@
+[
+  {
+    "key": "直播间名",
+    "label": "直播间名",
+    "insert_text": "{{直播间名}}",
+    "description": "拉取时填入当前方案名称。",
+    "group": "方案资料",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "主播名",
+    "label": "主播名",
+    "insert_text": "{{主播名}}",
+    "description": "拉取时使用系统默认值：小林",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "互动问句示例",
+    "label": "互动问句示例",
+    "insert_text": "{{互动问句示例}}",
+    "description": "拉取时使用系统默认值：有没有朋友平时就爱吃这口的？有没有跟我一样的？",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "口号",
+    "label": "口号",
+    "insert_text": "{{口号}}",
+    "description": "拉取时使用系统默认值：想看好物，咱们直播见。",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "品类禁忌",
+    "label": "品类禁忌",
+    "insert_text": "{{品类禁忌}}",
+    "description": "拉取时使用系统默认值：不讲功效，不说养生、不上火、滋补、零添加、纯天然这类没有依据的话。",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "品类要点",
+    "label": "品类要点",
+    "insert_text": "{{品类要点}}",
+    "description": "拉取时使用系统默认值：使用方法",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "底色",
+    "label": "底色",
+    "insert_text": "{{底色}}",
+    "description": "拉取时使用系统默认值：真诚稳重，带一点生活化松弛感，热情但不聒噪。",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "核心价值",
+    "label": "核心价值",
+    "insert_text": "{{核心价值}}",
+    "description": "拉取时使用系统默认值：帮粉丝挑性价比好货，讲清楚产品优缺点，不夸大功效；优先站在买家角度讲痛点，而不是硬推。",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "核心标签",
+    "label": "核心标签",
+    "insert_text": "{{核心标签}}",
+    "description": "拉取时使用系统默认值：靠谱、实在、不套路、讲真话。",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "没问不提清单",
+    "label": "没问不提清单",
+    "insert_text": "{{没问不提清单}}",
+    "description": "拉取时使用系统默认值：门店、总店、包邮、吃法、保存时间",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "禁止罗列项",
+    "label": "禁止罗列项",
+    "insert_text": "{{禁止罗列项}}",
+    "description": "拉取时使用系统默认值：配料表、门店数量、工艺步骤",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "禁止项",
+    "label": "禁止项",
+    "insert_text": "{{禁止项}}",
+    "description": "拉取时使用系统默认值：大喊大叫、夸张咆哮、刻意煽情卖惨、低俗玩梗。",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "称呼",
+    "label": "称呼",
+    "insert_text": "{{称呼}}",
+    "description": "拉取时使用系统默认值：“朋友们”“老乡们”“各位”",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "行业表达限制",
+    "label": "行业表达限制",
+    "insert_text": "{{行业表达限制}}",
+    "description": "拉取时使用系统默认值：只讲体验和使用感受，不做健康或功效承诺",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "视觉形象",
+    "label": "视觉形象",
+    "insert_text": "{{视觉形象}}",
+    "description": "拉取时使用系统默认值：亲和耐看，表情自然，语速舒服，像本地实体店的主理人，不浮夸、不嘶吼。",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "说话风格",
+    "label": "说话风格",
+    "insert_text": "{{说话风格}}",
+    "description": "拉取时使用系统默认值：大白话为主，短句多，少书面词；偶尔口语助词（哎、对吧、你看哈），密度适中，不堆砌。",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "赛道",
+    "label": "赛道",
+    "insert_text": "{{赛道}}",
+    "description": "拉取时使用系统默认值：本地生活",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "默认置信度",
+    "label": "默认置信度",
+    "insert_text": "{{默认置信度}}",
+    "description": "拉取时使用系统默认值：85",
+    "group": "系统默认表达",
+    "templates": [
+      "persona_md",
+      "facts_md",
+      "red_lines_md",
+      "speech_requirements_md",
+      "interaction_requirements_md"
+    ]
+  },
+  {
+    "key": "商品",
+    "label": "商品卡",
+    "insert_text": "{{#商品}}\n{{/商品}}",
+    "description": "拉取时整块填入当前方案的有效商品卡，无数据时留空。",
+    "group": "事实数据块",
+    "templates": [
+      "facts_md"
+    ]
+  },
+  {
+    "key": "福利",
+    "label": "活动福利",
+    "insert_text": "{{#福利}}\n{{/福利}}",
+    "description": "拉取时整块填入当前方案的有效活动福利，无数据时留空。",
+    "group": "事实数据块",
+    "templates": [
+      "facts_md"
+    ]
+  },
+  {
+    "key": "样本话术",
+    "label": "样本话术",
+    "insert_text": "{{样本话术}}",
+    "description": "执行改写时填入本条待改写原文；系统也会自动附加样本。",
+    "group": "改写运行数据",
+    "templates": [
+      "rewrite_planning_md"
+    ]
+  },
+  {
+    "key": "已有开场",
+    "label": "已有开场",
+    "insert_text": "{{已有开场}}",
+    "description": "后台改写时填入这个片段已经使用的开场，首次可能为空。",
+    "group": "改写运行数据",
+    "templates": [
+      "rewrite_planning_md"
+    ]
+  },
+  {
+    "key": "开场方式",
+    "label": "开场方式",
+    "insert_text": "{{开场方式}}",
+    "description": "后台改写时填入本轮选择的开场方式，手动改写时可能为空。",
+    "group": "改写运行数据",
+    "templates": [
+      "rewrite_planning_md"
+    ]
+  },
+  {
+    "key": "近期写作记录",
+    "label": "近期写作记录",
+    "insert_text": "{{近期写作记录}}",
+    "description": "改写时填入上次骨架和写作上下文；没有记录时明确说明暂无记录。",
+    "group": "改写运行数据",
+    "templates": [
+      "rewrite_planning_md"
+    ]
+  }
+]

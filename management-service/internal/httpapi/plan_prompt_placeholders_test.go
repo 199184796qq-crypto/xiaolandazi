@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -90,5 +91,19 @@ func TestPlanPromptPlaceholderRuntimeValuesAreExact(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q: %s", want, got)
 		}
+	}
+}
+
+func TestPlanPromptPlaceholderCompatibilitySnapshotMatchesCatalog(t *testing.T) {
+	raw, err := os.ReadFile("../../../web-console/src/planPromptPlaceholderCatalog.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot []planPromptPlaceholder
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(snapshot, planPromptPlaceholderCatalog()) {
+		t.Fatal("frontend compatibility catalog must be regenerated from the tested backend catalog")
 	}
 }

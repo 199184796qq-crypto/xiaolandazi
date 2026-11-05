@@ -1,4 +1,5 @@
 import type { PlanPromptSections } from './planPrompt'
+import compatibilityCatalog from './planPromptPlaceholderCatalog.json'
 
 export type PlanPromptTemplateKey = keyof PlanPromptSections | 'rewrite_planning_md'
 export interface PlanPromptPlaceholder {
@@ -24,4 +25,10 @@ export function readPromptPlaceholders(value: unknown): PlanPromptPlaceholder[] 
     seen.add(item.key)
     return true
   })
+}
+
+// Versioned compatibility data generated from the backend catalog's renderer test.
+// A server-provided catalog, including an explicit empty catalog, takes precedence.
+export function promptPlaceholdersForDocument(value: unknown): PlanPromptPlaceholder[] {
+  return readPromptPlaceholders(value === undefined ? compatibilityCatalog : value)
 }

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getPlanPromptTemplates, savePlanPromptTemplates, type PlanPromptTemplates, type PlanPromptTemplatesDocument } from '../api'
 import { emptyPlanPromptSections, planPromptTabs, planPromptValidation } from '../planPrompt'
 import PromptPlaceholderTextarea from '../components/PromptPlaceholderTextarea.vue'
-import { readPromptPlaceholders, type PlanPromptPlaceholder } from '../planPromptPlaceholders'
+import { promptPlaceholdersForDocument, type PlanPromptPlaceholder } from '../planPromptPlaceholders'
 
 const tabs = [...planPromptTabs, { key: 'rewrite_planning_md', label: '话术规划' }] as const
 const draft = ref<PlanPromptTemplates>({ ...emptyPlanPromptSections(), rewrite_planning_md: '' })
@@ -31,7 +31,7 @@ function accept(value: PlanPromptTemplatesDocument) {
   for (const tab of tabs) next[tab.key] = value.templates[tab.key]
   draft.value = next
   revision.value = value.revision
-  placeholders.value = readPromptPlaceholders(value.placeholders)
+  placeholders.value = promptPlaceholdersForDocument(value.placeholders)
   original.value = JSON.stringify(draft.value)
 }
 async function load() {
