@@ -9,17 +9,17 @@ import (
 	"livecompanion/management/internal/speechmission"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // This endpoint is deliberately fail-closed. A missing/malformed Core response
 // cannot authorize a new paid model/TTS operation.
-func (w *Worker) playoutPreflight(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, text, stage string) (bool, error) {
-	duration := 3000
-	if text != "" {
-		duration = max(3000, utf8.RuneCountInString(text)*230)
+func (w *Worker) playoutPreflight(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, text, stage string, rates ...float64) (bool, error) {
+	rate := 1.0
+	if len(rates) > 0 {
+		rate = rates[0]
 	}
 	until := item.ExpiresAt
 	if !item.CompletionUntil.IsZero() {
@@ -31,7 +31,9 @@ func (w *Worker) playoutPreflight(ctx context.Context, session model.LiveRuntime
 	if isTimeReport(item) && !item.TimeReportValidUntil.IsZero() && item.TimeReportValidUntil.Before(until) {
 		until = item.TimeReportValidUntil
 	}
-	request := map[string]any{"duration_ms": duration, "until": until, "stage": stage}
+	// Core owns the common estimator. Send final spoken text, including the
+	// late address, and the exact rate that will be sent to TTS.
+	request := map[string]any{"duration_ms": 3000, "until": until, "stage": stage, "text": text, "rate": rate}
 	resp, err := w.core.DoRoom(ctx, session.TenantID, session.RoomID, http.MethodPost, fmt.Sprintf("/internal/v1/rooms/%d/agent-decisions/%s/preflight", session.RoomID, item.ID), tenantQuery(session.TenantID), request)
 	if err != nil {
 		return false, err
@@ -42,8 +44,11 @@ func (w *Worker) playoutPreflight(ctx context.Context, session model.LiveRuntime
 		return false, fmt.Errorf("playout preflight http %d", resp.StatusCode)
 	}
 	var result struct {
-		Allowed *bool  `json:"allowed"`
-		Reason  string `json:"reason"`
+		Allowed      *bool  `json:"allowed"`
+		Reason       string `json:"reason"`
+		DurationMS   int    `json:"duration_ms"`
+		RemainingMS  int    `json:"remaining_ms"`
+		RetryAfterMS int    `json:"retry_after_ms"`
 	}
 	if json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&result) != nil || result.Allowed == nil {
 		return false, fmt.Errorf("invalid playout preflight response")
@@ -57,11 +62,11 @@ func (w *Worker) playoutPreflight(ctx context.Context, session model.LiveRuntime
 	}
 	releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := w.release(releaseCtx, session, item.ID, "preflight:"+reason); err != nil {
+	if err := w.release(releaseCtx, session, item.ID, "preflight:"+reason, strconv.Itoa(result.RetryAfterMS)); err != nil {
 		return false, err
 	}
 	w.transitionMission(&item, speechmission.StateCreated, "preparation_yield", reason)
-	log.Printf("interaction preparation deferred tenant=%d room=%d decision=%s stage=%s reason=%s duration_ms=%d", session.TenantID, session.RoomID, item.ID, stage, reason, duration)
+	log.Printf("interaction preparation deferred tenant=%d room=%d decision=%s stage=%s reason=%s duration_ms=%d remaining_ms=%d retry_ms=%d", session.TenantID, session.RoomID, item.ID, stage, reason, result.DurationMS, result.RemainingMS, result.RetryAfterMS)
 	return true, nil
 }
 

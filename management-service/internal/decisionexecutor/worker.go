@@ -1556,7 +1556,21 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		return nil
 	}
 
-	if wait, err := w.playoutPreflight(ctx, session, *item, text, "tts"); err != nil {
+	voice, ok, err := w.v2Voice(ctx, session, *item)
+	if !ok && err == nil {
+		voice, ok, err = w.readyVoice(ctx, session.TenantID, session.RoomID)
+	}
+	if err != nil {
+		w.transitionMission(item, speechmission.StateFailed, "voice_resolve_failed", err.Error())
+		return err
+	}
+	if !ok {
+		err := fmt.Errorf("没有可用的默认声音，请先在声音中心选择可用音色")
+		w.transitionMission(item, speechmission.StateFailed, "voice_unavailable", err.Error())
+		return err
+	}
+
+	if wait, err := w.playoutPreflight(ctx, session, *item, text, "tts", voiceRate(voice)); err != nil {
 		return err
 	} else if wait {
 		w.savePreflightDraft(session, *item, text, preparationScope, memoryBefore)
@@ -1595,19 +1609,6 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		}
 	}
 	if err := w.checkTimeReport(*item); err != nil {
-		return err
-	}
-	voice, ok, err := w.v2Voice(ctx, session, *item)
-	if !ok && err == nil {
-		voice, ok, err = w.readyVoice(ctx, session.TenantID, session.RoomID)
-	}
-	if err != nil {
-		w.transitionMission(item, speechmission.StateFailed, "voice_resolve_failed", err.Error())
-		return err
-	}
-	if !ok {
-		err := fmt.Errorf("没有可用的默认声音，请先在声音中心选择可用音色")
-		w.transitionMission(item, speechmission.StateFailed, "voice_unavailable", err.Error())
 		return err
 	}
 
@@ -2338,6 +2339,9 @@ func (w *Worker) release(ctx context.Context, session model.LiveRuntimeSession, 
 	if len(reasons) > 0 && strings.HasPrefix(reasons[0], "preflight:") {
 		query.Set("reason", "preflight")
 		query.Set("block_reason", strings.TrimPrefix(reasons[0], "preflight:"))
+		if len(reasons) > 1 {
+			query.Set("retry_after_ms", reasons[1])
+		}
 	}
 	if len(reasons) > 0 && reasons[0] == "cut_reschedule" {
 		query.Set("reason", "cut_reschedule")

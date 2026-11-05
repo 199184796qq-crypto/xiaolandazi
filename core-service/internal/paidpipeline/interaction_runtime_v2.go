@@ -373,6 +373,7 @@ func (p *Processor) interactionV2Receipt(m messagecaptain.Message) bool {
 		Decision string    `json:"decision_id"`
 		Status   string    `json:"status"`
 		At       time.Time `json:"at"`
+		PlayedMS *int      `json:"played_ms,omitempty"`
 	}
 	if json.Unmarshal(m.Payload, &r) != nil {
 		return true
@@ -413,7 +414,11 @@ func (p *Processor) interactionV2Receipt(m messagecaptain.Message) bool {
 		return true
 	}
 	v.engine.SetPolicy(scope, p.v2Policy(scope), r.At)
-	v.engine.Receipts(m.RoomID, r.Decision, r.Status, r.At)
+	if r.PlayedMS != nil {
+		v.engine.Receipts(m.RoomID, r.Decision, r.Status, r.At, *r.PlayedMS)
+	} else {
+		v.engine.Receipts(m.RoomID, r.Decision, r.Status, r.At)
+	}
 	return true
 }
 func (p *Processor) reserveAudioV2(m messagecaptain.Message) error {

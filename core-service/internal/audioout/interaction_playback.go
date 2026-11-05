@@ -10,6 +10,8 @@ type InteractionPreflightRequest struct {
 	DecisionID string    `json:"decision_id"`
 	Stage      string    `json:"stage"`
 	DurationMS int       `json:"duration_ms"`
+	Text       string    `json:"text,omitempty"`
+	Rate       float64   `json:"rate,omitempty"`
 	Until      time.Time `json:"until"`
 }
 type InteractionPreflightResult struct {
@@ -21,7 +23,16 @@ type InteractionPreflightResult struct {
 	TrackID      string    `json:"track_id,omitempty"`
 	CutMS        int       `json:"cut_ms,omitempty"`
 	RemainingMS  int       `json:"remaining_ms,omitempty"`
+	DurationMS   int       `json:"duration_ms,omitempty"`
 }
+
+// Structured scheduling evidence survives the in-process message bus wrapping.
+type InteractionPreparationError struct {
+	Reason                    string
+	RemainingMS, RetryAfterMS int
+}
+
+func (e *InteractionPreparationError) Error() string { return e.Reason }
 
 // InteractionPlaybackReceipt contains only PCM producer evidence. Task creation
 // and elapsed wall time cannot set StartedAt or a COMPLETED status.

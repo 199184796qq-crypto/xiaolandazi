@@ -25,7 +25,7 @@ func (q *Queue) FailPlayback(room int64, id, task, reason string) bool {
 
 // YieldPreparation releases an unbound execution lease without spending a
 // generation retry, extending original validity, or pretending audio exists.
-func (q *Queue) YieldPreparation(room int64, id, reason string) (*Item, bool) {
+func (q *Queue) YieldPreparation(room int64, id, reason string, retry ...time.Duration) (*Item, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	state := q.rooms[room]
@@ -33,17 +33,28 @@ func (q *Queue) YieldPreparation(room int64, id, reason string) (*Item, bool) {
 		return nil, false
 	}
 	now := q.now().UTC()
-	for _, item := range state.items {
+	for index, item := range state.items {
 		if item.ID != id || item.PlaybackTaskID != "" || (item.Status != StatusPending && item.Status != StatusClaimed) {
 			continue
 		}
 		if item.Status == StatusClaimed && item.Attempts > 0 {
 			item.Attempts--
 		}
+		wait := 5 * time.Second
+		if len(retry) > 0 && retry[0] > 0 {
+			wait = min(retry[0], time.Minute)
+		}
+		item.PreparationReason = strings.TrimSpace(reason)
+		if strings.Contains(reason, "audio_duration_budget") && !now.Add(wait).Before(itemDeadline(item)) {
+			q.recordTerminalLocked(state, item, "FAILED", "audio_duration_budget_deadline", now)
+			copy := cloneItem(*item)
+			state.items = append(state.items[:index], state.items[index+1:]...)
+			return &copy, true
+		}
 		item.Status = StatusPending
 		item.ClaimedAt = nil
-		item.RetryAfter = now.Add(5 * time.Second)
-		q.addNoteLocked(state, now, "preparation_yield", fmt.Sprintf("decision=%s reason=%s retry_ms=5000", id, strings.TrimSpace(reason)))
+		item.RetryAfter = now.Add(wait)
+		q.addNoteLocked(state, now, "preparation_yield", fmt.Sprintf("decision=%s reason=%s retry_ms=%d", id, strings.TrimSpace(reason), wait.Milliseconds()))
 		copy := cloneItem(*item)
 		q.sortLocked(state)
 		return &copy, true

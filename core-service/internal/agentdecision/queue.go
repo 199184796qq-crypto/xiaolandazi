@@ -130,10 +130,11 @@ type Item struct {
 	OriginTrackID        string          `json:"origin_track_id,omitempty"`
 	Schedule             json.RawMessage `json:"schedule,omitempty"`
 
-	Attempts     int       `json:"attempts,omitempty"`
-	RetryAfter   time.Time `json:"retry_after,omitempty"`
-	ContentGoal  string    `json:"content_goal,omitempty"`
-	ContentAngle string    `json:"content_angle,omitempty"`
+	Attempts          int       `json:"attempts,omitempty"`
+	RetryAfter        time.Time `json:"retry_after,omitempty"`
+	PreparationReason string    `json:"preparation_reason,omitempty"`
+	ContentGoal       string    `json:"content_goal,omitempty"`
+	ContentAngle      string    `json:"content_angle,omitempty"`
 
 	ID                   string              `json:"id"`
 	RoomID               int64               `json:"room_id"`
@@ -226,11 +227,16 @@ type CompletionStats struct {
 	AdmissionDeferred int `json:"admission_deferred"`
 }
 type TerminalOutcome struct {
-	DecisionID string    `json:"decision_id"`
-	EventIDs   []int64   `json:"event_ids"`
-	Status     string    `json:"status"`
-	Reason     string    `json:"reason"`
-	At         time.Time `json:"at"`
+	MissionKind       string    `json:"mission_kind,omitempty"`
+	Topic             string    `json:"topic,omitempty"`
+	Title             string    `json:"title,omitempty"`
+	ExpiresAt         time.Time `json:"expires_at,omitempty"`
+	PreparationReason string    `json:"preparation_reason,omitempty"`
+	DecisionID        string    `json:"decision_id"`
+	EventIDs          []int64   `json:"event_ids"`
+	Status            string    `json:"status"`
+	Reason            string    `json:"reason"`
+	At                time.Time `json:"at"`
 }
 type Snapshot struct {
 	Completion         CompletionStats    `json:"completion"`
@@ -1032,7 +1038,7 @@ func (q *Queue) pruneLocked(roomID int64, state *roomState, now time.Time) {
 				q.addNoteLocked(state, now, "execution_failed", fmt.Sprintf("“%s”达到执行期限，记录失败原因并释放占用", item.Title))
 				continue
 			}
-			if item.Status == StatusClaimed {
+			if item.Status == StatusClaimed && item.PlaybackTaskID == "" {
 				claimedAt := item.ClaimedAt
 				if claimedAt == nil || now.Sub(claimedAt.UTC()) >= ClaimExecutionTimeout {
 					if !now.Before(deadline) {
@@ -1233,7 +1239,7 @@ func (q *Queue) recordTerminalLocked(state *roomState, item *Item, status, reaso
 	case "CANCELLED":
 		state.completion.Cancelled++
 	}
-	state.outcomes = append(state.outcomes, TerminalOutcome{DecisionID: item.ID, EventIDs: append([]int64(nil), item.LinkedEventIDs...), Status: status, Reason: reason, At: now})
+	state.outcomes = append(state.outcomes, TerminalOutcome{DecisionID: item.ID, EventIDs: append([]int64(nil), item.LinkedEventIDs...), Status: status, Reason: reason, At: now, MissionKind: item.MissionKind, Topic: item.Topic, Title: item.Title, ExpiresAt: itemDeadline(item), PreparationReason: item.PreparationReason})
 	if len(state.outcomes) > 200 {
 		state.outcomes = state.outcomes[len(state.outcomes)-200:]
 	}

@@ -467,7 +467,14 @@ func (s *Server) applyAudioInteractionPlaybackEvent(ctx context.Context, state *
 	}
 	state.mu.Unlock()
 	if meta != nil && meta.DecisionID != "" && s.messages != nil && !duplicateTerminal {
-		raw, _ := json.Marshal(map[string]any{"decision_id": meta.DecisionID, "status": event.Status, "at": event.OccurredAt})
+		payload := map[string]any{"decision_id": meta.DecisionID, "status": event.Status, "at": event.OccurredAt}
+		if event.ProgressMS > 0 || event.Status == "PLAYING" || event.Status == "PROGRESS" {
+			payload["played_ms"] = max(0, event.ProgressMS)
+		}
+		if event.Status == "COMPLETED" && event.DurationMS > 0 {
+			payload["played_ms"] = event.DurationMS
+		}
+		raw, _ := json.Marshal(payload)
 		s.messages.Publish(ctx, messagecaptain.Message{Kind: "interaction.v2.playback", RoomID: meta.RoomID, RunID: meta.RuntimeEpoch, TaskID: event.SpeechTaskID, Payload: raw})
 	}
 	if (event.Status == "COMPLETED" || event.Status == "FAILED") && meta != nil && !duplicateTerminal {

@@ -18,7 +18,7 @@ func (p *Processor) SetPreparationReader(fn func(context.Context, audioout.Inter
 func (p *Processor) preparationCheck(ctx context.Context, s interactionruntime.Scope, decision string, duration int, at time.Time) audioout.InteractionPreflightResult {
 	r := audioout.InteractionPreflightResult{Allowed: true, CheckedAt: at, RetryAfterMS: 5000}
 	if v := p.interactionV2.Load(); v != nil {
-		r.Reason, r.RemainingMS = v.engine.PreviewPreparation(s, decision, duration, at)
+		r.Reason, r.RemainingMS, r.RetryAfterMS = v.engine.PreviewPreparationRetry(s, decision, duration, at)
 		r.Allowed = r.Reason == ""
 	}
 	p.scheduleMu.Lock()
@@ -47,9 +47,9 @@ func (p *Processor) preflightAudio(m messagecaptain.Message) error {
 	}
 	s := p.v2Scope(req.TenantID, m.RoomID)
 	if v := p.interactionV2.Load(); v != nil {
-		reason, _ := v.engine.PreviewPreparation(s, req.DecisionID, req.DurationMS, p.clock())
+		reason, remaining, retry := v.engine.PreviewPreparationRetry(s, req.DecisionID, req.DurationMS, p.clock())
 		if reason != "" {
-			return fmt.Errorf("%s", reason)
+			return &audioout.InteractionPreparationError{Reason: reason, RemainingMS: remaining, RetryAfterMS: retry}
 		}
 	}
 	return nil

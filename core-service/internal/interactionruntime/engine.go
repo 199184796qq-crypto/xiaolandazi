@@ -96,6 +96,8 @@ type Task struct {
 	Failure            string
 	Attempts           int
 	Estimate           time.Duration
+	PCMPlayedMS        int
+	PCMKnown           bool
 	SignalRefs         map[string]uint64
 }
 type dialogue struct {
@@ -753,7 +755,7 @@ func (e *Engine) Accept(w Work, c Content, err error, now time.Time) bool {
 		rebindDeadline(t)
 	}
 	t.State = "body_ready"
-	t.Estimate = time.Duration(max(2, min(30, utf8.RuneCountInString(c.Body)/5))) * time.Second
+	t.Estimate = time.Duration(EstimateDurationMS(c.Body, 1)) * time.Millisecond
 	return true
 }
 func (e *Engine) Select(s Scope, now time.Time) *Task {
@@ -762,16 +764,10 @@ func (e *Engine) Select(s Scope, now time.Time) *Task {
 	r := e.room(s, now)
 	var ready []*Task
 	var selected *Task
-	used := 0.0
 	kept := r.Played[:0]
 	for _, v := range r.Played {
 		if now.Sub(v.At) < 60*time.Second {
 			kept = append(kept, v)
-			seconds := v.Seconds
-			if overlap := v.At.Sub(now.Add(-60 * time.Second)).Seconds(); seconds > overlap {
-				seconds = overlap
-			}
-			used += max(0, seconds)
 		}
 	}
 	r.Played = kept
@@ -796,13 +792,6 @@ func (e *Engine) Select(s Scope, now time.Time) *Task {
 			return nil
 		}
 	}
-	budget := 40.0
-	if r.Density == "normal" {
-		budget = 30
-	}
-	if r.Density == "fast" {
-		budget = 20
-	}
 	semanticAvailable := semanticQuotaAvailable(r, now, "")
 	for _, t := range ready {
 		if selected != nil && !welcomeSupersedes(t, selected) {
@@ -811,7 +800,7 @@ func (e *Engine) Select(s Scope, now time.Time) *Task {
 		if t.Work.BatchPrepared && semanticKind(t.Work.Kind) && !semanticAvailable {
 			continue
 		}
-		if t.Work.Kind != "urgent" && used+t.Estimate.Seconds() > budget {
+		if t.Work.Kind != "urgent" && !durationBudgetAllowed(r, int(t.Estimate.Milliseconds()), now) {
 			continue
 		}
 		if t.Work.WelcomeQuota && now.Sub(t.Work.At) >= welcomeWindow {
@@ -913,33 +902,26 @@ func (e *Engine) ReserveAudio(roomID int64, decision string, durationMS int, sta
 		if t.Work.BatchPrepared && semanticKind(t.Work.Kind) && !semanticQuotaAvailable(r, start, t.Work.ID) {
 			return false
 		}
-		used := 0.0
-		for _, v := range r.Played {
-			overlap := min(v.Seconds, v.At.Sub(start.Add(-60*time.Second)).Seconds())
-			used += max(0, overlap)
-		}
-		budget := 40.0
-		if r.Density == "normal" {
-			budget = 30
-		}
-		if r.Density == "fast" {
-			budget = 20
-		}
 		t.Estimate = time.Duration(durationMS) * time.Millisecond
-		if t.Work.Kind != "urgent" && float64(durationMS)/1000 > 40 {
-			e.cancel(r, t, "audio_exceeds_interaction_window")
-			return false
-		}
-		return t.Work.Kind == "urgent" || used+float64(durationMS)/1000 <= budget
+		return t.Work.Kind == "urgent" || durationBudgetAllowed(r, durationMS, start)
 	}
 	return false
 }
-func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time) {
+func (e *Engine) Receipts(roomID int64, decision, status string, at time.Time, pcmMS ...int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r := e.rooms[roomID]
 	if r == nil {
 		return
+	}
+	if decision == "" || at.IsZero() {
+		return
+	}
+	for _, t := range r.Tasks {
+		if t.Decision == decision && decision != "" && len(pcmMS) > 0 && pcmMS[0] >= 0 && !terminal(t.State) {
+			t.PCMKnown = true
+			t.PCMPlayedMS = max(t.PCMPlayedMS, pcmMS[0])
+		}
 	}
 	if decision == "" || at.IsZero() || !e.recordPlayback(r, decision, status, at) {
 		return
@@ -1025,10 +1007,7 @@ func (e *Engine) receiptsLocked(r *room, decision, status string, at time.Time) 
 			if len(t.Work.People) == 1 {
 				rememberAnswer(r, t.Work.People[0].UID, t.Content.Body, at)
 			}
-			seconds := at.Sub(t.Started).Seconds()
-			if seconds < 0 {
-				seconds = 0
-			}
+			seconds := taskPlayedSeconds(t, at)
 			r.Played = append(r.Played, sample{at, seconds})
 			if at.After(r.LastInteraction) {
 				r.LastInteraction = at
@@ -1053,7 +1032,7 @@ func (e *Engine) receiptsLocked(r *room, decision, status string, at time.Time) 
 			}
 		case "FAILED":
 			if t.State == "playing" {
-				r.Played = append(r.Played, sample{at, max(0, at.Sub(t.Started).Seconds())})
+				r.Played = append(r.Played, sample{at, taskPlayedSeconds(t, at)})
 				if at.After(r.LastInteraction) {
 					r.LastInteraction = at
 				}
@@ -1074,7 +1053,7 @@ func (e *Engine) Lost(roomID int64, decision string, now time.Time) {
 		for _, t := range r.Tasks {
 			if t.Decision == decision && (t.State == "selected" || t.State == "playing") {
 				if t.State == "playing" {
-					r.Played = append(r.Played, sample{now, max(0, now.Sub(t.Started).Seconds())})
+					r.Played = append(r.Played, sample{now, taskPlayedSeconds(t, now)})
 					if now.After(r.LastInteraction) {
 						r.LastInteraction = now
 					}

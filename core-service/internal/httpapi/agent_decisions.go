@@ -3,7 +3,9 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -230,11 +232,15 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		if errs := s.messages.Publish(r.Context(), messagecaptain.Message{Kind: "interaction.v2.preflight", RoomID: roomID, Payload: raw}); len(errs) > 0 {
 			check.Allowed = false
 			check.Reason = errs[0].Error()
+			var blocked *audioout.InteractionPreparationError
+			if errors.As(errs[0], &blocked) {
+				check.RemainingMS, check.RetryAfterMS = blocked.RemainingMS, blocked.RetryAfterMS
+			}
 		}
 	}
 	if !check.Allowed {
-		s.agentDecisions.YieldPreparation(roomID, head.ID, check.Reason)
-		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": check.Reason, "retry_after_ms": 5000})
+		s.agentDecisions.YieldPreparation(roomID, head.ID, check.Reason, time.Duration(check.RetryAfterMS)*time.Millisecond)
+		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": check.Reason, "retry_after_ms": check.RetryAfterMS})
 		return
 	}
 	plannedSwitchMS := 0
@@ -356,7 +362,8 @@ func (s *Server) releaseRoomAgentDecision(w http.ResponseWriter, r *http.Request
 	var item *agentdecision.Item
 	var released bool
 	if r.URL.Query().Get("reason") == "preflight" {
-		item, released = s.agentDecisions.YieldPreparation(roomID, id, r.URL.Query().Get("block_reason"))
+		retryMS, _ := strconv.Atoi(r.URL.Query().Get("retry_after_ms"))
+		item, released = s.agentDecisions.YieldPreparation(roomID, id, r.URL.Query().Get("block_reason"), time.Duration(max(0, min(60000, retryMS)))*time.Millisecond)
 	} else if r.URL.Query().Get("reason") == "cut_reschedule" {
 		deadline, _ := time.Parse(time.RFC3339Nano, r.URL.Query().Get("prepared_until"))
 		item, released = s.agentDecisions.RescheduleCut(roomID, id, deadline)

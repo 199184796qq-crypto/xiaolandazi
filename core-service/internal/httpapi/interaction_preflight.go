@@ -3,9 +3,12 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"livecompanion/core/internal/agentwork"
 	"livecompanion/core/internal/audioout"
+	"livecompanion/core/internal/interactionruntime"
 	"livecompanion/core/internal/messagecaptain"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -79,6 +82,9 @@ func (s *Server) preflightRoomAgentDecision(w http.ResponseWriter, r *http.Reque
 		writeError(w, 400, "invalid preflight")
 		return
 	}
+	if req.Text != "" {
+		req.DurationMS = interactionruntime.EstimateDurationMS(req.Text, req.Rate)
+	}
 	item, ok := s.agentDecisions.Get(room, strings.TrimSpace(r.PathValue("decisionID")))
 	if !ok || item.Status != "CLAIMED" || item.PlaybackTaskID != "" {
 		writeError(w, 409, "decision_changed")
@@ -103,13 +109,21 @@ func (s *Server) preflightRoomAgentDecision(w http.ResponseWriter, r *http.Reque
 	}
 	req.Until = deadline
 	result := s.InteractionPreparationWindow(r.Context(), req)
+	result.DurationMS = req.DurationMS
 	if result.Allowed && s.messages != nil {
 		raw, _ := json.Marshal(req)
 		failures := s.messages.Publish(r.Context(), messagecaptain.Message{Kind: "interaction.v2.preflight", RoomID: room, RunID: req.Epoch, Payload: raw})
 		if len(failures) > 0 {
 			result.Allowed = false
 			result.Reason = failures[0].Error()
+			var blocked *audioout.InteractionPreparationError
+			if errors.As(failures[0], &blocked) {
+				result.RemainingMS, result.RetryAfterMS = blocked.RemainingMS, blocked.RetryAfterMS
+			}
 		}
+	}
+	if !result.Allowed {
+		log.Printf("interaction preflight deferred room=%d decision=%s kind=%s stage=%s duration_ms=%d remaining_ms=%d retry_ms=%d expires_at=%s reason=%s", room, item.ID, item.MissionKind, req.Stage, req.DurationMS, result.RemainingMS, result.RetryAfterMS, deadline.Format(time.RFC3339Nano), result.Reason)
 	}
 	writeJSON(w, 200, result)
 }
