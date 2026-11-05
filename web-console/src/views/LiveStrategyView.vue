@@ -30,7 +30,7 @@ import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import RecordingScriptTabs from '../components/RecordingScriptTabs.vue'
 import RecordingScriptEntries from '../components/RecordingScriptEntries.vue'
 import { playbackVoiceKey, readScriptPlaybackSettings, selectedScriptVoices, scriptPlaybackForSave } from '../scriptPlaybackSettings'
-import { groupedScriptForSave, scriptEntries, scriptGroupsError, type ScriptEntry } from '../recordingScriptGroups'
+import { groupedScriptForSave, scriptCharacters, scriptEntries, scriptGroupsError, type ScriptEntry } from '../recordingScriptGroups'
 import RecordingOriginalMedia from '../components/RecordingOriginalMedia.vue'
 import PlanHeaderArtwork from '../components/PlanHeaderArtwork.vue'
 import PlanCreateDialog from '../components/PlanCreateDialog.vue'
@@ -1028,6 +1028,20 @@ const activeRecordingTab = computed<RecordingScriptTab | null>(
   () => recordingTabs.value.find((item) => item.id === activeRecordingTabId.value) || recordingTabs.value[0] || null,
 )
 const activeRecordingEntries = computed(() => activeRecordingTab.value ? scriptEntries(activeRecordingTab.value) : [])
+const originalScriptTotals = computed(() => {
+  const counts = recordingTabs.value.flatMap(tab =>
+    recordingVoiceMode.value === 'stream_clone' ? scriptEntries(tab).map(entry => scriptCharacters(entry.text)) : [scriptCharacters(tab.text)],
+  ).filter(count => count > 0)
+  const characters = counts.reduce((sum, count) => sum + count, 0)
+  // Match the per-fragment preview: actual audio supplies the final duration.
+  const seconds = Math.ceil(characters * 60 / 320)
+  const minutes = Math.floor(seconds / 60)
+  return {
+    pieces: counts.length,
+    characters,
+    duration: minutes > 0 ? `${minutes} 分 ${seconds % 60} 秒` : `${seconds} 秒`,
+  }
+})
 const recordingGroupsError = computed(() => scriptGroupsError(recordingTabs.value))
 function updateRecordingEntries(entries: ScriptEntry[]): void {
   if (!activeRecordingTab.value || fullShowVersionSaving.value) return
@@ -6170,8 +6184,13 @@ onBeforeUnmount(() => {
                 <section class="strategy-custom-mainline-segments">
                   <header>
                     <i class="strategy-custom-mainline-editor-icon" aria-hidden="true">↗</i>
-                    <div>
+                    <div class="strategy-original-script-heading">
                       <strong>原始话术</strong>
+                      <span class="strategy-original-script-totals" title="汇总所有分组的非空原始话术，正常语速按约 320 字/分钟估算，实际时长以音频为准。">
+                        <span>共 {{ originalScriptTotals.pieces }} 片</span>
+                        <span>共 {{ originalScriptTotals.characters }} 字</span>
+                        <span>正常语速约 {{ originalScriptTotals.duration }}</span>
+                      </span>
                     </div>
                     <button
                       v-if="showRecordingOriginalMedia"
@@ -9394,6 +9413,23 @@ label.plan-save-error{display:grid;gap:8px;min-width:0}.plan-save-error select{m
 
 .strategy-formal-facts :is(small,span,p,label,button,input,select,textarea,th,td),.strategy-formal-facts .strategy-fact-category-item strong { font-size:16px; }
 /* Upload instructions and progress remain readable on narrow screens. */
+.strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-segments > header > .strategy-original-script-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 20px;
+  min-width: 0;
+}
+.strategy-original-script-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  min-width: 0;
+}
+.strategy-original-script-totals > span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
 .strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-upload > label span,
 .strategy-fullshow-output-grid.is-recording-mainline .strategy-custom-mainline-progress > span {
   font-size: 16px;
