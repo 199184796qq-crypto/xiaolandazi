@@ -10,8 +10,8 @@ import (
 	"unicode/utf8"
 )
 
-// TemplateCatalog contains ready-to-edit text, independently of the legacy
-// model-generation mothers. Reading an empty catalog never seeds old instructions.
+// TemplateCatalog contains ready-to-edit text. Missing persisted pages may expose
+// their saved legacy template; an explicit empty list always stays empty.
 type PromptTemplate struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`

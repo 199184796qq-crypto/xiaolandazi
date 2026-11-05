@@ -16,7 +16,7 @@ const planPromptCatalogPrefix = "plan_prompt_catalog_"
 var ErrPlanPromptCatalogRevision = errors.New("模板目录已被其他人修改，请重新读取后再保存")
 
 func (s *Store) GetPlanPromptTemplateCatalog(ctx context.Context) (planprompt.TemplateCatalog, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT setting_key,value_text FROM mgmt_system_settings WHERE setting_group=? ORDER BY setting_key`, planPromptCatalogGroup)
+	rows, err := s.db.QueryContext(ctx, `SELECT setting_key,value_text FROM mgmt_system_settings WHERE setting_group IN (?,?) ORDER BY setting_key`, planPromptCatalogGroup, planPromptTemplateGroup)
 	if err != nil {
 		return planprompt.TemplateCatalog{}, err
 	}
@@ -26,10 +26,17 @@ func (s *Store) GetPlanPromptTemplateCatalog(ctx context.Context) (planprompt.Te
 func readPlanPromptCatalog(rows *sql.Rows, complete bool) (planprompt.TemplateCatalog, error) {
 	c := planprompt.EmptyTemplateCatalog()
 	count := 0
+	present := map[string]bool{}
+	legacy := map[string]string{}
 	for rows.Next() {
 		var key, raw string
 		if err := rows.Scan(&key, &raw); err != nil {
 			return c, err
+		}
+		for _, page := range planprompt.TemplateKeys {
+			if key == planPromptTemplatePrefix+page {
+				legacy[page] = raw
+			}
 		}
 		for _, page := range planprompt.TemplateKeys {
 			if key != planPromptCatalogPrefix+page {
@@ -40,6 +47,7 @@ func readPlanPromptCatalog(rows *sql.Rows, complete bool) (planprompt.TemplateCa
 				return c, fmt.Errorf("模板目录记录损坏: %w", err)
 			}
 			c.Pages[page] = items
+			present[page] = true
 			count++
 			break
 		}
@@ -49,6 +57,13 @@ func readPlanPromptCatalog(rows *sql.Rows, complete bool) (planprompt.TemplateCa
 	}
 	if complete && count != len(planprompt.TemplateKeys) {
 		return c, errors.New("模板目录记录不完整")
+	}
+	// Only saved legacy text is exposed. An explicitly empty catalog page wins;
+	// reading never creates rows, fills placeholders or invokes a model.
+	for page, raw := range legacy {
+		if !present[page] {
+			c.Pages[page] = []planprompt.PromptTemplate{{ID: "legacy_" + page, Name: "默认模板", Content: raw}}
+		}
 	}
 	return c, c.Validate()
 }
@@ -61,9 +76,27 @@ func (s *Store) SavePlanPromptTemplateCatalog(ctx context.Context, next planprom
 		return next, err
 	}
 	defer tx.Rollback()
+	// Freeze the saved legacy values before first catalog creation. Existing
+	// catalog rows remain authoritative, including deliberately deleted pages.
+	legacyRows, err := tx.QueryContext(ctx, `SELECT setting_key,value_text FROM mgmt_system_settings WHERE setting_group=? ORDER BY setting_key FOR UPDATE`, planPromptTemplateGroup)
+	if err != nil {
+		return next, err
+	}
+	inherited, err := readPlanPromptCatalog(legacyRows, false)
+	closeErr := legacyRows.Close()
+	if err != nil {
+		return next, err
+	}
+	if closeErr != nil {
+		return next, closeErr
+	}
 	// Deterministic exclusive locks serialize initial creation and subsequent CAS.
 	for i, key := range planprompt.TemplateKeys {
-		_, err = tx.ExecContext(ctx, `INSERT INTO mgmt_system_settings(setting_key,setting_group,label,value_text,input_type,sort_order,updated_by_user_id) VALUES(?,?,?,'[]','textarea',?,?) ON DUPLICATE KEY UPDATE setting_key=VALUES(setting_key)`, planPromptCatalogPrefix+key, planPromptCatalogGroup, "方案模板目录 "+key, i, actorID)
+		raw, err := json.Marshal(inherited.Pages[key])
+		if err != nil {
+			return next, err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO mgmt_system_settings(setting_key,setting_group,label,value_text,input_type,sort_order,updated_by_user_id) VALUES(?,?,?,?,'textarea',?,?) ON DUPLICATE KEY UPDATE setting_key=VALUES(setting_key)`, planPromptCatalogPrefix+key, planPromptCatalogGroup, "方案模板目录 "+key, string(raw), i, actorID)
 		if err != nil {
 			return next, err
 		}
@@ -73,7 +106,7 @@ func (s *Store) SavePlanPromptTemplateCatalog(ctx context.Context, next planprom
 		return next, err
 	}
 	current, err := readPlanPromptCatalog(rows, true)
-	closeErr := rows.Close()
+	closeErr = rows.Close()
 	if err != nil {
 		return next, err
 	}
