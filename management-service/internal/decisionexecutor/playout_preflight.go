@@ -34,6 +34,9 @@ func (w *Worker) playoutPreflight(ctx context.Context, session model.LiveRuntime
 	// Core owns the common estimator. Send final spoken text, including the
 	// late address, and the exact rate that will be sent to TTS.
 	request := map[string]any{"duration_ms": 3000, "until": until, "stage": stage, "text": text, "rate": rate}
+	if stage == "tts" {
+		request["preparation_ms"] = w.estimateTTPreparation(text).Milliseconds()
+	}
 	resp, err := w.core.DoRoom(ctx, session.TenantID, session.RoomID, http.MethodPost, fmt.Sprintf("/internal/v1/rooms/%d/agent-decisions/%s/preflight", session.RoomID, item.ID), tenantQuery(session.TenantID), request)
 	if err != nil {
 		return false, err
@@ -65,7 +68,11 @@ func (w *Worker) playoutPreflight(ctx context.Context, session model.LiveRuntime
 	if err := w.release(releaseCtx, session, item.ID, "preflight:"+reason, strconv.Itoa(result.RetryAfterMS)); err != nil {
 		return false, err
 	}
-	w.transitionMission(&item, speechmission.StateCreated, "preparation_yield", reason)
+	if reason == "welcome_tts_time_insufficient" || reason == "welcome_names_deadline_missing" {
+		w.transitionMission(&item, speechmission.StateFailed, reason, "欢迎剩余有效时间不足，未购买TTS，等待重新收集最近观众")
+	} else {
+		w.transitionMission(&item, speechmission.StateCreated, "preparation_yield", reason)
+	}
 	log.Printf("interaction preparation deferred tenant=%d room=%d decision=%s stage=%s reason=%s duration_ms=%d remaining_ms=%d retry_ms=%d", session.TenantID, session.RoomID, item.ID, stage, reason, result.DurationMS, result.RemainingMS, result.RetryAfterMS)
 	return true, nil
 }

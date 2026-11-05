@@ -49,6 +49,7 @@ func TestWelcomeWorkerOneWholeTTSForOneAndTenPeople(t *testing.T) {
 			var knowledge map[string]any
 			json.Unmarshal(raw, &knowledge)
 			knowledge["welcome_quota"] = true
+			knowledge["welcome_names_expires_at"] = time.Now().Add(30 * time.Second)
 			names := make([]string, n)
 			for i := range names {
 				names[i] = fmt.Sprintf("新人%c", '甲'+i)
@@ -80,6 +81,7 @@ func TestWelcomeWorkerCutRetriesReuseAudioWithoutRenewingTTL(t *testing.T) {
 	var knowledge map[string]any
 	json.Unmarshal(raw, &knowledge)
 	knowledge["welcome_quota"] = true
+	knowledge["welcome_names_expires_at"] = now.Add(30 * time.Second)
 	setClaim := func() {
 		claim, _ := json.Marshal(map[string]any{"claimed": true, "item": map[string]any{"id": "welcome-d", "topic": "welcome", "mission_kind": "welcome_named", "nicknames": []string{"小王"}, "purpose_knowledge": knowledge, "expires_at": knowledge["expires_at"]}})
 		core.claimRaw = string(claim)

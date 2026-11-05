@@ -108,6 +108,35 @@ func (s *Server) preflightRoomAgentDecision(w http.ResponseWriter, r *http.Reque
 		deadline = req.Until
 	}
 	req.Until = deadline
+	// Welcome names and the selection lease have different origins. Buying TTS
+	// must fit the earlier names deadline, including synthesis and admission tail.
+	if req.Stage == "tts" {
+		var welcome struct {
+			Quota      bool      `json:"welcome_quota"`
+			Ready      time.Time `json:"welcome_ready_at"`
+			NamesUntil time.Time `json:"welcome_names_expires_at"`
+		}
+		if json.Unmarshal(item.PurposeKnowledge, &welcome) == nil && welcome.Quota && welcome.Ready.IsZero() {
+			reason := ""
+			if welcome.NamesUntil.IsZero() {
+				reason = "welcome_names_deadline_missing"
+			} else {
+				until := welcome.NamesUntil
+				if deadline.Before(until) {
+					until = deadline
+				}
+				needed := time.Duration(max(5000, min(35000, req.PreparationMS)))*time.Millisecond + time.Second
+				if !time.Now().Add(needed).Before(until) {
+					reason = "welcome_tts_time_insufficient"
+				}
+			}
+			if reason != "" {
+				log.Printf("welcome tts preflight denied room=%d decision=%s preparation_ms=%d names_until=%s lease_until=%s reason=%s", room, item.ID, max(5000, min(35000, req.PreparationMS)), welcome.NamesUntil.Format(time.RFC3339Nano), deadline.Format(time.RFC3339Nano), reason)
+				writeJSON(w, 200, audioout.InteractionPreflightResult{Reason: reason, DurationMS: req.DurationMS})
+				return
+			}
+		}
+	}
 	result := s.InteractionPreparationWindow(r.Context(), req)
 	result.DurationMS = req.DurationMS
 	if result.Allowed && s.messages != nil {

@@ -45,6 +45,12 @@ func (q *Queue) YieldPreparation(room int64, id, reason string, retry ...time.Du
 			wait = min(retry[0], time.Minute)
 		}
 		item.PreparationReason = strings.TrimSpace(reason)
+		if item.PreparationReason == "welcome_tts_time_insufficient" || item.PreparationReason == "welcome_names_deadline_missing" {
+			q.recordTerminalLocked(state, item, "FAILED", strings.TrimSpace(reason), now)
+			copy := cloneItem(*item)
+			state.items = append(state.items[:index], state.items[index+1:]...)
+			return &copy, true
+		}
 		if strings.Contains(reason, "audio_duration_budget") && !now.Add(wait).Before(itemDeadline(item)) {
 			q.recordTerminalLocked(state, item, "FAILED", "audio_duration_budget_deadline", now)
 			copy := cloneItem(*item)
@@ -60,6 +66,26 @@ func (q *Queue) YieldPreparation(room int64, id, reason string, retry ...time.Du
 		return &copy, true
 	}
 	return nil, false
+}
+
+// FailUnstarted is an automatic admission failure, never a manual cancellation.
+// Recheck playback ownership under the same lock as removal to close races.
+func (q *Queue) FailUnstarted(room int64, id, reason string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	state := q.rooms[room]
+	if state == nil {
+		return false
+	}
+	for i, item := range state.items {
+		if item.ID != id || item.PlaybackTaskID != "" || item.Status != StatusPending {
+			continue
+		}
+		q.recordTerminalLocked(state, item, "FAILED", reason, q.now().UTC())
+		state.items = append(state.items[:i], state.items[i+1:]...)
+		return true
+	}
+	return false
 }
 
 // ClaimableHead matches ClaimNext's retry/claimed gates, so a deferred P0 does

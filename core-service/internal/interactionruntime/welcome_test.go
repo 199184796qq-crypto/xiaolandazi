@@ -20,6 +20,39 @@ func welcomeBody(t *testing.T, e *Engine, w Work, at time.Time) {
 	}
 }
 
+func TestWelcomeNamesDeadlineNeverRenewsWithSelectionOrReady(t *testing.T) {
+	e := newWelcomeEngine()
+	s := scope(29)
+	at := base
+	add(e, s, "entry", "new", "member", "", at)
+	w := e.Jobs(at, 1)[0]
+	welcomeBody(t, e, w, at.Add(time.Second))
+	selected := selectTask(t, e, s, at.Add(10*time.Second))
+	check := func(task Task) {
+		var m struct {
+			Names   time.Time `json:"welcome_names_expires_at"`
+			Expires time.Time `json:"expires_at"`
+		}
+		if json.Unmarshal(task.Content.Knowledge, &m) != nil || !m.Names.Equal(w.At.Add(30*time.Second)) || !m.Expires.Equal(task.Work.Expires) {
+			t.Fatal("names deadline refreshed", string(task.Content.Knowledge))
+		}
+	}
+	check(*selected)
+	ready, ok := e.ReadyWelcome(29, selected.Work.ID, at.Add(15*time.Second))
+	if !ok {
+		t.Fatal("ready")
+	}
+	check(ready)
+	again, ok := e.ReadyWelcome(29, selected.Work.ID, at.Add(20*time.Second))
+	if !ok {
+		t.Fatal("ready retry")
+	}
+	check(again)
+	if !again.Work.Expires.Equal(ready.Work.Expires) {
+		t.Fatal("playback admission lease renewed")
+	}
+}
+
 func TestWelcomePeriodMatrixAndBoundaries(t *testing.T) {
 	for row, s := range []int{0, 5, 11, 21} {
 		for col, entries := range []int{1, 6, 31} {

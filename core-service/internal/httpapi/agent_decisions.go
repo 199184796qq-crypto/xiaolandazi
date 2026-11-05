@@ -159,11 +159,8 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "empty"})
 		return
 	}
-	if !s.validInteractionV2Item(queue[0], roomID, tenantID, time.Now()) {
-		s.agentDecisions.Remove(roomID, queue[0].ID)
-		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "interaction_v2_expired"})
-		return
-	}
+	// Waiting deadlines cannot evict an already claimed/bound playback. Let the
+	// queue select only claimable work before validating its admission deadline.
 	head := s.agentDecisions.ClaimableHead(roomID)
 	if head == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "deferred"})
@@ -171,7 +168,7 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 	}
 	queue = []agentdecision.Item{*head}
 	if !s.validInteractionV2Item(*head, roomID, tenantID, time.Now()) {
-		s.agentDecisions.Remove(roomID, head.ID)
+		s.agentDecisions.FailUnstarted(roomID, head.ID, "interaction_v2_expired")
 		writeJSON(w, 200, map[string]any{"claimed": false, "reason": "interaction_v2_expired"})
 		return
 	}

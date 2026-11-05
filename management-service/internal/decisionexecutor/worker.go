@@ -116,24 +116,25 @@ type Worker struct {
 	inFlight   map[int64]time.Time
 	retryAfter map[int64]time.Time
 
-	addressMu            sync.Mutex
-	recentNamed          map[int64]map[string]time.Time
-	recentGreeting       map[int64][]string
-	recentBridge         map[int64][]string
-	recentBoundary       map[int64][]string
-	recentWelcomeProfile map[int64]string
-	nicknameAliases      map[string]nicknameAliasCacheEntry
-	nicknameRulesOnce    sync.Once
-	nicknameRulesValue   *addressing.Rules
-	nicknameRandSeed     int64
-	orderGuard           *orderbell.Guard
-	orderAudioComposer   func(context.Context, string) (ttsgateway.OrderBellAudio, error)
-	recentPhrases        map[int64][]string
-	readingRules         map[string]readingRulesCacheEntry
-	benefitRedis         *redis.Client
-	prepared             map[preparedInteractionKey]preparedInteraction
-	preflightDrafts      map[preparedInteractionKey]preparedInteraction
-	timeReportDrafts     map[preparedInteractionKey]timeReportDraft
+	addressMu             sync.Mutex
+	recentNamed           map[int64]map[string]time.Time
+	recentGreeting        map[int64][]string
+	recentBridge          map[int64][]string
+	recentBoundary        map[int64][]string
+	recentWelcomeProfile  map[int64]string
+	nicknameAliases       map[string]nicknameAliasCacheEntry
+	nicknameRulesOnce     sync.Once
+	nicknameRulesValue    *addressing.Rules
+	nicknameRandSeed      int64
+	orderGuard            *orderbell.Guard
+	orderAudioComposer    func(context.Context, string) (ttsgateway.OrderBellAudio, error)
+	recentPhrases         map[int64][]string
+	readingRules          map[string]readingRulesCacheEntry
+	benefitRedis          *redis.Client
+	prepared              map[preparedInteractionKey]preparedInteraction
+	preflightDrafts       map[preparedInteractionKey]preparedInteraction
+	ttsPreparationSamples []time.Duration
+	timeReportDrafts      map[preparedInteractionKey]timeReportDraft
 }
 
 type decisionItem struct {
@@ -1425,6 +1426,15 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	reschedule := false
 	defer func() {
 		if !completed {
+			if errors.Is(resultErr, errWelcomeTTSTimeInsufficient) {
+				releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := w.release(releaseCtx, session, item.ID, "preflight:welcome_tts_time_insufficient", "0"); err != nil {
+					log.Printf("welcome synthesis deadline release tenant=%d room=%d decision=%s: %v", session.TenantID, session.RoomID, item.ID, err)
+				}
+				resultErr = v2TaskFailure{resultErr}
+				return
+			}
 			if (hasInteractionV2Body(*item) || errors.Is(resultErr, interactionplan.ErrInvalidResult)) && !reschedule {
 				w.withdrawUnstartedV2(session, item.ID)
 				if resultErr != nil {
@@ -1648,7 +1658,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		Rate:        voiceRate(voice),
 		Instruction: ttsInstruction,
 	})
-	if err != nil && ssmlUsed && !errors.Is(err, voiceasset.ErrCleared) {
+	if err != nil && ssmlUsed && !errors.Is(err, voiceasset.ErrCleared) && !errors.Is(err, errWelcomeTTSTimeInsufficient) {
 		audio, err = w.synthesizeInteractionAudio(ttsCtx, item, ttsgateway.SynthesizeRequest{
 			Provider:    voiceProvider(voice),
 			Model:       ttsModel,
@@ -1689,9 +1699,12 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		// Corrections remain hard constraints, unlike advisory host style.
 		// 规则更新后只用最新文本重新合成语音，不再做长度兜底修复。
 		text = item.nicknameSpeechText(text)
-		audio, err = w.synthesizePaidAudio(ctx, session, "interaction_fact_refresh_tts", item.ID, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: ttsModel, VoiceID: voice.VoiceID, Text: prefixedInteractionText(text), Rate: voiceRate(voice), Instruction: ttsInstruction})
-		if err != nil || strings.TrimSpace(audio.AudioURL) == "" {
-			return fmt.Errorf("纠正规则更新后重新生成语音失败: %v", err)
+		audio, err = w.synthesizeInteractionAudioStage(ctx, item, "interaction_fact_refresh_tts", ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: ttsModel, VoiceID: voice.VoiceID, Text: text, Rate: voiceRate(voice), Instruction: ttsInstruction})
+		if err != nil {
+			return fmt.Errorf("纠正规则更新后重新生成语音失败: %w", err)
+		}
+		if strings.TrimSpace(audio.AudioURL) == "" {
+			return fmt.Errorf("纠正规则更新后TTS未返回音频地址")
 		}
 		latest, e := w.interactionV2Memory(ctx, session, *item)
 		if e != nil {

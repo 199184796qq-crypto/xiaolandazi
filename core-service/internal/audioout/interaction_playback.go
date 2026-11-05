@@ -3,16 +3,17 @@ package audioout
 import "time"
 
 type InteractionPreflightRequest struct {
-	TenantID   int64     `json:"tenant_id"`
-	RoomID     int64     `json:"room_id"`
-	PlanID     int64     `json:"plan_id"`
-	Epoch      string    `json:"epoch"`
-	DecisionID string    `json:"decision_id"`
-	Stage      string    `json:"stage"`
-	DurationMS int       `json:"duration_ms"`
-	Text       string    `json:"text,omitempty"`
-	Rate       float64   `json:"rate,omitempty"`
-	Until      time.Time `json:"until"`
+	TenantID      int64     `json:"tenant_id"`
+	RoomID        int64     `json:"room_id"`
+	PlanID        int64     `json:"plan_id"`
+	Epoch         string    `json:"epoch"`
+	DecisionID    string    `json:"decision_id"`
+	Stage         string    `json:"stage"`
+	PreparationMS int       `json:"preparation_ms,omitempty"`
+	DurationMS    int       `json:"duration_ms"`
+	Text          string    `json:"text,omitempty"`
+	Rate          float64   `json:"rate,omitempty"`
+	Until         time.Time `json:"until"`
 }
 type InteractionPreflightResult struct {
 	Allowed      bool      `json:"allowed"`
