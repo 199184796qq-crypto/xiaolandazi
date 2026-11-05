@@ -4465,7 +4465,8 @@ export function annotatePlanText(planId: number, text: string) {
     { method: 'POST', body: JSON.stringify({ text }), suppressErrorDialog: true },
   )
 }
-export type PlanPromptRenderSections = {
+export type PlanPromptPage = keyof import('./planPrompt').PlanPromptSections | 'rewrite_planning_md'
+export type PlanPromptRenderSections = Partial<Record<PlanPromptPage, string>> & {
   persona?: string
   facts?: string
   redlines?: string
@@ -4473,10 +4474,10 @@ export type PlanPromptRenderSections = {
   interaction?: string
 }
 
-export function renderLiveAgentPlanPrompt(planId: number) {
-  return request<{ facts_md: string; prompt_md: string; sections?: PlanPromptRenderSections; rewrite_planning_md?: string; master_sha256?: string }>(
+export function renderLiveAgentPlanPrompt(planId: number, page: PlanPromptPage, signal?: AbortSignal) {
+  return request<{ facts_md?: string; prompt_md?: string; sections?: PlanPromptRenderSections; rewrite_planning_md?: string; master_sha256?: string; warnings?: Partial<Record<PlanPromptPage, string[]>>; sources?: Partial<Record<PlanPromptPage, string>> }>(
     '/api/v1/live-agent-plans/' + planId + '/prompt/render',
-    { method: 'POST', body: JSON.stringify({}), suppressErrorDialog: true },
+    { method: 'POST', body: JSON.stringify({ page }), signal, suppressErrorDialog: true },
   )
 }
 

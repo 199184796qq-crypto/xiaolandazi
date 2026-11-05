@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { renderLiveAgentPlanPrompt } from '../api'
+import { renderLiveAgentPlanPrompt, type PlanPromptPage } from '../api'
 import { compilePlanPrompts, planPromptTabs, planPromptValidation, type PlanPromptSections } from '../planPrompt'
 
 const content = defineModel<PlanPromptSections>({ required: true })
@@ -10,13 +10,17 @@ const emit = defineEmits<{ retry: []; clearFeedback: [] }>()
 const generating = ref(false)
 const generationError = ref('')
 const generationNotice = ref('')
+const generationWarnings = ref<string[]>([])
+const generationPage = ref<PlanPromptPage>('persona_md')
+const confirmationPage = ref<PlanPromptPage | null>(null)
 const confirmation = ref<HTMLDialogElement | null>(null)
 const cancelButton = ref<HTMLButtonElement | null>(null)
 const regenerateButton = ref<HTMLButtonElement | null>(null)
 const editor = ref<HTMLTextAreaElement | null>(null)
 const tabs = [...planPromptTabs, { key: 'rewrite_planning_md', label: '话术规划' }] as const
-const activeTab = ref<keyof PlanPromptSections | 'rewrite_planning_md'>('persona_md')
+const activeTab = ref<PlanPromptPage>('persona_md')
 const selectedTab = computed(() => tabs.find(tab => tab.key === activeTab.value)!)
+const pageLabel = (page: PlanPromptPage) => tabs.find(tab => tab.key === page)!.label
 const activeContent = computed({
   get: () => activeTab.value === 'rewrite_planning_md' ? rewritePlanning.value : content.value[activeTab.value],
   set: value => {
@@ -30,80 +34,113 @@ const busy = computed(() => props.loading || props.saving || generating.value)
 const unavailable = computed(() => !props.planId || !props.loaded || busy.value)
 let mounted = true
 let requestSequence = 0
+let requestController: AbortController | null = null
 
-watch(() => props.saving, saving => {
-  if (saving) {
-    generationError.value = ''
-    generationNotice.value = ''
-  }
+function invalidateGeneration() {
+  requestSequence++
+  requestController?.abort()
+  requestController = null
+  generating.value = false
+  generationError.value = ''
+  generationNotice.value = ''
+  generationWarnings.value = []
+  confirmation.value?.close()
+  confirmationPage.value = null
+}
+
+watch(() => [props.planId, props.loaded, props.loading, props.saving] as const, (next, previous) => {
+  if (next[0] !== previous[0] || !next[1] || next[2] || next[3]) invalidateGeneration()
+}, { flush: 'sync' })
+watch(activeTab, () => {
+  confirmation.value?.close()
+  confirmationPage.value = null
 })
 
 onBeforeUnmount(() => {
   mounted = false
-  requestSequence++
-  confirmation.value?.close()
+  invalidateGeneration()
 })
 
 function edited() {
   generationError.value = ''
   generationNotice.value = ''
+  generationWarnings.value = []
   emit('clearFeedback')
 }
 
-async function generate() {
+async function generate(page: PlanPromptPage) {
   if (unavailable.value || confirmation.value?.open) return
   const planId = props.planId!
   const sequence = ++requestSequence
-  const current = () => mounted && sequence === requestSequence && props.planId === planId
+  const original = page === 'rewrite_planning_md' ? rewritePlanning.value : content.value[page]
+  const current = () => mounted && sequence === requestSequence && props.planId === planId && props.loaded && !props.loading && !props.saving
+  requestController = new AbortController()
+  generationPage.value = page
   generating.value = true
   generationError.value = ''
   generationNotice.value = ''
+  generationWarnings.value = []
   emit('clearFeedback')
   try {
-    const result = await renderLiveAgentPlanPrompt(planId)
+    const result = await renderLiveAgentPlanPrompt(planId, page, requestController.signal)
     if (!current()) return
     const sections = result.sections
-    if (!sections || typeof sections.persona !== 'string' || typeof sections.facts !== 'string' ||
-        typeof sections.redlines !== 'string' || typeof sections.speech !== 'string' ||
-        typeof sections.interaction !== 'string' || typeof result.rewrite_planning_md !== 'string') {
-      throw new Error('未返回完整的六份提示词，当前内容已保留，请重试')
+    const shortNames = {
+      persona_md: 'persona', red_lines_md: 'redlines',
+      speech_requirements_md: 'speech', interaction_requirements_md: 'interaction', facts_md: 'facts',
+    } as const
+    const pageText = page === 'rewrite_planning_md'
+      ? result.rewrite_planning_md ?? sections?.rewrite_planning_md
+      : sections?.[page] ?? sections?.[shortNames[page]]
+    if (typeof pageText !== 'string' || (page !== 'facts_md' && !pageText.trim())) {
+      throw new Error('服务端未返回「' + pageLabel(page) + '」内容，请重试')
     }
-    const next: PlanPromptSections = {
-      persona_md: sections.persona, facts_md: sections.facts, red_lines_md: sections.redlines,
-      speech_requirements_md: sections.speech, interaction_requirements_md: sections.interaction,
+    if (Array.from(pageText).length > 20000) throw new Error('本页内容超过20000字，请调整母版后重新拉取')
+    if ((page === 'rewrite_planning_md' ? rewritePlanning.value : content.value[page]) !== original) {
+      throw new Error('本页内容在拉取期间已变化，本次结果未覆盖草稿，请重新拉取')
     }
-    const planning = result.rewrite_planning_md
+    const next = page === 'rewrite_planning_md' ? content.value : { ...content.value, [page]: pageText }
+    const planning = page === 'rewrite_planning_md' ? pageText : rewritePlanning.value
     const error = planPromptValidation(next, planning)
     if (error) throw new Error(error)
-    content.value = next
-    rewritePlanning.value = planning
-    activeTab.value = 'persona_md'
-    generationNotice.value = next.facts_md.trim() || next.persona_md.trim()
-      ? '已从母版拉取六份提示词；检查后请点击顶部“保存方案”。'
-      : '当前方案没有可用商品卡、福利或事实，事实依据已清空；检查后请点击顶部“保存方案”。'
+    if (page === 'rewrite_planning_md') rewritePlanning.value = pageText
+    else content.value = next
+    const warnings = result.warnings?.[page]
+    generationWarnings.value = Array.isArray(warnings) ? warnings.filter((note): note is string => typeof note === 'string' && !!note.trim()) : []
+    const action = result.sources?.[page] === 'model' ? '已生成' : '已拉取'
+    generationNotice.value = page === 'facts_md' && !pageText.trim()
+      ? '当前方案没有可用事实内容，事实依据已清空；检查后请点击顶部“保存方案”。'
+      : action + '「' + pageLabel(page) + '」；检查后请点击顶部“保存方案”。'
   } catch (err) {
     if (current()) generationError.value = err instanceof Error ? err.message : '拉取提示词失败，请重试'
   } finally {
     if (current()) {
       generating.value = false
-      if (!generationError.value) { await nextTick(); if (current()) editor.value?.focus({ preventScroll: true }) }
+      requestController = null
+      if (!generationError.value) { await nextTick(); if (current() && activeTab.value === page) editor.value?.focus({ preventScroll: true }) }
     }
   }
 }
 
 function requestRegeneration() {
   if (unavailable.value || confirmation.value?.open) return
-  if (![...Object.values(content.value), rewritePlanning.value].some(text => text.trim())) { void generate(); return }
+  const page = activeTab.value
+  const text = page === 'rewrite_planning_md' ? rewritePlanning.value : content.value[page]
+  if (!text.trim()) { void generate(page); return }
+  confirmationPage.value = page
   confirmation.value?.showModal()
   cancelButton.value?.focus()
 }
 function cancelRegeneration() {
   confirmation.value?.close()
+  confirmationPage.value = null
   regenerateButton.value?.focus({ preventScroll: true })
 }
 function confirmRegeneration() {
+  const page = confirmationPage.value
   confirmation.value?.close()
-  void generate()
+  confirmationPage.value = null
+  if (page) void generate(page)
 }
 function moveTab(event: KeyboardEvent, index: number) {
   const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']
@@ -127,7 +164,7 @@ function backdrop(event: MouseEvent) {
     <header class="plan-prompt-heading">
       <div>
         <h3 id="plan-prompt-heading">方案提示词</h3>
-        <p>拉取六份母版到对应文本框，事实依据按当前方案资料填充。修改后请点击顶部“保存方案”。</p>
+        <p>拉取当前页提示词，其他页保持原稿；事实依据按当前方案资料填充。检查后请点击顶部“保存方案”。</p>
       </div>
       <div class="plan-prompt-actions">
           <button ref="regenerateButton" type="button" class="plan-prompt-primary" :disabled="unavailable" @click="requestRegeneration">{{ generating ? '拉取中…' : '拉取提示词' }}</button>
@@ -141,6 +178,10 @@ function backdrop(event: MouseEvent) {
     </div>
     <div v-if="generationError" class="plan-prompt-error" role="alert"><strong>拉取未完成</strong><p>{{ generationError }}</p><p>当前内容已保留，可重新拉取。</p></div>
     <p v-if="generationNotice || notice" class="plan-prompt-notice" role="status">{{ generationNotice || notice }}</p>
+    <div v-if="generationWarnings.length" class="plan-prompt-warning" role="status">
+      <strong>「{{ pageLabel(generationPage) }}」拉取提示</strong>
+      <ul><li v-for="(warning, index) in generationWarnings" :key="index">{{ warning }}</li></ul>
+    </div>
     <div v-if="loading" class="plan-prompt-skeleton" role="status">
       <p>正在读取当前方案提示词…</p>
       <span v-for="index in 6" :key="index" aria-hidden="true"></span>
@@ -155,7 +196,7 @@ function backdrop(event: MouseEvent) {
         <button v-for="(tab, index) in tabs" :id="'plan-prompt-tab-' + tab.key" :key="tab.key" type="button" role="tab" :aria-selected="activeTab === tab.key" aria-controls="plan-prompt-panel" :tabindex="activeTab === tab.key ? 0 : -1" @click="activeTab = tab.key" @keydown="moveTab($event, index)">{{ tab.label }}</button>
       </div>
       <div class="plan-prompt-content-heading"><label for="plan-prompt-content">{{ selectedTab.label }}</label><span>{{ Array.from(activeContent).length }} 字</span></div>
-      <p v-if="generating" class="plan-prompt-progress" role="status"><i aria-hidden="true"></i>正在拉取当前方案提示词…</p>
+      <p v-if="generating" class="plan-prompt-progress" role="status"><i aria-hidden="true"></i>正在拉取「{{ pageLabel(generationPage) }}」…</p>
       <div id="plan-prompt-panel" role="tabpanel" :aria-labelledby="'plan-prompt-tab-' + activeTab">
         <textarea id="plan-prompt-content" ref="editor" v-model="activeContent" :readonly="unavailable" maxlength="20000" rows="18" spellcheck="false" :placeholder="'请填写' + selectedTab.label" @input="edited"></textarea>
       </div>
@@ -170,8 +211,8 @@ function backdrop(event: MouseEvent) {
 
     <Teleport to="body">
       <dialog ref="confirmation" class="plan-prompt-confirm" aria-labelledby="plan-prompt-confirm-heading" aria-describedby="plan-prompt-confirm-description" @cancel.prevent="cancelRegeneration" @click="backdrop">
-        <h2 id="plan-prompt-confirm-heading">拉取提示词并替换六页？</h2>
-        <p id="plan-prompt-confirm-description">六个文本框将分别从母版重新拉取，未保存的修改（包括话术规划）都会被替换。事实依据仍使用当前方案资料；拉取后需点击顶部“保存方案”。</p>
+        <h2 id="plan-prompt-confirm-heading">拉取提示词并替换当前页？</h2>
+        <p id="plan-prompt-confirm-description">仅替换「{{ pageLabel(confirmationPage || activeTab) }}」当前内容，其他五页保持原稿。事实依据按当前方案资料填充，其他页由模型生成；拉取后需点击顶部“保存方案”。</p>
         <footer><button ref="cancelButton" type="button" class="plan-prompt-secondary" @click="cancelRegeneration">取消</button><button type="button" class="plan-prompt-primary" @click="confirmRegeneration">确认拉取</button></footer>
       </dialog>
     </Teleport>
@@ -191,6 +232,7 @@ function backdrop(event: MouseEvent) {
 .plan-prompt-content textarea{box-sizing:border-box;display:block;min-width:0;width:100%;min-height:460px;max-width:100%;padding:20px;border:1px solid #dfe3f4;border-radius:14px;background:#fff;color:#26324d;font:inherit;font-size:20px;line-height:1.8;resize:vertical;outline:none}.plan-prompt-content textarea:focus{border-color:#8273f6;box-shadow:0 0 0 3px #6554ec15}.plan-prompt-content textarea[readonly]{background:#f8f9fd}.plan-prompt-content textarea::placeholder{color:#8894aa;font-size:16px}
 .plan-prompt-error{padding:14px 18px;border:1px solid #f1cbd2;border-radius:12px;background:#fff5f6;color:#a64256;font-size:16px;overflow-wrap:anywhere}.plan-prompt-error p{margin:4px 0 0}.plan-prompt-error button{margin-top:10px;background:white;color:inherit;border-color:#e8bcc6}
 .plan-prompt-notice{margin:0;padding:14px 18px;border:1px solid #d6e8e2;border-radius:12px;background:#f0faf6;color:#307c69;font-size:16px;overflow-wrap:anywhere}
+.plan-prompt-warning{padding:14px 18px;border:1px solid #ead7af;border-radius:12px;background:#fffaf0;color:#845d20;font-size:16px;overflow-wrap:anywhere}.plan-prompt-warning ul{margin:6px 0 0;padding-left:22px}
 .plan-prompt-skeleton{display:grid;gap:18px;min-height:420px;padding:24px;border:1px solid #e2e6f3;border-radius:14px;background:#fafbff}.plan-prompt-skeleton p{margin:0;color:#71819d}.plan-prompt-skeleton span{height:18px;max-width:92%;border-radius:7px;background:linear-gradient(90deg,#e9edf7,#f4f6fc,#e9edf7);background-size:200% 100%;animation:prompt-loading 1.5s ease-in-out infinite}.plan-prompt-skeleton span:last-child{max-width:60%}
 .plan-prompt-progress{display:flex;align-items:center;gap:10px;margin:0;color:#6554d8;font-size:16px}.plan-prompt-progress i{width:16px;height:16px;flex:none;border:2px solid #d8d2fc;border-top-color:#6554ec;border-radius:50%;animation:prompt-spin .8s linear infinite}
 .plan-prompt-confirm{box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 32px);margin:auto;padding:28px;border:1px solid #dfe3f4;border-radius:22px;background:#fff;color:#26324d;font:inherit;font-size:16px;line-height:1.7;box-shadow:0 24px 80px #26324d33;overflow:auto}.plan-prompt-confirm::backdrop{background:#26324d66;backdrop-filter:blur(4px)}.plan-prompt-confirm h2{margin:0;font-size:22px}.plan-prompt-confirm p{margin:14px 0 24px;color:#68758e;font-size:16px;overflow-wrap:anywhere}.plan-prompt-confirm footer{display:flex;justify-content:flex-end;gap:10px}

@@ -50,9 +50,11 @@ window.fetch=async(url,init={})=>{
   return Response.json({items:[versions[plan]]});
  }
  if(p.endsWith('/render')){
+  if(!['persona_md','facts_md','red_lines_md','speech_requirements_md','interaction_requirements_md','rewrite_planning_md'].includes(body?.page))throw Error('Explicit page required');
   if(f.failRender){f.failRender=false;return Response.json({error:'母版读取失败'},{status:500})}
   const m=f.templates,rendered={sections:{persona:m.persona_md,facts:m.facts_md+'\n实际方案'+plan+'商品卡和正式事实',redlines:m.red_lines_md,speech:m.speech_requirements_md,interaction:m.interaction_requirements_md},rewrite_planning_md:m.rewrite_planning_md,facts_md:'当前方案事实'};
-  if(f.incompleteRender){f.incompleteRender=false;delete rendered.sections.redlines}
+  if(f.holdRender){f.holdRender=false;await new Promise(r=>f.releaseRender=r)}
+  if(f.incompleteRender){f.incompleteRender=false;delete rendered.rewrite_planning_md}
   return Response.json(rendered);
  }
  if(method==='PUT'){
@@ -132,19 +134,20 @@ try {
   const beforePull = (await puts()).length
   const pull = page.getByRole('button', { name: '拉取提示词', exact: true })
   await pull.click()
-  await page.getByRole('dialog', { name: '拉取提示词并替换六页？', exact: true }).waitFor()
+  await page.getByRole('dialog', { name: '拉取提示词并替换当前页？', exact: true }).waitFor()
   await page.getByRole('button', { name: '取消', exact: true }).click(); assert.equal(await showRewrite(), failedDraft)
   await pull.click(); await page.getByRole('button', { name: '确认拉取', exact: true }).click()
-  await page.getByText(/已从母版拉取六份提示词/).waitFor(); assert.equal(await showRewrite(), '母版规划\n{{已有开场}}\n{{开场方式}}')
-  await tab('红线禁止').click(); assert.equal(await editor.inputValue(), '母版红线'); await showRewrite()
+  await page.getByText(/已拉取「话术规划」/).waitFor(); assert.equal(await showRewrite(), '母版规划\n{{已有开场}}\n{{开场方式}}')
+  await tab('红线禁止').click(); assert.equal(await editor.inputValue(), '')
+  await pull.click(); await page.getByText(/已拉取「红线禁止」/).waitFor(); assert.equal(await editor.inputValue(), '母版红线'); await showRewrite()
   assert.equal((await puts()).length, beforePull)
-  checks.push('拉取先确认、取消保留草稿；成功更新红线和规划在内的六页且不自动保存')
+  checks.push('拉取先确认、取消保留草稿；规划与红线分别按当前页拉取，不自动保存')
   for(const flag of ['failRender','incompleteRender']){
     await editor.fill('失败时保留规划');await page.evaluate(flag=>window.fixture[flag]=true,flag)
     await pull.click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.getByText('拉取未完成',{exact:true}).waitFor();assert.equal(await showRewrite(),'失败时保留规划')
     await tab('红线禁止').click();assert.equal(await editor.inputValue(),'母版红线');await showRewrite();assert.equal((await puts()).length,beforePull)
   }
-  checks.push('拉取失败或六份返回缺项整体保留原草稿，避免只更新部分文本框')
+  checks.push('当前页拉取失败或返回缺项时保留原草稿，其他页不受影响')
   await editor.fill(''); await savePrompt(); await switchTo(5); await switchTo(4); assert.equal(await showRewrite(), '')
   checks.push('显式清空规划后仍保存空值，不复活上一份文本')
   await page.evaluate(() => { window.fixture.documents[4].rewrite_planning_md = '隐藏页读取的规划'; sessionStorage.setItem('rewrite-documents', JSON.stringify(window.fixture.documents)) })
@@ -171,10 +174,22 @@ try {
   await page.setViewportSize({width:390,height:900});const templateSize=await page.locator('.prompt-templates').evaluate(el=>({scroll:el.scrollWidth,client:el.clientWidth}));assert.ok(templateSize.scroll<=templateSize.client+1,JSON.stringify(templateSize));await page.locator('.prompt-templates').screenshot({path:output+'/templates-mobile.png'});await page.setViewportSize({width:1600,height:1100})
   await page.evaluate(()=>window.fixture.showTemplates.value=false);await open();await ready();await switchTo(4)
   const beforeAdopt=(await puts()).length
-  await page.getByRole('button',{name:'拉取提示词',exact:true}).click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.getByText(/已从母版拉取六份/).waitFor()
-  for(const[key,value]of Object.entries(updatedTemplates)){await tab(templateLabels[key]).click();assert.equal(await editor.inputValue(),key==='facts_md'?value+'\n实际方案4商品卡和正式事实':value)}
+  for(const[key,value]of Object.entries(updatedTemplates)){
+    await tab(templateLabels[key]).click()
+    await page.getByRole('button',{name:'拉取提示词',exact:true}).click()
+    const confirm=page.getByRole('button',{name:'确认拉取',exact:true});if(await confirm.isVisible())await confirm.click()
+    await page.getByText('已拉取「'+templateLabels[key]+'」；检查后请点击顶部“保存方案”。',{exact:true}).waitFor()
+    assert.equal(await editor.inputValue(),key==='facts_md'?value+'\n实际方案4商品卡和正式事实':value)
+  }
   assert.equal((await puts()).length,beforeAdopt);await savePrompt();assert.equal((await puts()).at(-1).body.rewrite_planning_md,updatedTemplates.rewrite_planning_md)
-  checks.push('维护后返回方案显式拉取六份新母版，事实按方案填充，顶部保存才采用')
+  checks.push('维护后逐页显式拉取新母版，事实按方案填充，六次page请求不自动保存，顶部保存才采用')
+  const beforeConcurrentSave=await showRewrite()
+  await page.evaluate(()=>{window.fixture.holdRender=true;window.fixture.templates.rewrite_planning_md='保存后不应覆盖的迟到规划'})
+  await pull.click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.waitForFunction(()=>!!window.fixture.releaseRender)
+  await savePrompt();assert.equal((await puts()).at(-1).body.rewrite_planning_md,beforeConcurrentSave)
+  await page.evaluate(()=>{window.fixture.releaseRender();window.fixture.releaseRender=null});await page.waitForTimeout(100)
+  assert.equal(await showRewrite(),beforeConcurrentSave)
+  checks.push('实际父页在拉取中点击顶部保存：保存点击时草稿，作废迟到生成，不覆盖已保存正文')
   await switchTo(4); await showRewrite()
   assert.equal(await editor.evaluate(el => getComputedStyle(el).fontSize), '20px')
   await page.locator('.plan-prompt-editor').screenshot({ path: output + '/desktop.png' })
