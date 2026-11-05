@@ -121,13 +121,13 @@ export function serializePromptMetadata(document: StructuredPrompt): string {
 
 export function removePromptField(document: StructuredPrompt, fieldId: string): StructuredPrompt {
   const field = document.nodes.flatMap(node => node.fields).find(field => field.id === fieldId)
-  if (!field || field.origin !== 'user' || field.key === null) throw new Error('只能删除自己添加的键值')
+  if (!field) throw new Error('当前键值或正文已变化，请重新选择')
   return { ...document, nodes: document.nodes.map(node => ({ ...node, fields: node.fields.filter(field => field.id !== fieldId) })) }
 }
 
 export function removePromptNode(document: StructuredPrompt, nodeId: string): StructuredPrompt {
   const node = document.nodes.find(node => node.id === nodeId)
-  if (!node || node.origin !== 'user') throw new Error('只能删除自己添加的节点')
+  if (!node) throw new Error('当前节点已变化，请重新选择')
   return { ...document, nodes: document.nodes.filter(node => node.id !== nodeId) }
 }
 

@@ -118,10 +118,10 @@ test('Inline nodes accept bare names or headed blocks, validate atomically, and 
   }
 })
 
-test('Only custom nodes may be removed, including all of their fields, without modifying model nodes', () => {
+test('Nodes from either origin may be removed with their own fields, without modifying other nodes', () => {
   const doc=parseStructuredPrompt('【身份】\n姓名：甲'),added=appendPromptNodesFromText(doc,'习惯\n语速：中等')
-  assert.throws(()=>removePromptNode(added,doc.nodes[0].id),/只能删除自己添加/)
-  assert.throws(()=>removePromptNode(added,'missing'),/只能删除自己添加/)
+  assert.equal(serializeStructuredPrompt(removePromptNode(added,doc.nodes[0].id)),'\n【习惯】\n语速：中等\n')
+  assert.throws(()=>removePromptNode(added,'missing'),/当前节点已变化/)
   const removed=removePromptNode(added,added.nodes.at(-1).id)
   assert.equal(serializeStructuredPrompt(removed),serializeStructuredPrompt(doc))
   assert.equal(serializePromptMetadata(removed),'')
@@ -152,14 +152,14 @@ test('Plan originals retain provenance while all three model prompt compilations
   assert.equal(readPlanPromptSections(baseline).persona_editor_json,undefined)
 })
 
-test('Custom fields in model nodes delete key and entire multiline value together; model fields cannot be removed', () => {
+test('All fields delete key and entire multiline value together without deleting other fields', () => {
   for (const newline of ['\n','\r\n','\r']) {
     const raw='【身份】'+newline+'姓名：甲'
     const base=parseStructuredPrompt(raw)
     let doc=appendPromptField(base,base.nodes[0].id,'备注','第一句\n【引用节点】\n键：仍为内容')
     assert.equal(doc.nodes[0].fields[1].origin,'user')
-    assert.throws(()=>removePromptField(doc,base.nodes[0].fields[0].id),/只能删除自己添加/)
-    assert.throws(()=>removePromptField(doc,'missing'),/只能删除自己添加/)
+    assert.equal(removePromptField(doc,base.nodes[0].fields[0].id).nodes[0].fields.length,1)
+    assert.throws(()=>removePromptField(doc,'missing'),/当前键值或正文已变化/)
     doc=removePromptField(doc,doc.nodes[0].fields[1].id)
     assert.equal(serializeStructuredPrompt(doc),raw)
     assert.equal(serializePromptMetadata(doc),'')
@@ -178,7 +178,7 @@ test('Field provenance survives edit/save/refresh and updates positions after de
   doc=parseStructuredPrompt(serializeStructuredPrompt(doc),serializePromptMetadata(doc))
   assert.deepEqual(doc.nodes.map(n=>n.fields.map(f=>[f.key,f.origin])),[[['键','model'],['第二键','user']],[['键','user']]])
   assert.equal(doc.nodes[0].fields[1].value,'修改后的值😀')
-  assert.throws(()=>removePromptField(doc,doc.nodes[0].fields[0].id),/只能删除自己添加/)
+  assert.doesNotThrow(()=>removePromptField(doc,doc.nodes[0].fields[0].id))
   doc=removePromptField(doc,doc.nodes[1].fields[0].id)
   assert.equal(doc.nodes[1].fields.length,0)
   assert.equal(doc.nodes[1].origin,'user')
@@ -190,7 +190,7 @@ test('Old node-only metadata retains custom-node keys but never guesses field ow
   const metadata=JSON.stringify({version:1,source,user_nodes:[{index:1,name:'自建'}]})
   const doc=parseStructuredPrompt(source,metadata)
   assert.deepEqual(doc.nodes.map(n=>n.fields.map(f=>f.origin)),[['model','model'],['user']])
-  assert.throws(()=>removePromptField(doc,doc.nodes[0].fields[1].id),/只能删除自己添加/)
+  assert.doesNotThrow(()=>removePromptField(doc,doc.nodes[0].fields[1].id))
   assert.doesNotThrow(()=>removePromptField(doc,doc.nodes[1].fields[0].id))
 })
 
@@ -215,5 +215,34 @@ test('Duplicate model labels and ungrouped text use field positions without enab
   doc=removePromptField(doc,doc.nodes[0].fields[3].id)
   assert.equal(doc.nodes[1].fields[1].origin,'user')
   assert.equal(doc.nodes[1].fields[1].value,'模型里的新值')
-  assert.throws(()=>removePromptField(doc,doc.nodes[0].fields[0].id),/只能删除自己添加/)
+  assert.doesNotThrow(()=>removePromptField(doc,doc.nodes[0].fields[0].id))
+})
+
+test('Duplicate model names use exact node and field identities when deleting', () => {
+  let doc=parseStructuredPrompt('【同名】\r\n键：一\r\n键：二\r\n【同名】\r\n键：三\r\n')
+  doc=removePromptField(doc,doc.nodes[0].fields[1].id)
+  assert.equal(serializeStructuredPrompt(doc),'【同名】\r\n键：一\r\n【同名】\r\n键：三\r\n')
+  doc=removePromptNode(doc,doc.nodes[0].id)
+  assert.equal(serializeStructuredPrompt(doc),'【同名】\r\n键：三\r\n')
+})
+
+test('Untagged, stale-provenance and ordinary body contents may all be removed', () => {
+  const raw='无键正文\n第二句\n【模型节点】\n键：多行\n    【引用不是节点】\n    键：仍是内容\n'
+  for(const metadata of ['', 'broken', '{"version":1,"source":"旧原文","user_nodes":[]}']){
+    let doc=parseStructuredPrompt(raw,metadata)
+    doc=removePromptField(doc,doc.nodes[0].fields[0].id)
+    assert.equal(serializeStructuredPrompt(doc),'【模型节点】\n键：多行\n    【引用不是节点】\n    键：仍是内容\n')
+    doc=removePromptField(doc,doc.nodes[1].fields[0].id)
+    assert.equal(serializeStructuredPrompt(doc),'【模型节点】\n')
+  }
+})
+
+test('Deleting every model and custom node saves an empty source and allows a fresh first node', () => {
+  let doc=appendPromptNodesFromText(parseStructuredPrompt('【模型】\n键：值\n'),'自建\n键：自建值')
+  for(const id of doc.nodes.map(n=>n.id))doc=removePromptNode(doc,id)
+  assert.equal(serializeStructuredPrompt(doc),'');assert.equal(serializePromptMetadata(doc),'')
+  doc=parseStructuredPrompt(serializeStructuredPrompt(doc),serializePromptMetadata(doc))
+  assert.equal(serializeStructuredPrompt(doc),'')
+  doc=appendPromptNodesFromText(doc,'新节点\n新键：新值')
+  assert.equal(serializeStructuredPrompt(doc),'【新节点】\n新键：新值\n')
 })
