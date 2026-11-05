@@ -4465,7 +4465,7 @@ export function annotatePlanText(planId: number, text: string) {
     { method: 'POST', body: JSON.stringify({ text }), suppressErrorDialog: true },
   )
 }
-export type PlanPromptPage = keyof import('./planPrompt').PlanPromptSections | 'rewrite_planning_md'
+export type PlanPromptPage = typeof import('./planPrompt').planPromptTabs[number]['key'] | 'rewrite_planning_md'
 export type PlanPromptRenderSections = Partial<Record<PlanPromptPage, string>> & {
   persona?: string
   facts?: string
@@ -4481,7 +4481,7 @@ export function renderLiveAgentPlanPrompt(planId: number, page: PlanPromptPage, 
   )
 }
 
-export type PlanPromptTemplates = import('./planPrompt').PlanPromptSections & { rewrite_planning_md: string }
+export type PlanPromptTemplates = Pick<import('./planPrompt').PlanPromptSections, typeof import('./planPrompt').planPromptTabs[number]['key']> & { rewrite_planning_md: string }
 export type PlanPromptTemplatesDocument = { templates: PlanPromptTemplates; revision: string; placeholders?: import('./planPromptPlaceholders').PlanPromptPlaceholder[] }
 
 export function getPlanPromptTemplates() {

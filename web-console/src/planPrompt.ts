@@ -4,6 +4,8 @@ export interface PlanPromptSections {
   red_lines_md: string
   speech_requirements_md: string
   interaction_requirements_md: string
+  // Editor-only provenance; never compose this value into model prompts.
+  persona_editor_json?: string
 }
 
 export const planPromptTabs = [
@@ -23,7 +25,9 @@ export function readPlanPromptSections(value: unknown): PlanPromptSections {
     throw new Error('服务端未返回完整的分区提示词，当前内容已保留，请更新服务后重试')
   }
   const source = value as PlanPromptSections
-  return { persona_md: source.persona_md, facts_md: source.facts_md, red_lines_md: source.red_lines_md, speech_requirements_md: source.speech_requirements_md, interaction_requirements_md: source.interaction_requirements_md }
+  const sections: PlanPromptSections = { persona_md: source.persona_md, facts_md: source.facts_md, red_lines_md: source.red_lines_md, speech_requirements_md: source.speech_requirements_md, interaction_requirements_md: source.interaction_requirements_md }
+  if (typeof source.persona_editor_json === 'string' && source.persona_editor_json) sections.persona_editor_json = source.persona_editor_json
+  return sections
 }
 
 export function readPlanRewritePlanning(value: unknown): string {
@@ -41,7 +45,7 @@ export function cleanPlanPromptSections(value: PlanPromptSections): PlanPromptSe
 
 export function compilePlanPrompts(value: PlanPromptSections) {
   const s = cleanPlanPromptSections(value)
-  const combine = (keys: (keyof PlanPromptSections)[]) => keys.map(key => {
+  const combine = (keys: (typeof planPromptTabs[number]['key'])[]) => keys.map(key => {
     const title = planPromptTabs.find(tab => tab.key === key)!.label
     return s[key] ? `【${title}】\n${s[key]}` : ''
   }).filter(Boolean).join('\n\n')

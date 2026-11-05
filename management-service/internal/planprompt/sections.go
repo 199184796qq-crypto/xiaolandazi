@@ -15,6 +15,7 @@ type Sections struct {
 	RedLinesMD                string `json:"red_lines_md"`
 	SpeechRequirementsMD      string `json:"speech_requirements_md"`
 	InteractionRequirementsMD string `json:"interaction_requirements_md"`
+	PersonaEditorJSON         string `json:"persona_editor_json,omitempty"`
 }
 
 func clean(text string) string {
@@ -62,6 +63,9 @@ func (s Sections) Empty() bool {
 }
 
 func (s Sections) Validate() error {
+	if err := s.validatePersonaEditor(); err != nil {
+		return err
+	}
 	if utf8.RuneCountInString(s.Interaction()) > MaxPromptRunes || utf8.RuneCountInString(s.Speech()) > MaxPromptRunes {
 		return errors.New("合成后的每份元提示词不能超过20000字，请缩短对应文本框内容")
 	}

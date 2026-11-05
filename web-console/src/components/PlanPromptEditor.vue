@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { renderLiveAgentPlanPrompt, type PlanPromptPage } from '../api'
 import { compilePlanPrompts, planPromptTabs, planPromptValidation, type PlanPromptSections } from '../planPrompt'
+import StructuredPromptEditor from './StructuredPromptEditor.vue'
 
 const content = defineModel<PlanPromptSections>({ required: true })
 const rewritePlanning = defineModel<string>('rewritePlanning', { default: '' })
@@ -17,6 +18,7 @@ const confirmation = ref<HTMLDialogElement | null>(null)
 const cancelButton = ref<HTMLButtonElement | null>(null)
 const regenerateButton = ref<HTMLButtonElement | null>(null)
 const editor = ref<HTMLTextAreaElement | null>(null)
+const structuredEditor = ref<InstanceType<typeof StructuredPromptEditor> | null>(null)
 const tabs = [...planPromptTabs, { key: 'rewrite_planning_md', label: '话术规划' }] as const
 const activeTab = ref<PlanPromptPage>('persona_md')
 const selectedTab = computed(() => tabs.find(tab => tab.key === activeTab.value)!)
@@ -28,6 +30,17 @@ const activeContent = computed({
     else content.value = { ...content.value, [activeTab.value]: value }
   },
 })
+// The cached persona editor must never write a late blur/IME event to another tab.
+const personaContent = computed(() => content.value.persona_md)
+const personaMetadata = computed(() => content.value.persona_editor_json || '')
+function updatePersona(value: string, metadata: string) {
+  // Update originals and provenance together; two model setters can read the
+  // same previous prop before Vue renders and otherwise overwrite each other.
+  const next = { ...content.value, persona_md: value }
+  if (metadata) next.persona_editor_json = metadata
+  else delete next.persona_editor_json
+  content.value = next
+}
 const compiled = computed(() => compilePlanPrompts(content.value))
 const validation = computed(() => planPromptValidation(content.value, rewritePlanning.value))
 const busy = computed(() => props.loading || props.saving || generating.value)
@@ -104,7 +117,10 @@ async function generate(page: PlanPromptPage) {
     const error = planPromptValidation(next, planning)
     if (error) throw new Error(error)
     if (page === 'rewrite_planning_md') rewritePlanning.value = pageText
-    else content.value = next
+    else {
+      if (page === 'persona_md') delete next.persona_editor_json
+      content.value = next
+    }
     const warnings = result.warnings?.[page]
     generationWarnings.value = Array.isArray(warnings) ? warnings.filter((note): note is string => typeof note === 'string' && !!note.trim()) : []
     const action = result.sources?.[page] === 'model' ? '已生成' : '已拉取'
@@ -117,7 +133,13 @@ async function generate(page: PlanPromptPage) {
     if (current()) {
       generating.value = false
       requestController = null
-      if (!generationError.value) { await nextTick(); if (current() && activeTab.value === page) editor.value?.focus({ preventScroll: true }) }
+      if (!generationError.value) {
+        await nextTick()
+        if (current() && activeTab.value === page) {
+          if (page === 'persona_md') structuredEditor.value?.focus()
+          else editor.value?.focus({ preventScroll: true })
+        }
+      }
     }
   }
 }
@@ -198,7 +220,8 @@ function backdrop(event: MouseEvent) {
       <div class="plan-prompt-content-heading"><label for="plan-prompt-content">{{ selectedTab.label }}</label><span>{{ Array.from(activeContent).length }} 字</span></div>
       <p v-if="generating" class="plan-prompt-progress" role="status"><i aria-hidden="true"></i>正在拉取「{{ pageLabel(generationPage) }}」…</p>
       <div id="plan-prompt-panel" role="tabpanel" :aria-labelledby="'plan-prompt-tab-' + activeTab">
-        <textarea id="plan-prompt-content" ref="editor" v-model="activeContent" :readonly="unavailable" maxlength="20000" rows="18" spellcheck="false" :placeholder="'请填写' + selectedTab.label" @input="edited"></textarea>
+        <KeepAlive :max="1"><StructuredPromptEditor v-if="activeTab === 'persona_md'" :key="planId ?? 'none'" ref="structuredEditor" :model-value="personaContent" :metadata="personaMetadata" input-id="plan-prompt-content" :readonly="unavailable" @change="updatePersona" @input="edited" /></KeepAlive>
+        <textarea v-if="activeTab !== 'persona_md'" id="plan-prompt-content" ref="editor" v-model="activeContent" :readonly="unavailable" maxlength="20000" rows="18" spellcheck="false" :placeholder="'请填写' + selectedTab.label" @input="edited"></textarea>
       </div>
       <p v-if="validation" class="plan-prompt-error" role="alert">{{ validation }}</p>
       <details class="plan-prompt-preview">

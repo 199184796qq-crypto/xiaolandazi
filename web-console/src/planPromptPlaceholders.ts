@@ -1,7 +1,7 @@
-import type { PlanPromptSections } from './planPrompt'
+import type { planPromptTabs } from './planPrompt'
 import compatibilityCatalog from './planPromptPlaceholderCatalog.json'
 
-export type PlanPromptTemplateKey = keyof PlanPromptSections | 'rewrite_planning_md'
+export type PlanPromptTemplateKey = typeof planPromptTabs[number]['key'] | 'rewrite_planning_md'
 export interface PlanPromptPlaceholder {
   key: string
   label: string

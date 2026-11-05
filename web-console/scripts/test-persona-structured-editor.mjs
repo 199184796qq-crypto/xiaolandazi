@@ -1,0 +1,207 @@
+// Actual strategy parent, prompt editor and API wrappers; local fixtures only.
+import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { createServer } from 'vite'
+const {chromium}=createRequire(new URL('../../collector-worker/package.json',import.meta.url))('playwright-core')
+const output=process.env.PERSONA_STRUCTURE_TEST_OUTPUT||'E:/直播伴播-local/persona-node-origin-20261105/browser'
+await mkdir(output,{recursive:true})
+const source=(await readFile(new URL('./test-plan-prompt-editor.mjs',import.meta.url),'utf8')).replace(/\r\n/g,'\n')
+const parent=(await readFile(new URL('./test-plan-rewrite-prompt-editor.mjs',import.meta.url),'utf8')).replace(/\r\n/g,'\n')
+let fixture=source.split('const fixture=String.raw`')[1].split('`\nconst server=')[0]
+const setup=parent.split('const setup = String.raw`')[1].split('\n`\nfixture =')[0]
+const sample='【身份】\n主播名：小林\n主播身份：店主本人，店里的自己人。\n\n【说话方式】\n语速：中等偏快\n句子长度：一句一个意思。\n\n【称呼】\n默认称呼：各位\n'
+fixture=fixture.replace('applySession(',setup+'\nif(!sessionStorage.getItem("rewrite-documents"))window.fixture.documents[4].sections.persona_md='+JSON.stringify(sample)+';\napplySession(')
+const server=await createServer({server:{host:'127.0.0.1',port:0},appType:'custom',plugins:[{name:'persona-parent-inspect',enforce:'pre',transform(code,id){
+  if(!id.endsWith('/src/views/LiveStrategyView.vue'))return
+  return code.replace('</script>',`window.fixture.view={plan:()=>currentRoomPlanId.value,setPlan:id=>handlePlanSwitch({target:{value:String(id)}}),loaded:()=>planPromptLoadedPlan.value,loading:()=>planPromptLoading.value,busy:()=>savePlanOneClickBusy.value,blocked:()=>fullShowSaveBlockedReason.value,hydrating:()=>fullShowWorkspaceHydrating.value,sections:()=>planPromptSections.value};</script>`)
+}}]})
+server.middlewares.use(async(req,res,next)=>{if(req.url!=='/__persona-structure')return next();res.setHeader('Content-Type','text/html;charset=utf-8');res.end(await server.transformIndexHtml(req.url,fixture))})
+await server.listen()
+const browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true})
+const checks=[],errors=[],external=[];let page
+try{
+ const context=await browser.newContext({viewport:{width:1440,height:1100},reducedMotion:'reduce'})
+ await context.route('**/*',route=>{const u=new URL(route.request().url());if(u.hostname==='127.0.0.1')return route.continue();external.push(u.hostname);return route.abort()})
+ page=await context.newPage();page.setDefaultTimeout(12000);page.on('pageerror',e=>errors.push(e.message))
+ const ready=()=>page.waitForFunction(()=>window.fixture?.view?.loaded()===window.fixture?.view?.plan()&&!window.fixture.view.loading()&&!window.fixture.view.busy()&&!window.fixture.view.hydrating())
+ const raw=()=>page.evaluate(()=>window.fixture.view.sections().persona_md)
+ const sections=()=>page.evaluate(()=>JSON.parse(JSON.stringify(window.fixture.view.sections())))
+ const value=(node,key)=>page.getByRole('textbox',{name:node+' / '+key+'的值',exact:true})
+ const draft=node=>page.getByRole('textbox',{name:node+' / 新增键值',exact:true})
+ const addFields=async(node,text)=>{await page.getByRole('button',{name:'给'+node+'添加键值',exact:true}).click();await draft(node).fill(text);await draft(node).blur()}
+ const nodeDraft=()=>page.getByRole('textbox',{name:'新增节点内容',exact:true})
+ const addNodes=async text=>{await page.getByRole('button',{name:'＋ 添加节点',exact:true}).click();await nodeDraft().fill(text);await nodeDraft().blur()}
+ const deleteNode=async name=>{await page.getByRole('button',{name:'删除'+name+'节点',exact:true}).click();await page.getByRole('button',{name:'确认删除节点',exact:true}).click()}
+ const fieldNames=()=>page.locator('.prompt-key>span').allTextContents()
+ const nodeNames=()=>page.locator('.prompt-node-heading h4').allTextContents()
+ const saveCalls=()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.method==='PUT'&&c.path.endsWith('/prompt')))
+ const switchTo=async id=>{await page.evaluate(id=>window.fixture.view.setPlan(id),id);await ready()}
+ await page.goto(server.resolvedUrls.local[0]+'__persona-structure');await page.waitForFunction(()=>window.fixture?.view?.plan()===4)
+ await page.getByRole('button',{name:'方案提示词',exact:true}).click();await ready();await page.getByRole('group',{name:'主播人设结构化编辑（测试）',exact:true}).waitFor()
+ assert.equal(await raw(),sample);const before=await sections(),initialKeys=await fieldNames(),initialNodes=await nodeNames()
+ assert.deepEqual(initialKeys,['主播名','主播身份','语速','句子长度','默认称呼'])
+ assert.equal(await page.locator('.prompt-node-heading input,.prompt-key input,.prompt-node-heading [contenteditable=true],.prompt-key [contenteditable=true]').count(),0)
+ const colors=await page.evaluate(()=>[getComputedStyle(document.querySelector('.prompt-node-heading h4')).color,getComputedStyle(document.querySelector('.prompt-key')).color,getComputedStyle(document.querySelector('.prompt-value')).color])
+ assert.equal(new Set(colors).size,3)
+ assert.equal(await page.getByRole('button',{name:/^删除.*节点$/}).count(),0)
+ await page.locator('.structured-prompt').screenshot({path:output+'/preview.png'})
+ checks.push('真实主播人设页识别节点/键/值；名称无编辑入口，三者分色，初次进入原文零改动')
+
+ await value('身份','主播名').fill('阿林😀');assert.equal(await raw(),sample.replace('小林','阿林😀'))
+ await value('身份','主播名').fill('');assert.ok((await raw()).includes('主播名：\n'))
+ await value('身份','主播名').fill('阿林😀')
+ assert.deepEqual(await fieldNames(),initialKeys);assert.deepEqual(await nodeNames(),initialNodes)
+ checks.push('改值/清空/Unicode只改变对应值，节点名和键名完整保留')
+
+ const multiline='店主本人。\n【这是引用，不是新增节点】\n示例键：引用内容'
+ await value('身份','主播身份').fill(multiline)
+ assert.ok((await raw()).includes('    【这是引用，不是新增节点】'))
+ await page.getByRole('tab',{name:'事实依据',exact:true}).click();assert.equal(await page.locator('.structured-prompt').count(),0)
+ await page.getByRole('tab',{name:'主播人设',exact:true}).click()
+ assert.equal(await value('身份','主播身份').inputValue(),multiline);assert.deepEqual(await fieldNames(),initialKeys)
+ checks.push('粘贴多行中的节点/键样式只作为值保存，切页重读不冒出新节点')
+
+ const imeBefore=await raw()
+ await value('身份','主播名').evaluate(el=>{el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));el.value='中文名字';el.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true,inputType:'insertCompositionText'}))})
+ assert.equal(await raw(),imeBefore)
+ await value('身份','主播名').evaluate(el=>el.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'中文名字'})))
+ assert.ok((await raw()).includes('主播名：中文名字'))
+ checks.push('中文输入法组合中不提交半成品，组合结束后更新该值')
+
+ const beforeLarge=await raw();await value('身份','主播名').fill('字'.repeat(20000))
+ await page.getByRole('alert').filter({hasText:'整页内容不能超过20000字'}).waitFor()
+ assert.equal(await raw(),beforeLarge);assert.equal(await value('身份','主播名').inputValue(),'中文名字')
+ await value('身份','主播名').fill('中文名字！');await value('身份','主播名').fill('中文名字')
+ checks.push('整页长度包含锁定标签；超长值在修改原稿前拒绝并恢复输入框')
+
+ await page.getByRole('button',{name:'＋ 添加节点',exact:true}).click();assert.equal(await page.getByRole('dialog').count(),0)
+ const beforeNodeDraft=await raw();await nodeDraft().fill('身份');assert.equal(await raw(),beforeNodeDraft);await nodeDraft().blur()
+ await page.getByRole('alert').filter({hasText:'节点名已存在'}).waitFor();assert.equal((await nodeNames()).length,3)
+ await nodeDraft().fill('');await nodeDraft().blur();assert.equal((await nodeNames()).length,3)
+ await addNodes('表达习惯')
+ await page.getByRole('button',{name:'给表达习惯添加键值',exact:true}).waitFor();assert.equal((await nodeNames()).length,4)
+ await page.getByRole('button',{name:'删除表达习惯节点',exact:true}).waitFor()
+ assert.equal(await page.getByRole('button',{name:'删除身份节点',exact:true}).count(),0)
+ checks.push('新增节点在页面内失焦识别、无对话框，重名保留输入、空白不添加；仅自建节点有删除入口，所有节点名仍锁定')
+
+ const beforeTemporary=await raw();await addNodes('【临时节点】\n示例：保留自己的内容\n附加：第二个值')
+ await value('临时节点','示例').waitFor();await page.getByRole('button',{name:'删除临时节点节点',exact:true}).click()
+ assert.equal(await page.getByRole('dialog').count(),0);await page.getByRole('button',{name:'取消删除',exact:true}).click()
+ assert.equal(await value('临时节点','附加').inputValue(),'第二个值')
+ await deleteNode('临时节点');assert.equal(await raw(),beforeTemporary)
+ checks.push('节点与键值可在同一新增框填写；自建节点删除在节点内确认，可取消，删除后原模型节点及原文完整保留')
+
+ const beforeNodeIme=await raw();await page.getByRole('button',{name:'＋ 添加节点',exact:true}).click()
+ await nodeDraft().evaluate(el=>{el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));el.value='输入法节点\n值：完成😀';el.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true}));el.blur()})
+ assert.equal(await raw(),beforeNodeIme)
+ await nodeDraft().evaluate(el=>el.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'完成😀'})))
+ await value('输入法节点','值').waitFor();await deleteNode('输入法节点');assert.equal(await raw(),beforeNodeIme)
+ checks.push('节点新增支持中文输入法先失焦后完成，不解析半成品、不重复添加')
+
+ const beforeDraft=await raw()
+ await page.getByRole('button',{name:'给身份添加键值',exact:true}).click();assert.equal(await page.getByRole('dialog').count(),0)
+ assert.equal(await draft('身份').evaluate(el=>document.activeElement===el),true)
+ assert.equal(await draft('身份').locator('..').locator('..').getAttribute('aria-label'),'身份节点')
+ await draft('身份').fill('新键：有效内容\n主播名：重名');assert.equal(await raw(),beforeDraft);await draft('身份').blur()
+ await page.getByRole('alert').filter({hasText:'键名已存在'}).waitFor();assert.equal(await raw(),beforeDraft)
+ assert.equal(await draft('身份').inputValue(),'新键：有效内容\n主播名：重名')
+ await draft('身份').fill('- 隐藏前缀：内容');await draft('身份').blur();await page.getByRole('alert').filter({hasText:'键名请使用简短文字'}).waitFor()
+ await draft('身份').fill('缺少冒号');await draft('身份').blur();await page.getByRole('alert').filter({hasText:'请使用“键名：内容”'}).waitFor();assert.equal(await raw(),beforeDraft)
+ await page.getByRole('tab',{name:'事实依据',exact:true}).click();await page.getByRole('tab',{name:'主播人设',exact:true}).click()
+ assert.equal(await draft('身份').inputValue(),'缺少冒号')
+ await draft('身份').fill('');await draft('身份').blur();assert.equal(await draft('身份').count(),0)
+ checks.push('添加键值在指定节点下直接输入、无弹窗；失焦才解析，重名/非法/不完整整批拒绝并保留输入，切页仍保留')
+
+ await addFields('表达习惯','停顿：短句之间稍作停顿。\n语气:自然：像聊天\n说明：')
+ assert.equal(await draft('表达习惯').count(),0);assert.equal(await value('表达习惯','语气').inputValue(),'自然：像聊天');assert.equal(await value('表达习惯','说明').inputValue(),'')
+ await value('表达习惯','停顿').fill('句尾自然停顿。')
+ assert.ok((await raw()).includes('【表达习惯】\n停顿：句尾自然停顿。'))
+ assert.equal((await saveCalls()).length,0)
+ checks.push('支持中英文冒号、多组键值和空值，值内冒号保留；新键锁定、值可改，不自动保存或请求模型')
+
+ await page.getByRole('button',{name:'给表达习惯添加键值',exact:true}).click()
+ const imeDraftBefore=await raw()
+ await draft('表达习惯').evaluate(el=>{el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));el.value='口头禅：自然说话😀';el.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true}));el.blur()})
+ assert.equal(await raw(),imeDraftBefore)
+ await draft('表达习惯').evaluate(el=>el.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'自然说话😀'})))
+ await value('表达习惯','口头禅').waitFor();assert.equal(await value('表达习惯','口头禅').inputValue(),'自然说话😀')
+ await addFields('表达习惯','');assert.equal(await draft('表达习惯').count(),0)
+ checks.push('中文输入法失焦早于组合结束时延后解析，结束后仅添加一次；空白失焦不创建键')
+
+ const longDraftBefore=await raw();await addFields('表达习惯','超长：'+'字'.repeat(19997))
+ await page.getByRole('alert').filter({hasText:'未添加，输入已保留：整页内容不能超过20000字'}).waitFor();assert.equal(await raw(),longDraftBefore)
+ assert.ok((await draft('表达习惯').inputValue()).startsWith('超长：'))
+ await draft('表达习惯').fill('多行：第一句\n    第二句\n    【仅为引用】');await draft('表达习惯').blur()
+ assert.equal(await value('表达习惯','多行').inputValue(),'第一句\n第二句\n【仅为引用】')
+ checks.push('新增整页长度保护不部分提交、不丢输入；修正后可继续，多行值中的结构文字不变成节点')
+
+ const current=await sections();for(const key of Object.keys(before).filter(k=>k!=='persona_md'))assert.equal(current[key],before[key])
+ await page.getByRole('tab',{name:'话术规划',exact:true}).click();assert.equal(await page.locator('.structured-prompt').count(),0)
+ await page.getByRole('tab',{name:'主播人设',exact:true}).click()
+ await page.getByRole('button',{name:'给表达习惯添加键值',exact:true}).click();await draft('表达习惯').fill('保存时追加：先失焦再保存')
+ await page.locator('#plan-save-button').click();await ready();await page.getByText('方案提示词已随方案保存，三份元提示词已更新',{exact:true}).waitFor();const savedRaw=await raw()
+ assert.ok(savedRaw.includes('保存时追加：先失焦再保存'))
+ assert.equal((await saveCalls()).at(-1).body.sections.persona_md,savedRaw)
+ const savedMeta=(await saveCalls()).at(-1).body.sections.persona_editor_json
+ assert.equal(JSON.parse(savedMeta).source,savedRaw)
+ await switchTo(5);await switchTo(4)
+ assert.equal(await raw(),savedRaw);assert.equal(await value('表达习惯','停顿').inputValue(),'句尾自然停顿。')
+ await page.getByRole('button',{name:'删除表达习惯节点',exact:true}).waitFor()
+ checks.push('仅主播人设使用结构化框；点击顶部保存先解析焦点内新增值再提交，切方案往返正确回显')
+
+ await page.reload();await page.waitForFunction(()=>window.fixture?.view?.plan()===4);await page.getByRole('button',{name:'方案提示词',exact:true}).click();await ready()
+ assert.equal(await raw(),savedRaw);await page.getByRole('button',{name:'删除表达习惯节点',exact:true}).waitFor()
+ assert.equal(await page.getByRole('button',{name:'删除身份节点',exact:true}).count(),0)
+ await page.getByText('查看两份元提示词合成预览',{exact:true}).click()
+ assert.ok(!(await page.getByRole('textbox',{name:'主播互动元提示词',exact:true}).inputValue()).includes('user_nodes'))
+ await page.getByText('查看两份元提示词合成预览',{exact:true}).click()
+ checks.push('保存后浏览器刷新及方案重读仍识别自建节点，原节点始终锁定，来源元数据不进入提示词合成')
+
+ await page.getByText('查看完整原文（只读）',{exact:true}).click();assert.equal(await page.getByRole('textbox',{name:'主播人设完整原文（只读）',exact:true}).getAttribute('readonly'),'')
+ await page.getByText('查看完整原文（只读）',{exact:true}).click()
+ checks.push('完整原文可查看复制，保持只读，不能绕过锁定名称')
+
+ for(const width of [1440,777,390,320]){
+  await page.setViewportSize({width,height:1100});await page.waitForTimeout(60)
+  const size=await page.locator('.structured-prompt').evaluate(el=>({scroll:el.scrollWidth,client:el.clientWidth}))
+  assert.ok(size.scroll<=size.client+1,JSON.stringify(size))
+  const areas=await page.locator('.prompt-value').evaluateAll(els=>els.map(el=>({scroll:el.scrollHeight,client:el.clientHeight})))
+  assert.ok(areas.every(x=>x.scroll<=x.client+2),JSON.stringify(areas))
+  await page.locator('.structured-prompt').screenshot({path:output+'/'+width+'.png'})
+ }
+ await page.setViewportSize({width:1440,height:1100})
+ checks.push('1440/777/390/320px无横向溢出，多行值随宽度撑高而不遮挡')
+
+ await page.getByRole('button',{name:'＋ 添加节点',exact:true}).click();await switchTo(5)
+ assert.equal(await page.getByRole('dialog').count(),0);await switchTo(4)
+ assert.equal(await nodeDraft().count(),0)
+ checks.push('节点新增期间切方案，旧输入框关闭，不把旧新增操作带到新方案')
+
+ await addFields('身份','不完整内容');await switchTo(5);await switchTo(4)
+ assert.equal(await page.locator('.field-composer').count(),0)
+ checks.push('切方案丢弃旧节点的未解析输入，不将同名节点草稿带入其他方案')
+
+ const regeneratedText=await raw();await page.evaluate(text=>{window.fixture.templates.persona_md=text},regeneratedText)
+ await page.getByRole('button',{name:'拉取提示词',exact:true}).click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await ready()
+ await page.waitForFunction(()=>document.querySelector('.plan-prompt-editor')?.getAttribute('aria-busy')==='false')
+ assert.equal(await raw(),regeneratedText);assert.equal(await page.getByRole('button',{name:/^删除.*节点$/}).count(),0)
+ assert.equal((await sections()).persona_editor_json,undefined)
+ checks.push('重新拉取模型返回相同正文也会清除旧自建来源，不因同名/同文本误开放模型节点删除')
+
+ await page.evaluate(()=>{window.fixture.holdRender=true;window.fixture.templates.persona_md='【新身份】\n称呼：店主'})
+ await addFields('身份','另一个未完成内容')
+ await page.getByRole('button',{name:'拉取提示词',exact:true}).click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.waitForFunction(()=>!!window.fixture.releaseRender)
+ assert.equal(await page.locator('.prompt-value').first().getAttribute('readonly'),'')
+ assert.equal(await page.getByRole('button',{name:'＋ 添加节点',exact:true}).isDisabled(),true)
+ assert.equal(await draft('身份').getAttribute('readonly'),'')
+ await page.evaluate(()=>{window.fixture.releaseRender();window.fixture.releaseRender=null});await ready();await value('新身份','称呼').waitFor()
+ assert.equal(await raw(),'【新身份】\n称呼：店主');assert.equal(await value('新身份','称呼').getAttribute('readonly'),null)
+ assert.equal(await page.locator('.field-composer').count(),0)
+ checks.push('拉取/保存期间锁定值及新增入口；新模型正文返回后重新识别并锁定新名称')
+
+ assert.deepEqual(errors,[]);assert.deepEqual(external,[])
+ await writeFile(output+'/checks.json',JSON.stringify({passed:true,groups:checks.length,checks,errors,external,scope:'Actual parent/editor/API; local fixtures, no real model calls or production changes.'},null,2))
+ console.log(JSON.stringify({passed:true,groups:checks.length,checks}))
+}catch(error){if(page)await page.screenshot({path:output+'/failure.png',fullPage:true});await writeFile(output+'/failure.json',JSON.stringify({error:String(error),stack:error.stack,checks,errors,external},null,2));throw error}
+finally{await browser.close();await server.close()}
