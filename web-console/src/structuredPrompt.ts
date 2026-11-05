@@ -1,5 +1,6 @@
 export interface PromptField {
   id: string
+  origin: 'model' | 'user'
   key: string | null
   prefix: string
   value: string
@@ -53,7 +54,7 @@ export function parseStructuredPrompt(text: string, metadata = ''): StructuredPr
     if (!pending) return
     const suffix = pending.text.match(/(?:(?:\r\n|\r|\n)[ \t]*)+$/)?.[0] || ''
     const rawValue = pending.text.slice(0, pending.text.length - suffix.length)
-    node.fields.push({ id: 'f' + sequence++, key: pending.key, prefix: pending.prefix, value: decodedValue(rawValue, pending.key !== null), rawValue, suffix })
+    node.fields.push({ id: 'f' + sequence++, origin: 'model', key: pending.key, prefix: pending.prefix, value: decodedValue(rawValue, pending.key !== null), rawValue, suffix })
     pending = null
   }
   for (const match of text.matchAll(/[^\r\n]*(?:\r\n|\r|\n|$)/g)) {
@@ -75,7 +76,7 @@ export function parseStructuredPrompt(text: string, metadata = ''): StructuredPr
     }
   }
   flush()
-  if (!node.heading && !node.fields.length) node.fields.push({ id: 'f' + sequence++, key: null, prefix: '', value: '', rawValue: '', suffix: '' })
+  if (!node.heading && !node.fields.length) node.fields.push({ id: 'f' + sequence++, origin: 'model', key: null, prefix: '', value: '', rawValue: '', suffix: '' })
   nodes.push(node)
   const document: StructuredPrompt = { nodes, newline }
   // Missing/invalid/stale provenance always locks every node. Metadata is kept
@@ -88,7 +89,23 @@ export function parseStructuredPrompt(text: string, metadata = ''): StructuredPr
       if (!Number.isInteger(entry?.index) || entry.index < 0 || !nodes[entry.index]?.heading || nodes[entry.index]?.name !== entry.name || indexes.has(entry.index)) return document
       indexes.add(entry.index)
     }
-    return { ...document, nodes: nodes.map((node, index) => indexes.has(index) ? { ...node, origin: 'user' } : node) }
+    const fields = new Set<string>()
+    // v1 documents saved before field provenance only know entire custom nodes.
+    // Never infer ownership of an unknown field in an original/model node.
+    if (saved.user_fields !== undefined) {
+      if (!Array.isArray(saved.user_fields)) return document
+      for (const entry of saved.user_fields) {
+        if (!Number.isInteger(entry?.node_index) || entry.node_index < 0 || !Number.isInteger(entry?.index) || entry.index < 0) return document
+        const field = nodes[entry.node_index]?.fields[entry.index]
+        const identity = entry.node_index + ':' + entry.index
+        if (!field || field.key === null || field.key !== entry.key || fields.has(identity)) return document
+        fields.add(identity)
+      }
+    }
+    return { ...document, nodes: nodes.map((node, index) => ({ ...node,
+      origin: indexes.has(index) ? 'user' : 'model',
+      fields: node.fields.map((field, fieldIndex) => ({ ...field, origin: field.key !== null && (indexes.has(index) || fields.has(index + ':' + fieldIndex)) ? 'user' : 'model' })),
+    })) }
   } catch { return document }
 }
 
@@ -98,7 +115,14 @@ export function serializeStructuredPrompt(document: StructuredPrompt): string {
 
 export function serializePromptMetadata(document: StructuredPrompt): string {
   const user_nodes = document.nodes.flatMap((node, index) => node.origin === 'user' ? [{ index, name: node.name }] : [])
-  return user_nodes.length ? JSON.stringify({ version: 1, source: serializeStructuredPrompt(document), user_nodes }) : ''
+  const user_fields = document.nodes.flatMap((node, node_index) => node.fields.flatMap((field, index) => field.origin === 'user' && field.key !== null ? [{ node_index, index, key: field.key }] : []))
+  return user_nodes.length || user_fields.length ? JSON.stringify({ version: 1, source: serializeStructuredPrompt(document), user_nodes, user_fields }) : ''
+}
+
+export function removePromptField(document: StructuredPrompt, fieldId: string): StructuredPrompt {
+  const field = document.nodes.flatMap(node => node.fields).find(field => field.id === fieldId)
+  if (!field || field.origin !== 'user' || field.key === null) throw new Error('只能删除自己添加的键值')
+  return { ...document, nodes: document.nodes.map(node => ({ ...node, fields: node.fields.filter(field => field.id !== fieldId) })) }
 }
 
 export function removePromptNode(document: StructuredPrompt, nodeId: string): StructuredPrompt {
@@ -181,7 +205,7 @@ export function appendPromptField(document: StructuredPrompt, nodeId: string, ke
   if (error) throw new Error(error)
   const raw = target.heading + target.fields.map(field => field.prefix + field.rawValue + field.suffix).join('')
   const gap = !raw || /(?:\r\n|\r|\n)$/.test(raw) ? '' : document.newline
-  const field: PromptField = { id: nextId(document, 'f'), key: key.trim(), prefix: gap + key.trim() + '：', value: value.replace(/\r\n|\r/g, '\n'), rawValue: encodedValue(value, true, document.newline), suffix: document.newline }
+  const field: PromptField = { id: nextId(document, 'f'), origin: 'user', key: key.trim(), prefix: gap + key.trim() + '：', value: value.replace(/\r\n|\r/g, '\n'), rawValue: encodedValue(value, true, document.newline), suffix: document.newline }
   return { ...document, nodes: document.nodes.map(node => node.id === nodeId ? { ...node, fields: [...node.fields, field] } : node) }
 }
 

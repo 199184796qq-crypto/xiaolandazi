@@ -16,8 +16,8 @@ func TestPersonaEditorMetadataSavedAtomicallyAndScoped(t *testing.T) {
 	database := sql.OpenDB(promptSectionConnector{state})
 	defer database.Close()
 	s := &Store{db: database}
-	sections := planprompt.Sections{PersonaMD: "【身份】\n姓名：甲\n【自建】\n语速：中等\n"}
-	metadata, _ := json.Marshal(map[string]any{"version": 1, "source": sections.PersonaMD, "user_nodes": []any{map[string]any{"index": 1, "name": "自建"}}})
+	sections := planprompt.Sections{PersonaMD: "【身份】\n姓名：甲\n备注：用户新增\n【自建】\n语速：中等\n"}
+	metadata, _ := json.Marshal(map[string]any{"version": 1, "source": sections.PersonaMD, "user_nodes": []any{map[string]any{"index": 1, "name": "自建"}}, "user_fields": []any{map[string]any{"node_index": 0, "index": 1, "key": "备注"}, map[string]any{"node_index": 1, "index": 0, "key": "语速"}}})
 	sections.PersonaEditorJSON = string(metadata)
 	doc, err := s.SaveLiveAgentPlanPromptPlanning(context.Background(), 14, 4, 28, sections, "规则")
 	if err != nil || doc.Sections != sections || state.writes != 1 {

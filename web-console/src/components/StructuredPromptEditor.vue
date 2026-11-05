@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { appendPromptFieldsFromText, appendPromptNodesFromText, parseStructuredPrompt, removePromptNode, replacePromptValue, serializePromptMetadata, serializeStructuredPrompt, type StructuredPrompt } from '../structuredPrompt'
+import { appendPromptFieldsFromText, appendPromptNodesFromText, parseStructuredPrompt, removePromptField, removePromptNode, replacePromptValue, serializePromptMetadata, serializeStructuredPrompt, type StructuredPrompt } from '../structuredPrompt'
 
 const props = withDefaults(defineProps<{ modelValue: string; metadata?: string; readonly?: boolean; inputId?: string; maxLength?: number }>(), { metadata: '', readonly: false, inputId: 'plan-prompt-content', maxLength: 20000 })
 const emit = defineEmits<{ change: [value: string, metadata: string]; input: [] }>()
@@ -14,6 +14,7 @@ const fieldDrafts = ref<Record<string, FieldDraft>>({})
 const nodeDraft = ref<FieldDraft | null>(null)
 const nodeInput = ref<HTMLTextAreaElement | null>(null)
 const deletingNode = ref('')
+const deletingField = ref('')
 let composing: HTMLTextAreaElement | null = null
 
 function resizeValues() {
@@ -29,6 +30,7 @@ watch(() => [props.modelValue, props.metadata] as const, ([value, metadata]) => 
   fieldDrafts.value = {}
   nodeDraft.value = null
   deletingNode.value = ''
+  deletingField.value = ''
   error.value = ''
   composing = null
   void nextTick(resizeValues)
@@ -39,6 +41,7 @@ watch(() => props.readonly, value => {
     for (const draft of Object.values(fieldDrafts.value)) { draft.composing = false; draft.blurred = false }
     if (nodeDraft.value) { nodeDraft.value.composing = false; nodeDraft.value.blurred = false }
     deletingNode.value = ''
+    deletingField.value = ''
     void nextTick(() => {
       for (const node of document.value.nodes) for (const field of node.fields) {
         const area = root.value?.querySelector<HTMLTextAreaElement>('[data-field-id="' + field.id + '"]')
@@ -125,7 +128,19 @@ function nodeCompositionEnd(event: CompositionEvent) {
 }
 
 function requestDelete(nodeId: string) {
-  if (!props.readonly && document.value.nodes.find(node => node.id === nodeId)?.origin === 'user') deletingNode.value = nodeId
+  if (!props.readonly && document.value.nodes.find(node => node.id === nodeId)?.origin === 'user') { deletingField.value = ''; deletingNode.value = nodeId }
+}
+
+function requestDeleteField(fieldId: string) {
+  const field = document.value.nodes.flatMap(node => node.fields).find(field => field.id === fieldId)
+  if (!props.readonly && field?.key !== null && field?.origin === 'user') { deletingNode.value = ''; deletingField.value = fieldId }
+}
+
+function deleteField(fieldId: string) {
+  if (props.readonly) return
+  try {
+    if (commit(removePromptField(document.value, fieldId))) deletingField.value = ''
+  } catch (err) { error.value = err instanceof Error ? err.message : '删除未完成' }
 }
 
 function deleteNode(nodeId: string) {
@@ -186,7 +201,7 @@ defineExpose({ focus })
 <template>
   <div ref="root" class="structured-prompt" role="group" aria-label="主播人设结构化编辑（测试）" :aria-disabled="readonly">
     <div class="structure-toolbar">
-      <div class="structure-guide"><span class="structure-test">结构化编辑 · 测试</span><p>名称已锁定，值可修改。模型节点不可删除；自己添加的节点可删除。新增内容离开输入框后自动识别。</p></div>
+      <div class="structure-guide"><span class="structure-test">结构化编辑 · 测试</span><p>名称已锁定，值可修改。自己添加的节点和键值可以删除。新增内容离开输入框后自动识别。</p></div>
       <button ref="addButton" type="button" class="add-node" :disabled="readonly" @click="requestNode">＋ 添加节点</button>
     </div>
     <div class="structure-legend" aria-label="颜色说明"><span class="node-legend">节点名称</span><span class="key-legend">键名</span><span>值可编辑</span></div>
@@ -195,8 +210,9 @@ defineExpose({ focus })
       <header class="prompt-node-heading"><div class="node-title"><h4><span aria-hidden="true">▧</span> {{ node.name }}</h4><small>{{ node.origin === 'user' ? '自己添加' : '原始节点 · 已锁定' }}</small></div><div class="node-actions"><button type="button" :disabled="readonly" :aria-label="'给' + node.name + '添加键值'" @click="requestFields(node.id)">＋ 添加键值</button><button v-if="node.origin === 'user'" type="button" class="delete-node" :disabled="readonly" :aria-label="'删除' + node.name + '节点'" @click="requestDelete(node.id)">删除节点</button></div></header>
       <div v-if="deletingNode === node.id && node.origin === 'user'" class="node-delete-confirm" role="group" :aria-label="'确认删除' + node.name"><span>删除「{{ node.name }}」及其中全部键值？</span><div><button type="button" :disabled="readonly" @click="deletingNode = ''">取消删除</button><button type="button" class="delete-node" :disabled="readonly" @click="deleteNode(node.id)">确认删除节点</button></div></div>
       <div v-for="field in node.fields" :key="field.id" class="prompt-field">
-        <label class="prompt-key" :class="{ 'body-key': field.key === null }" :for="firstField === field.id ? inputId : inputId + '-' + field.id"><span>{{ field.key ?? '正文' }}</span><small>{{ field.key === null ? '内容保留' : '键名锁定' }}</small></label>
+        <div class="prompt-key-column"><label class="prompt-key" :class="{ 'body-key': field.key === null }" :for="firstField === field.id ? inputId : inputId + '-' + field.id"><span>{{ field.key ?? '正文' }}</span><small>{{ field.key === null ? '内容保留' : field.origin === 'user' ? '自己添加 · 键名锁定' : '键名锁定' }}</small></label><button v-if="field.origin === 'user' && field.key !== null" type="button" class="delete-field" :disabled="readonly" :aria-label="'删除' + node.name + ' / ' + field.key + '键值'" @click="requestDeleteField(field.id)">删除键值</button></div>
         <textarea :id="firstField === field.id ? inputId : inputId + '-' + field.id" :data-field-id="field.id" :aria-label="node.name + ' / ' + (field.key ?? '正文') + '的值'" :value="field.value" :readonly="readonly" :maxlength="maxLength" rows="1" class="prompt-value" spellcheck="false" @input="editValue($event, field.id)" @compositionstart="compositionStart" @compositionend="compositionEnd($event, field.id)"></textarea>
+        <div v-if="deletingField === field.id && field.origin === 'user'" class="field-delete-confirm" role="group" :aria-label="'确认删除' + node.name + ' / ' + field.key"><span>删除「{{ field.key }}」及其内容？</span><div><button type="button" :disabled="readonly" @click="deletingField = ''">取消删除键值</button><button type="button" class="delete-field" :disabled="readonly" @click="deleteField(field.id)">确认删除键值</button></div></div>
       </div>
       <div v-if="fieldDrafts[node.id]" class="field-composer">
         <label :for="inputId + '-draft-' + node.id">新增键值</label>
@@ -223,6 +239,7 @@ defineExpose({ focus })
 .prompt-node{overflow:hidden;min-width:0;border:1px solid #e1dcf2;border-radius:12px;background:white}.prompt-node-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px;background:#f3effd;border-bottom:1px solid #e8e2f7}.prompt-node-heading h4{min-width:0;margin:0;font-size:20px;font-weight:700;color:#6038a5;overflow-wrap:anywhere}.prompt-node-heading h4>span{margin-right:5px;color:#9274c8}.prompt-node-heading button{flex:none;min-height:36px;padding:5px 10px;font-size:14px;background:#fcfaff}
 .prompt-field{display:grid;grid-template-columns:minmax(100px,170px) minmax(0,1fr);gap:14px;padding:14px 16px;align-items:start}.prompt-field+.prompt-field{border-top:1px solid #eff1f7}.prompt-key{display:grid;gap:4px;min-width:0;padding-top:7px;color:#1d5c98;font-size:18px;font-weight:650;overflow-wrap:anywhere}.prompt-key small{font-size:12px;font-weight:400;color:#8c98aa}.prompt-key.body-key{color:#63758d}
 .field-composer{display:grid;gap:8px;padding:14px 16px;border-top:1px dashed #dcd7f3;background:#fcfbff}.field-composer>label{color:#1d5c98;font-size:16px;font-weight:650}.draft-help{margin:0;color:#78869e;font-size:14px;overflow-wrap:anywhere}
+.prompt-key-column{display:grid;gap:8px;min-width:0;justify-items:start}.prompt-key-column .prompt-key small{font-size:16px}.structured-prompt .delete-field{color:#ac3c57;border-color:#f0d1d9;background:#fff8fa;font-size:16px}.field-delete-confirm{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;min-width:0;padding:10px 12px;border-radius:9px;background:#fff5f7;color:#a43c55;font-size:16px;overflow-wrap:anywhere}.field-delete-confirm>div{display:flex;gap:8px;flex-wrap:wrap}
 .node-title{min-width:0}.node-title>small{color:#8b79ab;font-size:12px}.node-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.node-actions .delete-node,.node-delete-confirm .delete-node{color:#ac3c57;border-color:#f0d1d9;background:#fff8fa}.node-composer{border:1px dashed #c5b6ee;border-radius:12px}.node-delete-confirm{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:12px 16px;background:#fff5f7;color:#a43c55;font-size:16px}.node-delete-confirm>div{display:flex;gap:8px;flex-wrap:wrap}
 .structured-prompt textarea,.structure-dialog textarea{box-sizing:border-box;display:block;width:100%;min-width:0;max-width:100%;padding:10px 12px;border:1px solid #e2e7f1;border-radius:9px;background:white;color:#26324d;font:inherit;font-size:20px;line-height:1.7;outline:none;resize:vertical}.structured-prompt .prompt-value{min-height:60px;overflow:hidden;resize:none}.structured-prompt textarea:focus,.structure-dialog input:focus,.structure-dialog textarea:focus{border-color:#9b8cf0;box-shadow:0 0 0 3px #8270ed12}.structured-prompt textarea[readonly]{background:#f7f8fc;color:#6c7890}.empty-node{margin:0;padding:17px;color:#8b95a7;font-size:16px}.structure-original{min-width:0;padding-top:2px}.structure-original summary{color:#7a87a1;font-size:14px;cursor:pointer}.structure-original textarea{min-height:180px;margin-top:12px;font-size:16px}
 .structure-error{margin:0;padding:10px 12px;border-radius:9px;background:#fff2f4;color:#a43c55;font-size:16px;overflow-wrap:anywhere}.structure-dialog{box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:26px;border:1px solid #e2dff4;border-radius:18px;color:#26324d;font-size:18px;line-height:1.65;box-shadow:0 24px 80px #26324d33;overflow:auto}.structure-dialog::backdrop{background:#26324d60;backdrop-filter:blur(3px)}.structure-dialog h3{margin:0 0 18px;font-size:24px}.structure-dialog label{display:block;margin:14px 0 7px;font-size:16px;font-weight:650}.structure-dialog input{box-sizing:border-box;width:100%;min-height:46px;padding:10px 12px;border:1px solid #e2e7f1;border-radius:9px;outline:none;color:#26324d;font:inherit;font-size:18px}.dialog-target,.name-help{color:#78869e;font-size:14px;margin:8px 0}.structure-dialog footer{display:flex;justify-content:flex-end;gap:10px;margin-top:22px}.structure-dialog footer button{background:#6554ec;color:white;border-color:#6554ec}.structure-dialog footer .cancel{background:white;color:#68758f;border-color:#dfe3ee}

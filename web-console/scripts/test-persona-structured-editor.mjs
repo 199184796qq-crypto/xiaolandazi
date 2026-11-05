@@ -33,6 +33,8 @@ try{
  const nodeDraft=()=>page.getByRole('textbox',{name:'新增节点内容',exact:true})
  const addNodes=async text=>{await page.getByRole('button',{name:'＋ 添加节点',exact:true}).click();await nodeDraft().fill(text);await nodeDraft().blur()}
  const deleteNode=async name=>{await page.getByRole('button',{name:'删除'+name+'节点',exact:true}).click();await page.getByRole('button',{name:'确认删除节点',exact:true}).click()}
+ const fieldDelete=(node,key)=>page.getByRole('button',{name:'删除'+node+' / '+key+'键值',exact:true})
+ const deleteField=async(node,key)=>{await fieldDelete(node,key).click();await page.getByRole('button',{name:'确认删除键值',exact:true}).click()}
  const fieldNames=()=>page.locator('.prompt-key>span').allTextContents()
  const nodeNames=()=>page.locator('.prompt-node-heading h4').allTextContents()
  const saveCalls=()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.method==='PUT'&&c.path.endsWith('/prompt')))
@@ -54,6 +56,17 @@ try{
  assert.deepEqual(await fieldNames(),initialKeys);assert.deepEqual(await nodeNames(),initialNodes)
  checks.push('改值/清空/Unicode只改变对应值，节点名和键名完整保留')
 
+ assert.equal(await page.getByRole('button',{name:/^删除.*键值$/}).count(),0)
+ const beforeCustomFields=await raw()
+ await addFields('身份','自建备注：第一句\n    【引用】\n    键：也是内容\n空值：')
+ await fieldDelete('身份','自建备注').click();assert.equal(await page.getByRole('dialog').count(),0)
+ await page.getByRole('button',{name:'取消删除键值',exact:true}).click()
+ assert.equal(await value('身份','自建备注').inputValue(),'第一句\n【引用】\n键：也是内容')
+ await deleteField('身份','自建备注');await deleteField('身份','空值')
+ assert.equal(await raw(),beforeCustomFields)
+ assert.equal(await fieldDelete('身份','主播名').count(),0)
+ checks.push('模型节点内手动新增键值也可整组删除，内联确认可取消；多行/空值一并移除，不影响模型键和其他内容')
+
  const multiline='店主本人。\n【这是引用，不是新增节点】\n示例键：引用内容'
  await value('身份','主播身份').fill(multiline)
  assert.ok((await raw()).includes('    【这是引用，不是新增节点】'))
@@ -61,6 +74,8 @@ try{
  await page.getByRole('tab',{name:'主播人设',exact:true}).click()
  assert.equal(await value('身份','主播身份').inputValue(),multiline);assert.deepEqual(await fieldNames(),initialKeys)
  checks.push('粘贴多行中的节点/键样式只作为值保存，切页重读不冒出新节点')
+
+ await addFields('身份','刷新后可删：保留到保存')
 
  const imeBefore=await raw()
  await value('身份','主播名').evaluate(el=>{el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));el.value='中文名字';el.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true,inputType:'insertCompositionText'}))})
@@ -91,6 +106,15 @@ try{
  assert.equal(await value('临时节点','附加').inputValue(),'第二个值')
  await deleteNode('临时节点');assert.equal(await raw(),beforeTemporary)
  checks.push('节点与键值可在同一新增框填写；自建节点删除在节点内确认，可取消，删除后原模型节点及原文完整保留')
+
+ await addNodes('删空测试\n唯一键：内容')
+ await deleteField('删空测试','唯一键')
+ assert.equal(await value('删空测试','唯一键').count(),0)
+ await page.getByRole('button',{name:'给删空测试添加键值',exact:true}).waitFor()
+ await addFields('删空测试','唯一键：重新添加')
+ assert.equal(await value('删空测试','唯一键').inputValue(),'重新添加')
+ await deleteNode('删空测试')
+ checks.push('自建节点中的键值可独立删除，删空保留节点，可用同名重新添加')
 
  const beforeNodeIme=await raw();await page.getByRole('button',{name:'＋ 添加节点',exact:true}).click()
  await nodeDraft().evaluate(el=>{el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));el.value='输入法节点\n值：完成😀';el.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true}));el.blur()})
@@ -158,6 +182,17 @@ try{
  await page.getByText('查看两份元提示词合成预览',{exact:true}).click()
  checks.push('保存后浏览器刷新及方案重读仍识别自建节点，原节点始终锁定，来源元数据不进入提示词合成')
 
+ await fieldDelete('身份','刷新后可删').waitFor();await fieldDelete('表达习惯','停顿').waitFor()
+ await deleteField('身份','刷新后可删')
+ assert.equal(await value('身份','刷新后可删').count(),0)
+ assert.equal(await fieldDelete('身份','主播名').count(),0)
+ await page.locator('#plan-save-button').click();await ready()
+ await page.getByText('方案提示词已随方案保存，三份元提示词已更新',{exact:true}).waitFor()
+ await page.reload();await page.waitForFunction(()=>window.fixture?.view?.plan()===4);await page.getByRole('button',{name:'方案提示词',exact:true}).click();await ready()
+ assert.equal(await value('身份','刷新后可删').count(),0);await fieldDelete('表达习惯','停顿').waitFor()
+ assert.equal(await fieldDelete('身份','主播名').count(),0)
+ checks.push('字段来源随方案保存并在刷新后保留；删除再保存刷新不复现，剩余键的来源不因位置变化错配')
+
  await page.getByText('查看完整原文（只读）',{exact:true}).click();assert.equal(await page.getByRole('textbox',{name:'主播人设完整原文（只读）',exact:true}).getAttribute('readonly'),'')
  await page.getByText('查看完整原文（只读）',{exact:true}).click()
  checks.push('完整原文可查看复制，保持只读，不能绕过锁定名称')
@@ -186,15 +221,20 @@ try{
  await page.getByRole('button',{name:'拉取提示词',exact:true}).click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await ready()
  await page.waitForFunction(()=>document.querySelector('.plan-prompt-editor')?.getAttribute('aria-busy')==='false')
  assert.equal(await raw(),regeneratedText);assert.equal(await page.getByRole('button',{name:/^删除.*节点$/}).count(),0)
+ assert.equal(await page.getByRole('button',{name:/^删除.*键值$/}).count(),0)
  assert.equal((await sections()).persona_editor_json,undefined)
  checks.push('重新拉取模型返回相同正文也会清除旧自建来源，不因同名/同文本误开放模型节点删除')
 
  await page.evaluate(()=>{window.fixture.holdRender=true;window.fixture.templates.persona_md='【新身份】\n称呼：店主'})
+ await addFields('身份','只读删除检查：保留')
+ await fieldDelete('身份','只读删除检查').click()
  await addFields('身份','另一个未完成内容')
  await page.getByRole('button',{name:'拉取提示词',exact:true}).click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.waitForFunction(()=>!!window.fixture.releaseRender)
  assert.equal(await page.locator('.prompt-value').first().getAttribute('readonly'),'')
  assert.equal(await page.getByRole('button',{name:'＋ 添加节点',exact:true}).isDisabled(),true)
  assert.equal(await draft('身份').getAttribute('readonly'),'')
+ assert.equal(await fieldDelete('身份','只读删除检查').isDisabled(),true)
+ assert.equal(await page.getByRole('button',{name:'确认删除键值',exact:true}).count(),0)
  await page.evaluate(()=>{window.fixture.releaseRender();window.fixture.releaseRender=null});await ready();await value('新身份','称呼').waitFor()
  assert.equal(await raw(),'【新身份】\n称呼：店主');assert.equal(await value('新身份','称呼').getAttribute('readonly'),null)
  assert.equal(await page.locator('.field-composer').count(),0)

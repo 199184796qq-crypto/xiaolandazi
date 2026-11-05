@@ -24,6 +24,7 @@ func (s Sections) validatePersonaEditor() error {
 			Index *int   `json:"index"`
 			Name  string `json:"name"`
 		} `json:"user_nodes"`
+		UserFields json.RawMessage `json:"user_fields"`
 	}
 	if json.Unmarshal([]byte(s.PersonaEditorJSON), &metadata) != nil || metadata.Version != 1 || metadata.Source == nil || *metadata.Source != s.PersonaMD || metadata.UserNodes == nil {
 		return invalid
@@ -35,6 +36,29 @@ func (s Sections) validatePersonaEditor() error {
 			return invalid
 		}
 		seen[*node.Index] = true
+	}
+	// Optional in v1 for compatibility with already saved custom-node sources.
+	// Fields have independent ownership, including additions under model nodes.
+	if len(metadata.UserFields) > 0 {
+		var fields []struct {
+			NodeIndex *int   `json:"node_index"`
+			Index     *int   `json:"index"`
+			Key       string `json:"key"`
+		}
+		if json.Unmarshal(metadata.UserFields, &fields) != nil || fields == nil {
+			return invalid
+		}
+		fieldSeen := make(map[[2]int]bool)
+		for _, field := range fields {
+			if field.NodeIndex == nil || field.Index == nil || *field.NodeIndex < 0 || *field.NodeIndex > maxIndex || *field.Index < 0 || *field.Index > maxIndex || strings.TrimSpace(field.Key) == "" || utf8.RuneCountInString(field.Key) > 40 {
+				return invalid
+			}
+			identity := [2]int{*field.NodeIndex, *field.Index}
+			if fieldSeen[identity] {
+				return invalid
+			}
+			fieldSeen[identity] = true
+		}
 	}
 	return nil
 }

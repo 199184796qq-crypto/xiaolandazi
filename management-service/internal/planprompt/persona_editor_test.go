@@ -8,7 +8,7 @@ import (
 
 func TestPersonaEditorMetadataNeverEntersPrompts(t *testing.T) {
 	s := Sections{PersonaMD: "【身份】\n姓名：甲\n【自建】\n语速：中等\n", FactsMD: "已确认事实"}
-	metadata, _ := json.Marshal(map[string]any{"version": 1, "source": s.PersonaMD, "user_nodes": []any{map[string]any{"index": 1, "name": "自建"}}})
+	metadata, _ := json.Marshal(map[string]any{"version": 1, "source": s.PersonaMD, "user_nodes": []any{map[string]any{"index": 1, "name": "自建"}}, "user_fields": []any{map[string]any{"node_index": 1, "index": 0, "key": "语速"}}})
 	base := s
 	s.PersonaEditorJSON = string(metadata)
 	if err := s.Validate(); err != nil {
@@ -21,6 +21,30 @@ func TestPersonaEditorMetadataNeverEntersPrompts(t *testing.T) {
 	var reread Sections
 	if err != nil || json.Unmarshal(encoded, &reread) != nil || reread != s {
 		t.Fatal("editor metadata did not round trip with originals")
+	}
+}
+
+func TestPersonaEditorFieldMetadataCompatibilityAndValidation(t *testing.T) {
+	for _, extra := range []string{"", `,"user_fields":[]`, `,"user_fields":[{"node_index":0,"index":0,"key":"键"}]`} {
+		metadata := `{"version":1,"source":"键：值","user_nodes":[]` + extra + `}`
+		if err := (Sections{PersonaMD: "键：值", PersonaEditorJSON: metadata}).Validate(); err != nil {
+			t.Fatal("old and field-aware metadata must both be accepted", err)
+		}
+	}
+	for _, fields := range []string{
+		`null`, `{}`, `[null]`, `[{"index":0,"key":"键"}]`,
+		`[{"node_index":0,"key":"键"}]`, `[{"node_index":-1,"index":0,"key":"键"}]`,
+		`[{"node_index":99,"index":0,"key":"键"}]`, `[{"node_index":0,"index":-1,"key":"键"}]`,
+		`[{"node_index":0,"index":99,"key":"键"}]`, `[{"node_index":0,"index":0.5,"key":"键"}]`,
+		`[{"node_index":0,"index":0,"key":" "}]`,
+		`[{"node_index":0,"index":0,"key":"键"},{"node_index":0,"index":0,"key":"别的"}]`,
+	} {
+		t.Run(fields, func(t *testing.T) {
+			metadata := `{"version":1,"source":"键：值","user_nodes":[],"user_fields":` + fields + `}`
+			if err := (Sections{PersonaMD: "键：值", PersonaEditorJSON: metadata}).Validate(); err == nil {
+				t.Fatal("invalid field ownership accepted")
+			}
+		})
 	}
 }
 
