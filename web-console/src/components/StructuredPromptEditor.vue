@@ -9,6 +9,7 @@ const root = ref<HTMLElement | null>(null)
 const addButton = ref<HTMLButtonElement | null>(null)
 const rawEditor = ref<HTMLTextAreaElement | null>(null)
 const textMode = ref(false)
+const deleteMode = ref(false)
 const rawText = ref(props.modelValue)
 const compositionField = ref('')
 const compositionValue = ref('')
@@ -18,8 +19,6 @@ interface FieldDraft { text: string; error: string; composing: boolean; blurred:
 const fieldDrafts = ref<Record<string, FieldDraft>>({})
 const nodeDraft = ref<FieldDraft | null>(null)
 const nodeInput = ref<HTMLTextAreaElement | null>(null)
-const deletingNode = ref('')
-const deletingField = ref('')
 let composing: HTMLTextAreaElement | null = null
 let active = true
 let mounted = true
@@ -49,8 +48,7 @@ watch(() => [props.modelValue, props.metadata, props.resetKey] as const, ([value
   compositionField.value = ''
   fieldDrafts.value = {}
   nodeDraft.value = null
-  deletingNode.value = ''
-  deletingField.value = ''
+  deleteMode.value = false
   error.value = ''
   composing = null
   void nextTick(resizeValues)
@@ -61,8 +59,7 @@ watch(() => props.readonly, value => {
     compositionField.value = ''
     for (const draft of Object.values(fieldDrafts.value)) { draft.composing = false; draft.blurred = false }
     if (nodeDraft.value) { nodeDraft.value.composing = false; nodeDraft.value.blurred = false }
-    deletingNode.value = ''
-    deletingField.value = ''
+    deleteMode.value = false
     void nextTick(restoreInputs)
   }
 })
@@ -74,8 +71,7 @@ onDeactivated(() => {
   compositionField.value = ''
   for (const draft of Object.values(fieldDrafts.value)) { draft.composing = false; draft.blurred = false }
   if (nodeDraft.value) { nodeDraft.value.composing = false; nodeDraft.value.blurred = false }
-  deletingNode.value = ''
-  deletingField.value = ''
+  deleteMode.value = false
 })
 onBeforeUnmount(() => { mounted = false; window.removeEventListener('resize', resizeValues) })
 void nextTick(resizeValues)
@@ -160,29 +156,29 @@ function nodeCompositionEnd(event: CompositionEvent) {
   if (draft.blurred) { draft.blurred = false; finishNode() }
 }
 
-function requestDelete(nodeId: string) {
-  if (editable() && document.value.nodes.some(node => node.id === nodeId)) { deletingField.value = ''; deletingNode.value = nodeId }
+function canDelete(event: MouseEvent) {
+  return editable() && deleteMode.value && !textMode.value && event.currentTarget instanceof HTMLElement && !!root.value?.contains(event.currentTarget)
 }
 
-function requestDeleteField(fieldId: string) {
-  const field = document.value.nodes.flatMap(node => node.fields).find(field => field.id === fieldId)
-  if (editable() && field) { deletingNode.value = ''; deletingField.value = fieldId }
-}
-
-function deleteField(fieldId: string) {
-  if (!editable()) return
+function deleteField(fieldId: string, event: MouseEvent) {
+  if (!canDelete(event)) return
   try {
-    if (commit(removePromptField(document.value, fieldId))) deletingField.value = ''
+    if (commit(removePromptField(document.value, fieldId))) { composing = null; compositionField.value = '' }
   } catch (err) { error.value = err instanceof Error ? err.message : '删除未完成' }
 }
 
-function deleteNode(nodeId: string) {
-  if (!editable()) return
+function deleteNode(nodeId: string, event: MouseEvent) {
+  if (!canDelete(event)) return
   try {
     if (!commit(removePromptNode(document.value, nodeId))) return
     delete fieldDrafts.value[nodeId]
-    deletingNode.value = ''
+    composing = null
+    compositionField.value = ''
   } catch (err) { error.value = err instanceof Error ? err.message : '删除未完成' }
+}
+
+function toggleDeleteMode() {
+  if (editable() && !textMode.value) deleteMode.value = !deleteMode.value
 }
 
 function requestFields(nodeId: string) {
@@ -238,8 +234,7 @@ function editRaw(event: Event) {
   if (!commit(parseStructuredPrompt(area.value))) { rawText.value = original; area.value = original; return }
   fieldDrafts.value = {}
   nodeDraft.value = null
-  deletingNode.value = ''
-  deletingField.value = ''
+  deleteMode.value = false
 }
 
 function rawCompositionEnd(event: CompositionEvent) {
@@ -262,8 +257,7 @@ async function toggleMode() {
       return
     }
   }
-  deletingNode.value = ''
-  deletingField.value = ''
+  deleteMode.value = false
   error.value = ''
   textMode.value = !textMode.value
   await nextTick()
@@ -273,21 +267,21 @@ defineExpose({ focus })
 </script>
 
 <template>
-  <div ref="root" class="structured-prompt" role="group" :aria-label="label + '编辑器'" :aria-disabled="readonly">
+  <div ref="root" class="structured-prompt" :class="{ 'deletion-mode': deleteMode }" role="group" :aria-label="label + '编辑器'" :aria-disabled="readonly">
     <div class="structure-toolbar">
       <button type="button" class="edit-model" :aria-pressed="textMode" :disabled="readonly" @click="toggleMode">{{ textMode ? '结构化显示' : '编辑模型' }}</button>
       <button v-if="!textMode" ref="addButton" type="button" class="add-node" :disabled="readonly" @click="requestNode">＋ 添加节点</button>
+      <button v-if="!textMode" type="button" class="delete-mode-toggle" :aria-pressed="deleteMode" :disabled="readonly" @click="toggleDeleteMode">{{ deleteMode ? '完成删除' : '删除模式' }}</button>
     </div>
     <p v-if="error" class="structure-error" role="alert">{{ error }}</p>
     <textarea v-if="textMode" :id="inputId" ref="rawEditor" class="prompt-raw" :aria-label="label + '完整内容'" :value="rawText" :readonly="readonly" :maxlength="maxLength" rows="18" spellcheck="false" @input="editRaw" @compositionstart="compositionStart" @compositionend="rawCompositionEnd"></textarea>
     <template v-else>
     <section v-for="node in document.nodes" :key="node.id" class="prompt-node" :data-node-id="node.id" :aria-label="node.name + '节点'">
-      <header class="prompt-node-heading"><div class="node-title"><h4><span aria-hidden="true">▧</span> {{ node.name }}</h4></div><div class="node-actions"><button type="button" :disabled="readonly" :aria-label="'给' + node.name + '添加键值'" @click="requestFields(node.id)">＋ 添加键值</button><button type="button" class="delete-node" :disabled="readonly" :aria-label="'删除' + node.name + '节点'" @click="requestDelete(node.id)">删除节点</button></div></header>
-      <div v-if="deletingNode === node.id" class="node-delete-confirm" role="group" :aria-label="'确认删除' + node.name"><span>删除「{{ node.name }}」及其中全部键值？</span><div><button type="button" :disabled="readonly" @click="deletingNode = ''">取消删除</button><button type="button" class="delete-node" :disabled="readonly" @click="deleteNode(node.id)">确认删除节点</button></div></div>
+      <header class="prompt-node-heading"><div class="node-title"><h4><span aria-hidden="true">▧</span> {{ node.name }}</h4></div><div class="node-actions"><button type="button" :disabled="readonly" :aria-label="'给' + node.name + '添加键值'" @click="requestFields(node.id)">＋ 添加键值</button></div><button v-if="deleteMode" type="button" class="delete-badge node-delete-badge" :disabled="readonly" :aria-label="'删除' + node.name + '节点'" :title="'删除' + node.name + '节点'" @click.stop="deleteNode(node.id, $event)"><span aria-hidden="true">×</span></button></header>
       <div v-for="field in node.fields" :key="field.id" class="prompt-field">
-        <div class="prompt-key-column"><label class="prompt-key" :class="{ 'body-key': field.key === null }" :for="firstField === field.id ? inputId : inputId + '-' + field.id"><span>{{ field.key ?? '正文' }}</span></label><button type="button" class="delete-field" :disabled="readonly" :aria-label="'删除' + node.name + ' / ' + (field.key === null ? '正文' : field.key + '键值')" @click="requestDeleteField(field.id)">{{ field.key === null ? '删除正文' : '删除键值' }}</button></div>
+        <div class="prompt-key-column"><label class="prompt-key" :class="{ 'body-key': field.key === null }" :for="firstField === field.id ? inputId : inputId + '-' + field.id"><span>{{ field.key ?? '正文' }}</span></label></div>
+        <button v-if="deleteMode" type="button" class="delete-badge field-delete-badge" :disabled="readonly" :aria-label="'删除' + node.name + ' / ' + (field.key === null ? '正文' : field.key + '键值')" :title="field.key === null ? '删除这段正文' : '删除' + field.key + '及其内容'" @click.stop="deleteField(field.id, $event)"><span aria-hidden="true">×</span></button>
         <textarea :id="firstField === field.id ? inputId : inputId + '-' + field.id" :data-field-id="field.id" :aria-label="node.name + ' / ' + (field.key ?? '正文') + '的值'" :value="compositionField === field.id ? compositionValue : field.value" :readonly="readonly" :maxlength="maxLength" rows="1" class="prompt-value" spellcheck="false" @input="editValue($event, field.id)" @compositionstart="compositionStart" @compositionend="compositionEnd($event, field.id)"></textarea>
-        <div v-if="deletingField === field.id" class="field-delete-confirm" role="group" :aria-label="'确认删除' + node.name + ' / ' + (field.key ?? '正文')"><span>{{ field.key === null ? '删除这段正文？' : '删除「' + field.key + '」及其内容？' }}</span><div><button type="button" :disabled="readonly" @click="deletingField = ''">{{ field.key === null ? '取消删除正文' : '取消删除键值' }}</button><button type="button" class="delete-field" :disabled="readonly" @click="deleteField(field.id)">{{ field.key === null ? '确认删除正文' : '确认删除键值' }}</button></div></div>
       </div>
       <div v-if="fieldDrafts[node.id]" class="field-composer">
         <label :for="inputId + '-draft-' + node.id">新增键值</label>
@@ -311,12 +305,19 @@ defineExpose({ focus })
 .structured-prompt{display:grid;gap:14px;min-width:0;padding:20px;border:1px solid #dedff1;border-radius:16px;background:#fbfcff;color:#26324d;font-size:18px;line-height:1.65}
 .structure-toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:flex-end}
 .structured-prompt button{box-sizing:border-box;min-height:42px;border:1px solid #ddd9f6;border-radius:10px;padding:8px 13px;background:white;color:#5b48c4;font:inherit;font-size:16px;font-weight:650;cursor:pointer}.structured-prompt button:disabled{opacity:.5;cursor:default}.structured-prompt button:focus-visible{outline:3px solid #c7bfff;outline-offset:2px}.structure-toolbar .add-node{flex:none;background:#6554ec;color:white;border-color:#6554ec}
-.prompt-node{overflow:hidden;min-width:0;border:1px solid #e1dcf2;border-radius:12px;background:white}.prompt-node-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px;background:#f3effd;border-bottom:1px solid #e8e2f7}.prompt-node-heading h4{min-width:0;margin:0;font-size:20px;font-weight:700;color:#6038a5;overflow-wrap:anywhere}.prompt-node-heading h4>span{margin-right:5px;color:#9274c8}.prompt-node-heading button{flex:none;min-height:36px;padding:5px 10px;font-size:16px;background:#fcfaff}
-.prompt-field{display:grid;grid-template-columns:minmax(100px,170px) minmax(0,1fr);gap:14px;padding:14px 16px;align-items:start}.prompt-field+.prompt-field{border-top:1px solid #eff1f7}.prompt-key{display:grid;gap:4px;min-width:0;padding-top:7px;color:#1d5c98;font-size:18px;font-weight:650;overflow-wrap:anywhere}.prompt-key.body-key{color:#63758d}
+.prompt-node{overflow:hidden;min-width:0;border:1px solid #e1dcf2;border-radius:12px;background:white}.prompt-node-heading{position:relative;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px;background:#f3effd;border-bottom:1px solid #e8e2f7}.prompt-node-heading h4{min-width:0;margin:0;font-size:20px;font-weight:700;color:#6038a5;overflow-wrap:anywhere}.prompt-node-heading h4>span{margin-right:5px;color:#9274c8}.prompt-node-heading button{flex:none;min-height:36px;padding:5px 10px;font-size:16px;background:#fcfaff}
+.prompt-field{position:relative;display:grid;grid-template-columns:minmax(100px,170px) minmax(0,1fr);gap:14px;padding:14px 16px;align-items:start}.prompt-field+.prompt-field{border-top:1px solid #eff1f7}.prompt-key{display:grid;gap:4px;min-width:0;padding-top:7px;color:#1d5c98;font-size:18px;font-weight:650;overflow-wrap:anywhere}.prompt-key.body-key{color:#63758d}
 .field-composer{display:grid;gap:8px;padding:14px 16px;border-top:1px dashed #dcd7f3;background:#fcfbff}.field-composer>label{color:#1d5c98;font-size:16px;font-weight:650}.draft-help{margin:0;color:#78869e;font-size:16px;overflow-wrap:anywhere}
-.prompt-key-column{display:grid;gap:8px;min-width:0;justify-items:start}.structured-prompt .delete-field{color:#ac3c57;border-color:#f0d1d9;background:#fff8fa;font-size:16px}.field-delete-confirm{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;min-width:0;padding:10px 12px;border-radius:9px;background:#fff5f7;color:#a43c55;font-size:16px;overflow-wrap:anywhere}.field-delete-confirm>div{display:flex;gap:8px;flex-wrap:wrap}
-.node-title{min-width:0}.node-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.node-actions .delete-node,.node-delete-confirm .delete-node{color:#ac3c57;border-color:#f0d1d9;background:#fff8fa}.node-composer{border:1px dashed #c5b6ee;border-radius:12px}.node-delete-confirm{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:12px 16px;background:#fff5f7;color:#a43c55;font-size:16px}.node-delete-confirm>div{display:flex;gap:8px;flex-wrap:wrap}
+.prompt-key-column{display:grid;gap:8px;min-width:0;justify-items:start}
+.node-title{min-width:0}.node-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.node-composer{border:1px dashed #c5b6ee;border-radius:12px}
 .structured-prompt textarea{box-sizing:border-box;display:block;width:100%;min-width:0;max-width:100%;padding:10px 12px;border:1px solid #e2e7f1;border-radius:9px;background:white;color:#26324d;font:inherit;font-size:20px;line-height:1.7;outline:none;resize:vertical}.structured-prompt .prompt-value{min-height:60px;overflow:hidden;resize:none}.structured-prompt textarea:focus{border-color:#9b8cf0;box-shadow:0 0 0 3px #8270ed12}.structured-prompt textarea[readonly]{background:#f7f8fc;color:#6c7890}.empty-node{margin:0;padding:17px;color:#8b95a7;font-size:16px}.structured-prompt .prompt-raw{min-height:460px;padding:18px;resize:vertical}
 .structure-error{margin:0;padding:10px 12px;border-radius:9px;background:#fff2f4;color:#a43c55;font-size:16px;overflow-wrap:anywhere}
+.structure-toolbar .delete-mode-toggle{color:#bd334c;border-color:#f0cdd5;background:#fff7f9}.structure-toolbar .delete-mode-toggle[aria-pressed=true]{color:white;background:#d63e59;border-color:#d63e59}
+.deletion-mode .prompt-node-heading,.deletion-mode .prompt-field{padding-right:64px}
+.structured-prompt .delete-badge{position:absolute;z-index:1;top:10px;right:12px;display:grid;place-items:center;width:36px;min-width:36px;height:36px;min-height:36px;padding:0;border:2px solid white;border-radius:50%;background:#e1465f;color:white;line-height:1;box-shadow:0 2px 7px #b7294540;transform-origin:50% 50%;animation:prompt-delete-wiggle .24s ease-in-out infinite alternate}
+.delete-badge>span{font-size:25px;font-weight:500;line-height:1}.structured-prompt .delete-badge:hover{background:#c62e49}.structured-prompt .delete-badge:focus-visible{outline-color:#d63e59}.structured-prompt .delete-badge:disabled{animation:none}
+@keyframes prompt-delete-wiggle{from{transform:rotate(-8deg)}to{transform:rotate(8deg)}}
+@media(prefers-reduced-motion:reduce){.structured-prompt .delete-badge{animation:none}}
+
 @media(max-width:600px){.structured-prompt{padding:12px;gap:12px}.structure-toolbar{flex-wrap:wrap;gap:10px}.prompt-field{grid-template-columns:1fr;gap:6px;padding:12px}.prompt-key{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:0}.prompt-node-heading{padding:11px 12px;gap:8px}.prompt-node-heading h4{font-size:18px}}
 </style>

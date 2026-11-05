@@ -39,7 +39,7 @@ try{
  const save=async()=>{await page.locator('#plan-save-button').click();await ready();await page.getByText('方案提示词已随方案保存，三份元提示词已更新',{exact:true}).waitFor()}
  await page.goto(server.resolvedUrls.local[0]+'__dual-mode');await page.waitForFunction(()=>window.fixture?.view?.plan()===4);await open()
  assert.equal(await page.locator('.plan-prompt-content-heading label,.structure-guide,.structure-legend,.structure-test,.node-title>small,.prompt-key small,.structure-original').count(),0)
- assert.deepEqual(await page.locator('.structure-toolbar button').allTextContents(),['编辑模型','＋ 添加节点'])
+ assert.deepEqual(await page.locator('.structure-toolbar button').allTextContents(),['编辑模型','＋ 添加节点','删除模式'])
  checks.push('移除截图冗余标题/说明/图例/锁定小字；编辑模型位于添加节点前')
 
  const original=await draft(),calls=await requests()

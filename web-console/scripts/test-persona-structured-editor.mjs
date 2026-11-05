@@ -24,7 +24,8 @@ try{
  const context=await browser.newContext({viewport:{width:1440,height:1100},reducedMotion:'reduce'})
  await context.route('**/*',route=>{const u=new URL(route.request().url());if(u.hostname==='127.0.0.1')return route.continue();external.push(u.hostname);return route.abort()})
  page=await context.newPage();page.setDefaultTimeout(12000);page.on('pageerror',e=>errors.push(e.message))
- const ready=()=>page.waitForFunction(()=>window.fixture?.view?.loaded()===window.fixture?.view?.plan()&&!window.fixture.view.loading()&&!window.fixture.view.busy()&&!window.fixture.view.hydrating())
+ const ensureDelete=async()=>{const b=page.getByRole('button',{name:'删除模式',exact:true});if(await b.count()&&await b.isEnabled())await b.click()}
+ const ready=async()=>{await page.waitForFunction(()=>window.fixture?.view?.loaded()===window.fixture?.view?.plan()&&!window.fixture.view.loading()&&!window.fixture.view.busy()&&!window.fixture.view.hydrating());await ensureDelete()}
  const raw=()=>page.evaluate(()=>window.fixture.view.sections().persona_md)
  const sections=()=>page.evaluate(()=>JSON.parse(JSON.stringify(window.fixture.view.sections())))
  const value=(node,key)=>page.getByRole('textbox',{name:node+' / '+key+'的值',exact:true})
@@ -32,9 +33,9 @@ try{
  const addFields=async(node,text)=>{await page.getByRole('button',{name:'给'+node+'添加键值',exact:true}).click();await draft(node).fill(text);await draft(node).blur()}
  const nodeDraft=()=>page.getByRole('textbox',{name:'新增节点内容',exact:true})
  const addNodes=async text=>{await page.getByRole('button',{name:'＋ 添加节点',exact:true}).click();await nodeDraft().fill(text);await nodeDraft().blur()}
- const deleteNode=async name=>{await page.getByRole('button',{name:'删除'+name+'节点',exact:true}).click();await page.getByRole('button',{name:'确认删除节点',exact:true}).click()}
+ const deleteNode=async name=>{await ensureDelete();await page.getByRole('button',{name:'删除'+name+'节点',exact:true}).click()}
  const fieldDelete=(node,key)=>page.getByRole('button',{name:'删除'+node+' / '+key+'键值',exact:true})
- const deleteField=async(node,key)=>{await fieldDelete(node,key).click();await page.getByRole('button',{name:'确认删除键值',exact:true}).click()}
+ const deleteField=async(node,key)=>{await ensureDelete();await fieldDelete(node,key).click()}
  const fieldNames=()=>page.locator('.prompt-key>span').allTextContents()
  const nodeNames=()=>page.locator('.prompt-node-heading h4').allTextContents()
  const saveCalls=()=>page.evaluate(()=>window.fixture.calls.filter(c=>c.method==='PUT'&&c.path.endsWith('/prompt')))
@@ -57,35 +58,35 @@ try{
  checks.push('改值/清空/Unicode只改变对应值，节点名和键名完整保留')
 
  const beforeModelDelete=await raw()
- await fieldDelete('身份','主播名').click();await page.getByRole('button',{name:'取消删除键值',exact:true}).click()
+ await page.getByRole('button',{name:'完成删除',exact:true}).click()
  assert.equal(await raw(),beforeModelDelete)
  await deleteField('身份','主播名');assert.equal(await value('身份','主播名').count(),0)
  assert.equal(await value('身份','主播身份').inputValue(),'店主本人，店里的自己人。')
- await page.getByRole('button',{name:'删除身份节点',exact:true}).click();await page.getByRole('button',{name:'取消删除',exact:true}).click()
+ await page.getByRole('button',{name:'完成删除',exact:true}).click()
  await deleteNode('身份');assert.equal(await value('身份','主播身份').count(),0)
  assert.equal(await value('说话方式','语速').inputValue(),'中等偏快')
  await page.reload();await page.waitForFunction(()=>window.fixture?.view?.plan()===4);await page.getByRole('button',{name:'方案提示词',exact:true}).click();await ready()
  assert.equal(await raw(),sample)
  await value('身份','主播名').fill('阿林😀')
- checks.push('模型原键值和节点均可内联确认删除或取消；删除只影响所选内容，未保存刷新恢复原方案')
+ checks.push('模型原键值和节点均可角标直接删除或退出模式；删除只影响所选内容，未保存刷新恢复原方案')
 
 
  assert.equal(await page.getByRole('button',{name:/^删除.*键值$/}).count(),5)
  const beforeCustomFields=await raw()
  await addFields('身份','自建备注：第一句\n    【引用】\n    键：也是内容\n空值：')
- await fieldDelete('身份','自建备注').click();assert.equal(await page.getByRole('dialog').count(),0)
- await page.getByRole('button',{name:'取消删除键值',exact:true}).click()
+ assert.equal(await page.getByRole('dialog').count(),0)
+ await page.getByRole('button',{name:'完成删除',exact:true}).click()
  assert.equal(await value('身份','自建备注').inputValue(),'第一句\n【引用】\n键：也是内容')
  await deleteField('身份','自建备注');await deleteField('身份','空值')
  assert.equal(await raw(),beforeCustomFields)
  assert.equal(await fieldDelete('身份','主播名').count(),1)
- checks.push('模型节点内手动新增键值也可整组删除，内联确认可取消；多行/空值一并移除，不影响模型键和其他内容')
+ checks.push('模型节点内手动新增键值也可整组删除，退出删除模式不改内容；多行/空值一并移除，不影响模型键和其他内容')
 
  const multiline='店主本人。\n【这是引用，不是新增节点】\n示例键：引用内容'
  await value('身份','主播身份').fill(multiline)
  assert.ok((await raw()).includes('    【这是引用，不是新增节点】'))
  await page.getByRole('tab',{name:'事实依据',exact:true}).click();assert.equal(await page.locator('.structured-prompt').count(),1)
- await page.getByRole('tab',{name:'主播人设',exact:true}).click()
+ await page.getByRole('tab',{name:'主播人设',exact:true}).click();await ensureDelete()
  assert.equal(await value('身份','主播身份').inputValue(),multiline);assert.deepEqual(await fieldNames(),initialKeys)
  checks.push('粘贴多行中的节点/键样式只作为值保存，切页重读不冒出新节点')
 
@@ -115,11 +116,10 @@ try{
  checks.push('新增节点在页面内失焦识别、无对话框，重名保留输入、空白不添加；所有来源节点都有删除入口，所有节点名仍锁定')
 
  const beforeTemporary=await raw();await addNodes('【临时节点】\n示例：保留自己的内容\n附加：第二个值')
- await value('临时节点','示例').waitFor();await page.getByRole('button',{name:'删除临时节点节点',exact:true}).click()
- assert.equal(await page.getByRole('dialog').count(),0);await page.getByRole('button',{name:'取消删除',exact:true}).click()
+ await value('临时节点','示例').waitFor();assert.equal(await page.getByRole('dialog').count(),0);await page.getByRole('button',{name:'完成删除',exact:true}).click()
  assert.equal(await value('临时节点','附加').inputValue(),'第二个值')
  await deleteNode('临时节点');assert.equal(await raw(),beforeTemporary)
- checks.push('节点与键值可在同一新增框填写；自建节点删除在节点内确认，可取消，删除后原模型节点及原文完整保留')
+ checks.push('节点与键值可在同一新增框填写；自建节点删除用角标直接删除，可退出模式，删除后原模型节点及原文完整保留')
 
  await addNodes('删空测试\n唯一键：内容')
  await deleteField('删空测试','唯一键')
@@ -146,7 +146,7 @@ try{
  assert.equal(await draft('身份').inputValue(),'新键：有效内容\n主播名：重名')
  await draft('身份').fill('- 隐藏前缀：内容');await draft('身份').blur();await page.getByRole('alert').filter({hasText:'键名请使用简短文字'}).waitFor()
  await draft('身份').fill('缺少冒号');await draft('身份').blur();await page.getByRole('alert').filter({hasText:'请使用“键名：内容”'}).waitFor();assert.equal(await raw(),beforeDraft)
- await page.getByRole('tab',{name:'事实依据',exact:true}).click();await page.getByRole('tab',{name:'主播人设',exact:true}).click()
+ await page.getByRole('tab',{name:'事实依据',exact:true}).click();await page.getByRole('tab',{name:'主播人设',exact:true}).click();await ensureDelete()
  assert.equal(await draft('身份').inputValue(),'缺少冒号')
  await draft('身份').fill('');await draft('身份').blur();assert.equal(await draft('身份').count(),0)
  checks.push('添加键值在指定节点下直接输入、无弹窗；失焦才解析，重名/非法/不完整整批拒绝并保留输入，切页仍保留')
@@ -176,7 +176,7 @@ try{
 
  const current=await sections();for(const key of Object.keys(before).filter(k=>k!=='persona_md'))assert.equal(current[key],before[key])
  await page.getByRole('tab',{name:'话术规划',exact:true}).click();assert.equal(await page.locator('.structured-prompt').count(),1)
- await page.getByRole('tab',{name:'主播人设',exact:true}).click()
+ await page.getByRole('tab',{name:'主播人设',exact:true}).click();await ensureDelete()
  await page.getByRole('button',{name:'给表达习惯添加键值',exact:true}).click();await draft('表达习惯').fill('保存时追加：先失焦再保存')
  await page.locator('#plan-save-button').click();await ready();await page.getByText('方案提示词已随方案保存，三份元提示词已更新',{exact:true}).waitFor();const savedRaw=await raw()
  assert.ok(savedRaw.includes('保存时追加：先失焦再保存'))
@@ -210,7 +210,7 @@ try{
  const toggleRawBefore=await raw()
  await page.getByRole('button',{name:'编辑模型',exact:true}).click();assert.equal(await page.getByRole('textbox',{name:'主播人设完整内容',exact:true}).getAttribute('readonly'),null)
  assert.equal(await page.getByRole('textbox',{name:'主播人设完整内容',exact:true}).inputValue(),toggleRawBefore)
- await page.getByRole('button',{name:'结构化显示',exact:true}).click();assert.equal(await raw(),toggleRawBefore)
+ await page.getByRole('button',{name:'结构化显示',exact:true}).click();await ensureDelete();assert.equal(await raw(),toggleRawBefore)
  checks.push('完整内容以单一文本框编辑，切回结构化不改变原文')
 
  for(const width of [1440,777,390,320]){
@@ -235,7 +235,7 @@ try{
 
  const regeneratedText=await raw();await page.evaluate(text=>{window.fixture.templates.persona_md=text},regeneratedText)
  await page.getByRole('button',{name:'拉取提示词',exact:true}).click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await ready()
- await page.waitForFunction(()=>document.querySelector('.plan-prompt-editor')?.getAttribute('aria-busy')==='false')
+ await page.waitForFunction(()=>document.querySelector('.plan-prompt-editor')?.getAttribute('aria-busy')==='false');await ensureDelete()
  assert.equal(await raw(),regeneratedText);assert.equal(await page.getByRole('button',{name:/^删除.*节点$/}).count(),4)
  assert.ok(await page.getByRole('button',{name:/^删除.*键值$/}).count()>5)
  assert.equal((await sections()).persona_editor_json,undefined)
@@ -243,20 +243,20 @@ try{
 
  await page.evaluate(()=>{window.fixture.holdRender=true;window.fixture.templates.persona_md='【新身份】\n称呼：店主'})
  await addFields('身份','只读删除检查：保留')
- await fieldDelete('身份','只读删除检查').click()
+ await ensureDelete()
  await addFields('身份','另一个未完成内容')
  await page.getByRole('button',{name:'拉取提示词',exact:true}).click();await page.getByRole('button',{name:'确认拉取',exact:true}).click();await page.waitForFunction(()=>!!window.fixture.releaseRender)
  assert.equal(await page.locator('.prompt-value').first().getAttribute('readonly'),'')
  assert.equal(await page.getByRole('button',{name:'＋ 添加节点',exact:true}).isDisabled(),true)
  assert.equal(await draft('身份').getAttribute('readonly'),'')
- assert.equal(await fieldDelete('身份','只读删除检查').isDisabled(),true)
+ assert.equal(await fieldDelete('身份','只读删除检查').count(),0);assert.equal(await page.getByRole('button',{name:'删除模式',exact:true}).isDisabled(),true)
  assert.equal(await page.getByRole('button',{name:'确认删除键值',exact:true}).count(),0)
  await page.evaluate(()=>{window.fixture.releaseRender();window.fixture.releaseRender=null});await ready();await value('新身份','称呼').waitFor()
  assert.equal(await raw(),'【新身份】\n称呼：店主');assert.equal(await value('新身份','称呼').getAttribute('readonly'),null)
  assert.equal(await page.locator('.field-composer').count(),0)
  checks.push('拉取/保存期间锁定值及新增入口；新模型正文返回后重新识别并锁定新名称')
 
- await fieldDelete('新身份','称呼').waitFor();await deleteField('新身份','称呼')
+ await ensureDelete();await fieldDelete('新身份','称呼').waitFor();await deleteField('新身份','称呼')
  assert.equal(await raw(),'【新身份】\n')
  await deleteNode('新身份');assert.equal(await raw(),'')
  await page.locator('#plan-save-button').click();await ready()
@@ -270,13 +270,11 @@ try{
 
  await page.evaluate(()=>{window.fixture.documents[5].sections.persona_md='【正文节点】\n没有键名的模型正文。'})
  await switchTo(5)
- await page.getByRole('button',{name:'删除正文节点 / 正文',exact:true}).click()
- await page.getByRole('button',{name:'取消删除正文',exact:true}).click()
+ await page.getByRole('button',{name:'完成删除',exact:true}).click()
  assert.equal(await value('正文节点','正文').inputValue(),'没有键名的模型正文。')
- await page.getByRole('button',{name:'删除正文节点 / 正文',exact:true}).click()
- await page.getByRole('button',{name:'确认删除正文',exact:true}).click()
+ await ensureDelete();await page.getByRole('button',{name:'删除正文节点 / 正文',exact:true}).click()
  assert.equal(await raw(),'【正文节点】\n')
- checks.push('没有键名的模型正文也可单独删除或取消，保留所属节点')
+ checks.push('没有键名的模型正文也可单独用角标删除或退出模式，保留所属节点')
 
 
  assert.deepEqual(errors,[]);assert.deepEqual(external,[])
