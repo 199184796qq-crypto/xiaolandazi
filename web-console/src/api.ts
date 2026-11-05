@@ -545,6 +545,14 @@ export function updateRoomNumber(roomId: number, externalRoomId: string, expecte
   })
 }
 
+export function updateRoomName(roomId: number, name: string, expectedName: string) {
+  return request<Pick<Room, 'id' | 'name'>>('/api/v1/rooms/' + roomId + '/name', {
+    method: 'PATCH',
+    body: JSON.stringify({ name, expected_name: expectedName }),
+    suppressErrorDialog: true,
+  })
+}
+
 export function setRoomMonitor(roomId: number, enabled: boolean) {
   return request<Room>('/api/v1/rooms/' + roomId + '/monitor', {
     method: 'PATCH',

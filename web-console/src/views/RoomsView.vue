@@ -3,7 +3,7 @@ import { useFeedbackErrorRef } from '../uiFeedback'
 import { confirmAction, showToast } from '../uiFeedback'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { createRoom, deleteRoom, getLiveOpsSupportAuthorizations, getRoomCustomerContact, getRooms, getTenants, setRoomMonitor, updateRoomNumber } from '../api'
+import { createRoom, deleteRoom, getLiveOpsSupportAuthorizations, getRoomCustomerContact, getRooms, getTenants, setRoomMonitor, updateRoomNumber, updateRoomName } from '../api'
 import RoomListIcon from '../components/RoomListIcon.vue'
 import DataListControls from '../components/DataListControls.vue'
 import PaginationBar from '../components/PaginationBar.vue'
@@ -29,7 +29,7 @@ const deletingRoomIds = ref<number[]>([])
 const contactRoomId = ref<number | null>(null)
 const contactLoading = ref(false), contactError = ref(''), contactPhone = ref('')
 let contactRequest = 0
-const editingRoom = ref<{ id: number; title: string; original: string; connected: boolean } | null>(null)
+const editingRoom = ref<{ id: number; title: string; original: string; connected: boolean; field: 'name' | 'number' } | null>(null)
 const editedRoomNumber = ref(''), roomNumberError = ref(''), savingRoomNumber = ref(false)
 const roomNumberInput = ref<HTMLInputElement | null>(null)
 const roomNumberDialog = ref<HTMLFormElement | null>(null)
@@ -37,15 +37,16 @@ let roomNumberRequest = 0
 let roomListRequest = 0
 let roomNumberTrigger: HTMLElement | null = null
 
-async function openRoomNumberEditor(room: Room, event: MouseEvent) {
+async function openRoomNumberEditor(room: Room, event: MouseEvent, field: 'name' | 'number' = 'number') {
   event.stopPropagation()
   if (!canManageRooms.value || !coreActionsAvailable.value || savingRoomNumber.value) return
   roomNumberRequest++
   roomListRequest++
   loading.value = false
   roomNumberTrigger = event.currentTarget as HTMLElement
-  editingRoom.value = { id: room.id, title: roomTitle(room), original: room.external_room_id, connected: Boolean(room.monitor_enabled) }
-  editedRoomNumber.value = room.external_room_id
+  const original = field === 'name' ? room.name : room.external_room_id
+  editingRoom.value = { id: room.id, title: roomTitle(room), original, connected: field === 'number' && Boolean(room.monitor_enabled), field }
+  editedRoomNumber.value = original
   roomNumberError.value = ''
   await nextTick()
   roomNumberInput.value?.focus()
@@ -73,21 +74,23 @@ async function saveRoomNumber() {
   const target = editingRoom.value
   if (!target || savingRoomNumber.value || !canManageRooms.value || !coreActionsAvailable.value || target.connected) return
   const value = editedRoomNumber.value.trim()
-  if (!value) { roomNumberError.value = '请输入房间号'; roomNumberInput.value?.focus(); return }
+  const isName = target.field === 'name'
+  if (!value) { roomNumberError.value = isName ? '请输入直播间名称' : '请输入房间号'; roomNumberInput.value?.focus(); return }
+  if (isName && (Array.from(value).length > 128 || /\p{Cc}/u.test(value))) { roomNumberError.value = '名称最多128个字符，不能含换行或控制字符'; return }
   if (value === target.original) { closeRoomNumberEditor(); return }
   const sequence = ++roomNumberRequest
   savingRoomNumber.value = true
   roomNumberError.value = ''
   try {
-    const updated = await updateRoomNumber(target.id, value, target.original)
+    const updated = isName ? await updateRoomName(target.id, value, target.original) : await updateRoomNumber(target.id, value, target.original)
     if (sequence !== roomNumberRequest || editingRoom.value?.id !== target.id) return
-    rooms.value = rooms.value.map(room => room.id === target.id ? { ...room, ...updated } : room)
+    rooms.value = rooms.value.map(room => room.id === target.id ? (isName ? { ...room, name: updated.name } : { ...room, ...updated }) : room)
     saveRoomCache(rooms.value)
     savingRoomNumber.value = false
     closeRoomNumberEditor()
-    showToast('房间号已修改', '下次连接将使用新的房间号。', 'success')
+    showToast(isName ? '直播间名称已修改' : '房间号已修改', isName ? '名称已保存。' : '下次连接将使用新的房间号。', 'success')
   } catch (err) {
-    if (sequence === roomNumberRequest) roomNumberError.value = err instanceof Error ? err.message : '修改房间号失败，请重试'
+    if (sequence === roomNumberRequest) roomNumberError.value = err instanceof Error ? err.message : (isName ? '修改名称失败，请重试' : '修改房间号失败，请重试')
   } finally {
     if (sequence === roomNumberRequest || !editingRoom.value) savingRoomNumber.value = false
   }
@@ -280,19 +283,6 @@ function statusText(room: Room) {
   if (status === 'core_unavailable') return 'Core异常'
   if (status === 'core_recovering') return '状态同步中'
   return status || '未知'
-}
-
-function statusDescription(room: Room) {
-  const status = effectiveStatus(room)
-  if (status === 'live') return '一切准备就绪，正在直播'
-  if (status === 'connecting') return '设备正在建立连接'
-  if (status === 'pending') return '等待直播平台开播'
-  if (status === 'stopped') return '直播间当前已停止'
-  if (status === 'device_offline') return '直播设备当前离线'
-  if (status === 'error') return '连接异常，请检查设备'
-  if (status === 'core_unavailable') return '服务暂不可用，请稍后重试'
-  if (status === 'core_recovering') return '正在同步直播间状态'
-  return '直播间当前未开播'
 }
 
 function roomMark(room: Room) {
@@ -624,11 +614,13 @@ onBeforeUnmount(() => {
               <div class="room-title-line">
                 <strong>{{ roomTitle(room) }}</strong>
                 <button
+                  v-if="canManageRooms"
                   class="room-edit-button"
                   type="button"
-                  title="管理直播间"
-                  aria-label="管理直播间"
-                  @click.stop="router.push('/rooms/' + room.id)"
+                  title="修改直播间名称"
+                  aria-label="修改直播间名称"
+                  :disabled="!coreActionsAvailable"
+                  @click="openRoomNumberEditor(room, $event, 'name')"
                 >
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M4 16.75V20h3.25L17.8 9.45l-3.25-3.25L4 16.75Zm16.7-10.04a1 1 0 0 0 0-1.42l-2-2a1 1 0 0 0-1.42 0l-1.56 1.56 3.25 3.25 1.73-1.39Z" />
@@ -661,7 +653,6 @@ onBeforeUnmount(() => {
                 <i></i>
                 {{ statusText(room) }}
               </span>
-              <small>{{ statusDescription(room) }}</small>
             </div>
           </div>
 
@@ -856,14 +847,14 @@ onBeforeUnmount(() => {
     <div v-if="editingRoom" class="modal-backdrop room-number-backdrop" @click.self="closeRoomNumberEditor">
       <form ref="roomNumberDialog" class="modal-card room-number-dialog" role="dialog" aria-modal="true" aria-labelledby="room-number-dialog-title" @submit.prevent="saveRoomNumber" @keydown="trapRoomNumberFocus">
         <div class="modal-header">
-          <h3 id="room-number-dialog-title">修改房间号</h3>
-          <button type="button" class="close-button" aria-label="关闭修改房间号" :disabled="savingRoomNumber" @click="closeRoomNumberEditor">×</button>
+          <h3 id="room-number-dialog-title">{{ editingRoom.field === 'name' ? '修改直播间名称' : '修改房间号' }}</h3>
+          <button type="button" class="close-button" :aria-label="editingRoom.field === 'name' ? '关闭修改直播间名称' : '关闭修改房间号'" :disabled="savingRoomNumber" @click="closeRoomNumberEditor">×</button>
         </div>
         <p>{{ editingRoom.title }}</p>
         <div class="form-stack">
-          <label for="edited-room-number">房间号 / 抖音直播链接</label>
+          <label for="edited-room-number">{{ editingRoom.field === 'name' ? '直播间名称' : '房间号 / 抖音直播链接' }}</label>
           <input id="edited-room-number" ref="roomNumberInput" v-model="editedRoomNumber" autocomplete="off" :disabled="savingRoomNumber || editingRoom.connected" :aria-invalid="Boolean(roomNumberError)" aria-describedby="room-number-help room-number-error" />
-          <small id="room-number-help">{{ editingRoom.connected ? '请先结束直播并停止直播间连接，再修改房间号。' : '保存后，下次连接将使用新的房间号。' }}</small>
+          <small id="room-number-help">{{ editingRoom.field === 'name' ? '最多128个字符。' : editingRoom.connected ? '请先结束直播并停止直播间连接，再修改房间号。' : '保存后，下次连接将使用新的房间号。' }}</small>
           <p v-if="roomNumberError" id="room-number-error" class="room-number-error" role="alert">{{ roomNumberError }}</p>
         </div>
         <div class="modal-actions">
@@ -951,7 +942,6 @@ onBeforeUnmount(() => {
 .room-list-readable .room-card-premium .card-actions { display: flex; flex: 1 1 360px; flex-wrap: wrap; gap: 8px; }
 .room-list-readable .room-card-premium .room-action-button { flex: 1 1 90px; min-height: 44px; padding: 8px 12px; }
 .room-list-readable .room-card-premium .room-action-enter { flex-grow: 1.3; min-width: 135px; }
-.room-list-readable .room-status-block small { max-width: 165px; }
 .room-number-dialog { width: min(540px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; }
 .room-number-dialog > p { margin: 0 0 20px; overflow-wrap: anywhere; }
 .room-number-dialog input { width: 100%; min-width: 0; }

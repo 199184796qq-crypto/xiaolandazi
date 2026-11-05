@@ -30,6 +30,13 @@ export async function startFixture() {
             room.external_room_id=input.external_room_id.trim();room.source_url='https://live.douyin.com/'+room.external_room_id;
             return Response.json(structuredClone(room));
           }
+          if(method==='PATCH'&&url.startsWith('/api/v1/rooms/')&&url.endsWith('/name')){
+            await new Promise(resolve=>setTimeout(resolve,window.fixture.delay));
+            if(window.fixture.saveError)return Response.json({error:window.fixture.saveError},{status:409});
+            const input=JSON.parse(options.body),room=rooms.find(room=>url==='/api/v1/rooms/'+room.id+'/name');
+            if(input.expected_name!==room.name)return Response.json({error:'直播间名称已被修改，请刷新后重试'},{status:409});
+            room.name=input.name.trim();return Response.json({id:room.id,name:room.name});
+          }
           if(method!=='GET')throw Error('Unexpected mutation: '+url);
           return Response.json({items:[],count:0});
         };
