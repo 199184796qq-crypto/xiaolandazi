@@ -168,7 +168,7 @@ func sortReady(r *room, ts []*Task) {
 // Business class is primary. A reasoned model urgency hint is a bounded
 // adjustment inside that class; it cannot bypass quota, lifetime or playback.
 func contentPriority(t *Task) int {
-	base := map[string]int{"投诉": 50, "催单": 40, "下单意向": 30, "提问": 20, "闲聊": 10}[t.Content.Intent.Type]
+	base := map[string]int{"投诉": 50, "催单": 40, "下单意向": 30, "提问": 20, "请求": 20, "要求": 20, "闲聊": 10}[t.Content.Intent.Type]
 	if t.Content.Intent.PriorityReason != "" {
 		switch t.Content.Intent.Priority {
 		case "较高":
