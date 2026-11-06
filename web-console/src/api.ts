@@ -4424,6 +4424,7 @@ export function setPlanProductCategory(planId: number, category: string) {
 }
 
 export interface PlanPrompt {
+  revision?: string
   prompt_md: string
   sections: import('./planPrompt').PlanPromptSections
   interaction_prompt_md: string
@@ -4853,4 +4854,21 @@ export function savePlanPromptTemplateCatalog(catalog: import('./planPromptTempl
 }
 export function getLiveAgentPlanPromptTemplates(planId: number, page: PlanPromptPage, signal?: AbortSignal) {
   return request<import('./planPromptTemplateCatalog').PromptTemplateSelection>('/api/v1/live-agent-plans/' + planId + '/prompt/templates?page=' + encodeURIComponent(page), { signal })
+}
+
+
+export function checkLiveAgentPlanSave(planId: number, tenantId?: number, allowRuntimePrompts = false) {
+  const params = new URLSearchParams()
+  if (tenantId) params.set('tenant_id', String(tenantId))
+  if (allowRuntimePrompts) params.set('allow_runtime_prompt_update', '1')
+  const query = params.size ? '?' + params.toString() : ''
+  return request<{ editable: boolean; runtime_prompts_editable?: boolean }>('/api/v1/live-agent-plans/' + planId + '/save-check' + query, { method: 'POST' })
+}
+
+
+export function saveLiveAgentPlanRuntimePrompts(planId: number, sections: import('./planPrompt').PlanPromptSections, rewritePlanning: string, revision: string) {
+  return request<PlanPrompt>('/api/v1/live-agent-plans/' + planId + '/runtime-prompts', {
+    method: 'PUT',
+    body: JSON.stringify({ expected_revision: revision, speech_requirements_md: sections.speech_requirements_md, interaction_requirements_md: sections.interaction_requirements_md, rewrite_planning_md: rewritePlanning }),
+  })
 }

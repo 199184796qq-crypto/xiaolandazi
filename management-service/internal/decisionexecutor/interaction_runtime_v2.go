@@ -141,11 +141,9 @@ func (w *Worker) v2Address(ctx context.Context, s model.LiveRuntimeSession, item
 		}
 	}
 	var names []string
-	rawNames := make([]string, 0, len(slots))
 	for _, slot := range slots {
 		if slot.name != "" {
 			names = append(names, slot.name)
-			rawNames = append(rawNames, slot.raw)
 		}
 	}
 	// 一个可点名的都没有时，一律用群称呼：送过来的是这一批人，
@@ -162,8 +160,8 @@ func (w *Worker) v2Address(ctx context.Context, s model.LiveRuntimeSession, item
 			// 单人：裸称 40%、带称谓 60%。
 			name := names[0]
 			label := name
-			// 超过 4 个字不加称谓，多人和单人都一样，掷到也一样。
-			if addressing.WithTitle(w.addressRand()) && len(terms) > 0 && !addressing.HasAddressSuffix(name) && len([]rune(rawNames[0])) <= 4 {
+			// 按最终可念称呼计数：缩写后超过 5 个字不加称谓。
+			if addressing.WithTitle(w.addressRand()) && len(terms) > 0 && !addressing.HasAddressSuffix(name) && len([]rune(name)) <= 5 {
 				label = name + terms[0]
 			}
 			parts = append(parts, label)
@@ -177,10 +175,10 @@ func (w *Worker) v2Address(ctx context.Context, s model.LiveRuntimeSession, item
 			case 1:
 				parts = append(parts, names...)
 			default:
-				for i, name := range names {
+				for _, name := range names {
 					label := name
-					// 原始昵称超过 4 个字不加称谓，多人名单里同样适用。
-					if len(terms) > 0 && !addressing.HasAddressSuffix(name) && i < len(rawNames) && len([]rune(rawNames[i])) <= 4 {
+					// 多人逐名追加也按最终可念称呼的 5 字上限。
+					if len(terms) > 0 && !addressing.HasAddressSuffix(name) && len([]rune(name)) <= 5 {
 						label = name + terms[0]
 					}
 					parts = append(parts, label)
@@ -210,11 +208,15 @@ func (w *Worker) v2Address(ctx context.Context, s model.LiveRuntimeSession, item
 	return address
 }
 func (w *Worker) generateInteractionV2(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem) (string, error) {
-	snapshot, err := interactionplan.Freeze(ctx, w.store, session)
+	e, prepared := interactionplan.Decode(item.PurposeKnowledge)
+	freeze := interactionplan.Freeze
+	if prepared {
+		freeze = interactionplan.FreezePrepared
+	}
+	snapshot, err := freeze(ctx, w.store, session)
 	if err != nil {
 		return "", err
 	}
-	e, prepared := interactionplan.Decode(item.PurposeKnowledge)
 	complete := func(callCtx context.Context, req agentgateway.Request) (agentgateway.Response, error) {
 		return w.completeV2RecordedModel(callCtx, session, snapshot, req, item.ID+":"+req.Stage)
 	}

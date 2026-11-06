@@ -33,6 +33,8 @@ type Snapshot struct {
 	FrozenAt                            time.Time
 	Voice                               model.VoiceProfile
 	Style                               model.LiveAgentPlanAnchorStyleProfile
+	RuntimeContextKey                   string
+	RuntimePromptRevision               string
 }
 type Turn struct {
 	Question string `json:"question"`
@@ -164,12 +166,47 @@ type promptSource interface {
 	GetLiveAgentPlanPrompt(context.Context, int64, int64) (string, time.Time, error)
 }
 
+type runtimePromptSource interface {
+	GetLiveAgentPlanRuntimePrompts(context.Context, int64, int64) (planprompt.RuntimePrompts, error)
+}
+
+func runtimePromptFor(ctx context.Context, source Source, frozen Snapshot) (Snapshot, error) {
+	reader, ok := source.(runtimePromptSource)
+	if !ok || frozen.RuntimeContextKey == "" {
+		return frozen, nil
+	}
+	current, err := reader.GetLiveAgentPlanRuntimePrompts(ctx, frozen.Scope.Tenant, frozen.Scope.Plan)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if current.Enabled && current.ContextKey() == frozen.RuntimeContextKey {
+		// Keep the fixed run identity: a prepared body bought before the save must
+		// still finish. Only subsequent model requests use the new requirements.
+		frozen.Prompt = current.Sections.Interaction()
+		frozen.RuntimePromptRevision = current.Revision
+	}
+	return frozen, nil
+}
+
+// Prepared content has already completed its model call and may already have
+// paid audio. A requirements save or a transient prompt read error cannot revoke
+// its original run identity or force another purchase.
+func FreezePrepared(ctx context.Context, source Source, session model.LiveRuntimeSession) (Snapshot, error) {
+	if s, ok := Frozen.ForSession(session.TenantID, session.RoomID, session.ID); ok && session.ID > 0 {
+		if strings.TrimSpace(s.Prompt) == "" {
+			return s, errors.New("本场冻结的方案提示词为空")
+		}
+		return s, nil
+	}
+	return Freeze(ctx, source, session)
+}
+
 func Freeze(ctx context.Context, source Source, session model.LiveRuntimeSession) (Snapshot, error) {
 	if s, ok := Frozen.ForSession(session.TenantID, session.RoomID, session.ID); ok && session.ID > 0 {
 		if strings.TrimSpace(s.Prompt) == "" {
 			return s, errors.New("本场冻结的方案提示词为空，请配置后在新场使用")
 		}
-		return s, nil
+		return runtimePromptFor(ctx, source, s)
 	}
 	published, err := source.GetPublishedLiveAgentPlanVersionForRoom(ctx, session.TenantID, session.RoomID)
 	if err != nil {
@@ -203,6 +240,21 @@ func Freeze(ctx context.Context, source Source, session model.LiveRuntimeSession
 	s, err := NewSnapshot(Scope{session.TenantID, session.RoomID, session.ID, published.PlanID, published.ID}, prompt, p0.PromptText, string(md))
 	if err != nil {
 		return s, err
+	}
+	if reader, ok := source.(runtimePromptSource); ok {
+		current, err := reader.GetLiveAgentPlanRuntimePrompts(ctx, session.TenantID, published.PlanID)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		// Bind only a matching document. Do not mix two different reads if another
+		// author saves between initial prompt and context acquisition.
+		if current.Structured && current.Sections.Interaction() != prompt {
+			return Snapshot{}, errors.New("方案提示词保存中，请稍后重试")
+		}
+		if current.Structured {
+			s.RuntimeContextKey = current.ContextKey()
+			s.RuntimePromptRevision = current.Revision
+		}
 	}
 	identity := published.VoiceIdentity
 	rate := identity.Rate

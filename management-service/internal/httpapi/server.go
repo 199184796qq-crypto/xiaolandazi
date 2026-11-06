@@ -229,6 +229,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/product-category", s.planProductCategorySet)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/prompt", s.liveAgentPlanPromptGet)
 	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/prompt", s.liveAgentPlanPromptPut)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/runtime-prompts", s.liveAgentPlanRuntimePromptPut)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/prompt/render", s.liveAgentPlanPromptRender)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/prompt/templates", s.liveAgentPlanPromptTemplates)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/script/rewrite", s.planScriptRewrite)

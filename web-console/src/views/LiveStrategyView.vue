@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { saveLiveAgentPlanRuntimePrompts } from '../api'
+import { checkLiveAgentPlanSave } from '../api'
 
 import { validateOriginalAudioFiles } from '../directAudioUpload'
 import RoomReadingRules from '../components/RoomReadingRules.vue'
@@ -112,6 +114,7 @@ const activeMode = ref<StrategyMode>('products')
 const lastFactMode = ref<PlanFactMode>('products')
 const planPromptSections = ref(emptyPlanPromptSections())
 const planRewritePlanning = ref('')
+const planPromptRevision = ref('')
 type PlanPromptDraft = { sections: PlanPromptSections; rewritePlanning: string }
 const planPromptLoading = ref(false)
 const planPromptSaving = ref(false)
@@ -184,6 +187,7 @@ async function loadPlanPrompt() {
   if (!planId) {
     planPromptSections.value = emptyPlanPromptSections()
     planRewritePlanning.value = ''
+    planPromptRevision.value = ''
     planPromptLegacy.value = ''
     planPromptLoadedPlan.value = 0
     return
@@ -199,6 +203,7 @@ async function loadPlanPrompt() {
     if (!current()) return
     planPromptSections.value = readPlanPromptSections(result.sections)
     planRewritePlanning.value = readPlanRewritePlanning(result.rewrite_planning_md)
+    planPromptRevision.value = result.revision || ''
     planPromptLegacy.value = result.legacy_prompt_md || ''
     planPromptLoadedPlan.value = planId
     planPromptNotice.value = result.legacy_unstructured ? '旧版完整提示词已单独保留，四页只显示各自保存的原文；请填写后保存。' : ''
@@ -213,6 +218,7 @@ watch(currentRoomPlanId, () => {
   planPromptSequence++
   planPromptSections.value = emptyPlanPromptSections()
   planRewritePlanning.value = ''
+  planPromptRevision.value = ''
   planPromptLegacy.value = ''
   planPromptLoadedPlan.value = 0
   planPromptLoading.value = false
@@ -3408,6 +3414,7 @@ async function persistPlanPromptIfAny(planId: number, original?: PlanPromptDraft
     if (!current()) return
     planPromptSections.value = readPlanPromptSections(result.sections)
     planRewritePlanning.value = readPlanRewritePlanning(result.rewrite_planning_md)
+    planPromptRevision.value = result.revision || ''
     planPromptLegacy.value = result.legacy_prompt_md || ''
     planPromptLoadedPlan.value = planId
     planPromptNotice.value = '方案提示词已随方案保存，三份元提示词已更新'
@@ -3430,9 +3437,29 @@ async function savePlanOneClick() {
   try {
     if (!current()) throw new Error('页面范围或话术设置已变化，本次保存已取消')
     savePlanOneClickStage.value = '保存中…'
+    const access = await checkLiveAgentPlanSave(planId, room.tenant_id, activeMode.value === 'plan_prompt')
+    if (!current()) throw new Error('方案已变化，本次保存已取消')
     // Capture page originals at the click, before saving/refreshing other assets.
     const promptOriginals = await planPromptOriginalsForSave(planId)
     if (!current()) throw new Error('页面范围或话术设置已变化，本次保存已取消')
+    if (!access.editable && access.runtime_prompts_editable) {
+      if (!promptOriginals || !planPromptRevision.value) throw new Error('请先保留草稿并重新读取方案提示词后再保存')
+      planPromptSaving.value = true
+      try {
+        const saved = await saveLiveAgentPlanRuntimePrompts(planId, promptOriginals.sections, promptOriginals.rewritePlanning, planPromptRevision.value)
+        if (!current()) return
+        const sections = readPlanPromptSections(saved.sections)
+        planPromptSections.value.speech_requirements_md = sections.speech_requirements_md
+        planPromptSections.value.interaction_requirements_md = sections.interaction_requirements_md
+        planRewritePlanning.value = readPlanRewritePlanning(saved.rewrite_planning_md)
+        planPromptRevision.value = saved.revision || ''
+        planPromptNotice.value = '直播话术要求、互动回答要求、话术规划已热更新，后续生成使用新内容。其他修改需结束直播后保存。'
+        fullShowNotice.value = planPromptNotice.value
+      } finally {
+        if (current()) planPromptSaving.value = false
+      }
+      return
+    }
     const saved = await saveFullShowVersion()
     if (!saved) {
       if (current()) throw new Error(fullShowVersionError.value || '本次未完成正式版本保存，请查看提示后重试；原版本保持不变。')

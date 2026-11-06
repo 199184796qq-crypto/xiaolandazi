@@ -33,7 +33,12 @@ func (s *Server) liveAgentPlanSaveCheck(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if !s.allowPlanSave(w, r, tenant, plan) {
+	err := s.store.AssertLiveAgentPlanEditable(r.Context(), tenant, plan)
+	if errors.Is(err, appdb.ErrLiveAgentPlanInUse) && r.URL.Query().Get("allow_runtime_prompt_update") == "1" {
+		writeJSON(w, http.StatusOK, map[string]any{"editable": false, "runtime_prompts_editable": true})
+		return
+	}
+	if writePlanSaveGuardError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"editable": true})

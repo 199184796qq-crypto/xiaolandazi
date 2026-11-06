@@ -14,6 +14,8 @@ import (
 )
 
 type LiveAgentPlanPromptDocument struct {
+	Revision            string              `json:"revision"`
+	RuntimeHotUpdate    bool                `json:"runtime_hot_update,omitempty"`
 	Sections            planprompt.Sections `json:"sections"`
 	PromptMD            string              `json:"prompt_md"`
 	InteractionPromptMD string              `json:"interaction_prompt_md"`
@@ -58,6 +60,7 @@ func (s *Store) GetLiveAgentPlanPromptDocument(ctx context.Context, tenantID, pl
 	if e := s.db.QueryRowContext(ctx, `SELECT rewrite_prompt_md FROM live_agent_plan_prompts WHERE tenant_id=? AND plan_id=?`, tenantID, planID).Scan(&rewrite); e == nil && rewrite.Valid {
 		out.RewritePromptMD = rewrite.String
 	}
+	out.Revision = livePlanPromptRevision(out.PromptMD, sections.String, out.RewritePromptMD)
 	if sections.Valid && strings.TrimSpace(sections.String) != "" {
 		if err := json.Unmarshal([]byte(sections.String), &out.Sections); err != nil {
 			return out, fmt.Errorf("decode plan prompt sections: %w", err)
@@ -65,11 +68,13 @@ func (s *Store) GetLiveAgentPlanPromptDocument(ctx context.Context, tenantID, pl
 		out.SpeechPromptMD = speech.String
 		var original struct {
 			RewritePlanningMD *string `json:"rewrite_planning_md"`
+			RuntimeHotUpdate  bool    `json:"runtime_hot_update"`
 		}
 		if err := json.Unmarshal([]byte(sections.String), &original); err != nil {
 			return out, err
 		}
 		out.RewritePlanningMD = original.RewritePlanningMD
+		out.RuntimeHotUpdate = original.RuntimeHotUpdate
 	} else {
 		// No page originals exist for a legacy document. Never reverse-parse its
 		// compiled text into editable pages; expose that old text separately.

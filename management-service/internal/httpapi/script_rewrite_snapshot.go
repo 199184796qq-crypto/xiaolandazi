@@ -55,6 +55,15 @@ func withScriptRewriteSnapshot(v model.LiveAgentPlanVersion, snapshot scriptRewr
 }
 func (s *Server) loadScriptRewriteSnapshot(ctx context.Context, tenant int64, v model.LiveAgentPlanVersion) (scriptRewriteSnapshot, error) {
 	if snapshot, ok := scriptRewriteSnapshotFor(v); ok {
+		if s.store != nil && snapshot.Prompt != "" {
+			current, err := s.store.GetLiveAgentPlanRuntimePrompts(ctx, tenant, v.PlanID)
+			if err != nil {
+				return scriptRewriteSnapshot{}, err
+			}
+			if prompt, ok := current.RewriteFor(snapshot.Prompt); ok {
+				snapshot.Prompt = prompt
+			}
+		}
 		return snapshot, nil
 	}
 	if s.store == nil {
