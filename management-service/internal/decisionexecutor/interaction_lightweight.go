@@ -34,7 +34,7 @@ const (
 
 // classifyInteraction 把一次互动事件归到三档之一。
 // 这是新互动策略机的「分类」环节，纯程序逻辑，不调模型。
-// v2IntentType 取新链路解析出的受控类型（提问/下单意向/催单/投诉/闲聊/刷屏）。
+// v2IntentType 取新链路解析出的受控类型；请求沿用普通事实应答流程。
 func v2IntentType(item decisionItem) string {
 	if len(item.PurposeKnowledge) == 0 {
 		return ""
@@ -51,7 +51,7 @@ func typeTier(t string) (interactionTier, bool) {
 	switch t {
 	case "刷屏", "闲聊":
 		return tierAcknowledge, true
-	case "提问", "下单意向", "催单", "投诉":
+	case "提问", "请求", "要求", "下单意向", "催单", "投诉":
 		return tierFactAnswer, true
 	}
 	return tierAcknowledge, false

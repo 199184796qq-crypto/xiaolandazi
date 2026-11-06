@@ -278,6 +278,8 @@ func request(s Snapshot, template, stage string, payload any, format agentgatewa
 func normalizeType(v string) string {
 	v = strings.TrimSpace(v)
 	switch v {
+	case "请求", "要求":
+		return "请求"
 	case "提问", "下单意向", "催单", "投诉", "闲聊", "主动互动", "刷屏":
 		return v
 	}

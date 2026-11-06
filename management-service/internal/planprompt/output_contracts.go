@@ -39,7 +39,7 @@ const SpeechOutputContract = `【输出格式（系统保留，不可删除或�
 // The five content fields are shared by single and multi-person requests.
 // Speaker/task identities, priority bands and expiry remain program-owned.
 const interactionFiveFields = `意图：对当前诉求的一句理解
-类型：提问、下单意向、催单、投诉、闲聊、主动互动、刷屏之一
+类型：提问、请求、下单意向、催单、投诉、闲聊、主动互动、刷屏之一
 歧义：是或否
 澄清句：需要确认问题时可直接口播的一句反问，否则留空
 话术：可直接口播的回答正文，否则留空
