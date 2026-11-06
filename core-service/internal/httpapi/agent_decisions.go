@@ -223,10 +223,11 @@ func (s *Server) claimRoomAgentDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": "mainline_low_buffer", "item": queue[0], "buffered_mainline_ms": program.BufferedMainlineMS})
 		return
 	}
-	check := s.InteractionPreparationWindow(r.Context(), audioout.InteractionPreflightRequest{RoomID: roomID, TenantID: tenantID, PlanID: s.agentWork.Get(roomID).PlanID, Epoch: s.currentInteractionEpoch(roomID), DecisionID: head.ID, Until: head.ExpiresAt, DurationMS: 3000})
+	preparation := audioout.InteractionPreflightRequest{RoomID: roomID, TenantID: tenantID, PlanID: s.agentWork.Get(roomID).PlanID, Epoch: s.currentInteractionEpoch(roomID), DecisionID: head.ID, Until: head.ExpiresAt, DurationMS: 3000, Stage: "claim"}
+	check := s.InteractionPreparationWindow(r.Context(), preparation)
 	if check.Allowed && s.messages != nil {
-		raw, _ := json.Marshal(audioout.InteractionPreflightRequest{TenantID: tenantID, RoomID: roomID, DecisionID: head.ID, DurationMS: 3000})
-		if errs := s.messages.Publish(r.Context(), messagecaptain.Message{Kind: "interaction.v2.preflight", RoomID: roomID, Payload: raw}); len(errs) > 0 {
+		raw, _ := json.Marshal(preparation)
+		if errs := s.messages.Publish(r.Context(), messagecaptain.Message{Kind: "interaction.v2.preflight", RoomID: roomID, RunID: preparation.Epoch, Payload: raw}); len(errs) > 0 {
 			check.Allowed = false
 			check.Reason = errs[0].Error()
 			var blocked *audioout.InteractionPreparationError

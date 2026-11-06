@@ -43,7 +43,13 @@ func (p *Processor) preflightAudio(m messagecaptain.Message) error {
 		return fmt.Errorf("invalid_preflight")
 	}
 	item, ok := p.decisions.Get(m.RoomID, req.DecisionID)
-	if !ok || item.Status != agentdecision.StatusClaimed || item.PlaybackTaskID != "" {
+	// Claim admission runs before the atomic ClaimExpected transition. Paid
+	// preparation runs afterwards and must continue requiring an owned claim.
+	expected := agentdecision.StatusClaimed
+	if req.Stage == "claim" {
+		expected = agentdecision.StatusPending
+	}
+	if !ok || item.Status != expected || item.PlaybackTaskID != "" {
 		return fmt.Errorf("decision_changed")
 	}
 	s := p.v2Scope(req.TenantID, m.RoomID)
