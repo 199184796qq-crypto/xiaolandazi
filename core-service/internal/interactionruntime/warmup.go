@@ -6,6 +6,22 @@ import "time"
 // including manual speech. First warmup starts no earlier than this run's start.
 const WarmupMinGap = 180 * time.Second
 
+// A failed/unplayed guide is not an interaction end. Throttle only new guide
+// purchases; questions/welcomes and the real 180-second playback clock keep
+// their own eligibility. Record each terminal attempt once, never every tick.
+const warmupFailureBackoff = 30 * time.Second
+
+func reconcileWarmupBackoff(r *room, now time.Time) {
+	for _, task := range r.Tasks {
+		if task.Work.Kind == "guide" && terminal(task.State) && task.State != "completed" && !task.warmupBackoffRecorded {
+			task.warmupBackoffRecorded = true
+			if retry := now.Add(warmupFailureBackoff); retry.After(r.WarmupRetryAt) {
+				r.WarmupRetryAt = retry
+			}
+		}
+	}
+}
+
 type playbackActivity struct{ Started, Ended time.Time }
 
 // Reconcile even manual playback when its queue item was cancelled or lost
@@ -25,6 +41,10 @@ func (e *Engine) ReconcilePlayback(s Scope, queued map[string]bool, now time.Tim
 }
 
 func warmupAllowed(r *room, now time.Time) bool {
+	reconcileWarmupBackoff(r, now)
+	if now.Before(r.WarmupRetryAt) {
+		return false
+	}
 	if r.Policy != nil && r.Policy.Busy {
 		return false
 	}

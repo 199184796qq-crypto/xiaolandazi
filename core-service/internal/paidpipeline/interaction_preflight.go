@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"livecompanion/core/internal/agentdecision"
 	"livecompanion/core/internal/audioout"
 	"livecompanion/core/internal/interactionruntime"
 	"livecompanion/core/internal/messagecaptain"
@@ -42,12 +43,17 @@ func (p *Processor) preflightAudio(m messagecaptain.Message) error {
 		return fmt.Errorf("invalid_preflight")
 	}
 	item, ok := p.decisions.Get(m.RoomID, req.DecisionID)
-	if !ok || item.PlaybackTaskID != "" {
+	if !ok || item.Status != agentdecision.StatusClaimed || item.PlaybackTaskID != "" {
 		return fmt.Errorf("decision_changed")
 	}
 	s := p.v2Scope(req.TenantID, m.RoomID)
+	if req.Epoch != s.Epoch || !p.runtime.IsWorking(m.RoomID) {
+		return fmt.Errorf("run_changed")
+	}
 	if v := p.interactionV2.Load(); v != nil {
-		reason, remaining, retry := v.engine.PreviewPreparationRetry(s, req.DecisionID, req.DurationMS, p.clock())
+		now := p.clock()
+		v.engine.SetPolicy(s, p.v2Policy(s), now)
+		reason, remaining, retry := v.engine.PreviewPreparationRetry(s, req.DecisionID, req.DurationMS, now)
 		if reason != "" {
 			return &audioout.InteractionPreparationError{Reason: reason, RemainingMS: remaining, RetryAfterMS: retry}
 		}

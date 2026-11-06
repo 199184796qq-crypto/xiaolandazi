@@ -1658,7 +1658,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		Rate:        voiceRate(voice),
 		Instruction: ttsInstruction,
 	})
-	if err != nil && ssmlUsed && !errors.Is(err, voiceasset.ErrCleared) && !errors.Is(err, errWelcomeTTSTimeInsufficient) {
+	if err != nil && ssmlUsed && !errors.Is(err, voiceasset.ErrCleared) && !errors.Is(err, errWelcomeTTSTimeInsufficient) && !errors.Is(err, errWarmupPurchaseNotAllowed) {
 		audio, err = w.synthesizeInteractionAudio(ttsCtx, item, ttsgateway.SynthesizeRequest{
 			Provider:    voiceProvider(voice),
 			Model:       ttsModel,

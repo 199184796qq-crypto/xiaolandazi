@@ -39,11 +39,16 @@ func (w *Worker) synthesizeInteractionAudioStage(ctx context.Context, item *deci
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
+	scope, _ := ctx.Value(workerPaidScopeKey{}).(workerPaidScope)
+	if item.MissionKind == "warmup" && scope.session.ID > 0 {
+		ctx = ttsgateway.WithSynthesisGuard(ctx, func(c context.Context) error {
+			return w.checkWarmupTTSPurchase(c, scope.session, *item, request.Text, request.Rate)
+		})
+	}
 	if runes := []rune(request.Text); len(runes) > 0 {
 		n := min(80, len(runes))
 		log.Printf("interaction tts text decision=%s mission=%s text=%q", item.ID, item.MissionKind, string(runes[:n]))
 	}
-	scope, _ := ctx.Value(workerPaidScopeKey{}).(workerPaidScope)
 	started := time.Now()
 	response, err := w.synthesizePaidAudio(ctx, scope.session, stage, item.ID, request)
 	w.observeTTPreparation(time.Since(started))

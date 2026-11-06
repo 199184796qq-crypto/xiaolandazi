@@ -51,7 +51,11 @@ func (p *Processor) v2Policy(s interactionruntime.Scope) interactionruntime.Poli
 		}
 	}
 	for _, item := range view.Queue {
-		if item.Scene != "warmup" {
+		// All V2 tasks share Scene=interaction_v2. Identify the work itself:
+		// otherwise a guide's own queued/claimed item makes it cancel itself.
+		warmup := item.MissionKind == "warmup" || item.InteractionDecision.PrimaryEvent == "guide" ||
+			(item.MissionKind == "" && item.InteractionDecision.PrimaryEvent == "" && item.Scene == "warmup")
+		if !warmup {
 			policy.Busy = true
 		}
 	}

@@ -85,20 +85,21 @@ type Content struct {
 	Knowledge json.RawMessage
 }
 type Task struct {
-	ControlsRevision   uint64
-	BlockedAtCreation  map[string]bool
-	Work               Work
-	Content            Content
-	State, Decision    string
-	Started, Completed time.Time
-	SelectedAt         time.Time
-	ReadyAt            time.Time
-	Failure            string
-	Attempts           int
-	Estimate           time.Duration
-	PCMPlayedMS        int
-	PCMKnown           bool
-	SignalRefs         map[string]uint64
+	ControlsRevision      uint64
+	BlockedAtCreation     map[string]bool
+	Work                  Work
+	Content               Content
+	State, Decision       string
+	Started, Completed    time.Time
+	SelectedAt            time.Time
+	ReadyAt               time.Time
+	Failure               string
+	Attempts              int
+	Estimate              time.Duration
+	PCMPlayedMS           int
+	PCMKnown              bool
+	SignalRefs            map[string]uint64
+	warmupBackoffRecorded bool
 }
 type dialogue struct {
 	UID, Name, Original, Clarify  string
@@ -147,6 +148,7 @@ type room struct {
 	Welcome                             *welcomeState
 	Behaviors                           map[string]*behaviorLane
 	Playback                            map[string]playbackActivity
+	WarmupRetryAt                       time.Time
 }
 type Engine struct {
 	mu          sync.Mutex
@@ -671,7 +673,7 @@ func (e *Engine) Accept(w Work, c Content, err error, now time.Time) bool {
 		return false
 	}
 	if err != nil {
-		if t.Work.WelcomeQuota || t.Work.Template != "" {
+		if t.Work.WelcomeQuota || t.Work.Template != "" || t.Work.Kind == "guide" {
 			t.State = "failed"
 			t.Failure = err.Error()
 			return false

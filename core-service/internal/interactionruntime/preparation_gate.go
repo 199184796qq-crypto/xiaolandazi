@@ -111,6 +111,9 @@ func (e *Engine) PreviewPreparationRetry(s Scope, decision string, duration int,
 			if !enabled(r, t.Work.Kind) {
 				return "interaction_disabled", remaining, 0
 			}
+			if t.Work.Kind == "guide" && !warmupAllowed(r, at) {
+				return "warmup_activity_changed", remaining, 0
+			}
 			if t.Work.Kind == "urgent" {
 				return "", remaining, 0
 			}

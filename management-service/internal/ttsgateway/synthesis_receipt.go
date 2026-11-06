@@ -78,6 +78,25 @@ type SynthesisObserver interface {
 }
 
 type synthesisObserverKey struct{}
+type synthesisGuardKey struct{}
+
+// WithSynthesisGuard revalidates disposable work after scheduler admission,
+// immediately before any accounting reservation or provider request. Guards
+// compose and run for each real attempt, including an SSML fallback.
+func WithSynthesisGuard(ctx context.Context, guard func(context.Context) error) context.Context {
+	previous, _ := ctx.Value(synthesisGuardKey{}).(func(context.Context) error)
+	return context.WithValue(ctx, synthesisGuardKey{}, func(c context.Context) error {
+		if previous != nil {
+			if err := previous(c); err != nil {
+				return err
+			}
+		}
+		if guard != nil {
+			return guard(c)
+		}
+		return nil
+	})
+}
 
 // WithSynthesisObserver scopes accounting to a call tree, never a global gateway.
 // Cloning, voice design, cache reads, and unrelated previews are not observed.
@@ -132,6 +151,11 @@ func BillableTextCharacters(text string) int64 {
 func observeSynthesis(ctx context.Context, provider Provider, request SynthesizeRequest) (result SynthesizeResponse, err error) {
 	if err := ctx.Err(); err != nil {
 		return result, notSent(err)
+	}
+	if guard, _ := ctx.Value(synthesisGuardKey{}).(func(context.Context) error); guard != nil {
+		if err := guard(ctx); err != nil {
+			return result, notSent(err)
+		}
 	}
 	text := request.Text
 	if request.Provider == ProviderTencent {
