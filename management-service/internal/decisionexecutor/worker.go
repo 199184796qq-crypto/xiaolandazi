@@ -1833,7 +1833,7 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 		SourceType:        sourceType,
 		QuestionText:      primaryQuestion(*item),
 		GeneratedText:     text,
-		IntentJSON:        string(item.PurposeKnowledge),
+		IntentJSON:        generatedSpeechHistoryIntentJSON(item),
 		SuggestionJSON:    string(suggestionJSON),
 	})
 	historyCancel()

@@ -948,28 +948,62 @@ function generatedSpeechCorrectionLabel(item: GeneratedSpeechHistoryItem) {
   return '未纠正'
 }
 
-function generatedSpeechIntentFields(raw?: string) {
-  if (!raw) return []
+function generatedSpeechHistoryReceiptKind(item: GeneratedSpeechHistoryItem) {
+  const session = runtimeSnapshot.value?.session
+  if (!session || item.runtime_session_id !== session.id || item.runtime_external_id !== session.external_id) return ''
+  const start = Date.parse(session.started_at)
+  const end = session.ended_at ? Date.parse(session.ended_at) : dashboardNow.value
+  const created = Date.parse(item.created_at)
+  if (!Number.isFinite(start) || !Number.isFinite(end) || !Number.isFinite(created) || created < start || created > end) return ''
+  const receipts = [
+    ...(agentDecisionState.value?.played_history || []).map(row => ({ id: row.decision_id, kind: row.mission_kind, at: row.answered_at })),
+    ...(agentDecisionState.value?.terminal_history || []).map(row => ({ id: row.decision_id, kind: row.mission_kind, at: row.at })),
+  ]
+  const kinds = new Set(receipts.filter(row => {
+    const at = Date.parse(row.at)
+    return row.id === item.decision_id && row.kind && at >= start && at <= end
+  }).map(row => row.kind!))
+  return kinds.size === 1 ? [...kinds][0]! : ''
+}
+
+function generatedSpeechIntentFields(item: GeneratedSpeechHistoryItem) {
+  let record: Record<string, unknown> = {}
   try {
-    const value: unknown = JSON.parse(raw)
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
-    const record = value as Record<string, unknown>
-    const intent = record.intent && typeof record.intent === 'object' && !Array.isArray(record.intent)
-      ? record.intent as Record<string, unknown>
-      : record
-    const text = (...values: unknown[]) => values.find((value): value is string => typeof value === 'string' && !!value.trim())?.trim() || ''
-    return [
-      { label: '意图', text: text(intent.meaning, intent['意图'], intent.purpose, record.purpose, record.intent) },
-      { label: '类型', text: text(intent.type, intent['类型'], record.type, record['类型']) },
-    ].filter(field => field.text)
-  } catch {
-    return []
+    const value: unknown = JSON.parse(item.intent_json || '')
+    if (value && typeof value === 'object' && !Array.isArray(value)) record = value as Record<string, unknown>
+  } catch { /* A missing or malformed intent must never expose raw JSON. */ }
+  const intent = record.intent && typeof record.intent === 'object' && !Array.isArray(record.intent)
+    ? record.intent as Record<string, unknown>
+    : record
+  const text = (...values: unknown[]) => values.find((value): value is string => typeof value === 'string' && !!value.trim())?.trim() || ''
+  const kind = text(record.mission_kind) || generatedSpeechHistoryReceiptKind(item)
+  const event = text(record.event_kind)
+  const taskLabels: Record<string, string> = {
+    welcome: '新人欢迎', welcome_named: '新人欢迎', welcome_batch: '新人欢迎',
+    warmup: '互动暖场', guide: '互动暖场',
+    reply_like: '点赞感谢', like: '点赞感谢',
+    reply_follow: '关注感谢', follow: '关注感谢',
+    conversion_signal: '下单回应', order: '下单回应',
+    time_report: '时间播报', engagement: '互动回应',
   }
+  const modelType = text(intent.type, intent['类型'], record.type, record['类型'])
+  const semanticKinds = ['reply_question', 'reply_chat', 'question', 'semantic', 'dialogue', 'urgent', 'complaint']
+  // Older v2 envelopes did not retain the task kind. A model's smalltalk label
+  // alone cannot tell a welcome apart from an audience conversation.
+  const type = taskLabels[kind] || (semanticKinds.includes(kind)
+    ? kind === 'reply_chat' && event === 'engagement' ? taskLabels.engagement : modelType
+    : taskLabels[event] || (record.protocol !== 'interaction_v2'
+      ? modelType
+      : modelType ? '互动（任务类型未记录）' : ''))
+  return [
+    { label: '意图', text: text(intent.meaning, intent['意图'], intent.purpose, record.purpose, record.intent) },
+    { label: '类型', text: type },
+  ].filter(field => field.text)
 }
 
 const generatedSpeechHistoryItems = computed(() => generatedSpeechHistory.value.items.map(item => ({
   ...item,
-  intentFields: generatedSpeechIntentFields(item.intent_json),
+  intentFields: generatedSpeechIntentFields(item),
 })))
 
 function openGeneratedSpeechCorrection(input: {

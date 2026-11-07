@@ -1190,6 +1190,8 @@ export interface AgentDecisionItem {
 }
 
 export interface AgentDecisionRecentAnswer {
+  decision_id?: string
+  mission_kind?: string
   topic: string
   title: string
   answered_at: string
@@ -1226,6 +1228,8 @@ export interface AgentDecisionSimulationResult {
 }
 
 export interface AgentDecisionSnapshot {
+  played_history?: AgentDecisionRecentAnswer[]
+  terminal_history?: Array<{ decision_id: string; mission_kind?: string; at: string }>
   room_id: number
   generated_at: string
   summary: AgentDecisionSummary
