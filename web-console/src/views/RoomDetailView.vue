@@ -948,25 +948,29 @@ function generatedSpeechCorrectionLabel(item: GeneratedSpeechHistoryItem) {
   return '未纠正'
 }
 
-function prettyGeneratedSpeechJSON(raw?: string) {
-  if (!raw) return ''
+function generatedSpeechIntentFields(raw?: string) {
+  if (!raw) return []
   try {
-    return JSON.stringify(JSON.parse(raw), null, 2)
+    const value: unknown = JSON.parse(raw)
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+    const record = value as Record<string, unknown>
+    const intent = record.intent && typeof record.intent === 'object' && !Array.isArray(record.intent)
+      ? record.intent as Record<string, unknown>
+      : record
+    const text = (...values: unknown[]) => values.find((value): value is string => typeof value === 'string' && !!value.trim())?.trim() || ''
+    return [
+      { label: '意图', text: text(intent.meaning, intent['意图'], intent.purpose, record.purpose, record.intent) },
+      { label: '类型', text: text(intent.type, intent['类型'], record.type, record['类型']) },
+    ].filter(field => field.text)
   } catch {
-    return raw
+    return []
   }
 }
 
-function generatedSpeechIntentSummary(raw?: string) {
-  if (!raw) return ''
-  try {
-    const value = JSON.parse(raw) as { purpose?: string; task_angles?: Array<Record<string, unknown>> }
-    const angles = (value.task_angles || []).map(angle => String(angle['角度'] || angle['angle'] || '')).filter(Boolean)
-    return [value.purpose, angles.length ? `角度：${angles.join('、')}` : ''].filter(Boolean).join('；')
-  } catch {
-    return raw
-  }
-}
+const generatedSpeechHistoryItems = computed(() => generatedSpeechHistory.value.items.map(item => ({
+  ...item,
+  intentFields: generatedSpeechIntentFields(item.intent_json),
+})))
 
 function openGeneratedSpeechCorrection(input: {
   decisionId?: string
@@ -5164,7 +5168,7 @@ onBeforeUnmount(() => {
           <div v-else-if="speechHistoryLoading && !generatedSpeechHistory.items.length" class="speech-history-empty">正在读取本场回答库…</div>
           <div v-else-if="!generatedSpeechHistory.items.length" class="speech-history-empty">本场还没有已生成并成功下发的话术。</div>
           <div v-else class="speech-history-list">
-            <article v-for="item in generatedSpeechHistory.items" :key="item.id" class="speech-history-item">
+            <article v-for="item in generatedSpeechHistoryItems" :key="item.id" class="speech-history-item">
               <div class="speech-history-item-meta">
                 <span class="speech-history-source">{{ generatedSpeechSourceLabel(item.source_type) }}</span>
                 <time>{{ formatTime(item.created_at) }}</time>
@@ -5174,13 +5178,14 @@ onBeforeUnmount(() => {
                 </span>
               </div>
               <p v-if="item.question_text" class="speech-history-question"><strong>关联问题：</strong>{{ item.question_text }}</p>
-              <details v-if="item.intent_json" class="speech-history-json">
-                <summary>意图：{{ generatedSpeechIntentSummary(item.intent_json) }}</summary>
-                <pre>{{ prettyGeneratedSpeechJSON(item.intent_json) }}</pre>
-              </details>
-              <details v-if="item.suggestion_json" class="speech-history-json">
-                <summary>回答建议</summary>
-                <pre>{{ prettyGeneratedSpeechJSON(item.suggestion_json) }}</pre>
+              <details v-if="item.intentFields.length" class="speech-history-intent">
+                <summary>意图</summary>
+                <dl>
+                  <div v-for="field in item.intentFields" :key="field.label">
+                    <dt>{{ field.label }}：</dt>
+                    <dd>{{ field.text }}</dd>
+                  </div>
+                </dl>
               </details>
               <p class="speech-history-reply">{{ item.generated_text }}</p>
               <div class="speech-history-item-actions">
@@ -7278,6 +7283,10 @@ onBeforeUnmount(() => {
   border-radius: 24px;
   background: #f9fbff;
   box-shadow: 0 34px 90px rgba(18, 31, 68, .28);
+  font-size: 18px;
+}
+.speech-history-dialog :is(button, input, select, option) {
+  font-size: 18px;
 }
 .speech-history-head {
   display: flex;
@@ -7291,17 +7300,17 @@ onBeforeUnmount(() => {
 }
 .speech-history-head span {
   color: #6d79c9;
-  font-size: 11px;
+  font-size: 18px;
   font-weight: 900;
   letter-spacing: .14em;
 }
 .speech-history-head strong {
   color: #263353;
-  font-size: 25px;
+  font-size: 18px;
 }
 .speech-history-head small {
   color: #8791a8;
-  font-size: 13px;
+  font-size: 18px;
 }
 .speech-history-close {
   width: 38px;
@@ -7310,7 +7319,7 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   background: #eef1f8;
   color: #5a6785;
-  font-size: 25px;
+  font-size: 18px;
   line-height: 1;
   cursor: pointer;
 }
@@ -7328,7 +7337,7 @@ onBeforeUnmount(() => {
   outline: none;
   background: #fff;
   color: #2d3957;
-  font-size: 14px;
+  font-size: 18px;
 }
 .speech-history-search input:focus {
   border-color: rgba(83, 100, 217, .52);
@@ -7369,7 +7378,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 9px;
   color: #8b94a8;
-  font-size: 12px;
+  font-size: 18px;
 }
 .speech-history-source {
   padding: 4px 8px;
@@ -7391,24 +7400,24 @@ onBeforeUnmount(() => {
 }
 .speech-history-question {
   color: #697590;
-  font-size: 13px;
+  font-size: 18px;
 }
 .speech-history-reply {
   color: #2e3954;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 700;
   line-height: 1.7;
 }
-.speech-history-json {
+.speech-history-intent {
   margin: 6px 0;
   color: #697590;
-  font-size: 13px;
+  font-size: 18px;
 }
-.speech-history-json summary {
+.speech-history-intent summary {
   cursor: pointer;
   color: #3d5a8a;
 }
-.speech-history-json pre {
+.speech-history-intent dl {
   margin: 6px 0 0;
   padding: 8px 10px;
   max-height: 220px;
@@ -7416,10 +7425,19 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: #f5f7fb;
   color: #2e3954;
-  font-size: 12px;
   line-height: 1.5;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.speech-history-intent dl > div {
+  display: flex;
+  align-items: baseline;
+}
+.speech-history-intent dt {
+  flex: 0 0 auto;
+}
+.speech-history-intent dd {
+  margin: 0;
+  white-space: pre-wrap;
 }
 .speech-history-item-actions {
   display: flex;
@@ -7435,7 +7453,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 16px;
   color: #7f899f;
-  font-size: 13px;
+  font-size: 18px;
 }
 .speech-history-pagination-summary {
   display: flex;
@@ -7450,7 +7468,7 @@ onBeforeUnmount(() => {
   gap: 7px;
   flex: 0 0 auto;
   color: #7f899f;
-  font-size: 13px;
+  font-size: 18px;
   white-space: nowrap;
 }
 .speech-history-page-size > span {
@@ -7465,7 +7483,7 @@ onBeforeUnmount(() => {
   outline: none;
   background: #f0f3fb;
   color: #4c5877;
-  font-size: 13px;
+  font-size: 18px;
   font-weight: 800;
   cursor: pointer;
 }
@@ -7502,6 +7520,26 @@ onBeforeUnmount(() => {
   border-radius: 16px;
   color: #8993aa;
   background: #fff;
+}
+
+@media (max-width: 640px) {
+  .speech-history-mask {
+    padding: 12px;
+  }
+  .speech-history-dialog {
+    width: 100%;
+    padding: 16px;
+  }
+  .speech-history-head > div {
+    min-width: 0;
+  }
+  .speech-history-close {
+    flex-shrink: 0;
+  }
+  .speech-history-pagination,
+  .speech-history-page-buttons {
+    flex-wrap: wrap;
+  }
 }
 
 .speech-track-card.status-playing { border-color: rgba(73, 201, 155, .48); }
