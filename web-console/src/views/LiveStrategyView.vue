@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { saveLiveAgentPlanRuntimePrompts } from '../api'
 import { checkLiveAgentPlanSave } from '../api'
-
+import { saveLiveAgentPlanRuntimePrompts } from '../api'
 import { validateOriginalAudioFiles } from '../directAudioUpload'
 import RoomReadingRules from '../components/RoomReadingRules.vue'
 import PlanPromptEditor from '../components/PlanPromptEditor.vue'
@@ -30,6 +29,9 @@ import { usePlanBusinessMode } from '../usePlanBusinessMode'
 import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
 import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import RecordingScriptTabs from '../components/RecordingScriptTabs.vue'
+import PlanMaterialImport from '../components/PlanMaterialImport.vue'
+import PlanContextWords from '../components/PlanContextWords.vue'
+import PlanDanmakuTest from '../components/PlanDanmakuTest.vue'
 import RecordingScriptEntries from '../components/RecordingScriptEntries.vue'
 import { playbackVoiceKey, readScriptPlaybackSettings, selectedScriptVoices, scriptPlaybackForSave } from '../scriptPlaybackSettings'
 import { groupedScriptForSave, scriptCharacters, scriptEntries, scriptGroupsError, type ScriptEntry } from '../recordingScriptGroups'
@@ -99,6 +101,9 @@ type StrategyMode =
   | 'benefits'
   | 'knowledge'
   | 'plan_prompt'
+  | 'material_import'
+  | 'context_words'
+  | 'danmaku_test'
   | 'memory'
   | 'reading'
   | 'miner'
@@ -5675,6 +5680,21 @@ onBeforeUnmount(() => {
           />
         </section>
 
+        <section v-else-if="activeMode === 'danmaku_test'" class="strategy-v2-workspace">
+          <PlanDanmakuTest v-if="currentRoomPlanId" :key="'danmaku-test:' + currentRoomPlanId" :plan-id="currentRoomPlanId" />
+          <p v-else class="muted">请先在页面顶部选择方案。</p>
+        </section>
+
+        <section v-else-if="activeMode === 'context_words'" class="strategy-v2-workspace">
+          <PlanContextWords v-if="currentRoomPlanId" :key="'context-words:' + currentRoomPlanId" :plan-id="currentRoomPlanId" />
+          <p v-else class="muted">请先在页面顶部选择方案。</p>
+        </section>
+
+        <section v-else-if="activeMode === 'material_import'" class="strategy-v2-workspace">
+          <PlanMaterialImport v-if="currentRoomPlanId" :key="'material-import:' + currentRoomPlanId" :plan-id="currentRoomPlanId" :links="formalProductLinks" />
+          <p v-else class="muted">请先在页面顶部选择方案。</p>
+        </section>
+
         <section v-else-if="activeMode === 'reading'" class="strategy-v2-workspace">
         <RoomReadingRules :plan-id="currentRoomPlanId" :tenant-id="planTenantId" />
       </section>
@@ -9469,3 +9489,4 @@ label.plan-save-error{display:grid;gap:8px;min-width:0}.plan-save-error select{m
 </style>
 
 <style scoped src="../styles/recordingScriptGroups.css"></style>
+

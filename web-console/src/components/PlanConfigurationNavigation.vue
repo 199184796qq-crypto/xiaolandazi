@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed } from 'vue'
 import PlanConfigurationIcon from './PlanConfigurationIcon.vue'
 import { planConfigurationSection, type PlanConfigurationMode, type PlanConfigurationSection } from '../livePlanNavigation'
@@ -25,6 +25,9 @@ const factTabs: { mode: PlanConfigurationMode; label: string }[] = [
   { mode: 'products', label: '商品资料' },
   { mode: 'benefits', label: '活动福利' },
   { mode: 'plan_prompt', label: '方案提示词' },
+  { mode: 'material_import', label: '资料导入' },
+  { mode: 'context_words', label: '语境词' },
+  { mode: 'danmaku_test', label: '弹幕测试' },
 ]
 function pending(mode: PlanConfigurationMode) {
   return mode === 'products' ? props.productRiskCount : mode === 'benefits' ? props.benefitRiskCount : 0
@@ -68,3 +71,4 @@ function pending(mode: PlanConfigurationMode) {
 @media(max-width:700px){.plan-configuration-sections{padding:0 4px;gap:0;border-radius:13px}.plan-configuration-sections button{flex:1 1 calc(50% - 8px);justify-content:center;min-height:65px;padding:10px 5px;font-size:16px;gap:5px}.plan-configuration-sections :deep(.plan-configuration-icon){width:19px;height:19px}.plan-configuration-fact-tabs{gap:8px;padding:14px 12px;margin-top:12px}.plan-configuration-fact-tabs>button{flex:1 1 calc(50% - 8px);justify-content:center;min-height:44px;padding:9px 8px;font-size:16px;gap:7px}.plan-configuration-fact-tabs :deep(.fact-risk-tab-notice){flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){.plan-configuration-sections button,.plan-configuration-fact-tabs>button{transition:none}}
 </style>
+

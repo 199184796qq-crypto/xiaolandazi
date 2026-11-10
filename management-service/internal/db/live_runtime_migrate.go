@@ -38,6 +38,7 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 		name  string
 		sql   string
 	}{
+		{"live_agent_plan_material_claims", "details_json", "ALTER TABLE live_agent_plan_material_claims ADD COLUMN details_json JSON NULL AFTER conditions_json"},
 		{"live_anchor_styles", "active_analysis_version_id", "ALTER TABLE live_anchor_styles ADD COLUMN active_analysis_version_id BIGINT UNSIGNED NOT NULL DEFAULT 0"},
 		{"live_anchor_styles", "avatar_type", "ALTER TABLE live_anchor_styles ADD COLUMN avatar_type VARCHAR(32) NOT NULL DEFAULT 'female' AFTER description"},
 		{"live_anchor_styles", "avatar_data", "ALTER TABLE live_anchor_styles ADD COLUMN avatar_data MEDIUMTEXT NULL"},

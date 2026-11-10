@@ -130,6 +130,7 @@ func (s *Server) prepareInteractionBatchV2(ctx context.Context, batchID string, 
 		result, _, err := s.completeAnchorStyleWorkbench(callCtx, "", req.Stage, req.ResponseFormat, req.Messages, req.MaxTokens, false)
 		return result, err
 	}
+	ctx = interactionplan.WithContextWordSource(ctx, s.store)
 	results, issues, err := preparedBatchResultsV2(interactionplan.WithParseRequest(ctx, batchID), snapshot, inputs, items, complete)
 	if err != nil {
 		return nil, nil, err

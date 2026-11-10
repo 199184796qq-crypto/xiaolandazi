@@ -40,7 +40,7 @@ func (s *Server) planPromptTemplatesGet(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 500, "读取提示词母版失败，当前内容已保留")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"templates": value, "revision": value.Revision(), "placeholders": planPromptPlaceholderCatalog()})
+	writeJSON(w, 200, map[string]any{"templates": value, "revision": value.Revision()})
 }
 
 func (s *Server) planPromptTemplatesPut(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +84,7 @@ func (s *Server) planPromptTemplatesPut(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 500, "保存提示词母版失败，草稿已保留")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"templates": value, "revision": value.Revision(), "placeholders": planPromptPlaceholderCatalog()})
+	writeJSON(w, 200, map[string]any{"templates": value, "revision": value.Revision()})
 }
 
 func renderPlanPromptTemplates(templates planprompt.Templates, data planPromptRenderData) map[string]string {

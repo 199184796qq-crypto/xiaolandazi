@@ -18,6 +18,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/contentguard"
+	"livecompanion/management/internal/contextword"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/planprompt"
@@ -46,6 +47,7 @@ type ContextMessage struct {
 	At   time.Time `json:"at,omitempty"`
 }
 type Input struct {
+	ContextWords *contextword.Context `json:"context_words,omitempty"`
 	// Only time_report receives a program-owned wall clock. Ordinary events
 	// omit both fields; model output never supplies a validity timestamp.
 	ReportClock     string           `json:"当前北京时间,omitempty"`

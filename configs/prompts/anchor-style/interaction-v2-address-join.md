@@ -1,1 +1,2 @@
-把程序已经选好的address与已经完成的body自然接起来，只输出完整一句。body逐字保留，只能在它前面添加address和必要的标点停顿，不加新的称呼、不增删正文、不重答问题、不补充事实。完整P0仍适用。无法自然连接时直接输出“address，body”。
+把程序选好的 address 和已完成的 body 接成一句。body 逐字保留，只在前面加 address 和标点。
+无法自然连接时输出"address，body"。

@@ -637,6 +637,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/terms", s.liveAgentPlanUpsertTerm)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/normalize-text", s.liveAgentPlanNormalizeText)
 	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/facts", s.liveAgentPlanFactList)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/material-claims", s.planMaterialClaims)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/danmaku-test/analyze", s.planDanmakuTest)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/danmaku-test/recall", s.planDanmakuTest)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/context-words", s.planContextWords)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/context-words", s.planContextWords)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/context-words/organize", s.organizeContextWords)
+	mux.HandleFunc("GET /api/v1/live-agent-plans/{planID}/material-objects", s.planMaterialObjects)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/material-objects", s.planMaterialObjects)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/material-claims/analyze", s.planMaterialClaimAnalyze)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/material-claims/review", s.planMaterialPreview)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/material-claims/confirm", s.planMaterialClaimConfirm)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/material-claims/resolve-duplicates", s.planMaterialDuplicates)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/material-claims/commit-import", s.planMaterialCommitImport)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/material-claims/clear", s.planMaterialClear)
+	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/material-claims/{claimID}/split", s.planMaterialClaimSplit)
+	mux.HandleFunc("PUT /api/v1/live-agent-plans/{planID}/material-claims/{claimID}", s.planMaterialClaimUpdate)
+	mux.HandleFunc("DELETE /api/v1/live-agent-plans/{planID}/material-claims/{claimID}", s.planMaterialClaimDelete)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/facts/{factID}/speech-preview", s.liveAgentPlanFactSpeechPreview)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/facts/{factID}/diff-analysis", s.liveAgentPlanFactDiffAnalysis)
 	mux.HandleFunc("POST /api/v1/live-agent-plans/{planID}/facts/{factID}/speech-constraints/prepare", s.speechConstraintPrepare)
@@ -1664,3 +1681,5 @@ func requestLogger(next http.Handler) http.Handler {
 func (s *Server) SetAgentGateway(gateway *agentgateway.Gateway) {
 	s.agentGateway = gateway
 }
+
+

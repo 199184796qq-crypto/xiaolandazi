@@ -1,4 +1,4 @@
-package agentgateway
+﻿package agentgateway
 
 import (
 	"context"
@@ -46,7 +46,7 @@ type modelResolverContextKey struct{}
 // analysis; registering existing review stages does not add model calls.
 func UsesReviewModel(stage string) bool {
 	switch stage {
-	case "mainline_p0_context", "speech_review", "interaction_p0_context", "fact_fields_normalize", "fact_fields_normalize_review", "fact_expression_examples_review", "fact_template_influence_review", "speech_constraint_review", "speech_constraint_text_review", "angle_direction_review", "content_pool_task_review", "content_pool_fact_scope_review", "mainline_final_content_review", "fact_gap_check", "selling_point_extraction", "product_selling_point_extraction", "selling_point_incremental_update", "selling_point_incremental_review", "wheel_p0_rewrite", "fact_content_purposes", "fact_content_angles":
+	case "mainline_p0_context", "speech_review", "interaction_p0_context", "fact_fields_normalize", "fact_fields_normalize_review", "fact_expression_examples_review", "fact_template_influence_review", "speech_constraint_review", "speech_constraint_text_review", "angle_direction_review", "content_pool_task_review", "content_pool_fact_scope_review", "mainline_final_content_review", "fact_gap_check", "material_import_analyze", "selling_point_extraction", "product_selling_point_extraction", "selling_point_incremental_update", "selling_point_incremental_review", "wheel_p0_rewrite", "fact_content_purposes", "fact_content_angles":
 		return true
 	default:
 		return false
@@ -69,7 +69,7 @@ func UsesInteractionAnswerModel(stage string) bool {
 // answers viewers with the review role, without the room pool taking over.
 func UsesInteractionPurposeModel(stage string) bool {
 	switch stage {
-	case "interaction_purpose_resolution", "interaction_purpose_judge":
+	case "interaction_purpose_resolution", "interaction_purpose_judge", "danmaku_test_intent", "danmaku_test_answer":
 		return true
 	default:
 		return false
@@ -129,3 +129,4 @@ func NewFromContext(ctx context.Context) *Gateway {
 	}
 	return g
 }
+

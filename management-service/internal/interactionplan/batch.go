@@ -113,6 +113,21 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 		}
 		inputs[i].EngagementToken = ""
 	}
+	inputs, err = withMatchedWords(ctx, s, inputs)
+	if err != nil {
+		return BatchResult{}, err
+	}
+	wordPrompt := ""
+	for _, item := range inputs {
+		if item.ContextWords != nil {
+			hint, e := interactionpolicy.Read("interaction-context-words.md")
+			if e != nil {
+				return BatchResult{}, e
+			}
+			wordPrompt = "\n\n" + string(hint)
+			break
+		}
+	}
 	raw, err := json.Marshal(struct {
 		Items      []BatchItem `json:"items"`
 		Mainline   string      `json:"current_mainline,omitempty"`
@@ -128,7 +143,7 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 	// 完整P0留在程序快照中，由解析后的Validate及送播前校验使用，
 	// 不在欢迎或其它互动的正文生成请求里额外叠加。
 	req := agentgateway.Request{Stage: "interaction_purpose_resolution", ResponseFormat: agentgateway.ResponseText, MaxTokens: 900 * len(items), Timeout: 27 * time.Second, EnableThinking: false, CacheSystemPrompt: true,
-		Messages: []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + stripFormatSection(s.Prompt) + "\n\n" + stripFormatSection(string(md)) + "\n\n" + contract}, {Role: "user", Content: string(raw)}}}
+		Messages: []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + stripFormatSection(s.Prompt) + "\n\n" + stripFormatSection(string(md)) + "\n\n" + contract + wordPrompt}, {Role: "user", Content: string(raw)}}}
 	response, err := complete(ctx, req)
 	if err != nil {
 		return BatchResult{}, err
