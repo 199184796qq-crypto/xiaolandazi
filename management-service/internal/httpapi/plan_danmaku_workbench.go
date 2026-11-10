@@ -166,9 +166,10 @@ func runDanmakuTest(ctx context.Context, input danmakuInput, lib danmakuLibrary,
 	seen := map[string]bool{}
 	for _, r := range lib.Records {
 		c := r.Claim
-		if (c.Destination == "" || c.Destination == "fact" || c.Destination == "qa") && c.Topic != "" && !seen[c.Topic] {
-			seen[c.Topic] = true
-			attributes = append(attributes, c.Topic)
+		attribute := danmakutest.AttributeName(c.Topic, lib.Links, lib.Stores)
+		if (c.Destination == "" || c.Destination == "fact" || c.Destination == "qa") && attribute != "" && !seen[attribute] {
+			seen[attribute] = true
+			attributes = append(attributes, attribute)
 		}
 	}
 	// Catalogs contain human names only. Internal IDs and relationships are
@@ -197,13 +198,14 @@ func runDanmakuTest(ctx context.Context, input danmakuInput, lib danmakuLibrary,
 	groups := []map[string]any{}
 	for _, g := range out.Recall.Groups {
 		facts := []map[string]any{}
-		for _, h := range g.Hits {
+		focused, resolved := danmakutest.FocusFacts(g, lib.Links, lib.Stores)
+		for _, h := range focused {
 			if h.ConditionStatus == "不适用" {
 				continue
 			}
 			facts = append(facts, map[string]any{"attribute": h.Attribute, "content": h.Content, "scope": h.Scope, "conditions": h.Conditions, "exceptions": h.Exceptions, "condition_status": h.ConditionStatus, "original": h.Original, "question": h.Question})
 		}
-		groups = append(groups, map[string]any{"ask": g.Ask, "facts": facts, "notice": g.Notice})
+		groups = append(groups, map[string]any{"ask": g.Ask, "facts": facts, "focus_resolved": resolved, "notice": g.Notice})
 	}
 	err = danmakuModelJSON(ctx, "danmaku_test_answer", "danmaku-test-answer.md", map[string]any{"question": input.Question, "room_intro": input.RoomIntro, "intent": out.Intent, "context_words": out.ContextWords, "asks": groups, "recall_notices": out.Recall.Notices}, complete, &out.danmakuAnswer)
 	if err != nil {

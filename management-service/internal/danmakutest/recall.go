@@ -403,7 +403,7 @@ func Retrieve(records []Record, links []Link, stores []model.MaterialStoreObject
 				continue
 			}
 			score := semantic.CosineSimilarity(r.Vector, vectors[qi])
-			exact := a.Attribute != "" && norm(a.Attribute) == norm(c.Topic)
+			exact := a.Attribute != "" && AttributeName(a.Attribute, links, stores) == AttributeName(c.Topic, links, stores)
 			if !manual && score < .3 && !exact {
 				continue
 			}

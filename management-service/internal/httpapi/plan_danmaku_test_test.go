@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/contextword"
@@ -94,5 +95,42 @@ func TestDanmakuEmptyLibraryGreetingAndInputLimits(t *testing.T) {
 	}
 	if validateDanmakuInput(&danmakuInput{Queries: make([]string, 11)}, true) == nil || validateDanmakuInput(&danmakuInput{Question: strings.Repeat("字", 1001)}, false) == nil {
 		t.Fatal("unbounded input")
+	}
+}
+
+func TestDanmakuPriceFocusActualOverAnswerRegression(t *testing.T) {
+	calls, embeds := 0, 0
+	lib := danmakuLibrary{Links: []danmakutest.Link{{ID: 11, Name: "1"}}}
+	for i, entry := range [][2]string{{"1号链接价格", "87.6元"}, {"1号链接门店价", "95.6元"}, {"门店价", "加上运费后一百多"}, {"1号链接礼品包装费", "额外加5元"}, {"1号链接规格", "900g"}, {"1号链接适用口味", "麻辣和五香"}, {"默认规格", "默认整只"}, {"1号链接商品名", "杨鸭子"}} {
+		lib.Records = append(lib.Records, danmakutest.Record{Claim: model.PlanMaterialClaim{ID: int64(i + 1), Topic: entry[0], Content: entry[1], SourceQuote: entry[1], EmbeddingModel: "qwen", MaterialClaimDetails: model.MaterialClaimDetails{ObjectTargets: []model.MaterialObjectTarget{{Kind: "product", LinkID: 11}}}}, Vector: []float32{1, 0}})
+	}
+	complete := func(_ context.Context, _ string, m []agentgateway.Message) (agentgateway.Response, error) {
+		calls++
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(m[1].Content), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			for _, a := range payload["attributes"].([]any) {
+				if strings.HasPrefix(a.(string), "1号") {
+					t.Fatal("catalog object prefix not resolved", a)
+				}
+			}
+			return agentgateway.Response{Text: `{"meaning":"询问1号商品的价格","speech_act":"提问","operation":"answer","asks":[{"text":"1号多少钱","subjects":["1"],"attribute":"价格"}],"uncertainties":[]}`}, nil
+		}
+		groups := payload["asks"].([]any)
+		g := groups[0].(map[string]any)
+		facts := g["facts"].([]any)
+		if len(groups) != 1 || g["focus_resolved"] != true || len(facts) != 1 || facts[0].(map[string]any)["content"] != "87.6元" {
+			t.Fatal("unasked facts entered answer", g)
+		}
+		if strings.Contains(m[1].Content, "95.6") || strings.Contains(m[1].Content, "额外加5元") || strings.Contains(m[1].Content, "一百多") {
+			t.Fatal("extra attributes leaked", m[1].Content)
+		}
+		return agentgateway.Response{Text: `{"action":"answer","answer":"1号链接价格是87.6元。"}`}, nil
+	}
+	out, err := runDanmakuTest(context.Background(), danmakuInput{Question: "1号多少钱"}, lib, danmakuFakeEmbed{calls: &embeds}, complete)
+	if err != nil || calls != 2 || embeds != 1 || len(out.Recall.Hits) != 8 || out.Answer != "1号链接价格是87.6元。" {
+		t.Fatal(out, err, calls, embeds)
 	}
 }
