@@ -197,15 +197,8 @@ func runDanmakuTest(ctx context.Context, input danmakuInput, lib danmakuLibrary,
 	// Do not send internal row IDs or numerical rankings to the answer model.
 	groups := []map[string]any{}
 	for _, g := range out.Recall.Groups {
-		facts := []map[string]any{}
-		focused, resolved := danmakutest.FocusFacts(g, lib.Links, lib.Stores)
-		for _, h := range focused {
-			if h.ConditionStatus == "不适用" {
-				continue
-			}
-			facts = append(facts, map[string]any{"attribute": h.Attribute, "content": h.Content, "scope": h.Scope, "conditions": h.Conditions, "exceptions": h.Exceptions, "condition_status": h.ConditionStatus, "original": h.Original, "question": h.Question})
-		}
-		groups = append(groups, map[string]any{"ask": g.Ask, "facts": facts, "focus_resolved": resolved, "notice": g.Notice})
+		main, peripheral, resolved := danmakutest.PartitionFacts(g, lib.Links, lib.Stores)
+		groups = append(groups, map[string]any{"ask": g.Ask, "main_facts": danmakuAnswerFacts(main), "peripheral_facts": danmakuAnswerFacts(peripheral), "focus_resolved": resolved, "notice": g.Notice})
 	}
 	err = danmakuModelJSON(ctx, "danmaku_test_answer", "danmaku-test-answer.md", map[string]any{"question": input.Question, "room_intro": input.RoomIntro, "intent": out.Intent, "context_words": out.ContextWords, "asks": groups, "recall_notices": out.Recall.Notices}, complete, &out.danmakuAnswer)
 	if err != nil {
@@ -215,6 +208,13 @@ func runDanmakuTest(ctx context.Context, input danmakuInput, lib danmakuLibrary,
 		return out, errors.New("回答结果不完整，请重试")
 	}
 	return out, nil
+}
+func danmakuAnswerFacts(hits []danmakutest.Hit) []map[string]any {
+	facts := []map[string]any{}
+	for _, h := range hits {
+		facts = append(facts, map[string]any{"attribute": h.Attribute, "content": h.Content, "scope": h.Scope, "conditions": h.Conditions, "exceptions": h.Exceptions, "condition_status": h.ConditionStatus, "original": h.Original, "question": h.Question})
+	}
+	return facts
 }
 func recallDanmaku(ctx context.Context, lib danmakuLibrary, asks []danmakutest.Ask, queries []string, e danmakuEmbedder, manual bool) (danmakutest.Recall, error) {
 	if manual {

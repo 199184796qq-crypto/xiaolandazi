@@ -42,23 +42,20 @@ func AttributeName(name string, links []Link, stores []model.MaterialStoreObject
 	return strings.ToLower(strings.Join(strings.Fields(name), ""))
 }
 
-// FocusFacts leaves the broad recall list intact for inspection. Only the
-// current attribute and all of its complete conditional variants enter the
-// answer facts when an exact, program-normalized name is available. Unknown
-// vocabulary keeps the bounded candidates, explicitly marked unresolved, so
-// this precision fix does not silently turn semantic matches into no facts.
-func FocusFacts(group Group, links []Link, stores []model.MaterialStoreObject) ([]Hit, bool) {
+// PartitionFacts labels relevance without discarding any recalled evidence.
+// Exact attribute matches are main facts; all other candidates remain available
+// as peripheral facts, including separately stored prerequisites and conflicts.
+// Neither tier implies greater truth or applicability. An unknown attribute
+// leaves the main tier empty and all candidates in the peripheral tier.
+func PartitionFacts(group Group, links []Link, stores []model.MaterialStoreObject) (main, peripheral []Hit, resolved bool) {
 	focus := AttributeName(group.Ask.Attribute, links, stores)
-	selected := []Hit{}
-	if focus != "" {
-		for _, hit := range group.Hits {
-			if AttributeName(hit.Attribute, links, stores) == focus {
-				selected = append(selected, hit)
-			}
+	main, peripheral = []Hit{}, []Hit{}
+	for _, hit := range group.Hits {
+		if focus != "" && hit.ConditionStatus != "不适用" && AttributeName(hit.Attribute, links, stores) == focus {
+			main = append(main, hit)
+		} else {
+			peripheral = append(peripheral, hit)
 		}
 	}
-	if len(selected) > 0 {
-		return selected, true
-	}
-	return group.Hits, false
+	return main, peripheral, len(main) > 0
 }

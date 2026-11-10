@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestFocusPriceExcludesUnaskedPropertiesWithoutHidingRecall(t *testing.T) {
+func TestPartitionPriceKeepsOtherPropertiesAsPeripheralFacts(t *testing.T) {
 	links := []Link{{ID: 11, Name: "1"}, {ID: 22, Name: "2号链接"}}
 	group := Group{Ask: Ask{Text: "1号多少钱", Subjects: []string{"1"}, Attribute: "价格"}, Hits: []Hit{
 		{ID: 1, Attribute: "1号链接价格", Content: "87.6", Original: "价格：87.6"},
@@ -17,36 +17,36 @@ func TestFocusPriceExcludesUnaskedPropertiesWithoutHidingRecall(t *testing.T) {
 		{ID: 7, Attribute: "默认规格", Content: "默认整只"},
 		{ID: 8, Attribute: "1号链接商品名", Content: "杨鸭子"},
 	}}
-	selected, resolved := FocusFacts(group, links, nil)
-	if !resolved || len(selected) != 1 || selected[0].ID != 1 || len(group.Hits) != 8 {
+	selected, peripheral, resolved := PartitionFacts(group, links, nil)
+	if !resolved || len(selected) != 1 || selected[0].ID != 1 || len(group.Hits) != 8 || len(peripheral) != 7 || peripheral[0].ID != 2 {
 		t.Fatal(selected, resolved, group)
 	}
 	group.Ask.Attribute = "门店价"
-	selected, resolved = FocusFacts(group, links, nil)
-	if !resolved || len(selected) != 2 || selected[0].ID != 2 || selected[1].ID != 3 {
+	selected, peripheral, resolved = PartitionFacts(group, links, nil)
+	if !resolved || len(selected) != 2 || selected[0].ID != 2 || selected[1].ID != 3 || len(peripheral) != 6 {
 		t.Fatal("explicit store price lost", selected, resolved)
 	}
 	group.Ask.Attribute = "礼品包装费"
-	selected, resolved = FocusFacts(group, links, nil)
-	if !resolved || len(selected) != 1 || selected[0].ID != 4 || selected[0].Conditions != "要礼品包装" {
+	selected, peripheral, resolved = PartitionFacts(group, links, nil)
+	if !resolved || len(selected) != 1 || selected[0].ID != 4 || selected[0].Conditions != "要礼品包装" || len(peripheral) != 7 {
 		t.Fatal("explicit fee/condition lost", selected, resolved)
 	}
 }
 
-func TestFocusRetainsConditionsComparisonAndUnknownVocabulary(t *testing.T) {
+func TestPartitionRetainsConditionsComparisonAndUnknownVocabulary(t *testing.T) {
 	links := []Link{{ID: 11, Name: "1"}, {ID: 22, Name: "2"}}
 	group := Group{Ask: Ask{Text: "1号2号价格有什么区别", Attribute: "价格", Subjects: []string{"1", "2"}}, Hits: []Hit{
 		{ID: 1, Attribute: "1号链接价格", Content: "87.6元", Scope: "1", Conditions: "满两只", Exceptions: "礼盒除外", ConditionStatus: "待核对"},
 		{ID: 2, Attribute: "2号链接价格", Content: "98元", Scope: "2"},
 		{ID: 3, Attribute: "1号链接门店价", Content: "95.6元"},
 	}}
-	selected, resolved := FocusFacts(group, links, nil)
-	if !resolved || len(selected) != 2 || selected[0].Conditions != "满两只" || selected[0].Exceptions != "礼盒除外" || selected[1].Scope != "2" {
+	selected, peripheral, resolved := PartitionFacts(group, links, nil)
+	if !resolved || len(selected) != 2 || selected[0].Conditions != "满两只" || selected[0].Exceptions != "礼盒除外" || selected[1].Scope != "2" || len(peripheral) != 1 {
 		t.Fatal(selected, resolved)
 	}
 	group.Ask.Attribute = "到手总价"
-	selected, resolved = FocusFacts(group, links, nil)
-	if resolved || len(selected) != 3 {
+	selected, peripheral, resolved = PartitionFacts(group, links, nil)
+	if resolved || len(selected) != 0 || len(peripheral) != 3 {
 		t.Fatal("unmapped semantic candidates silently discarded", selected, resolved)
 	}
 }
@@ -57,6 +57,25 @@ func TestFocusCanonicalNamesDoNotConflateOtherProperties(t *testing.T) {
 	for _, tc := range [][2]string{{"1号链接价格", "价格"}, {"第2号链接：价格", "价格"}, {"王家店·门店价", "门店价"}, {"1号链接门店价", "门店价"}, {"1斤规格", "1斤规格"}, {"3号链接价格", "3号链接价格"}} {
 		if got := AttributeName(tc[0], links, stores); got != tc[1] {
 			t.Fatal(tc, got)
+		}
+	}
+}
+
+func TestPartitionKeepsPrerequisiteConflictsAndInapplicableBoundary(t *testing.T) {
+	group := Group{Ask: Ask{Attribute: "运费"}, Hits: []Hit{
+		{ID: 1, Attribute: "运费", Content: "免邮费", ConditionStatus: "适用"},
+		{ID: 2, Attribute: "运费", Content: "全场包邮", Conditions: "偏远地区除外", Exceptions: "偏远地区", ConditionStatus: "不适用"},
+		{ID: 3, Attribute: "偏远地区服务费", Content: "指定地区需补运费", Conditions: "指定地区", Original: "指定地区需补运费", ConditionStatus: "适用"},
+	}}
+	main, peripheral, resolved := PartitionFacts(group, nil, nil)
+	if !resolved || len(main) != 1 || main[0] != group.Hits[0] || len(peripheral) != 2 || peripheral[0] != group.Hits[1] || peripheral[1] != group.Hits[2] {
+		t.Fatal("separate conditions, exclusions or conflicts lost", main, peripheral, resolved)
+	}
+	for _, attribute := range []string{"", "未知属性"} {
+		group.Ask.Attribute = attribute
+		main, peripheral, resolved = PartitionFacts(group, nil, nil)
+		if resolved || len(main) != 0 || len(peripheral) != 3 {
+			t.Fatal("unknown focus must keep all peripheral facts", main, peripheral, resolved)
 		}
 	}
 }
