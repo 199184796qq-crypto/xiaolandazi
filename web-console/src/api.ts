@@ -1168,6 +1168,10 @@ export function adoptLiveAgentPlanProductLinks(
   })
 }
 
+export function updatePlanMaterialLinkDisplayName(planId:number,linkId:number,displayName:string){
+  return request<{id:number;display_name:string}>('/api/v1/live-agent-plans/'+planId+'/product-links/'+linkId+'/display-name',{method:'PATCH',body:JSON.stringify({display_name:displayName})})
+}
+
 export function updateLiveAgentPlanProductLink(
   planId: number,
   productLinkId: number,
@@ -1304,6 +1308,17 @@ export function createLiveAgentPlanScript(planId: number, payload: SaveLiveAgent
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export function autoGenerateLiveAgentPlanScript(planId: number, text = '', tenantId?: number, recentTexts: string[] = []) {
+  const query = tenantId ? '?tenant_id=' + encodeURIComponent(String(tenantId)) : ''
+  return request<{ text: string; chars: number; p0_pending?: boolean }>(
+    '/api/v1/live-agent-plans/' + planId + '/script/auto-generate' + query,
+    {
+      method: 'POST',
+      body: JSON.stringify({ text, recent_texts: recentTexts }),
+    },
+  )
 }
 
 export function updateLiveAgentPlanScript(
@@ -1549,6 +1564,14 @@ export function createLiveAgentPlanVersion(planId: number, payload: CreateLiveAg
     body: JSON.stringify(payload),
     ...(onEvent ? { headers: { Accept: 'text/event-stream' } } : {}),
   }, onEvent).then(normalizeLiveAgentPlanVersion)
+}
+
+export function checkLiveAgentPlanSave(planId: number, tenantId?: number, allowRuntimePrompts = false) {
+  const params = new URLSearchParams()
+  if (tenantId) params.set('tenant_id', String(tenantId))
+  if (allowRuntimePrompts) params.set('allow_runtime_prompt_update', '1')
+  const query = params.size ? '?' + params.toString() : ''
+  return request<{ editable: boolean; runtime_prompts_editable?: boolean }>('/api/v1/live-agent-plans/' + planId + '/save-check' + query, { method: 'POST' })
 }
 
 export function getLiveAgentPlanVersions(planId: number, roomId: number, tenantId?: number) {
@@ -4450,6 +4473,13 @@ export function saveLiveAgentPlanPrompt(planId: number, sections: import('./plan
   )
 }
 
+export function saveLiveAgentPlanRuntimePrompts(planId: number, sections: import('./planPrompt').PlanPromptSections, rewritePlanning: string, revision: string) {
+  return request<PlanPrompt>('/api/v1/live-agent-plans/' + planId + '/runtime-prompts', {
+    method: 'PUT',
+    body: JSON.stringify({ expected_revision: revision, speech_requirements_md: sections.speech_requirements_md, interaction_requirements_md: sections.interaction_requirements_md, rewrite_planning_md: rewritePlanning }),
+  })
+}
+
 export type PlanTextRiskHit = {
   rule_id: string
   severity?: string
@@ -4460,10 +4490,10 @@ export type PlanTextRiskHit = {
   note?: string
 }
 
-export function annotatePlanText(planId: number, text: string) {
+export function annotatePlanText(planId: number, text: string, signal?: AbortSignal) {
   return request<{ hits?: PlanTextRiskHit[]; mode?: string }>(
     '/api/v1/live-agent-plans/' + planId + '/anchor-style-workbench/risk-annotations',
-    { method: 'POST', body: JSON.stringify({ text }), suppressErrorDialog: true },
+    { method: 'POST', body: JSON.stringify({ text }), suppressErrorDialog: true, signal },
   )
 }
 export type PlanPromptPage = typeof import('./planPrompt').planPromptTabs[number]['key'] | 'rewrite_planning_md'
@@ -4856,19 +4886,114 @@ export function getLiveAgentPlanPromptTemplates(planId: number, page: PlanPrompt
   return request<import('./planPromptTemplateCatalog').PromptTemplateSelection>('/api/v1/live-agent-plans/' + planId + '/prompt/templates?page=' + encodeURIComponent(page), { signal })
 }
 
+export type MaterialCondition = { field?: string; op?: string; values?: unknown[]; raw?: string; universe?: string; status?: string; effect?: string } | string
+export type MaterialObjectTarget = {kind: 'plan'|'product'|'store';link_id?:number;link_key?:string;link_no?:number;store_name?:string}
+export type MaterialLinkObject = {id:number;link_key:string;product_name?:string;display_name?:string}
+export type MaterialStoreObject = {name:string;link_ids:number[]}
+export type MaterialObjectCatalog = {revision:number;links:MaterialLinkObject[];stores:MaterialStoreObject[]}
+export type MaterialClaimDetails = {
+ object_targets?: MaterialObjectTarget[]
+ is_benefit?: boolean
+ client_id?: string; destination?: 'fact' | 'qa' | 'word' | 'material' | 'gap'; kind?: string; scope_name?: string
+ exceptions?: MaterialCondition[]; question?: string; answer?: string; aliases?: string[]
+ risk_flags?: string[]; risks?: { type?: string; text?: string; reason?: string; suggestion?: string }[]
+ p0_hits?: { rule?: string; text?: string }[]; needs_confirmation?: boolean; needs_split?: boolean
+ atomicity_reason?: string; polarity_issue?: string; condition_issue?: string
+}
+export type PlanMaterialClaim = MaterialClaimDetails & {
+  revision?: string
+  id: number
+  tenant_id: number
+  plan_id: number
+  claim_key: string
+  topic: string
+  attribute: string
+  value: string
+  content: string
+  polarity: 'positive' | 'negative'
+  fact_type: string
+  conditions: MaterialCondition[]
+  source_quote: string
+  source_sentence: string
+  scope_kind: 'plan' | 'product' | 'store' | 'unresolved' | 'item' | 'variant' | 'voucher' | 'service' | 'item_group'
+  store_name: string
+  product_link_id: number
+  embedding_model: string
+  created_at: string
+  updated_at: string
+}
+export type PlanMaterialClaimInput = Omit<PlanMaterialClaim, 'revision' | 'id' | 'tenant_id' | 'plan_id' | 'embedding_model' | 'created_at' | 'updated_at'> & { replaces_id?: number }
+export function getPlanMaterialClaims(planId: number) {
+  return request<{ items: PlanMaterialClaim[]; library_revision?:string }>(`/api/v1/live-agent-plans/${planId}/material-claims`)
+}
+export function commitPlanMaterialImport(planId:number,libraryRevision:string,objectRevision:number,choices:{item:PlanMaterialClaimInput;action:'append'|'replace'|'keep'}[]){
+  return request<{ok:boolean;added:number;kept:number;removed:number;accepted_client_ids:string[]}>(`/api/v1/live-agent-plans/${planId}/material-claims/commit-import`,{method:'POST',body:JSON.stringify({library_revision:libraryRevision,object_revision:objectRevision,choices})})
+}
+export function clearPlanMaterialLibrary(planId:number,libraryRevision:string){
+  return request<{ok:boolean;removed:number}>(`/api/v1/live-agent-plans/${planId}/material-claims/clear`,{method:'POST',body:JSON.stringify({library_revision:libraryRevision})})
+}
+export function analyzePlanMaterialClaims(planId: number, text: string) {
+  return request<{ items: PlanMaterialClaimInput[]; provider?: string; model?: string; embedding_model?: string; embedding_enabled: boolean; mode_hint?: string; parse_warnings?: string[]; conflicts?: { topic?: string; statements?: string[]; issue?: string }[]; gaps?: string[] }>(`/api/v1/live-agent-plans/${planId}/material-claims/analyze`, { method: 'POST', body: JSON.stringify({ text }) })
+}
+export function confirmPlanMaterialClaims(planId: number, items: PlanMaterialClaimInput[]) {
+  return request<{ ok: boolean; added: number; accepted_client_ids?: string[]; embedding_model: string }>(`/api/v1/live-agent-plans/${planId}/material-claims/confirm`, { method: 'POST', body: JSON.stringify({ items }) })
+}
 
-export function checkLiveAgentPlanSave(planId: number, tenantId?: number, allowRuntimePrompts = false) {
-  const params = new URLSearchParams()
-  if (tenantId) params.set('tenant_id', String(tenantId))
-  if (allowRuntimePrompts) params.set('allow_runtime_prompt_update', '1')
-  const query = params.size ? '?' + params.toString() : ''
-  return request<{ editable: boolean; runtime_prompts_editable?: boolean }>('/api/v1/live-agent-plans/' + planId + '/save-check' + query, { method: 'POST' })
+export function updatePlanMaterialClaim(planId: number, claimId: number, item: PlanMaterialClaimInput) {
+  return request<{ ok: boolean; embedding_model: string }>(`/api/v1/live-agent-plans/${planId}/material-claims/${claimId}`, { method: 'PUT', body: JSON.stringify(item) })
+}
+export function setPlanMaterialClaimBenefit(planId: number, claimId: number, revision: string, isBenefit: boolean) {
+  return request<{ ok: boolean }>(`/api/v1/live-agent-plans/${planId}/material-claims/${claimId}/benefit`, { method: 'PATCH', body: JSON.stringify({ revision, is_benefit: isBenefit }) })
+}
+export function splitPlanMaterialClaim(planId:number,claimId:number,revision:string,items:PlanMaterialClaimInput[]){
+  return request<{ok:boolean;added:number;removed:number}>(`/api/v1/live-agent-plans/${planId}/material-claims/${claimId}/split`,{method:'POST',body:JSON.stringify({revision,items})})
+}
+export function deletePlanMaterialClaim(planId: number, claimId: number) {
+  return request<{ ok: boolean }>(`/api/v1/live-agent-plans/${planId}/material-claims/${claimId}`, { method: 'DELETE' })
+}
+export function resolvePlanMaterialDuplicates(planId:number,keepId:number,expected:{id:number;revision:string}[],item:PlanMaterialClaimInput,objectKey:string){
+  return request<{ok:boolean;kept_id:number;removed:number}>(`/api/v1/live-agent-plans/${planId}/material-claims/resolve-duplicates`,{method:'POST',body:JSON.stringify({keep_id:keepId,expected,item,object_key:objectKey})})
+}
+
+export function updatePlanMaterialClaimScope(planId: number, claimId: number, scopeKind: 'plan' | 'product', productLinkId: number) {
+  return request<{ ok: boolean }>(`/api/v1/live-agent-plans/${planId}/material-claims/${claimId}/scope`, { method: 'PUT', body: JSON.stringify({ scope_kind: scopeKind, product_link_id: productLinkId }) })
 }
 
 
-export function saveLiveAgentPlanRuntimePrompts(planId: number, sections: import('./planPrompt').PlanPromptSections, rewritePlanning: string, revision: string) {
-  return request<PlanPrompt>('/api/v1/live-agent-plans/' + planId + '/runtime-prompts', {
-    method: 'PUT',
-    body: JSON.stringify({ expected_revision: revision, speech_requirements_md: sections.speech_requirements_md, interaction_requirements_md: sections.interaction_requirements_md, rewrite_planning_md: rewritePlanning }),
-  })
+
+export function reviewPlanMaterialClaims(planId: number, operation: 'questions' | 'split' | 'attribute_split', items: PlanMaterialClaimInput[]) {
+ return request<{ questions?: {q: string; claim_ids: string[]}[]; items?: PlanMaterialClaimInput[]; single?: boolean; model?: string }>(`/api/v1/live-agent-plans/${planId}/material-claims/review`, {method:'POST',body:JSON.stringify({operation,items})})
 }
+
+export function getPlanMaterialObjects(planId:number){return request<MaterialObjectCatalog>(`/api/v1/live-agent-plans/${planId}/material-objects`)}
+export function savePlanMaterialObjects(planId:number,revision:number,stores:MaterialStoreObject[]){return request<MaterialObjectCatalog>(`/api/v1/live-agent-plans/${planId}/material-objects`,{method:'PUT',body:JSON.stringify({revision,stores})})}
+
+
+export type ContextWord = { id?: string; triggers: string[]; meaning: string; when?: string; example?: string; enabled: boolean }
+export type ContextWordCatalog = { revision: number; items: ContextWord[] }
+export function getPlanContextWords(planId: number) { return request<ContextWordCatalog>(`/api/v1/live-agent-plans/${planId}/context-words`) }
+export function savePlanContextWords(planId: number, catalog: ContextWordCatalog) { return request<ContextWordCatalog>(`/api/v1/live-agent-plans/${planId}/context-words`, { method: 'PUT', body: JSON.stringify(catalog) }) }
+export function organizePlanContextWords(planId: number, text: string) { return request<{items: ContextWord[]; questions: string[]}>(`/api/v1/live-agent-plans/${planId}/context-words/organize`, { method: 'POST', body: JSON.stringify({text}) }) }
+
+export type QAEntry = {id?:string;revision:number;client_id?:string;question:string;answer:string;aliases:string[];object_targets:MaterialObjectTarget[];conditions?:string;exceptions?:string;valid_from?:string;valid_until?:string;original?:string;enabled:boolean}
+export type QACatalog = {revision:string;object_revision:string;items:QAEntry[]}
+export type QAPage = QACatalog & {links:MaterialLinkObject[];stores:MaterialStoreObject[]}
+export type QAProposal = {item:QAEntry;conflicts:QAEntry[];identical:boolean}
+export type QAPrepare = {revision:string;object_revision:string;proposals:QAProposal[]}
+export type QACommit = {operation_id:string;revision:string;object_revision:string;items:QAEntry[];choices:Record<string,string>;delete_id?:string}
+export function getPlanQAPairs(planId:number){return request<QAPage>(`/api/v1/live-agent-plans/${planId}/qa-pairs`)}
+export function preparePlanQAPairs(planId:number,items:QAEntry[]){return request<QAPrepare>(`/api/v1/live-agent-plans/${planId}/qa-pairs/prepare`,{method:'POST',body:JSON.stringify({items})})}
+export function commitPlanQAPairs(planId:number,input:QACommit){return request<QACatalog>(`/api/v1/live-agent-plans/${planId}/qa-pairs/commit`,{method:'POST',body:JSON.stringify(input)})}
+export function organizePlanQAPairs(planId:number,text:string){return request<{items:QAEntry[];questions:string[]}>(`/api/v1/live-agent-plans/${planId}/qa-pairs/organize`,{method:'POST',body:JSON.stringify({text})})}
+export type QAMatch = {id:string;revision:number;question:string;answer:string;scope:string;conditions?:string;exceptions?:string;score:number;status:string;reason?:string}
+export type QARecallGroup = {ask:string;matches:QAMatch[]}
+
+export type DanmakuAsk = {text:string;subjects:string[];attribute:string;attribute_key?:string;keywords?:string[];conditions?:Record<string,string>}
+export type DanmakuHit = {id:number;attribute:string;content:string;scope:string;score:number;condition_status:string;conditions?:string;exceptions?:string;original?:string;question?:string}
+export type DanmakuRecall = {groups:{ask:DanmakuAsk;hits:DanmakuHit[];notice?:string}[];hits:DanmakuHit[];notices:string[];matched_qa?:QARecallGroup[]}
+export type DanmakuTestResult = {question:string;intent:{meaning:string;category?:string;speech_act:string;operation:string;corrected?:string;uncertainties:string[];asks:DanmakuAsk[]};intent_model_json?:string;interaction_intent?:{meaning:string;type?:string;relevant:boolean;question:boolean;need_clarify:boolean;clarify?:string};answer_model_output?:string;context_words?:{hits:{matched:string[];meaning:string;when?:string;example?:string}[];omitted?:number};matched_qa?:QARecallGroup[];recall:DanmakuRecall;action:'answer'|'clarify'|'insufficient'|'skip';answer:string}
+export function analyzePlanDanmaku(planId:number,question:string,roomIntro:string){return request<DanmakuTestResult>(`/api/v1/live-agent-plans/${planId}/danmaku-test/analyze`,{method:'POST',body:JSON.stringify({question,room_intro:roomIntro})})}
+export function recallPlanDanmaku(planId:number,queries:string[]){return request<DanmakuRecall>(`/api/v1/live-agent-plans/${planId}/danmaku-test/recall`,{method:'POST',body:JSON.stringify({queries})})}
+export type PlanAnswerFlowSettings = { enabled:boolean; revision:number }
+export function getPlanAnswerFlowSettings(planId:number){return request<PlanAnswerFlowSettings>(`/api/v1/live-agent-plans/${planId}/interaction-answerflow`)}
+export function savePlanAnswerFlowSettings(planId:number,value:PlanAnswerFlowSettings){return request<PlanAnswerFlowSettings>(`/api/v1/live-agent-plans/${planId}/interaction-answerflow`,{method:'PUT',body:JSON.stringify(value)})}

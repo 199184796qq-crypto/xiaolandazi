@@ -25,6 +25,10 @@ const factTabs: { mode: PlanConfigurationMode; label: string }[] = [
   { mode: 'products', label: '商品资料' },
   { mode: 'benefits', label: '活动福利' },
   { mode: 'plan_prompt', label: '方案提示词' },
+  { mode: 'material_import', label: '资料导入' },
+  { mode: 'context_words', label: '语境词' },
+  { mode: 'qa_pairs', label: '问答对' },
+  { mode: 'danmaku_test', label: '弹幕测试' },
 ]
 function pending(mode: PlanConfigurationMode) {
   return mode === 'products' ? props.productRiskCount : mode === 'benefits' ? props.benefitRiskCount : 0

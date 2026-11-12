@@ -40,7 +40,7 @@ window.fixture={reset, save:()=>recordingScriptForSave(true), restore:restoreRec
 <header><strong>原始话术</strong></header>
 <RecordingScriptTabs :tabs="recordingTabs" :active-id="activeRecordingTabId" :disabled="saving" @select="activeRecordingTabId=$event" />
 <label class="strategy-script-tab-title"><span>组名</span><input v-model="active.title" :disabled="saving" aria-label="组名" /></label>
-<RecordingScriptEntries :key="active.id" :entries="entries" :plan-id="1" :disabled="saving" @update="active.entries=$event" />
+<RecordingScriptEntries :key="active.id" :entries="entries" :disabled="saving" :plan-id="1" @update="active.entries=$event" />
 </section></main></template>
 <style scoped src="/src/styles/recordingScriptGroups.css"></style>`
 const server = await createServer({ server: { host: '127.0.0.1', port: 0 }, plugins: [{ name: 'script-group-fixture',
@@ -52,7 +52,7 @@ const server = await createServer({ server: { host: '127.0.0.1', port: 0 }, plug
     res.end(await dev.transformIndexHtml(req.url, '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><div id="app"></div><script type="module">import {createApp} from "vue";import App from "/__script-groups-fixture.vue";createApp(App).mount("#app")</script>'))
   }) },
 }] })
-const checks = [], errors = [], externalRequests = [], layouts = []
+const checks = [], errors = [], externalRequests = [], layouts = [], riskRequests = []
 await mkdir(output, { recursive: true }); await server.listen()
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true })
 let failure
@@ -62,11 +62,23 @@ try {
     if (new URL(route.request().url()).hostname === '127.0.0.1') return route.continue()
     externalRequests.push(route.request().url());return route.abort()
   })
-  await context.route('**/api/v1/live-agent-plans/1/anchor-style-workbench/risk-annotations', route => route.fulfill({contentType:'application/json',body:JSON.stringify({hits:[]})}));
+  await context.route('**/api/v1/live-agent-plans/1/anchor-style-workbench/risk-annotations', async route => {
+    const body = route.request().postDataJSON()
+    const text = String(body?.text || '')
+    riskRequests.push(text)
+    const p0 = 'P0命中词'
+    const p1 = 'P1候选词'
+    const p0Start = Array.from(text).join('').indexOf(p0)
+    const p1Start = Array.from(text).join('').indexOf(p1)
+    const hits = []
+    if (p0Start >= 0) hits.push({ rule_id: 'test-p0', severity: 'P0', category: '硬拦词', matched_text: p0, original_start: p0Start, original_end: p0Start + Array.from(p0).length })
+    if (p1Start >= 0) hits.push({ rule_id: 'test-p1', severity: 'P1', category: '候选词', matched_text: p1, original_start: p1Start, original_end: p1Start + Array.from(p1).length })
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ hits, mode: 'lexical_review_only' }) })
+  })
   const page = await context.newPage();page.on('pageerror', e => errors.push(e.message));page.setDefaultTimeout(10000)
   await page.goto(server.resolvedUrls.local[0] + '__script-groups-test')
   const editors = page.locator('.recording-script-entry textarea')
-  const add = { isDisabled: () => page.getByRole('button', {name:'＋ 添加话术',exact:true}).isDisabled(), click: async () => { await page.evaluate(() => document.activeElement?.blur()); await page.waitForFunction(() => !document.querySelector('.recording-script-entry-checking')); await page.getByRole('button', {name:'＋ 添加话术',exact:true}).click() } }
+  const add = page.getByRole('button', { name: '＋ 添加话术', exact: true })
   const first = () => page.getByRole('textbox', { name: '话术 1 正文', exact: true })
   await first().fill('甲'.repeat(399));await add.click()
   assert.equal(await editors.count(), 1)
@@ -90,7 +102,7 @@ try {
   await second.fill('乙'.repeat(4001))
   assert.ok((await page.locator('.recording-script-entry-error').nth(1).innerText()).includes('单条不能超过'))
   const removeSecond = page.getByRole('button', { name: '删除话术 2', exact: true })
-  await first().blur(); await page.waitForFunction(() => !document.querySelector('.recording-script-entry-checking')); await removeSecond.click()
+  await removeSecond.click()
   assert.equal(await editors.count(), 2)
   const confirmSecond = page.getByRole('button', { name: '确认删除话术 2', exact: true })
   assert.equal(await confirmSecond.innerText(), '确认删除')
@@ -103,7 +115,7 @@ try {
   assert.equal(confirmationStyle.color, 'rgb(255, 255, 255)')
   await first().click()
   assert.equal(await page.getByRole('button', { name: '删除话术 2', exact: true }).count(), 1)
-  await first().blur(); await page.waitForFunction(() => !document.querySelector('.recording-script-entry-checking')); await removeSecond.click()
+  await removeSecond.click()
   await confirmSecond.click()
   assert.equal(await editors.count(), 1)
   await first().fill('甲'.repeat(3601));await add.click()
@@ -137,6 +149,22 @@ try {
   const literal = await page.evaluate(() => window.fixture.save())
   assert.equal(literal.tabs[0].entries.length, 2);assert.ok(literal.tabs[0].entries[0].text.endsWith('===='))
   checks.push('新条目内字面====按原文保存，不再充当分段符')
+  await page.evaluate(() => window.fixture.reset([{id:'a',title:'P0测试',text:'',audioAssetIds:[],pinned:false}]))
+  const blankHeight = await first().evaluate(element => element.getBoundingClientRect().height)
+  await first().fill('甲'.repeat(1200) + 'P1候选词' + '乙'.repeat(600) + 'P0命中词')
+  await page.waitForFunction(() => document.querySelector('.recording-script-entry-violations')?.textContent?.includes('P0命中词'))
+  const p0Notice = await page.locator('.recording-script-entry-violations').innerText()
+  assert.ok(p0Notice.includes('P0 命中「P0命中词」'))
+  assert.equal(p0Notice.includes('P1候选词'), false)
+  const highlighted = page.locator('.recording-script-entry-mirror mark')
+  assert.equal(await highlighted.count(), 1)
+  assert.equal(await highlighted.innerText(), 'P0命中词')
+  const markedStyle = await highlighted.evaluate(element => ({ color: getComputedStyle(element).color, background: getComputedStyle(element).backgroundColor }))
+  assert.equal(markedStyle.color, 'rgb(196, 44, 59)')
+  assert.notEqual(markedStyle.background, 'rgba(0, 0, 0, 0)')
+  assert.ok((await first().evaluate(element => element.getBoundingClientRect().height)) > blankHeight)
+  assert.ok(riskRequests.some(text => text.includes('P0命中词')))
+  checks.push('话术片按内容自动撑高；输入后防抖检查，只有 P0 在框上方提示并在可编辑正文中红色标记')
   for (const width of [1440, 390]) {
     await page.setViewportSize({width,height:1000})
     const info = await page.evaluate(() => ({

@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { saveLiveAgentPlanRuntimePrompts } from '../api'
 import { checkLiveAgentPlanSave } from '../api'
-
+import { saveLiveAgentPlanRuntimePrompts } from '../api'
 import { validateOriginalAudioFiles } from '../directAudioUpload'
 import RoomReadingRules from '../components/RoomReadingRules.vue'
 import PlanPromptEditor from '../components/PlanPromptEditor.vue'
@@ -30,6 +29,10 @@ import { usePlanBusinessMode } from '../usePlanBusinessMode'
 import PlanConfigurationIcon from '../components/PlanConfigurationIcon.vue'
 import AgentWorkspacePages from '../components/AgentWorkspacePages.vue'
 import RecordingScriptTabs from '../components/RecordingScriptTabs.vue'
+import PlanMaterialImport from '../components/PlanMaterialImport.vue'
+import PlanContextWords from '../components/PlanContextWords.vue'
+import PlanDanmakuTest from '../components/PlanDanmakuTest.vue'
+import PlanQAPairs from '../components/PlanQAPairs.vue'
 import RecordingScriptEntries from '../components/RecordingScriptEntries.vue'
 import { playbackVoiceKey, readScriptPlaybackSettings, selectedScriptVoices, scriptPlaybackForSave } from '../scriptPlaybackSettings'
 import { groupedScriptForSave, scriptCharacters, scriptEntries, scriptGroupsError, type ScriptEntry } from '../recordingScriptGroups'
@@ -47,7 +50,7 @@ import { latestSavedPlanVersion } from '../livePlanVersionStatus'
 import { getCurrentAnchor } from '../anchorRecommendations';
 import { realtimeOptionsFromVersion, realtimeGenerationOptionsError, validatedRealtimeOptions, type RealtimeGenerationOptions } from '../realtimeGenerationOptions'
 import { request } from '../api'
-import { activateLiveAgentConfigVersion, adoptLiveAgentPlanBenefits, adoptLiveAgentPlanFacts, adoptLiveAgentPlanProductLinks, copyLiveAgentPlanProductLink, copyLiveAgentPlanBenefit, archiveLiveAgentPlan, cloneLiveVoiceProfile, createLiveAgentPlanVersion, createLiveAgentPlanScript, createLiveAgentPlan, createLiveAgentPlanProductAttribute, getLiveAgentPlanWorkspace, getLiveAgentPlanVersions, getLiveAgentPlans, getLiveAgentPlanBenefits, getLiveAgentPlanFacts, getLiveAgentPlanProductLinks, getLiveAgentPlanPrompt, saveLiveAgentPlanPrompt, getLiveAgentPlanScripts, getLiveVoiceModelBindings, createLiveAgentConfigDraft, getLiveAgentConfigVersions, getLiveAddressingStrategy, getLiveAgentSettings, getUserUIPreferences, getLiveRoomPolicyContext, getRooms, getRoom, deleteLiveAgentPlanBenefit, deleteLiveAgentPlanProductLink, deleteLiveAgentPlanProductAttribute, publishLiveRoomPolicyVersion, auditLiveAgentFullShowPreview, regenerateLiveAgentFullShowVariant, generateLiveAgentFullShowVariantVoice, rebuildLiveAgentFullShowVariantSubtitles, rebuildLiveAgentCustomMainline, getLiveAgentPlanStyleOverlays, getAnchorStylePluginCatalog, getAnchorStyleWorkbenchContext, testLiveAgentAnchorStyle, previewAnalyzeLiveAgentAnchorStyle, listLiveAnchorStyles, getLiveAnchorStyle, listLiveAnchorStyleSamples, getLiveAnchorAnalysisVersions, previewAnalyzeLiveAgentPlanScript, previewGenerateLiveAgentFullShow, previewRecognizeLiveAgentPlanImage, updateLiveAgentPlan, updateLiveAgentPlanBenefit, updateLiveAgentPlanProductLink, updateLiveAgentPlanProductAttribute, saveLiveAgentPlanProductLinkFrequencyWeight, saveLiveAgentPlanProductSellingPoints, updateLiveAgentPlanScript, updateLiveAgentSettings, updateUserUIPreferences, uploadLiveAgentCustomMainline, uploadLiveMediaAsset } from '../api';
+import { activateLiveAgentConfigVersion, adoptLiveAgentPlanBenefits, adoptLiveAgentPlanFacts, adoptLiveAgentPlanProductLinks, copyLiveAgentPlanProductLink, copyLiveAgentPlanBenefit, archiveLiveAgentPlan, cloneLiveVoiceProfile, createLiveAgentPlanVersion, createLiveAgentPlanScript, createLiveAgentPlan, createLiveAgentPlanProductAttribute, getLiveAgentPlanWorkspace, getLiveAgentPlanVersions, getLiveAgentPlans, getLiveAgentPlanBenefits, getLiveAgentPlanFacts, getLiveAgentPlanProductLinks, getLiveAgentPlanPrompt, saveLiveAgentPlanPrompt, getLiveAgentPlanScripts, getLiveVoiceModelBindings, createLiveAgentConfigDraft, getLiveAgentConfigVersions, getLiveAddressingStrategy, getLiveAgentSettings, getUserUIPreferences, getLiveRoomPolicyContext, getRooms, getRoom, deleteLiveAgentPlanBenefit, deleteLiveAgentPlanProductLink, deleteLiveAgentPlanProductAttribute, publishLiveRoomPolicyVersion, auditLiveAgentFullShowPreview, regenerateLiveAgentFullShowVariant, generateLiveAgentFullShowVariantVoice, rebuildLiveAgentFullShowVariantSubtitles, rebuildLiveAgentCustomMainline, getLiveAgentPlanStyleOverlays, getAnchorStylePluginCatalog, getAnchorStyleWorkbenchContext, testLiveAgentAnchorStyle, previewAnalyzeLiveAgentAnchorStyle, listLiveAnchorStyles, getLiveAnchorStyle, listLiveAnchorStyleSamples, getLiveAnchorAnalysisVersions, previewAnalyzeLiveAgentPlanScript, previewGenerateLiveAgentFullShow, previewRecognizeLiveAgentPlanImage, updateLiveAgentPlan, updateLiveAgentPlanBenefit, updateLiveAgentPlanProductLink, updateLiveAgentPlanProductAttribute, updateLiveAgentPlanScript, updateLiveAgentSettings, updateUserUIPreferences, uploadLiveAgentCustomMainline, uploadLiveMediaAsset } from '../api';
 import { session } from '../session'
 import '../styles/workflow-guidance.css'
 import { beginLiveSupportScope, liveSupportMediaPlaybackURL } from '../liveSupportAccess'
@@ -99,6 +102,10 @@ type StrategyMode =
   | 'benefits'
   | 'knowledge'
   | 'plan_prompt'
+  | 'material_import'
+  | 'context_words'
+  | 'qa_pairs'
+  | 'danmaku_test'
   | 'memory'
   | 'reading'
   | 'miner'
@@ -111,6 +118,7 @@ type StrategyMode =
   | 'strategy'
 // “直播素材”是旧版资料入口，保留内部兼容状态但不再作为前台页面；进入策略页默认落在商品链接。
 const activeMode = ref<StrategyMode>('products')
+const qaTestQuestion = ref('')
 const lastFactMode = ref<PlanFactMode>('products')
 const planPromptSections = ref(emptyPlanPromptSections())
 const planRewritePlanning = ref('')
@@ -172,6 +180,23 @@ const addressingStrategy = ref<LiveAddressingStrategy>({ addressing_mode: 'syste
 const configVersions = ref<LiveAgentConfigVersion[]>([])
 const livePlans = ref<LiveAgentPlan[]>([])
 const currentRoomPlanId = ref<number | null>(null)
+const roomIntro = ref('')
+const savedRoomIntro = ref('')
+const roomIntroDraft = ref('')
+const editingRoomIntro = ref(false)
+const roomIntroDirty = computed(() => (editingRoomIntro.value ? roomIntroDraft.value.trim() : roomIntro.value) !== savedRoomIntro.value)
+function beginRoomIntroEdit() {
+  roomIntroDraft.value = roomIntro.value
+  editingRoomIntro.value = true
+}
+function finishRoomIntroEdit() {
+  roomIntro.value = roomIntroDraft.value.trim()
+  editingRoomIntro.value = false
+}
+function cancelRoomIntroEdit() {
+  roomIntroDraft.value = roomIntro.value
+  editingRoomIntro.value = false
+}
 const planSelectionScope = () => ({
   userId: Number(session.bootstrap?.actor.user_id || 0),
   tenantId: planTenantId.value,
@@ -226,6 +251,10 @@ watch(currentRoomPlanId, () => {
   planPromptError.value = ''
   planPromptNotice.value = ''
   planPromptPartialSaveNotice.value = ''
+  roomIntro.value = ''
+  savedRoomIntro.value = ''
+  roomIntroDraft.value = ''
+  editingRoomIntro.value = false
   if (activeMode.value === 'plan_prompt') void loadPlanPrompt()
 }, { flush: 'sync' })
 watch(() => planSelectionPreferenceKey(planSelectionScope()), () => {
@@ -3095,13 +3124,25 @@ async function loadFullShowWorkspace() {
   try {
     const contentMode = contentModeAccess.value?.content_mode
     if (!contentMode) return
-    const [workspace, bindings, official, profiles] = await Promise.all([
+    const [workspace, bindings, official, profiles, allVersions] = await Promise.all([
       getLiveAgentPlanWorkspace(planId, room.id, room.tenant_id, contentMode),
       getLiveVoiceModelBindings(),
       getPoolOfficialVoices('standard'),
       getLiveVoiceProfiles(),
+      getLiveAgentPlanVersions(planId, room.id, room.tenant_id),
     ])
     if (token !== fullShowWorkspaceLoadToken || currentRoomPlanId.value !== planId || planTenantId.value !== room.tenant_id) return
+    // The intro belongs to the plan, so recover it from the newest saved
+    // snapshot across content modes. Older versions did not have this field.
+    const introVersion = (allVersions.items || [])
+      .filter(version => version.plan_id === planId && version.tenant_id === room.tenant_id && Object.prototype.hasOwnProperty.call(version.generation_context || {}, 'room_intro'))
+      .sort((left, right) => right.id - left.id)[0]
+    const persistedIntro = String(introVersion?.generation_context?.room_intro || '')
+    if (!roomIntroDirty.value && !editingRoomIntro.value) {
+      roomIntro.value = persistedIntro
+      roomIntroDraft.value = persistedIntro
+    }
+    savedRoomIntro.value = persistedIntro
     availablePlanVoices.value = planVoiceChoices(bindings || [], official.items || [], official.configured === true, profiles || [])
     systemDefaultVoice.value = planDefaultVoice(official.items || [], official.configured === true)
     if (workspace.version && (workspace.version.plan_id !== planId || workspace.version.tenant_id !== room.tenant_id)) throw new Error('返回的方案版本不属于当前账号和方案，请重新读取')
@@ -3209,6 +3250,7 @@ function cleanVersionSafePoints(points: LiveAgentPlanSafePoint[]) {
 async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
   const planId = currentRoomPlanId.value
   const room = planAssetContext.value
+  const roomIntroAtSave = (editingRoomIntro.value ? roomIntroDraft.value : roomIntro.value).trim()
   if (fullShowVersionSaving.value) return null
   fullShowVersionError.value = ''
   if (fullShowSaveBlockedReason.value || !planId || !room) {
@@ -3318,6 +3360,7 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       variants,
       generation_context: {
         content_mode: contentModeAtSave,
+        room_intro: roomIntroAtSave,
         ...(contentModeAtSave === 'user_audio' ? { recording_voice_mode: recordingVoiceMode.value } : {}),
         ...(contentModeAtSave === 'user_audio' ? { recording_script: scriptAtSave || { ...recordingScriptForSave(false), ...playbackAtSave } } : {}),
         ...(contentModeAtSave === 'user_audio' ? { recording_original_sources: recordingOriginalSources } : {}),
@@ -3350,6 +3393,10 @@ async function saveFullShowVersion(): Promise<LiveAgentPlanVersion | null> {
       throw new Error('服务端未返回当前方案的新版本保存回执，请刷新核对；本次不显示保存成功。')
     }
     if (!current()) return saved
+    roomIntro.value = String(saved.generation_context?.room_intro ?? roomIntroAtSave)
+    savedRoomIntro.value = roomIntro.value
+    roomIntroDraft.value = roomIntro.value
+    editingRoomIntro.value = false
     if (contentModeAtSave === 'user_audio') restoreRecordingScript(saved.generation_context)
     fullShowSaveReceipt.value = saved
     fullShowSavedVersion.value = saved
@@ -4112,89 +4159,6 @@ async function saveProductRoomRoles(item: LiveAgentPlanProductLink, roomRoles: s
   }, item.tenant_id)
   if (currentRoomPlanId.value === planId) {
     formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id ? updated : link)
-  }
-}
-
-// 商品讲解频率面板：垂直列出商品链接，每个链接一条 1~100 滑块，越大整场讲越多。
-const frequencyPanelOpen = ref(false)
-const frequencySavingKey = ref('')
-const frequencyPanelError = ref('')
-
-// 角色→基准频率比例（与后端 ProductPolicy 默认值一致：main 40 / traffic 25 / benefit 20 / profit 10 / 其它 5）。
-const ROLE_BASELINE: Record<string, number> = { main: 40, traffic: 25, benefit: 20, profit: 10 }
-
-function roleBaseline(roles: string[]): number {
-  let best = 0
-  for (const r of roles || []) {
-    const w = ROLE_BASELINE[r] ?? 5
-    if (w > best) best = w
-  }
-  return best > 0 ? best : 5
-}
-
-// 系数（×100 存储，默认 1.0）。
-function frequencyCoefficient(item: LiveAgentPlanProductLink): number {
-  const w = item.frequency_weight || 0
-  if (w <= 0) return 1.0
-  let f = w / 100
-  if (f < 0.5) f = 0.5
-  if (f > 2.0) f = 2.0
-  return f
-}
-
-// 归一化占比（总和恒为 100%）。前端仅用于展示，实际调度由后端同一算法决定。
-function normalizedProductShares(items: LiveAgentPlanProductLink[]): Map<number, number> {
-  const out = new Map<number, number>()
-  if (!items.length) return out
-  const raw = items.map((it) => roleBaseline(it.room_roles || []) * frequencyCoefficient(it))
-  const total = raw.reduce((a, b) => a + b, 0)
-  if (total <= 0) {
-    const each = 100 / items.length
-    items.forEach((it) => out.set(it.id, each))
-    return out
-  }
-  items.forEach((it, i) => out.set(it.id, (raw[i] / total) * 100))
-  return out
-}
-
-const frequencyShares = computed(() => normalizedProductShares(formalProductLinks.value))
-
-async function saveProductFrequencyWeight(item: LiveAgentPlanProductLink, weight: number) {
-  const planId = currentRoomPlanId.value
-  if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新操作')
-  frequencySavingKey.value = item.link_key
-  frequencyPanelError.value = ''
-  try {
-    const updated = await saveLiveAgentPlanProductLinkFrequencyWeight(planId, item.id, weight, item.tenant_id)
-    if (currentRoomPlanId.value === planId) {
-      formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id ? updated : link)
-    }
-  } catch (error) {
-    frequencyPanelError.value = error instanceof Error ? error.message : '保存频率系数失败'
-    throw error
-  } finally {
-    frequencySavingKey.value = ''
-  }
-}
-
-function onFrequencyChange(item: LiveAgentPlanProductLink, event: Event) {
-  const target = event.target as HTMLInputElement
-  // 滑块值 = 系数 ×100（50~200；0=不干预=1.0）。
-  const coefficient = Number(target.value) || 0
-  void saveProductFrequencyWeight(item, coefficient).catch(() => {})
-}
-
-async function saveProductSellingPoints(
-  item: LiveAgentPlanProductLink,
-  points: { selling_point: string; tier?: string; point_weight?: number; is_main?: boolean; angles: { angle: string; weight: number }[]; target_audience?: string; pain_point?: string }[],
-) {
-  const planId = currentRoomPlanId.value
-  if (!planId || item.plan_id !== planId) throw new Error('当前方案已切换，请重新操作')
-  const result = await saveLiveAgentPlanProductSellingPoints(planId, item.id, points, item.tenant_id)
-  if (currentRoomPlanId.value === planId) {
-    formalProductLinks.value = formalProductLinks.value.map((link) => link.id === item.id
-      ? { ...link, selling_points: result.items }
-      : link)
   }
 }
 
@@ -5426,6 +5390,22 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="activeMode === 'products'" class="strategy-v2-workspace strategy-products-workspace">
+          <section class="strategy-room-intro" aria-labelledby="strategy-room-intro-title">
+            <div class="strategy-room-intro-heading">
+              <strong id="strategy-room-intro-title">直播间简介</strong>
+              <span v-if="roomIntroDirty" class="strategy-room-intro-unsaved">待保存</span>
+              <button v-if="!editingRoomIntro" type="button" aria-label="修改直播间简介" title="修改直播间简介" :disabled="savePlanOneClickBusy || fullShowVersionSaving" @click="beginRoomIntroEdit"><PlanConfigurationIcon name="edit" /></button>
+            </div>
+            <template v-if="editingRoomIntro">
+              <textarea v-model="roomIntroDraft" v-focus maxlength="2000" rows="3" aria-label="直播间简介" placeholder="填写直播间的业务、商品和服务介绍" :disabled="savePlanOneClickBusy || fullShowVersionSaving" @keydown.esc="cancelRoomIntroEdit" />
+              <div class="strategy-room-intro-actions">
+                <span>点击顶部“保存方案”后生效</span>
+                <button type="button" :disabled="savePlanOneClickBusy || fullShowVersionSaving" @click="cancelRoomIntroEdit">取消</button>
+                <button type="button" class="primary" :disabled="savePlanOneClickBusy || fullShowVersionSaving" @click="finishRoomIntroEdit">完成编辑</button>
+              </div>
+            </template>
+            <p v-else>{{ roomIntro || '暂无直播间简介，点击铅笔填写。' }}</p>
+          </section>
           <section class="strategy-product-formal">
             <header>
               <div>
@@ -5433,25 +5413,14 @@ onBeforeUnmount(() => {
                 <span>当前正式 {{ formalProductLinks.length }} 个</span>
               </div>
               <div class="strategy-product-formal-actions">
-                <button v-if="formalProductLinks.length >= 2" type="button" class="strategy-frequency-toggle" :aria-expanded="frequencyPanelOpen" @click="frequencyPanelOpen = !frequencyPanelOpen">{{ frequencyPanelOpen ? '收起频率' : '调节频率' }}</button>
                 <CreateProductCardButton :plan-id="currentRoomPlanId || 0" :tenant-id="planTenantId" :scope-key="planSelectionPreferenceKey(planSelectionScope())" :items="formalProductLinks" @created="onProductCardCreated" />
               </div>
             </header>
-            <section v-if="frequencyPanelOpen" class="strategy-frequency-panel">
-              <p>系数越大，这个商品讲得越多；所有商品占比之和恒为 100%，调高一个会自动压低其它。1.0 表示按定位基准、不额外偏重。</p>
-              <div v-for="item in formalProductLinks" :key="item.id" class="strategy-frequency-row">
-                <span class="strategy-frequency-label">{{ item.link_key }}</span>
-                <input type="range" min="0" max="200" step="5" :value="item.frequency_weight || 0" :disabled="!!frequencySavingKey" :aria-label="item.link_key + '讲解频率'" @change="onFrequencyChange(item, $event)" />
-                <span class="strategy-frequency-value">{{ frequencyCoefficient(item).toFixed(2) }}×</span>
-                <span class="strategy-frequency-share">{{ (frequencyShares.get(item.id) ?? 0).toFixed(0) }}%</span>
-              </div>
-              <p v-if="frequencyPanelError" class="strategy-frequency-error">{{ frequencyPanelError }}</p>
-            </section>
             <div v-if="!formalProductLinks.length" class="strategy-v2-empty strategy-product-formal-empty">
               <strong>还没有正式商品链接</strong>
               <span>点击“添加商品卡”填写商品资料，也可以向右侧智能体提供商品信息。</span>
             </div>
-            <LiveProductLinkCards v-else ref="productCards" :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :benefit-scopes="poolStatus?.benefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :copy-item="duplicateProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute" :save-selling-points="saveProductSellingPoints">
+            <LiveProductLinkCards v-else ref="productCards" :key="currentRoomPlanId || 0" :items="formalProductLinks" :benefits="activeFormalBenefits" :benefit-scopes="poolStatus?.benefits" :save-field="saveProductLinkField" :save-room-roles="saveProductRoomRoles" :remove-item="removeProductLink" :copy-item="duplicateProductLink" :add-attribute="addProductAttribute" :save-attribute="saveProductAttribute" :remove-attribute="removeProductAttribute">
               <template #risk="{ item }"><SourceRiskDetails :reviews="reviewsForArea(factRiskReviews, 'products', item.id)" :loading="factRiskNoticeState.loading" :can-confirm="session.bootstrap?.actor.role === 'customer'" :located-hash="locatedFactRiskHash" @confirm="confirmInlineFactRisk" @edit="editSourceRisk($event, 'products')" @appeal="(review, reason) => factRiskController?.submitReviewAppeal(review, reason)" /></template>
             </LiveProductLinkCards>
           </section>
@@ -5673,6 +5642,25 @@ onBeforeUnmount(() => {
             @retry="loadPlanPrompt"
             @clear-feedback="planPromptError = ''; planPromptNotice = ''"
           />
+        </section>
+
+        <section v-else-if="activeMode === 'danmaku_test'" class="strategy-v2-workspace">
+          <PlanDanmakuTest v-if="currentRoomPlanId" :key="'danmaku-test:' + currentRoomPlanId" :plan-id="currentRoomPlanId" :room-intro="savedRoomIntro" :initial-question="qaTestQuestion" @consume-initial-question="qaTestQuestion = ''" />
+          <p v-else class="muted">请先在页面顶部选择方案。</p>
+        </section>
+
+        <section v-else-if="activeMode === 'qa_pairs'" class="strategy-v2-workspace">
+          <PlanQAPairs v-if="currentRoomPlanId" :key="'qa-pairs:' + currentRoomPlanId" :plan-id="currentRoomPlanId" @test="question => { qaTestQuestion = question; activeMode = 'danmaku_test' }" />
+          <p v-else>请先选择方案。</p>
+        </section>
+        <section v-else-if="activeMode === 'context_words'" class="strategy-v2-workspace">
+          <PlanContextWords v-if="currentRoomPlanId" :key="'context-words:' + currentRoomPlanId" :plan-id="currentRoomPlanId" />
+          <p v-else class="muted">请先在页面顶部选择方案。</p>
+        </section>
+
+        <section v-else-if="activeMode === 'material_import'" class="strategy-v2-workspace">
+          <PlanMaterialImport v-if="currentRoomPlanId" :key="'material-import:' + currentRoomPlanId" :plan-id="currentRoomPlanId" :links="formalProductLinks" />
+          <p v-else class="muted">请先在页面顶部选择方案。</p>
         </section>
 
         <section v-else-if="activeMode === 'reading'" class="strategy-v2-workspace">
@@ -6263,7 +6251,7 @@ onBeforeUnmount(() => {
                   ></textarea>
                   <RecordingScriptEntries
                     v-if="recordingVoiceMode === 'stream_clone' && activeRecordingTab"
-                    :key="activeRecordingTab.id"
+                    :key="`${planTenantId || 0}:${currentRoomPlanId || 0}:${activeRecordingTab.id}`"
                     :entries="activeRecordingEntries"
                     :disabled="recordingOriginalBusy"
                     :plan-id="currentRoomPlanId"
@@ -7504,6 +7492,20 @@ onBeforeUnmount(() => {
 .strategy-link-coverage .is-warning strong { color:#b36b18; }
 .strategy-link-coverage .is-warning small { color:#a06a24; }
 .strategy-product-link-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.strategy-room-intro { display:grid; gap:9px; min-width:0; padding:15px 18px; border:1px solid #e0e5fb; border-radius:16px; background:#fff; }
+.strategy-room-intro-heading { display:flex; align-items:center; gap:10px; }
+.strategy-room-intro-heading strong { color:#172440; font-size:18px; font-weight:850; }
+.strategy-room-intro-heading button { display:grid; place-items:center; width:32px; height:32px; margin-left:2px; border:0; border-radius:8px; background:#eef1ff; color:#5864e9; cursor:pointer; }
+.strategy-room-intro-heading button :deep(svg) { width:17px; height:17px; }
+.strategy-room-intro-heading button:disabled { cursor:not-allowed; opacity:.5; }
+.strategy-room-intro-unsaved { padding:3px 8px; border-radius:999px; background:#fff5df; color:#946015; font-size:13px; }
+.strategy-room-intro p { margin:0; color:#44516b; font-size:18px; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
+.strategy-room-intro textarea { width:100%; min-height:100px; box-sizing:border-box; resize:vertical; padding:10px 12px; border:1px solid #cbd4f3; border-radius:10px; background:#fff; color:#26354d; font-family:inherit; font-size:18px; line-height:1.6; }
+.strategy-room-intro textarea:focus { outline:2px solid #8d94ff; outline-offset:1px; }
+.strategy-room-intro-actions { display:flex; align-items:center; justify-content:flex-end; gap:9px; flex-wrap:wrap; }
+.strategy-room-intro-actions span { margin-right:auto; color:#7d8799; font-size:13px; }
+.strategy-room-intro-actions button { padding:7px 12px; border:1px solid #dce2f3; border-radius:9px; background:#fff; color:#3d4b6b; font:inherit; cursor:pointer; }
+.strategy-room-intro-actions button.primary { border-color:#5c5cf0; background:#5c5cf0; color:#fff; }
 .strategy-product-formal { display:grid; gap:16px; min-width:0; padding:18px; border:1px solid #e0e5fb; border-radius:18px; background:rgba(255,255,255,.95); box-shadow:0 14px 36px rgba(78,91,171,.06); }
 .strategy-product-formal>header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding-bottom:12px; border-bottom:1px solid #e9ecf7; }
 .strategy-product-formal>header>div { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
@@ -7511,16 +7513,6 @@ onBeforeUnmount(() => {
 .strategy-product-formal>header strong { color:#172440; font-size:18px; font-weight:900; }
 .strategy-product-formal>header span,.strategy-product-formal>header small { color:#8a94a7; font-size:15px; line-height:1.5; }
 .strategy-product-formal-empty { min-height:110px; }
-.strategy-frequency-toggle { flex:none; padding:7px 14px; border:1px solid #c9d3f4; border-radius:999px; background:var(--tint,#edf0ff); color:var(--accent,#4d62ff); font:inherit; font-size:15px; font-weight:750; cursor:pointer; }
-.strategy-frequency-toggle:hover { border-color:var(--accent,#4d62ff); }
-.strategy-frequency-panel { display:grid; gap:12px; padding:14px; border:1px solid #e3e8f7; border-radius:14px; background:linear-gradient(135deg,#fafbff,#f4f6ff); }
-.strategy-frequency-panel>p { margin:0; color:#6a7590; font-size:14px; line-height:1.55; }
-.strategy-frequency-panel>p.strategy-frequency-error { color:#c84858; }
-.strategy-frequency-row { display:grid; grid-template-columns:72px minmax(120px,1fr) 56px 48px; align-items:center; gap:12px; }
-.strategy-frequency-label { color:#172440; font-size:15px; font-weight:800; }
-.strategy-frequency-row input[type="range"] { width:100%; accent-color:var(--accent,#4d62ff); }
-.strategy-frequency-value { text-align:right; color:#4d62ff; font-size:15px; font-weight:800; }
-.strategy-frequency-share { text-align:right; color:#7a5af5; font-size:14px; font-weight:800; }
 .strategy-product-intro { font-size:14px!important; line-height:1.55!important; }
 @media(max-width:600px) { .strategy-product-formal { padding:12px; } .strategy-product-formal>header { flex-wrap:wrap; } .strategy-product-formal>header>.strategy-product-formal-actions { width:100%; } }
 .strategy-product-link-card { display:grid; gap:14px; padding:18px; border:1px solid #dfe5f0; border-radius:18px; background:#fff; box-shadow:0 8px 22px rgba(48,63,104,.045); }
