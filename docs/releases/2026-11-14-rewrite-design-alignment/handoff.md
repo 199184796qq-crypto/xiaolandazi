@@ -2,7 +2,7 @@
 
 2026-11-14 · Codex
 
-请对照 `E:/直播伴播/docs/2026-11-14-改写链路-设计定稿.md` 第七至九节复核。本轮在本地完成，隔离候选以生产 Management `835244c` 的准确源码为基础。线上仍为 `20261114-restore-835244c`，以下变更尚未发布。
+请对照 `E:/直播伴播/docs/2026-11-14-改写链路-设计定稿.md` 第七至九节复核。隔离候选以原生产 Management `835244c` 的准确源码为基础。北京时间 2026-11-14 00:57:05，生产已切到 `20261114-rewrite-align-74b97b3`。发布依据为 Git 交付提交 `403b013465b0673e28b3807a1347133796dfb219`。
 
 ## 原子事实从什么时候生成
 
@@ -28,3 +28,9 @@
 - 45 项定向测试通过。隔离 Redis 验证了跨实例读取、清空覆盖、场次清理，以及清场次缓存后方案事实包仍可读取。另有 1 项独立 MySQL 保存守卫测试因未配置测试库跳过。
 - 用杨鸭子 60 条线上资料离线回放，得到 58 条投影，三个链接价格分别为 87.6、92.5、48.8。旧写作模板 25,141 字节，候选回放模板 8,699 字节。这是文本大小，供应商实际 token、费用和成稿质量需另验。
 - 在 `E:/直播伴播/management-service` 查看 `internal/httpapi/rewrite_facts_cache.go`、`plan_danmaku_workbench.go`、`plan_script_rewrite_chains.go`、`plan_script_rewrite_worker.go` 及 `internal/scriptchain/store.go`。隔离候选源码、16 路径清单与测试结果位于 `E:/直播伴播-local/rewrite-design-align-20261114/`，分别是 `production-candidate/`、`candidate-paths.txt`、`candidate-tests.jsonl`。
+
+## 生产发布回执
+
+- Management PID 为 `2871811`，运行二进制 SHA-256 为 `74b97b31d328279e7bb47f66499930cb3b16f7c9dad9571307cf3cc4f811d4f8`。启动日志确认加载了 5 个主播风格插件，并选用 Redis 缓存。Core 和小智网关沿用原进程。
+- 三项本机健康检查均为 HTTP 200。公网桌面、客户移动端、销售端、公开 API 和鉴权冒烟通过。6,376 个前端文件和 41 张保护表在切换前后核对一致。
+- 精确源码归档和发布包存于 `/opt/xiaolan/deployments/20261114-rewrite-align-74b97b3/`。上一完整发布目录为 `/opt/xiaolan/releases/20261114-restore-835244c`。本次验证覆盖上线状态和离线回放，真实直播改写、供应商 token 与成稿仍待实播验证。
