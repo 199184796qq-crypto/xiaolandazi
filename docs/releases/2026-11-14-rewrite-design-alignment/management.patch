@@ -1,0 +1,1009 @@
+diff --git a/management-service/internal/httpapi/live_agent_plan_versions.go b/management-service/internal/httpapi/live_agent_plan_versions.go
+index 06ea4c3a..e6be1eaa 100644
+--- a/management-service/internal/httpapi/live_agent_plan_versions.go
++++ b/management-service/internal/httpapi/live_agent_plan_versions.go
+@@ -499,6 +499,7 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
+ 		writeError(w, http.StatusInternalServerError, "保存直播智能体版本失败")
+ 		return
+ 	}
++	s.scheduleFactCardRebuild(tenantID, planID)
+ 	reportAnchorAnalysis(r.Context(), 100, "智能体方案已保存，下次开播直接使用")
+ 	writeJSON(w, http.StatusCreated, item)
+ }
+diff --git a/management-service/internal/httpapi/plan_danmaku_workbench.go b/management-service/internal/httpapi/plan_danmaku_workbench.go
+index 22a8e80d..bbb27b64 100644
+--- a/management-service/internal/httpapi/plan_danmaku_workbench.go
++++ b/management-service/internal/httpapi/plan_danmaku_workbench.go
+@@ -128,6 +128,7 @@ func (s *Server) scheduleFactCardRebuild(tenant, plan int64) {
+ 	if tenant <= 0 || plan <= 0 {
+ 		return
+ 	}
++	go s.rebuildRewriteFacts(tenant, plan)
+ 	go func() {
+ 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+ 		defer cancel()
+diff --git a/management-service/internal/httpapi/plan_material_claims.go b/management-service/internal/httpapi/plan_material_claims.go
+index 74194f5c..5642c1e6 100644
+--- a/management-service/internal/httpapi/plan_material_claims.go
++++ b/management-service/internal/httpapi/plan_material_claims.go
+@@ -881,6 +881,7 @@ func (s *Server) planMaterialClaimBenefit(w http.ResponseWriter, r *http.Request
+ 		}
+ 		return
+ 	}
++	s.scheduleFactCardRebuild(tenantID, planID)
+ 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+ }
+ 
+diff --git a/management-service/internal/httpapi/plan_material_objects.go b/management-service/internal/httpapi/plan_material_objects.go
+index c049fdc5..b30331b9 100644
+--- a/management-service/internal/httpapi/plan_material_objects.go
++++ b/management-service/internal/httpapi/plan_material_objects.go
+@@ -118,6 +118,7 @@ func (s *Server) planMaterialObjects(w http.ResponseWriter, r *http.Request) {
+ 		case err != nil:
+ 			writeError(w, 500, "保存对象失败，请刷新后重试")
+ 		default:
++			s.scheduleFactCardRebuild(tenantID, planID)
+ 			s.planMaterialObjectsResponse(w, r, tenantID, planID, links)
+ 		}
+ 		return
+@@ -143,6 +144,7 @@ func (s *Server) planMaterialObjects(w http.ResponseWriter, r *http.Request) {
+ 		writeError(w, 500, "保存门店关联失败，原关联保留")
+ 		return
+ 	}
++	s.scheduleFactCardRebuild(tenantID, planID)
+ 	catalog.Stores, catalog.Revision = input.Stores, revision
+ 	writeMaterialObjects(w, links, catalog)
+ }
+diff --git a/management-service/internal/httpapi/plan_save_analysis_paused.go b/management-service/internal/httpapi/plan_save_analysis_paused.go
+index 8f5d8741..8a287244 100644
+--- a/management-service/internal/httpapi/plan_save_analysis_paused.go
++++ b/management-service/internal/httpapi/plan_save_analysis_paused.go
+@@ -74,8 +74,6 @@ func (s *Server) existingSafetyForPlanSave(ctx context.Context, tenant, plan int
+ }
+ 
+ func (s *Server) capturePlanSaveWithoutAnalysis(ctx context.Context, tenant, plan int64, input *model.CreateLiveAgentPlanVersionInput) error {
+-	// 保存方案后预热一次事实视图：事实卡给问答链路，原子事实给改写链路。
+-	defer s.scheduleFactCardRebuild(tenant, plan)
+ 	resetPausedPlanSaveAnalysis(input)
+ 	if !isRealtimeScheme(input.GenerationContext) {
+ 		// Original recording, script-first TTS and prepared audio do not require
+diff --git a/management-service/internal/httpapi/plan_script_rewrite_chains.go b/management-service/internal/httpapi/plan_script_rewrite_chains.go
+index 5a96ce1d..5aceb639 100644
+--- a/management-service/internal/httpapi/plan_script_rewrite_chains.go
++++ b/management-service/internal/httpapi/plan_script_rewrite_chains.go
+@@ -6,6 +6,7 @@ import (
+ 	"log"
+ 	"math/rand"
+ 	"strings"
++	"sync"
+ 	"time"
+ 
+ 	"github.com/redis/go-redis/v9"
+@@ -16,16 +17,24 @@ import (
+ 
+ // 每场直播内复用：分析结果和已用链记录随场次失效，这里给 12 小时兜底。
+ var scriptChainStore = scriptchain.NewStore(scriptchain.NewMemoryKV(), 12*time.Hour)
++var scriptAnalysisInFlight sync.Map
+ 
+-// SetScriptChainRedis 用 Redis 承载逻辑链缓存；传 nil 时保留进程内缓存。
++// SetScriptChainRedis configures both rewrite caches at startup.
+ func (s *Server) SetScriptChainRedis(client *redis.Client) {
+ 	if client == nil {
+ 		return
+ 	}
+ 	scriptChainStore = scriptchain.NewStore(scriptchain.NewRedisKV(client), 12*time.Hour)
++	planRewriteFacts.redis = client
+ 	log.Printf("script chain cache backend: redis")
+ }
+ 
++func clearSessionScriptChains(ctx context.Context, tenant, session int64) {
++	if err := scriptChainStore.ClearSession(ctx, tenant, session); err != nil {
++		log.Printf("script chain session cleanup failed tenant=%d session=%d: %v", tenant, session, err)
++	}
++}
++
+ func scriptChainPieceKey(piece string) int64 {
+ 	h := fnv.New64a()
+ 	_, _ = h.Write([]byte(piece))
+@@ -33,18 +42,31 @@ func scriptChainPieceKey(piece string) int64 {
+ }
+ 
+ // scriptChainRequirement 取这条话术片的逻辑链，随机选一条，返回写作要求段落。
+-// 分析只在第一次用这条话术片时做一次；失败时返回空串，调用方按原流程继续。
+-func (s *Server) scriptChainRequirement(ctx context.Context, tenant, plan int64, sample, piece string) string {
++func (s *Server) scriptChainRequirement(ctx context.Context, tenant, plan, session int64, sample, piece string) string {
+ 	sample = strings.TrimSpace(sample)
+-	if sample == "" || plan <= 0 {
++	if sample == "" || plan <= 0 || session <= 0 {
+ 		return ""
+ 	}
+-	hash := scriptchain.ContentHash(sample)
+-	key := scriptChainPieceKey(piece)
++	r := rand.New(rand.NewSource(time.Now().UnixNano()))
++	target := scriptchain.TargetLength(r)
++	key := scriptchain.Piece{Tenant: tenant, Plan: plan, Session: session, ID: scriptChainPieceKey(piece), ContentHash: scriptchain.ContentHash(sample)}
+ 
+-	analysis, ok, err := scriptChainStore.Load(ctx, tenant, plan, key, hash)
++	analysis, ok, err := scriptChainStore.Load(ctx, key)
+ 	if err != nil {
+ 		log.Printf("script chain cache read failed plan=%d piece=%s: %v", plan, piece, err)
++		return scriptchain.DefaultRequirement(target)
++	}
++	if !ok {
++		if _, analyzing := scriptAnalysisInFlight.LoadOrStore(key, true); analyzing {
++			return scriptchain.DefaultRequirement(target)
++		}
++		defer scriptAnalysisInFlight.Delete(key)
++		// Another worker can complete the first analysis before this one takes the lock.
++		analysis, ok, err = scriptChainStore.Load(ctx, key)
++		if err != nil {
++			log.Printf("script chain cache read failed plan=%d piece=%s: %v", plan, piece, err)
++			return scriptchain.DefaultRequirement(target)
++		}
+ 	}
+ 	if !ok {
+ 		started := time.Now()
+@@ -63,28 +85,30 @@ func (s *Server) scriptChainRequirement(ctx context.Context, tenant, plan int64,
+ 		cancel()
+ 		if callErr != nil {
+ 			log.Printf("script analysis failed plan=%d piece=%s: %v", plan, piece, callErr)
+-			return ""
++			return scriptchain.DefaultRequirement(target)
+ 		}
+ 		parsed, parseErr := scriptchain.ParseAnalysis(result.Text)
+-		if parseErr != nil {
+-			log.Printf("script analysis rejected plan=%d piece=%s: %v", plan, piece, parseErr)
+-			return ""
++		if parseErr != nil || len(parsed.Chains) < scriptchain.MinCachedChains {
++			log.Printf("script analysis rejected plan=%d piece=%s chains=%d error=%v", plan, piece, len(parsed.Chains), parseErr)
++			return scriptchain.DefaultRequirement(target)
+ 		}
+ 		analysis = parsed
+-		if saveErr := scriptChainStore.Save(ctx, tenant, plan, key, hash, analysis); saveErr != nil {
++		if err := checkScriptGenerationGuard(ctx); err != nil {
++			return ""
++		}
++		if saveErr := scriptChainStore.Save(ctx, key, analysis); saveErr != nil {
+ 			log.Printf("script chain cache write failed plan=%d piece=%s: %v", plan, piece, saveErr)
+ 		}
+ 		log.Printf("script analysis done plan=%d piece=%s chains=%d cost=%dms", plan, piece, len(analysis.Chains), time.Since(started).Milliseconds())
+ 	}
+ 
+-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+-	recent := scriptChainStore.RecentUsed(ctx, tenant, plan, key, hash)
++	recent := scriptChainStore.RecentUsed(ctx, key)
+ 	idx := scriptchain.Pick(len(analysis.Chains), recent, r)
+ 	if idx < 0 {
+-		return ""
++		return scriptchain.DefaultRequirement(target)
+ 	}
+ 	chain := analysis.Chains[idx]
+-	scriptChainStore.MarkUsed(ctx, tenant, plan, key, hash, idx)
++	scriptChainStore.MarkUsed(ctx, key, recent, idx)
+ 	log.Printf("script chain picked plan=%d piece=%s chain=%s nodes=%d", plan, piece, chain.Name, len(chain.Nodes))
+-	return scriptchain.RenderRequirement(analysis, chain, scriptchain.TargetLength(r))
++	return scriptchain.RenderRequirement(analysis, chain, target)
+ }
+diff --git a/management-service/internal/httpapi/plan_script_rewrite_worker.go b/management-service/internal/httpapi/plan_script_rewrite_worker.go
+index c862a272..3a92c6a1 100644
+--- a/management-service/internal/httpapi/plan_script_rewrite_worker.go
++++ b/management-service/internal/httpapi/plan_script_rewrite_worker.go
+@@ -4,7 +4,6 @@ import (
+ 	"context"
+ 	"fmt"
+ 	"log"
+-	"math/rand"
+ 	"path/filepath"
+ 	"strconv"
+ 	"strings"
+@@ -165,37 +164,49 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
+ 		}
+ 		return
+ 	}
+-	openings := scriptUsedOpenings(pool, voiceID)
+-	kind := pickOpeningKind(rand.New(rand.NewSource(time.Now().UnixNano())), nil)
+-	document, err := s.loadScriptRewriteSnapshot(ctx, tenant, v)
+-	if err != nil || strings.TrimSpace(document.Prompt) == "" {
++	document, frozen := scriptRewriteSnapshotFor(v)
++	if !frozen {
++		var err error
++		document, err = s.loadScriptRewriteSnapshot(ctx, tenant, v)
++		if err != nil {
++			return
++		}
++	}
++	if strings.TrimSpace(document.Prompt) == "" {
+ 		return
+ 	}
+-	document, err = s.prepareRewriteFacts(ctx, tenant, v.PlanID, document)
++	facts, err := s.rewriteFactsJSON(ctx, tenant, v.PlanID)
+ 	if err != nil {
+ 		log.Printf("script rewrite facts unavailable plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
+ 		return
+ 	}
+-	turn, err := beginScriptRewriteTurn(ctx, recordingCacheMediaRoot(), newScriptRewriteContextScope(tenant, v.PlanID, unit.Text, document.Facts))
++	if len(facts) == 0 || string(facts) == "[]" {
++		log.Printf("script rewrite skipped without confirmed facts plan=%d piece=%s", v.PlanID, unit.poolID())
++		return
++	}
++	redlines, ok := backgroundRewriteRedLines(document)
++	if !ok {
++		log.Printf("script rewrite redlines unavailable plan=%d piece=%s", v.PlanID, unit.poolID())
++		return
++	}
++	turn, err := beginScriptRewriteTurn(ctx, recordingCacheMediaRoot(), newScriptRewriteContextScope(tenant, v.PlanID, unit.Text, string(facts)))
+ 	if err != nil {
+ 		log.Printf("script rewrite context unavailable plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
+ 		return
+ 	}
+ 	defer turn.Close()
+-	prompt, err := renderBackgroundScriptRewritePrompt(document.Prompt, unit.Text, openings, kind, turn.Previous)
+-	if err != nil || strings.TrimSpace(prompt) == "" {
++	requirement := s.scriptChainRequirement(ctx, tenant, v.PlanID, session, unit.Text, unit.poolID())
++	if requirement == "" {
+ 		return
+ 	}
+-	if requirement := s.scriptChainRequirement(ctx, tenant, v.PlanID, unit.Text, unit.poolID()); requirement != "" {
+-		prompt = prompt + "\n\n" + requirement
+-	}
++	prompt := renderChainRewritePrompt(requirement, redlines, string(facts))
+ 	work, cancel := context.WithTimeout(ctx, 180*time.Second)
+ 	defer cancel()
+ 	result, err := s.completePlayedScriptModel(work, agentgateway.Request{
+ 		Stage:          "script_rewrite",
+ 		Messages:       scriptRewriteMessages(prompt),
+ 		ResponseFormat: agentgateway.ResponseText,
+-		MaxTokens:      2400,
++		MaxTokens:      4000,
+ 		Timeout:        180 * time.Second,
+ 	})
+ 	if err != nil {
+@@ -212,12 +223,13 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
+ 	script = s.repairRewriteViolations(work, v, script)
+ 	// 删句之后可能不足 400 字：先试着用事实补写；补不上也照用，不丢弃。
+ 	if utf8.RuneCountInString(script) < rewriteMinRunes {
+-		if extended, ok := s.extendRewriteScript(work, v, script, document.Facts); ok {
++		if extended, ok := s.extendRewriteScript(work, v, script, string(facts)); ok {
+ 			script = s.repairRewriteViolations(work, v, extended)
+ 		} else {
+ 			log.Printf("script rewrite short but kept plan=%d piece=%s runes=%d", v.PlanID, shortKey(unit.Key), utf8.RuneCountInString(script))
+ 		}
+ 	}
++	script = scriptchain.NormalizeScript(script)
+ 	if !rewriteScriptAcceptable(v, unit.Text, script) {
+ 		log.Printf("script rewrite rejected plan=%d piece=%s runes=%d", v.PlanID, shortKey(unit.Key), utf8.RuneCountInString(script))
+ 		return
+@@ -277,6 +289,14 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
+ 	log.Printf("script rewrite ready plan=%d piece=%s runes=%d budget_left=%d", v.PlanID, shortKey(unit.Key), utf8.RuneCountInString(script), scriptVoiceBudgetLeft(v.PlanID))
+ }
+ 
++func renderChainRewritePrompt(requirement, redlines, facts string) string {
++	return strings.TrimSpace(requirement) + "\n" +
++		"只使用事实清单中的事实，保留适用条件和例外。资料没有写的，不作承诺。正文不朗读字段名和数组符号。\n" +
++		"开场和与观众聊天时避免绑定播放时段。事实清单中明确的发货、配送等时效照实表达。" +
++		"\n\n【红线禁止】\n" + strings.TrimSpace(redlines) +
++		"\n\n【事实清单】\n" + facts + "\n\n" + planprompt.RewriteOutputContract
++}
++
+ func (s *Server) checkScriptGenerationOwner(ctx context.Context, tenant, room, session int64, v model.LiveAgentPlanVersion) error {
+ 	if err := ctx.Err(); err != nil {
+ 		return err
+@@ -658,34 +678,6 @@ func (s *Server) askRewriteOpening(ctx context.Context, script string) (string,
+ 	return out, true
+ }
+ 
+-// scriptUsedOpenings 把这个片段已经用过的开场列成清单，交给模型避开。
+-//
+-// 只给开头 12 字，token 很省；比"禁止某类词"稳，模型按实际用过的写法换角度。
+-func scriptUsedOpenings(pool scriptplay.Pool, voiceID string) string {
+-	var lines []string
+-	seen := map[string]bool{}
+-	for _, v := range pool.VoiceVersions(voiceID) {
+-		text := strings.TrimSpace(v.Text)
+-		if text == "" {
+-			continue
+-		}
+-		runes := []rune(text)
+-		if len(runes) > 12 {
+-			runes = runes[:12]
+-		}
+-		head := string(runes)
+-		if seen[head] {
+-			continue
+-		}
+-		seen[head] = true
+-		lines = append(lines, "- "+head)
+-	}
+-	if len(lines) == 0 {
+-		return "（还没有用过的开场，这一版自己起一个）"
+-	}
+-	return strings.Join(lines, "\n")
+-}
+-
+ // scriptOpeningBlockMarker 用来判断提示词里是否已经带了开场指令。
+ const scriptOpeningBlockMarker = "【这一版的开场要求】"
+ 
+diff --git a/management-service/internal/httpapi/rewrite_facts_cache.go b/management-service/internal/httpapi/rewrite_facts_cache.go
+new file mode 100644
+index 00000000..7d16908f
+--- /dev/null
++++ b/management-service/internal/httpapi/rewrite_facts_cache.go
+@@ -0,0 +1,102 @@
++package httpapi
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"log"
++	"sync"
++	"time"
++
++	"github.com/redis/go-redis/v9"
++	"livecompanion/management/internal/scriptchain"
++)
++
++const rewriteFactsTTL = 12 * time.Hour
++
++type rewriteFactsCache struct {
++	local *scriptchain.MemoryKV
++	redis *redis.Client
++	locks [64]sync.Mutex
++}
++
++var planRewriteFacts = &rewriteFactsCache{local: scriptchain.NewMemoryKV()}
++
++func (s *Server) rewriteFactsJSON(ctx context.Context, tenant, plan int64) (json.RawMessage, error) {
++	return planRewriteFacts.get(ctx, tenant, plan, false, s.buildRewriteFactsPack)
++}
++
++func (s *Server) rebuildRewriteFacts(tenant, plan int64) {
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	if _, err := planRewriteFacts.get(ctx, tenant, plan, true, s.buildRewriteFactsPack); err != nil {
++		log.Printf("rewrite facts build failed tenant=%d plan=%d: %v", tenant, plan, err)
++	}
++}
++
++func (c *rewriteFactsCache) get(ctx context.Context, tenant, plan int64, refresh bool, build func(context.Context, int64, int64) (json.RawMessage, error)) (json.RawMessage, error) {
++	key := fmt.Sprintf("rewritefacts:v1:%d:%d", tenant, plan)
++	var kv scriptchain.KV = c.local
++	if c.redis != nil {
++		kv = scriptchain.NewRedisKV(c.redis)
++	}
++	read := func() (json.RawMessage, bool) {
++		value, ok, err := kv.Get(ctx, key)
++		return json.RawMessage(value), err == nil && ok && len(value) > 0 && value[0] == '[' && json.Valid([]byte(value))
++	}
++	if !refresh {
++		if value, ok := read(); ok {
++			return value, nil
++		}
++	}
++	lock := &c.locks[(uint64(tenant)*31+uint64(plan))%uint64(len(c.locks))]
++	lock.Lock()
++	defer lock.Unlock()
++	for {
++		if err := ctx.Err(); err != nil {
++			return nil, err
++		}
++		if !refresh {
++			if value, ok := read(); ok {
++				return value, nil
++			}
++		}
++		if c.redis == nil {
++			value, err := build(ctx, tenant, plan)
++			if err == nil {
++				err = kv.Set(ctx, key, string(value), rewriteFactsTTL)
++			}
++			return value, err
++		}
++
++		// A slower rebuild must not overwrite a newer projection from another process.
++		var value json.RawMessage
++		var buildErr error
++		err := c.redis.Watch(ctx, func(tx *redis.Tx) error {
++			value, buildErr = build(ctx, tenant, plan)
++			if buildErr != nil {
++				return buildErr
++			}
++			_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
++				pipe.Set(ctx, key, string(value), rewriteFactsTTL)
++				return nil
++			})
++			return err
++		}, key)
++		if errors.Is(err, redis.TxFailedErr) {
++			continue
++		}
++		if buildErr != nil || err == nil {
++			return value, buildErr
++		}
++		log.Printf("rewrite facts cache unavailable tenant=%d plan=%d: %v", tenant, plan, err)
++		if refresh {
++			return nil, err
++		}
++		if value != nil {
++			return value, nil
++		}
++		return build(ctx, tenant, plan)
++	}
++}
+diff --git a/management-service/internal/httpapi/rewrite_facts_test.go b/management-service/internal/httpapi/rewrite_facts_test.go
+index da08c64e..ab6b7cea 100644
+--- a/management-service/internal/httpapi/rewrite_facts_test.go
++++ b/management-service/internal/httpapi/rewrite_facts_test.go
+@@ -1,15 +1,20 @@
+ package httpapi
+ 
+ import (
++	"context"
+ 	"encoding/json"
++	"errors"
+ 	"os"
+ 	"slices"
+ 	"strings"
+ 	"testing"
++	"time"
+ 
++	"github.com/redis/go-redis/v9"
+ 	"livecompanion/management/internal/db"
+ 	"livecompanion/management/internal/model"
+ 	"livecompanion/management/internal/planprompt"
++	"livecompanion/management/internal/scriptchain"
+ )
+ 
+ func TestRewriteFactsProjection(t *testing.T) {
+@@ -115,26 +120,113 @@ func TestRewriteFactsSpecificDuplicateEvidence(t *testing.T) {
+ 	}
+ }
+ 
+-func TestBindRewriteFactsKeepsRules(t *testing.T) {
++func TestChainRewritePromptUsesOnlyBlueprintRedLinesAndFacts(t *testing.T) {
+ 	s := planprompt.Sections{PersonaMD: "说话自然", FactsMD: "【商品卡】\n旧价87.6\n\n【用词消歧】\n保留术语\n\n【数据使用规则】\n遵循价格规则", RedLinesMD: "禁止保证"}
+ 	prompt := planprompt.CompileRewritePlanning(s, "保留写作规划")
+ 	doc := scriptRewriteSnapshot{Prompt: prompt, Facts: s.FactsMD}
+-	pack := json.RawMessage(`[{"对象":"双人券","属性":"价格","值":"92.5"}]`)
+-	out, unbound := bindRewriteFacts(doc, pack)
+-	if unbound || strings.Count(out, string(pack)) != 1 || strings.Contains(out, "旧价87.6") {
+-		t.Fatalf("%q", out)
+-	}
+-	for _, wanted := range []string{"说话自然", "保留术语", "遵循价格规则", "禁止保证", "{{样本话术}}", "保留写作规划"} {
+-		if !strings.Contains(out, wanted) {
+-			t.Errorf("missing %q", wanted)
++	pack := `[{"对象":"双人券","属性":"价格","值":"92.5"}]`
++	redlines, ok := backgroundRewriteRedLines(doc)
++	if !ok || redlines != "禁止保证" {
++		t.Fatalf("legacy snapshot redlines: %q", redlines)
++	}
++	messages := scriptRewriteMessages(renderChainRewritePrompt(scriptchain.DefaultRequirement(700), redlines, pack))
++	if messages[0].Content != planprompt.RewriteOutputContract {
++		t.Fatal("changed output contract")
++	}
++	body := messages[1].Content
++	if !strings.HasPrefix(body, "【写作要求】") || !strings.HasSuffix(body, "【事实清单】\n"+pack) || strings.Count(body, pack) != 1 || !strings.Contains(body, "【红线禁止】\n禁止保证") {
++		t.Fatalf("unexpected writer input: %q", body)
++	}
++	for _, forbidden := range []string{"旧价87.6", "说话自然", "保留术语", "遵循价格规则", "样本话术", "保留写作规划"} {
++		if strings.Contains(body, forbidden) {
++			t.Errorf("old input leaked: %q", forbidden)
++		}
++	}
++}
++
++func TestRewriteFactsCacheEmptyFailureAndPlanIsolation(t *testing.T) {
++	cache := &rewriteFactsCache{local: scriptchain.NewMemoryKV()}
++	value := json.RawMessage(`[{"对象":"标准套餐","属性":"价格","值":"89.5"}]`)
++	calls := 0
++	var buildErr error
++	build := func(context.Context, int64, int64) (json.RawMessage, error) {
++		calls++
++		return value, buildErr
++	}
++	check := func(tenant, plan int64, refresh bool, want string, wantCalls int, wantErr error) {
++		t.Helper()
++		got, err := cache.get(t.Context(), tenant, plan, refresh, build)
++		if !errors.Is(err, wantErr) || string(got) != want || calls != wantCalls {
++			t.Fatalf("cache get returned %s, %v with %d builds", got, err, calls)
+ 		}
+ 	}
+-	legacy, unbound := bindRewriteFacts(scriptRewriteSnapshot{Prompt: "只有写作规划"}, pack)
+-	if unbound || !strings.Contains(legacy, string(pack)) {
+-		t.Fatalf("missing fact section in legacy prompt: %q", legacy)
++	price := string(value)
++	check(1, 2, false, price, 1, nil)
++	value = json.RawMessage(`[]`)
++	check(1, 2, false, price, 1, nil)
++	check(2, 2, false, `[]`, 2, nil)
++	check(1, 3, false, `[]`, 3, nil)
++	buildErr = errors.New("mysql unavailable")
++	value = nil
++	check(1, 2, true, "", 4, buildErr)
++	check(1, 2, false, price, 4, nil)
++	buildErr = nil
++	value = json.RawMessage(`[]`)
++	check(1, 2, true, `[]`, 5, nil)
++	check(1, 2, false, `[]`, 5, nil)
++}
++
++func TestRewriteFactsRedisAcrossManagementInstances(t *testing.T) {
++	addr := os.Getenv("REWRITE_FACTS_TEST_REDIS")
++	if addr == "" {
++		t.Skip("requires an isolated test Redis")
++	}
++	ctx := t.Context()
++	client := redis.NewClient(&redis.Options{Addr: addr, DialTimeout: time.Second, ReadTimeout: time.Second, WriteTimeout: time.Second})
++	t.Cleanup(func() { _ = client.Close() })
++	first := &rewriteFactsCache{redis: client}
++	second := &rewriteFactsCache{redis: client}
++	value := json.RawMessage(`[{"对象":"套装","属性":"价格","值":"125元"}]`)
++	build := func(context.Context, int64, int64) (json.RawMessage, error) { return value, nil }
++	neverBuild := func(context.Context, int64, int64) (json.RawMessage, error) {
++		t.Fatal("Redis hit fell back to MySQL")
++		return nil, nil
++	}
++	const tenant, plan int64 = 189021, 799159
++	if _, err := first.get(ctx, tenant, plan, true, build); err != nil {
++		t.Fatal(err)
++	}
++	if got, err := second.get(ctx, tenant, plan, false, neverBuild); err != nil || string(got) != string(value) {
++		t.Fatalf("Redis cache after restart: %s, %v", got, err)
++	}
++	chainCache := scriptchain.NewStore(scriptchain.NewRedisKV(client), 12*time.Hour)
++	old := scriptchain.Piece{Tenant: tenant, Plan: plan, Session: 6, ID: 3, ContentHash: scriptchain.ContentHash("原文")}
++	next := old
++	next.Session++
++	for _, piece := range []scriptchain.Piece{old, next} {
++		if err := chainCache.Save(ctx, piece, scriptchain.Analysis{Chains: make([]scriptchain.Chain, 10)}); err != nil {
++			t.Fatal(err)
++		}
++		chainCache.MarkUsed(ctx, piece, nil, 2)
++	}
++	if err := chainCache.ClearSession(ctx, tenant, old.Session); err != nil {
++		t.Fatal(err)
++	}
++	if _, hit, err := chainCache.Load(ctx, old); err != nil || hit || len(chainCache.RecentUsed(ctx, old)) > 0 {
++		t.Fatalf("old session cache remains: hit=%t err=%v", hit, err)
++	}
++	if _, hit, err := chainCache.Load(ctx, next); err != nil || !hit {
++		t.Fatalf("different session cache lost: hit=%t err=%v", hit, err)
++	}
++	if got, err := second.get(ctx, tenant, plan, false, neverBuild); err != nil || string(got) != string(value) {
++		t.Fatalf("session cleanup removed plan facts: %s, %v", got, err)
++	}
++	value = json.RawMessage(`[]`)
++	if _, err := first.get(ctx, tenant, plan, true, build); err != nil {
++		t.Fatal(err)
+ 	}
+-	if old, unbound := bindRewriteFacts(doc, nil); unbound || old != prompt {
+-		t.Fatalf("fallback template differs: %q", old)
++	if got, err := second.get(ctx, tenant, plan, false, neverBuild); err != nil || string(got) != `[]` {
++		t.Fatalf("old facts reappeared after clear: %s, %v", got, err)
+ 	}
+ }
+ 
+@@ -188,9 +280,10 @@ func TestRewriteFactsProductionReplay(t *testing.T) {
+ 	if strings.Count(string(data), "南充红花街一号") != 1 || strings.Contains(string(data), "总店位于南充红花街一号") || strings.Contains(string(data), "和刚出锅一模一样") {
+ 		t.Fatal("duplicate value or leaked source sentence")
+ 	}
+-	prompt, unbound := bindRewriteFacts(scriptRewriteSnapshot{Prompt: fixture.Prompt, Facts: fixture.Facts}, data)
+-	if unbound || strings.Count(prompt, string(data)) != 1 || strings.Contains(prompt, "价格：92.6") || !strings.Contains(prompt, "【数据使用规则】") {
+-		t.Fatal("production prompt has duplicate old facts or missing rules")
++	redlines, ok := backgroundRewriteRedLines(scriptRewriteSnapshot{Prompt: fixture.Prompt, Facts: fixture.Facts})
++	prompt := renderChainRewritePrompt(scriptchain.DefaultRequirement(700), redlines, string(data))
++	if !ok || redlines == "" || strings.Count(prompt, string(data)) != 1 || strings.Contains(prompt, "价格：92.6") || strings.Contains(prompt, "【样本话术】") {
++		t.Fatal("production replay has duplicate/old facts, sample text or missing redlines")
+ 	}
+ 	t.Logf("claims=%d facts=%d skipped=%d fact_pack_bytes=%d old_facts_section_bytes=%d rewrite_template_bytes_before=%d rewrite_template_bytes_after=%d", len(fixture.Claims), len(facts), skipped, len(data), len(fixture.Facts), len(fixture.Prompt), len(prompt))
+ }
+diff --git a/management-service/internal/httpapi/rewrite_facts.go b/management-service/internal/httpapi/rewrite_facts.go
+index 013456f3..ef9cf6b0 100644
+--- a/management-service/internal/httpapi/rewrite_facts.go
++++ b/management-service/internal/httpapi/rewrite_facts.go
+@@ -3,14 +3,12 @@ package httpapi
+ import (
+ 	"context"
+ 	"encoding/json"
+-	"errors"
+ 	"log"
+ 	"slices"
+ 	"strings"
+ 
+ 	"livecompanion/management/internal/db"
+ 	"livecompanion/management/internal/model"
+-	"livecompanion/management/internal/planprompt"
+ )
+ 
+ // The writing model gets reviewed values and restrictions. Evidence stays on
+@@ -24,85 +22,16 @@ type rewriteFact struct {
+ 	Exception string          `json:"例外,omitempty"`
+ }
+ 
+-func (s *Server) rewriteFactsJSON(ctx context.Context, tenant, plan int64) (json.RawMessage, error) {
++func (s *Server) buildRewriteFactsPack(ctx context.Context, tenant, plan int64) (json.RawMessage, error) {
+ 	claims, catalog, links, err := s.store.PlanRewriteFactsSnapshot(ctx, tenant, plan)
+-	if err != nil || len(claims) == 0 {
++	if err != nil {
+ 		return nil, err
+ 	}
+ 	facts, skipped := projectRewriteFacts(claims, catalog, links)
+-	if skipped != 0 {
+-		log.Printf("rewrite facts omitted tenant=%d plan=%d count=%d", tenant, plan, skipped)
+-	}
++	log.Printf("rewrite facts projected tenant=%d plan=%d count=%d omitted=%d", tenant, plan, len(facts), skipped)
+ 	return json.Marshal(facts)
+ }
+ 
+-func bindRewriteFacts(document scriptRewriteSnapshot, facts json.RawMessage) (template string, appendFacts bool) {
+-	if len(facts) == 0 {
+-		return document.Prompt, false
+-	}
+-	prompt := strings.ReplaceAll(document.Prompt, "\r\n", "\n")
+-	saved := strings.TrimSpace(strings.ReplaceAll(document.Facts, "\r\n", "\n"))
+-	const heading = "【事实依据】\n"
+-	if saved != "" {
+-		oldBlock := heading + saved
+-		before, after, found := strings.Cut(prompt, oldBlock)
+-		if found && !strings.Contains(before, "【样本话术】") && (after == "" || strings.HasPrefix(after, "\n")) {
+-			return before + heading + rewriteFactSection(string(facts), saved) + after, false
+-		}
+-	}
+-	// A standalone legacy planning prompt has no facts section to replace.
+-	if !strings.Contains(prompt, heading) {
+-		return strings.TrimRight(prompt, "\n") + "\n\n" + heading + string(facts), false
+-	}
+-	// A legacy composed prompt may have been frozen against an older version
+-	// of the facts editor. Only replace the bounded section before the sample.
+-	before, body, found := strings.Cut(prompt, "\n"+heading)
+-	if found && strings.HasPrefix(strings.TrimSpace(prompt), planprompt.RewriteIntro) && !strings.Contains(before, "【样本话术】") {
+-		redlines := strings.Index(body, "\n\n【红线禁止】\n")
+-		sample := strings.Index(body, "\n\n【样本话术】\n")
+-		if redlines >= 0 && (sample < 0 || redlines < sample) {
+-			return before + "\n" + heading + rewriteFactSection(string(facts), body[:redlines]) + body[redlines:], false
+-		}
+-	}
+-	return document.Prompt, true
+-}
+-
+-func (s *Server) prepareRewriteFacts(ctx context.Context, tenant, plan int64, document scriptRewriteSnapshot) (scriptRewriteSnapshot, error) {
+-	pack, err := s.rewriteFactsJSON(ctx, tenant, plan)
+-	if err != nil || len(pack) == 0 {
+-		return document, err
+-	}
+-	prompt, unbound := bindRewriteFacts(document, pack)
+-	if unbound {
+-		return scriptRewriteSnapshot{}, errors.New("改写提示词未找到可替换的事实依据，请核对方案提示词")
+-	}
+-	document.Prompt, document.Facts = prompt, string(pack)
+-	return document, nil
+-}
+-
+-func rewriteFactSection(facts, previous string) string {
+-	// The facts editor also contains rule sections. Keep rules and terminology
+-	// verbatim when replacing the factual text and product/benefit cards.
+-	lines := strings.Split(previous, "\n")
+-	var rules []string
+-	keep := false
+-	for _, line := range lines {
+-		switch strings.TrimSpace(line) {
+-		case "【全局】", "【商品卡】", "【活动福利】", "【事实依据】":
+-			keep = false
+-		case "【用词消歧】", "【数据使用规则】":
+-			keep = true
+-		}
+-		if keep {
+-			rules = append(rules, line)
+-		}
+-	}
+-	if text := strings.TrimSpace(strings.Join(rules, "\n")); text != "" {
+-		facts += "\n\n" + text
+-	}
+-	return facts
+-}
+-
+ type rewriteObject struct {
+ 	kind string
+ 	id   int64
+diff --git a/management-service/internal/httpapi/script_rewrite_snapshot.go b/management-service/internal/httpapi/script_rewrite_snapshot.go
+index 2b779713..0c457471 100644
+--- a/management-service/internal/httpapi/script_rewrite_snapshot.go
++++ b/management-service/internal/httpapi/script_rewrite_snapshot.go
+@@ -6,14 +6,17 @@ import (
+ 	"encoding/hex"
+ 	"encoding/json"
+ 	"errors"
+-	"livecompanion/management/internal/model"
+ 	"strings"
++
++	"livecompanion/management/internal/model"
++	"livecompanion/management/internal/planprompt"
+ )
+ 
+ // Preserve the existing prompt verbatim, without adding model instructions.
+ type scriptRewriteSnapshot struct {
+-	Prompt string `json:"prompt"`
+-	Facts  string `json:"facts"`
++	Prompt   string  `json:"prompt"`
++	Facts    string  `json:"facts"`
++	RedLines *string `json:"red_lines,omitempty"`
+ }
+ 
+ const scriptRewriteSnapshotKey = "script_rewrite_snapshot"
+@@ -77,5 +80,31 @@ func (s *Server) loadScriptRewriteSnapshot(ctx context.Context, tenant int64, v
+ 	if prompt == "" {
+ 		prompt, err = renderPlanRewritePrompt(document.Sections)
+ 	}
+-	return scriptRewriteSnapshot{Prompt: prompt, Facts: document.Sections.FactsMD}, err
++	return scriptRewriteSnapshot{Prompt: prompt, Facts: document.Sections.FactsMD, RedLines: &document.Sections.RedLinesMD}, err
++}
++
++func backgroundRewriteRedLines(snapshot scriptRewriteSnapshot) (string, bool) {
++	if snapshot.RedLines != nil {
++		return planprompt.Sections{RedLinesMD: *snapshot.RedLines}.Normalize().RedLinesMD, true
++	}
++	// Older live checkpoints froze only the compiled prompt. Recover the red
++	// lines from its envelope without reintroducing the old facts or sample.
++	prompt := strings.ReplaceAll(snapshot.Prompt, "\r\n", "\n")
++	const redlines = "\n\n【红线禁止】\n"
++	const sample = "\n\n【样本话术】\n"
++	if !strings.Contains(prompt, sample) {
++		return "", !strings.Contains(prompt, "【红线禁止】")
++	}
++	facts := planprompt.Sections{FactsMD: snapshot.Facts}.Normalize().FactsMD
++	if _, afterFacts, found := strings.Cut(prompt, "\n\n【事实依据】\n"+facts+redlines); found {
++		if body, _, ok := strings.Cut(afterFacts, sample); ok {
++			return strings.TrimSpace(body), true
++		}
++	}
++	beforeSample, _, _ := strings.Cut(prompt, sample)
++	i := strings.LastIndex(beforeSample, redlines)
++	if i < 0 {
++		return "", !strings.Contains(prompt, "【红线禁止】")
++	}
++	return strings.TrimSpace(beforeSample[i+len(redlines):]), true
+ }
+diff --git a/management-service/internal/httpapi/session_archive.go b/management-service/internal/httpapi/session_archive.go
+index 91a97310..ec99f43c 100644
+--- a/management-service/internal/httpapi/session_archive.go
++++ b/management-service/internal/httpapi/session_archive.go
+@@ -2,7 +2,9 @@ package httpapi
+ 
+ import (
+ 	"context"
++	"database/sql"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"livecompanion/management/internal/coreclient"
+ 	"livecompanion/management/internal/model"
+@@ -28,7 +30,13 @@ func (s *Server) watchSessionArchive(session model.LiveRuntimeSession) {
+ 			s.syncSessionArchive(ctx, session)
+ 			current, err := s.store.GetLiveRuntimeByRoom(ctx, session.TenantID, session.RoomID)
+ 			cancel()
+-			if err != nil || current.ID != session.ID || (current.Status != "running" && current.Status != "paused") {
++			ended := errors.Is(err, sql.ErrNoRows) || err == nil && (current.ID != session.ID || (current.Status != "running" && current.Status != "paused"))
++			if ended {
++				cleanup, done := context.WithTimeout(s.anchorProducerContext, 5*time.Second)
++				clearSessionScriptChains(cleanup, session.TenantID, session.ID)
++				done()
++			}
++			if ended || err != nil {
+ 				return
+ 			}
+ 			select {
+diff --git a/management-service/internal/scriptchain/chain_test.go b/management-service/internal/scriptchain/chain_test.go
+index c1fce6a3..2dbe0ad1 100644
+--- a/management-service/internal/scriptchain/chain_test.go
++++ b/management-service/internal/scriptchain/chain_test.go
+@@ -46,6 +46,36 @@ func TestTargetLengthWithinRange(t *testing.T) {
+ 	}
+ }
+ 
++func TestSessionChainCacheIsolatesContentAndClearsOnlyEndedSession(t *testing.T) {
++	cache := NewStore(NewMemoryKV(), 0)
++	piece := Piece{Tenant: 14, Session: 21, Plan: 3, ID: 9, ContentHash: ContentHash("方案原文")}
++	next := piece
++	next.Session = 22
++	changed := piece
++	changed.ContentHash = ContentHash("改过的方案原文")
++	analysis := Analysis{Chains: make([]Chain, 10)}
++	for _, key := range []Piece{piece, next} {
++		if err := cache.Save(t.Context(), key, analysis); err != nil {
++			t.Fatal(err)
++		}
++		for i := 0; i < 5; i++ {
++			cache.MarkUsed(t.Context(), key, cache.RecentUsed(t.Context(), key), i)
++		}
++	}
++	if _, hit, _ := cache.Load(t.Context(), changed); hit {
++		t.Fatal("changed original reused an old analysis")
++	}
++	if err := cache.ClearSession(t.Context(), piece.Tenant, piece.Session); err != nil {
++		t.Fatal(err)
++	}
++	if _, hit, _ := cache.Load(t.Context(), piece); hit || len(cache.RecentUsed(t.Context(), piece)) > 0 {
++		t.Fatal("ended session still contains chain data")
++	}
++	if _, hit, _ := cache.Load(t.Context(), next); !hit || len(cache.RecentUsed(t.Context(), next)) != 3 {
++		t.Fatal("next session was cleared or recent chain history is wrong")
++	}
++}
++
+ func TestNormalizeScriptSingleParagraph(t *testing.T) {
+ 	in := "宝宝们 先停一下。\r\n\r\n  今天只讲一只鸭子 ，\n900 g 一整只。\u3000好。"
+ 	got := NormalizeScript(in)
+diff --git a/management-service/internal/scriptchain/chain.go b/management-service/internal/scriptchain/chain.go
+index 6267da58..827d383c 100644
+--- a/management-service/internal/scriptchain/chain.go
++++ b/management-service/internal/scriptchain/chain.go
+@@ -26,6 +26,16 @@ type Analysis struct {
+ 	Style   string  `json:"语言风格"`
+ }
+ 
++const MinCachedChains = 3
++
++func DefaultRequirement(target int) string {
++	return RenderRequirement(Analysis{
++		Opening: "从观众正在关心的购买需求切入",
++		Closing: "概括选择依据，邀请观众按需下单",
++		Style:   "短句、口语、自然衔接",
++	}, Chain{Name: "通用顺序", Nodes: []string{"购买需求", "商品介绍", "商品信息", "下单引导"}}, target)
++}
++
+ // AnalysisPrompt 是分析阶段的系统提示词，用低思考调用。
+ const AnalysisPrompt = `你是直播话术分析师。产出是「写作蓝图」，不是复述样板。
+ 禁止出现样板里的任何原句，禁止出现任何具体数字、价格、地名、品名、链接号。
+@@ -135,7 +145,7 @@ func RenderRequirement(a Analysis, c Chain, target int) string {
+ 	b.WriteString("语言风格：" + strings.TrimSpace(a.Style) + "\n\n")
+ 	b.WriteString("这条话术写 " + itoa(target) + " 字左右（上下浮动 15% 以内）。\n")
+ 	b.WriteString("如果按这个顺序讲完还不到目标字数，可以把链里的节点再讲一遍来补足，" +
+-		"比如价格讲完一圈之后再回到价格做一次复述或对比；重复的节点要有新说法、新角度，不能把前面的话原样再说一遍。\n")
++		"重复的节点要有新说法、新角度，不能把前面的话原样再说一遍。\n")
+ 	return b.String()
+ }
+ 
+diff --git a/management-service/internal/scriptchain/redis_kv.go b/management-service/internal/scriptchain/redis_kv.go
+index fef4c06b..f1190877 100644
+--- a/management-service/internal/scriptchain/redis_kv.go
++++ b/management-service/internal/scriptchain/redis_kv.go
+@@ -35,7 +35,21 @@ func (r *RedisKV) Set(ctx context.Context, key, value string, ttl time.Duration)
+ 	return r.client.Set(ctx, key, value, ttl).Err()
+ }
+ 
+-// Del 删除键。
+-func (r *RedisKV) Del(ctx context.Context, key string) error {
+-	return r.client.Del(ctx, key).Err()
++func (r *RedisKV) ClearPrefix(ctx context.Context, prefix string) error {
++	var cursor uint64
++	for {
++		keys, next, err := r.client.Scan(ctx, cursor, prefix+"*", 100).Result()
++		if err != nil {
++			return err
++		}
++		if len(keys) > 0 {
++			if err := r.client.Unlink(ctx, keys...).Err(); err != nil {
++				return err
++			}
++		}
++		if next == 0 {
++			return nil
++		}
++		cursor = next
++	}
+ }
+diff --git a/management-service/internal/scriptchain/store.go b/management-service/internal/scriptchain/store.go
+index 5b2005eb..65b525ea 100644
+--- a/management-service/internal/scriptchain/store.go
++++ b/management-service/internal/scriptchain/store.go
+@@ -13,7 +13,7 @@ import (
+ type KV interface {
+ 	Get(ctx context.Context, key string) (string, bool, error)
+ 	Set(ctx context.Context, key string, value string, ttl time.Duration) error
+-	Del(ctx context.Context, key string) error
++	ClearPrefix(ctx context.Context, prefix string) error
+ }
+ 
+ // Store 保存每场直播里每条话术片的分析结果和已用链记录。
+@@ -27,41 +27,51 @@ func NewStore(kv KV, ttl time.Duration) *Store {
+ 	return &Store{kv: kv, ttl: ttl}
+ }
+ 
+-func (s *Store) analysisKey(tenant, plan, piece int64, hash string) string {
+-	return "scriptchain:" + strconv.FormatInt(tenant, 10) + ":" + strconv.FormatInt(plan, 10) + ":" +
+-		strconv.FormatInt(piece, 10) + ":" + hash + ":analysis"
++func sessionPrefix(tenant, session int64) string {
++	return "scriptchain:" + strconv.FormatInt(tenant, 10) + ":session:" + strconv.FormatInt(session, 10) + ":"
+ }
+ 
+-func (s *Store) usedKey(tenant, plan, piece int64, hash string) string {
+-	return "scriptchain:" + strconv.FormatInt(tenant, 10) + ":" + strconv.FormatInt(plan, 10) + ":" +
+-		strconv.FormatInt(piece, 10) + ":" + hash + ":used"
++// Piece identifies one saved text within its tenant, plan and live session.
++type Piece struct {
++	Tenant, Session, Plan int64
++	ID                    int64
++	ContentHash           string
++}
++
++func (p Piece) key(suffix string) string {
++	return sessionPrefix(p.Tenant, p.Session) + strconv.FormatInt(p.Plan, 10) + ":" +
++		strconv.FormatInt(p.ID, 10) + ":" + p.ContentHash + ":" + suffix
++}
++
++func (s *Store) ClearSession(ctx context.Context, tenant, session int64) error {
++	return s.kv.ClearPrefix(ctx, sessionPrefix(tenant, session))
+ }
+ 
+ // Load 读分析结果。
+-func (s *Store) Load(ctx context.Context, tenant, plan, piece int64, hash string) (Analysis, bool, error) {
++func (s *Store) Load(ctx context.Context, piece Piece) (Analysis, bool, error) {
+ 	var a Analysis
+-	raw, ok, err := s.kv.Get(ctx, s.analysisKey(tenant, plan, piece, hash))
++	raw, ok, err := s.kv.Get(ctx, piece.key("analysis"))
+ 	if err != nil || !ok {
+ 		return a, false, err
+ 	}
+ 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
+-		return a, false, err
++		return Analysis{}, false, nil
+ 	}
+-	return a, len(a.Chains) > 0, nil
++	return a, len(a.Chains) >= MinCachedChains, nil
+ }
+ 
+ // Save 写分析结果。
+-func (s *Store) Save(ctx context.Context, tenant, plan, piece int64, hash string, a Analysis) error {
++func (s *Store) Save(ctx context.Context, piece Piece, a Analysis) error {
+ 	raw, err := json.Marshal(a)
+ 	if err != nil {
+ 		return err
+ 	}
+-	return s.kv.Set(ctx, s.analysisKey(tenant, plan, piece, hash), string(raw), s.ttl)
++	return s.kv.Set(ctx, piece.key("analysis"), string(raw), s.ttl)
+ }
+ 
+ // RecentUsed 读最近用过的链下标（最多保留 3 条）。
+-func (s *Store) RecentUsed(ctx context.Context, tenant, plan, piece int64, hash string) []int {
+-	raw, ok, err := s.kv.Get(ctx, s.usedKey(tenant, plan, piece, hash))
++func (s *Store) RecentUsed(ctx context.Context, piece Piece) []int {
++	raw, ok, err := s.kv.Get(ctx, piece.key("used"))
+ 	if err != nil || !ok {
+ 		return nil
+ 	}
+@@ -75,8 +85,8 @@ func (s *Store) RecentUsed(ctx context.Context, tenant, plan, piece int64, hash
+ }
+ 
+ // MarkUsed 记录一条链被用过。
+-func (s *Store) MarkUsed(ctx context.Context, tenant, plan, piece int64, hash string, idx int) {
+-	used := append(s.RecentUsed(ctx, tenant, plan, piece, hash), idx)
++func (s *Store) MarkUsed(ctx context.Context, piece Piece, previous []int, idx int) {
++	used := append(previous, idx)
+ 	if len(used) > 3 {
+ 		used = used[len(used)-3:]
+ 	}
+@@ -84,7 +94,7 @@ func (s *Store) MarkUsed(ctx context.Context, tenant, plan, piece int64, hash st
+ 	for _, v := range used {
+ 		parts = append(parts, strconv.Itoa(v))
+ 	}
+-	_ = s.kv.Set(ctx, s.usedKey(tenant, plan, piece, hash), strings.Join(parts, ","), s.ttl)
++	_ = s.kv.Set(ctx, piece.key("used"), strings.Join(parts, ","), s.ttl)
+ }
+ 
+ // MemoryKV 是进程内实现，Redis 不可用时兜底。
+@@ -134,7 +144,7 @@ func (m *MemoryKV) Del(_ context.Context, key string) error {
+ }
+ 
+ // ClearPrefix 按前缀清理，场次结束时调用。
+-func (m *MemoryKV) ClearPrefix(prefix string) {
++func (m *MemoryKV) ClearPrefix(_ context.Context, prefix string) error {
+ 	m.mu.Lock()
+ 	defer m.mu.Unlock()
+ 	for k := range m.items {
+@@ -142,4 +152,5 @@ func (m *MemoryKV) ClearPrefix(prefix string) {
+ 			delete(m.items, k)
+ 		}
+ 	}
++	return nil
+ }

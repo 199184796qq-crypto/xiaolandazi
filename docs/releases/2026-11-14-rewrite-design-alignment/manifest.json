@@ -1,0 +1,88 @@
+{
+  "predecessor_source_sha256": "396888d1354f6048081f1638e67af14cde0c0919cd172d503e02f3f259022b8c",
+  "predecessor_management_sha256": "835244cd868cf09c17857de4c81eb8de1a4ecb9a969c3a16bba39a20184e7a2a",
+  "candidate_management_sha256": "74b97b31d328279e7bb47f66499930cb3b16f7c9dad9571307cf3cc4f811d4f8",
+  "patch_sha256": "e96178d340affc266e1a2733db4837402bd072108f3b0d635f6b10e3c5bfd2ae",
+  "files": [
+    {
+      "path": "management-service/internal/httpapi/live_agent_plan_versions.go",
+      "before": "9113e6fdaa08f76ad1ca59ec94d07265217a3293a58100391e17f648ea828e37",
+      "after": "99cb055c91b27dcd12c84bde1f1781d96ca72e49524589f480177f1e4108b60e"
+    },
+    {
+      "path": "management-service/internal/httpapi/plan_danmaku_workbench.go",
+      "before": "4dee0e84273ad97cca74e48fe6c834964961e4d296275f5dc5f42a13b8852ade",
+      "after": "7f957349ddcf3eb360b4b601b0fd936f6cc8dcf35af6e19c1541e128b91a4c76"
+    },
+    {
+      "path": "management-service/internal/httpapi/plan_material_claims.go",
+      "before": "9fdd3edf4d83e03bacc6c983a70f7c08d4484bfce8eec321e4a0d697aaa47d47",
+      "after": "4365384e42364b685987f6e39d4fdb947b0edaf64f09a35fb1da0af1e8d40507"
+    },
+    {
+      "path": "management-service/internal/httpapi/plan_material_objects.go",
+      "before": "bd66bc75701e907f5713e7dee480b2f1a587888104baa6b88f01c6ee5ba75a1c",
+      "after": "92500917717bfce41b43e265f4b135753c32b13a4fd386af6f5674c3e9d0b03f"
+    },
+    {
+      "path": "management-service/internal/httpapi/plan_save_analysis_paused.go",
+      "before": "b22ec04a016d7a99d612bb4279e1ff95afe8b1ae7c3a05d4679c57f3f9fb4533",
+      "after": "4d1f67aab6445b8576fef981f3328ae22f05d41c631dfde481f7969586b96868"
+    },
+    {
+      "path": "management-service/internal/httpapi/plan_script_rewrite_chains.go",
+      "before": "561987036d3189c9b161f22d897d68a506bd1123198bc385cfafc477c65db0d8",
+      "after": "1b94906da5b7a181637a5e48f882f51336f9999daa71b907ff04488626138cef"
+    },
+    {
+      "path": "management-service/internal/httpapi/plan_script_rewrite_worker.go",
+      "before": "513b36c0c72c3ccb63228168a6057535013889d83868dd9629e063ddc696393c",
+      "after": "a74bce4cac33faec9e52f35de50b102b6ea48c0f830b271deaebb0ea31c2023a"
+    },
+    {
+      "path": "management-service/internal/httpapi/rewrite_facts_cache.go",
+      "before": null,
+      "after": "253ef84f024c3e7362b4b90087d793d85f469761169f140c94f181e6b6fe3723"
+    },
+    {
+      "path": "management-service/internal/httpapi/rewrite_facts_test.go",
+      "before": "c325b8654fd23dd3a1524b69c497e49ad4b35bcdc44db2376ea2af8626c219de",
+      "after": "f44b41544d34fcf2b04fdab7149b8c3acfb8c33e23cb0981078d434abe213271"
+    },
+    {
+      "path": "management-service/internal/httpapi/rewrite_facts.go",
+      "before": "fa5efc4e9f3f4c71e8a12c312114fb36761aad9800af3e428ff716359cf9afe3",
+      "after": "27826180e3e2b30bce1f4b6f3c5420db78812f639a9e9660bfec489f273c2657"
+    },
+    {
+      "path": "management-service/internal/httpapi/script_rewrite_snapshot.go",
+      "before": "e414dfe7de36f6ac1df06e5fc99b54db3b7c36c30a7d3b18f23e1d2820a80513",
+      "after": "d9daa3200fa7081a339375186950e45be3e476876fc678a683a5b82754bd609d"
+    },
+    {
+      "path": "management-service/internal/httpapi/session_archive.go",
+      "before": "b7ae2fb34fb458f928bde7e1a59b020438bece2bc25d4096137443b37efe8711",
+      "after": "a725b8292311c1c6cd667488d25718bf1ac15b2b5561f6c8ed60cbd4b3a8fc89"
+    },
+    {
+      "path": "management-service/internal/scriptchain/chain_test.go",
+      "before": "05af1777cbf4b1f1007e1001ccda4e0deb3b1d9dfeb8073de16aa28ab8251dc3",
+      "after": "4b71b5e864cc8e7b0670a0a4e1d3204df8d50fa02b55edb7e20d07a631c8a1a7"
+    },
+    {
+      "path": "management-service/internal/scriptchain/chain.go",
+      "before": "e75f06ce456a4cb1ef30949edb6808a9ee50688364ef0d09cb196e168210407b",
+      "after": "85b358d04f5ce365c337ba8b853c813190a7d251c2dbe2fdcbf75622d3657bb6"
+    },
+    {
+      "path": "management-service/internal/scriptchain/redis_kv.go",
+      "before": "5acbd351d078914fbf27b1adcb1c0a1544d2eef6e865dab6c66fee2345df991b",
+      "after": "1010f9b24a783a010d419ecdad7641907c5c353cc5e86c142362df9e925dfc06"
+    },
+    {
+      "path": "management-service/internal/scriptchain/store.go",
+      "before": "7277050826de9c98b6724beb81e255242257113ca69ed1bae3a64471250a2935",
+      "after": "21d243228b6a55836cd58952037b8dc5b720e99ff3616ca479d9cd541ac10d4e"
+    }
+  ]
+}
