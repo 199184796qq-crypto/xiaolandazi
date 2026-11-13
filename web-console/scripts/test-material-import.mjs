@@ -29,6 +29,8 @@ createApp({render:()=>h(Panel,{planId:plan.value,links:state.catalog.links})}).m
 </script></html>`
 const server=await createServer({server:{host:'127.0.0.1',port:0,proxy:{}},appType:'custom'});server.middlewares.use(async(req,res,next)=>{if(req.url?.startsWith('/__material_import')){res.setHeader('Content-Type','text/html; charset=utf-8');res.end(await server.transformIndexHtml('/__material_import',html))}else next()});await server.listen()
 const browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});const page=await browser.newPage({viewport:{width:1440,height:1050}}),results=[],errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());page.setDefaultTimeout(15000);const button=name=>page.getByRole('button',{name,exact:true})
+let confirmDialogs=0
+page.on('dialog',()=>{confirmDialogs++})
 try{
  await page.goto(server.resolvedUrls.local[0]+'__material_import');await page.waitForFunction(()=>!!window.fixture);assert.equal(await page.locator('#material-raw').getAttribute('placeholder'),null);assert.equal(await page.locator('#material-raw').inputValue(),'');results.push('material_input_has_no_sample_placeholder');await page.locator('#material-raw').fill('1号87.6元 包邮新疆除外 切：切块 明天能到吗');await button('分析').click();await page.locator('article.claim').nth(4).waitFor();assert.equal(await page.locator('article.claim').count(),5);assert.equal(await page.evaluate(()=>window.fixture.state.library.length),0);results.push('analysis_is_draft_only_mixed_destinations')
  const linkNameButton = name => page.locator('.object-tree .tree-row>.tree-object')
@@ -151,6 +153,39 @@ try{
  // each owning object one extra second-level filter.
  await page.evaluate(()=>{const f=window.fixture.fact;window.fixture.state.library=[{...f('benefit-one','87.6元','price',{object_targets:[{kind:'product',link_id:101}]}),id:1300,revision:'a'.repeat(64)},{...f('benefit-two','95.6元','store_price',{topic:'门店价',object_targets:[{kind:'product',link_id:101}]}),id:1301,revision:'a'.repeat(64)}];localStorage.removeItem('material-import:v2:14:8:4');return window.fixture.plan(9)});await page.evaluate(()=>window.fixture.plan(4));await page.locator('.sources button').filter({hasText:/^库 /}).click();const benefitObject=page.locator('.object-tree .tree-row>button').filter({hasText:/^1号链接/});await benefitObject.click();const benefitTree=page.locator('.tree-attributes[aria-label="1号链接的属性"]');assert.equal(await benefitTree.getByRole('button',{name:/^福利 /}).count(),0);await page.getByRole('checkbox',{name:'标记87.6元为福利'}).check();await benefitTree.getByRole('button',{name:'福利 1',exact:true}).waitFor();const benefitCall=await page.evaluate(()=>window.fixture.state.calls.filter(c=>c.path.endsWith('/1300/benefit')).at(-1));assert.deepEqual(benefitCall.body,{revision:'a'.repeat(64),is_benefit:true});assert.equal(await page.evaluate(()=>window.fixture.state.library.find(x=>x.id===1300).embedding_model),undefined);await benefitTree.getByRole('button',{name:'福利 1',exact:true}).click();assert.equal(await page.locator('article.claim').count(),1);assert.ok((await page.locator('article.claim').innerText()).includes('87.6元'));await page.getByRole('checkbox',{name:'标记87.6元为福利'}).uncheck();await benefitTree.getByRole('button',{name:'福利 1',exact:true}).waitFor({state:'hidden'});assert.equal(await page.locator('article.claim').count(),0);results.push('benefit_marker_metadata_only_per_claim_and_object_second_level_filter')
  await page.evaluate(()=>{const f=window.fixture.fact;window.fixture.state.library=[];localStorage.setItem('material-import:v2:14:8:4',JSON.stringify({draft:[{...f('draft-benefit','赠送礼品','gift',{object_targets:[{kind:'plan'}]}),uid:'draft-benefit'}]}));return window.fixture.plan(9)});await page.evaluate(()=>window.fixture.plan(4));await page.getByRole('checkbox',{name:'标记赠送礼品为福利'}).check();const draftBenefit=await page.evaluate(()=>JSON.parse(localStorage.getItem('material-import:v2:14:8:4')).draft[0].is_benefit);assert.equal(draftBenefit,true);await page.reload();await page.getByRole('checkbox',{name:'标记赠送礼品为福利'}).waitFor();assert.equal(await page.getByRole('checkbox',{name:'标记赠送礼品为福利'}).isChecked(),true);results.push('draft_benefit_flag_survives_reload_and_import_payload')
+ const draftDelete=page.locator('article.claim').filter({hasText:'赠送礼品'})
+ const initialDelete=draftDelete.getByRole('button',{name:'删除',exact:true})
+ const draftConfirm=draftDelete.getByRole('button',{name:'确认删除',exact:true})
+ const dialogsBeforeDraft=confirmDialogs
+ assert.equal(await draftDelete.locator('.claim-head small').filter({hasText:/^key[：:]/}).count(),0)
+ await initialDelete.click()
+ await draftConfirm.waitFor()
+ await draftConfirm.press('Escape')
+ await initialDelete.click()
+ await draftDelete.locator('.value').click()
+ await initialDelete.click()
+ await draftConfirm.click()
+ await draftDelete.waitFor({state:'detached'})
+ assert.equal(confirmDialogs,dialogsBeforeDraft)
+ await page.evaluate(()=>{
+   const {state,fact}=window.fixture
+   state.library=[{...fact('inline-remove','删除回归库中资料','inline_remove',{object_targets:[{kind:'product',link_id:101}]}),id:1501}]
+   return window.fixture.plan(9)
+ })
+ await page.evaluate(()=>window.fixture.plan(4))
+ await page.locator('.sources button').filter({hasText:/^库 /}).click()
+ const libraryToDelete=page.locator('article.claim').filter({hasText:'删除回归库中资料'})
+ const deleteRequests=()=>page.evaluate(()=>window.fixture.state.calls.filter(c=>c.method==='DELETE'&&c.path.endsWith('/1501')).length)
+ const dialogsBeforeLibraryDelete=confirmDialogs
+ await libraryToDelete.getByRole('button',{name:'删除',exact:true}).click()
+ const libraryConfirm=libraryToDelete.getByRole('button',{name:'确认删除',exact:true})
+ await libraryConfirm.waitFor()
+ assert.equal(await deleteRequests(),0)
+ await libraryConfirm.click()
+ await libraryToDelete.waitFor({state:'detached'})
+ assert.equal(await deleteRequests(),1)
+ assert.equal(confirmDialogs,dialogsBeforeLibraryDelete)
+ results.push('claim_inline_delete_confirms_drafts_and_library_without_dialog')
  assert.deepEqual(errors,[])
  await writeFile(proof+'/frontend-results.json',JSON.stringify({passed:results,uncaught:errors,productionWrites:0},null,2));console.log(JSON.stringify({passed:results.length,cases:results}))
 }finally{await browser.close();await server.close()}

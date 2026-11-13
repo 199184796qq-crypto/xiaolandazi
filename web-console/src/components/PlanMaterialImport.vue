@@ -8,6 +8,7 @@ const text=ref(''),draft=ref<ImportRow[]>([]),library=ref<ImportRow[]>([]),selec
 const source=ref<'draft'|'library'|'all'>('draft'),view=ref<'object'|'todo'|'duplicates'>('object'),filter=ref('all'),object=ref('all'),search=ref(''),topic=ref('all')
 const expandedObjects=ref(new Set<string>()),objectAttribute=ref('all')
 const benefitGroup='__benefit__'
+const pendingClaimRemoval=ref<string|null>(null)
 const busy=ref(false),questionsLoading=ref(false),loaded=ref(false),error=ref(''),notice=ref(''),warnings=ref<string[]>([])
 const renamingLinkId=ref<number|null>(null),renamingName=ref(''),renameInput=ref<HTMLInputElement|HTMLInputElement[]|null>(null)
 const catalogLinks=ref<MaterialLinkObject[]>([]),catalogStores=ref<MaterialStoreObject[]>([]),catalogRevision=ref(0)
@@ -136,7 +137,23 @@ async function resolveDuplicate(group:DuplicateGroup){duplicateActionKey.value=g
  selected.value=new Set([...selected.value].filter(uid=>!removed.has(uid)));duplicateActionKey.value=''
  notice.value=`已处理${labelFor(group.objectKey)}下的重复属性，其它对象的内容和归属保留。`
 })}
-async function remove(it:ImportRow){if(!window.confirm(it.id?'移除这条库中资料？':'移除这条草稿？'))return;await run(async()=>{const token=epoch,plan=props.planId;if(it.id){await deletePlanMaterialClaim(plan,it.id);if(token!==epoch)return;await load()}else{draft.value=draft.value.filter(x=>x.uid!==it.uid);selected.value.delete(it.uid);persist()}})}
+async function remove(it:ImportRow){
+ if(busy.value)return
+ if(pendingClaimRemoval.value!==it.uid){pendingClaimRemoval.value=it.uid;return}
+ pendingClaimRemoval.value=null
+ await run(async()=>{
+  const token=epoch,plan=props.planId
+  if(it.id){
+   await deletePlanMaterialClaim(plan,it.id)
+   if(token!==epoch)return
+   await load()
+  }else{
+   draft.value=draft.value.filter(x=>x.uid!==it.uid)
+   selected.value.delete(it.uid)
+   persist()
+  }
+ })
+}
 async function removeSelected(){if(!selectedLibrary.value.length||!window.confirm(`移除选中的${selectedLibrary.value.length}条库中资料？`))return;await run(async()=>{const token=epoch,plan=props.planId,list=[...selectedLibrary.value];try{for(const it of list){if(token!==epoch)return;await deletePlanMaterialClaim(plan,it.id!);if(token!==epoch)return;library.value=library.value.filter(x=>x.id!==it.id);selected.value.delete(it.uid)}}finally{if(token===epoch)await load()}})}
 function predicateEditors(list:MaterialCondition[]=[]):PredicateEditor[]{return list.map(c=>typeof c==='string'?{field:'other',op:'raw',values:'',raw:c,universe:'',original:c}:{field:c.field||'other',op:c.op||'raw',values:['and','or'].includes(c.op||'')?'组合条件（完整保留）':(c.values||[]).join('、'),raw:c.raw||'',universe:c.universe||'',original:clone(c),opaque:['and','or'].includes(c.op||'')})}
 function openEdit(it:ImportRow){error.value='';scopeItem.value=null;editItem.value=it;edit.value=clone(it);predicates.value=predicateEditors(it.conditions);exceptions.value=predicateEditors(it.exceptions);void nextTick(()=>editorContent.value?.focus())}
@@ -153,8 +170,12 @@ async function saveScope(){const target=scopeItem.value;if(!target)return;await 
 function openBindings(){bindingsOpen.value=!bindingsOpen.value;if(bindingsOpen.value){bindingsDraft.value=clone(storeObjects.value);newStoreName.value=''}}
 function addStore(){const name=newStoreName.value.trim();if(!name||genericStore(name))return;error.value='';if(bindingsDraft.value.some(s=>s.name===name)){error.value='门店名称已存在';return};bindingsDraft.value.push({name,link_ids:[]});newStoreName.value=''}
 async function saveBindings(){await run(async()=>{const token=epoch,plan=props.planId;const out=await savePlanMaterialObjects(plan,catalogRevision.value,clone(bindingsDraft.value));if(token!==epoch)return;catalogStores.value=out.stores;catalogRevision.value=out.revision;bindingsOpen.value=false;notice.value='门店与链接的关联已保存。'})}
-function outsideScope(event:MouseEvent){if(!(event.target instanceof Element)||!event.target.closest('.scope-anchor'))scopeItem.value=null}
-onMounted(()=>document.addEventListener('click',outsideScope))
+function dismissInlineActions(event:MouseEvent){
+ const target=event.target instanceof Element?event.target:null
+ if(!target?.closest('.scope-anchor'))scopeItem.value=null
+ if(!target?.closest('.claim-remove'))pendingClaimRemoval.value=null
+}
+onMounted(()=>document.addEventListener('click',dismissInlineActions))
 function openSplit(it:ImportRow){error.value='';splitItem.value=it;splitRows.value=[];splitText.value=it.content}
 async function modelSplit(operation:'split'|'attribute_split'){const target=splitItem.value;if(!target)return;await run(async()=>{const token=epoch;const out=await reviewPlanMaterialClaims(props.planId,operation,[{...toInput(target),content:splitText.value}]);if(token!==epoch)return;if(!out.items?.length)throw Error('没有可由原文支持的拆分，请手动分行调整');splitRows.value=out.items.map(row);splitText.value=splitRows.value.map(it=>`${it.topic}：${it.content}`).join('\n')})}
 async function saveSplit(){const target=splitItem.value;if(!target)return;await run(async()=>{
@@ -174,9 +195,9 @@ function resetFilters(){search.value='';topic.value='all';filter.value='all';obj
 watch(source,()=>{objectAttribute.value='all';topic.value='all'})
 watch(topic,value=>{if(value!=='all')objectAttribute.value='all'})
 watch(()=>JSON.stringify(all.value.map(toInput)),()=>{questionRevision++;questionsLoading.value=false;questions.value=[];question.value=''},{flush:'sync'})
-watch([()=>props.planId,actorKey],()=>{epoch++;busy.value=false;questionsLoading.value=false;loaded.value=false;library.value=[];selected.value=new Set();libraryRevision.value='';importRows.value=[];importLibrary.value=[];importChoices.value={};edit.value=null;editItem.value=null;splitItem.value=null;scopeItem.value=null;confirmOpen.value=false;duplicateActionKey.value='';duplicateChoices.value={};view.value='object';error.value='';notice.value='';conflicts.value=[];catalogLinks.value=[];catalogStores.value=[];catalogRevision.value=0;bindingsOpen.value=false;bindingsDraft.value=[];source.value='draft';resetFilters();restore();void load()},{immediate:true})
+watch([()=>props.planId,actorKey],()=>{epoch++;pendingClaimRemoval.value=null;busy.value=false;questionsLoading.value=false;loaded.value=false;library.value=[];selected.value=new Set();libraryRevision.value='';importRows.value=[];importLibrary.value=[];importChoices.value={};edit.value=null;editItem.value=null;splitItem.value=null;scopeItem.value=null;confirmOpen.value=false;duplicateActionKey.value='';duplicateChoices.value={};view.value='object';error.value='';notice.value='';conflicts.value=[];catalogLinks.value=[];catalogStores.value=[];catalogRevision.value=0;bindingsOpen.value=false;bindingsDraft.value=[];source.value='draft';resetFilters();restore();void load()},{immediate:true})
 watch([text,draft],persist,{deep:true})
-onBeforeUnmount(()=>{epoch++;document.removeEventListener('click',outsideScope)})
+onBeforeUnmount(()=>{epoch++;document.removeEventListener('click',dismissInlineActions)})
 </script>
 
 <template>
@@ -223,7 +244,7 @@ onBeforeUnmount(()=>{epoch++;document.removeEventListener('click',outsideScope)}
    </section>
    <template v-else><article v-for="it in visible" :key="it.uid" class="claim" :class="{conflict:['conflict','lib_conflict'].includes(it.rowState||'')}">
     <input type="checkbox" :aria-label="'选择 '+it.content" :disabled="busy||(!it.id&&!eligible(it))" :checked="selected.has(it.uid)" @change="toggle(it.uid)"/>
-    <div class="claim-body"><div class="claim-head"><b>{{ scopeLabel(it) }}</b><span class="accent">· {{ it.topic||it.attribute||'其它' }}</span><small v-if="it.id">库</small><small v-if="it.claim_key">key：{{ it.claim_key }}</small><small>{{ ({fact:'事实',qa:'问答',word:'词卡',material:'素材',gap:'缺口'})[it.destination||'fact'] }}</small><small v-if="it.polarity==='negative'">否定</small><small v-if="hasCondition(it)">条件</small><small v-if="isTodo(it)" class="warn">待归属</small><button v-if="duplicateUIDs.has(it.uid)" class="duplicate-badge" @click="setView('duplicates')">重复属性</button><small v-if="it.needs_split" class="warn">可能未拆分</small><small v-if="it.rowState==='in_library'">库中已有</small><label class="benefit-toggle"><input type="checkbox" :aria-label="'标记'+it.content+'为福利'" :checked="!!it.is_benefit" :disabled="busy" @change="toggleBenefit(it)"/><span>福利</span></label></div>
+    <div class="claim-body"><div class="claim-head"><b>{{ scopeLabel(it) }}</b><span class="accent">· {{ it.topic||it.attribute||'其它' }}</span><small v-if="it.id">库</small><small>{{ ({fact:'事实',qa:'问答',word:'词卡',material:'素材',gap:'缺口'})[it.destination||'fact'] }}</small><small v-if="it.polarity==='negative'">否定</small><small v-if="hasCondition(it)">条件</small><small v-if="isTodo(it)" class="warn">待归属</small><button v-if="duplicateUIDs.has(it.uid)" class="duplicate-badge" @click="setView('duplicates')">重复属性</button><small v-if="it.needs_split" class="warn">可能未拆分</small><small v-if="it.rowState==='in_library'">库中已有</small><label class="benefit-toggle"><input type="checkbox" :aria-label="'标记'+it.content+'为福利'" :checked="!!it.is_benefit" :disabled="busy" @change="toggleBenefit(it)"/><span>福利</span></label></div>
      <div class="value" v-if="it.destination==='qa'"><div>Q：{{ it.question }}</div><div>A：{{ it.answer }}</div></div><div v-else class="value">{{ it.content }}</div>
      <p v-if="it.value&&it.value!==it.content" class="muted">标准值：{{ it.value }}</p><p v-if="it.conditions.length" class="muted">条件：{{ it.conditions.map(conditionLabel).join('；') }}</p><p v-if="it.exceptions?.length" class="muted">例外：{{ it.exceptions.map(conditionLabel).join('；') }}</p>
 
@@ -234,7 +255,7 @@ onBeforeUnmount(()=>{epoch++;document.removeEventListener('click',outsideScope)}
      <p v-if="it.destination==='word'" class="muted">词义保留在草稿，不能当作商品事实写入语义库。</p>
      <div class="actions"><button v-if="it.destination==='gap'" :disabled="busy" @click="supply(it)">补充事实</button><button :disabled="busy" @click="openEdit(it)">编辑</button><button v-if="it.destination!=='gap'" :disabled="busy" @click="openSplit(it)">再拆分</button><span class="scope-anchor" @keydown.esc="scopeItem=null"><button :disabled="busy" :aria-expanded="scopeItem?.uid===it.uid" @click="openScope(it)">归属分配 ▾</button>
       <div v-if="scopeItem?.uid===it.uid" class="scope-popover" role="group" aria-label="属性归属多选"><input v-model="scopeSearch" aria-label="搜索归属对象" placeholder="搜索链接或门店"/><div class="scope-options"><label v-for="key in scopeOptions" :key="key" class="compact-option"><input type="checkbox" :aria-label="labelFor(key)" :checked="scopeChoices.includes(key)" :disabled="busy" @change="toggleScope(key)"/><span>{{ labelFor(key) }}<small>{{ subtitleFor(key) }}</small></span></label></div><div class="scope-footer"><span>已选 {{ scopeChoices.length }} 个</span><button :disabled="busy" @click="scopeItem=null">取消</button><button class="primary" :disabled="busy||!scopeChoices.length" @click="saveScope">确定分配</button></div></div>
-     </span><button class="danger" :disabled="busy" @click="remove(it)">移除</button></div>
+     </span><button type="button" class="danger claim-remove" :class="{confirming:pendingClaimRemoval===it.uid}" :disabled="busy" @click="remove(it)" @blur="pendingClaimRemoval===it.uid&&(pendingClaimRemoval=null)" @keydown.esc.stop="pendingClaimRemoval=null">{{ pendingClaimRemoval===it.uid?'确认删除':'删除' }}</button></div>
     </div>
    </article>
    <p v-if="!visible.length" class="empty">当前筛选下没有资料。</p></template>
@@ -304,4 +325,5 @@ onBeforeUnmount(()=>{epoch++;document.removeEventListener('click',outsideScope)}
 .tree-row>.rename-input{flex:1;min-width:0;width:100%;height:36px;min-height:36px;padding:4px 8px;font-size:16px;border:1px solid #a28cff;border-radius:7px}
 .tree-row>button.rename-action{flex:0 0 auto;padding:5px 7px;border:1px solid #e5e0f2;border-radius:7px;background:#fff;font-size:14px;color:#654cc8;white-space:nowrap}
 .tree-row>button.rename-action:disabled{opacity:.5}
+.material-import .claim-remove.confirming{background:#ca342b;border-color:#ca342b;color:#fff}
 </style>
