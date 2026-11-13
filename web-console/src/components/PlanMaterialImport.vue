@@ -227,7 +227,9 @@ onBeforeUnmount(()=>{epoch++;document.removeEventListener('click',outsideScope)}
      <div class="value" v-if="it.destination==='qa'"><div>Q：{{ it.question }}</div><div>A：{{ it.answer }}</div></div><div v-else class="value">{{ it.content }}</div>
      <p v-if="it.value&&it.value!==it.content" class="muted">标准值：{{ it.value }}</p><p v-if="it.conditions.length" class="muted">条件：{{ it.conditions.map(conditionLabel).join('；') }}</p><p v-if="it.exceptions?.length" class="muted">例外：{{ it.exceptions.map(conditionLabel).join('；') }}</p>
 
-     <p v-if="it.source_sentence&&it.source_sentence!==it.source_quote" class="muted">原句：{{ it.source_sentence }}</p><p v-if="it.source_quote" class="muted">原文：{{ it.source_quote }}</p><p v-if="it.oldContent" class="muted">原值：{{ it.oldContent }}</p><p v-if="it.polarity_issue||it.condition_issue" class="error">{{ it.polarity_issue }} {{ it.condition_issue }}</p>
+     <p v-if="it.source_quote" class="muted">原句摘要：{{ it.source_quote }}</p>
+      <p v-if="it.source_sentence&&it.source_sentence!==it.source_quote" class="muted">原句：{{ it.source_sentence }}</p>
+      <p v-if="it.oldContent" class="muted">原值：{{ it.oldContent }}</p><p v-if="it.polarity_issue||it.condition_issue" class="error">{{ it.polarity_issue }} {{ it.condition_issue }}</p>
      <div v-if="isRisk(it)" class="risk"><b>风险提示（不等于正式审核放行）</b><div v-for="(risk,i) in it.risks" :key="i"><p>{{ risk.text }} · {{ risk.reason }}</p><p>建议：{{ risk.suggestion }} <button :disabled="busy" @click="openEdit(it)">修改表述</button></p></div><p v-if="it.p0_hits?.length">⛔ 含需正式审核的表达。入库不会绕过已有播放审核。</p></div>
      <p v-if="it.destination==='word'" class="muted">词义保留在草稿，不能当作商品事实写入语义库。</p>
      <div class="actions"><button v-if="it.destination==='gap'" :disabled="busy" @click="supply(it)">补充事实</button><button :disabled="busy" @click="openEdit(it)">编辑</button><button v-if="it.destination!=='gap'" :disabled="busy" @click="openSplit(it)">再拆分</button><span class="scope-anchor" @keydown.esc="scopeItem=null"><button :disabled="busy" :aria-expanded="scopeItem?.uid===it.uid" @click="openScope(it)">归属分配 ▾</button>
