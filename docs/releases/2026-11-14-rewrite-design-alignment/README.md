@@ -48,9 +48,7 @@ echo "74b97b31d328279e7bb47f66499930cb3b16f7c9dad9571307cf3cc4f811d4f8  $build_d
 1. 使用唯一且非空的新发布 ID，例如 `20261114-rewrite-align-74b97b3`。在服务器用 `mktemp -d /tmp/xiaolan-publish.XXXXXXXX` 创建上传暂存目录。上传候选程序、源码归档、版本元数据和发布工具，核对 SHA-256。
 2. 发布程序获取 `/opt/xiaolan/deployments/xiaolan-release.lock`。锁内再次核对实际 `current`、三服务 PID 和二进制、配置、保护表与前端指纹。确认所有直播、暂停场次、Core 播放和采集录制均已空闲。无法核实或者遇到并发发布时结束本次激活。
 3. 从锁内确认的当前完整运行目录复制到唯一的 `/opt/xiaolan/releases/.staging-<发布ID>.*`。复制继承文件时保留权限和所有者。只在暂存目录覆盖 Management 程序及 `VERSION`、`VERSION.json` 和本次来源索引。比对候选和当前目录文件清单，允许差异仅为这几个路径。保留四端前端、插件、配置、采集器和其他二进制。
-4. 将通过校验的候选目录重命名为 `/opt/xiaolan/releases/<发布ID>`。再检查运行仍空闲且 `current` 未移动。用同目录临时符号链接原子切换 `current`，只重启 `xiaolan-management.service`。
-
-北京时间 2026-11-14 00:57:05，生产已切到 `20261114-rewrite-align-74b97b3`。发布依据为 Git 交付提交 `403b013465b0673e28b3807a1347133796dfb219`。全过程保留前一发布目录和事故恢复备份。任何清理只处理本次经过路径校验的暂存文件。
+4. 将通过校验的候选目录重命名为 `/opt/xiaolan/releases/<发布ID>`。再检查运行仍空闲且 `current` 未移动。用同目录临时符号链接原子切换 `current`，只重启 `xiaolan-management.service`。全过程保留前一发布目录和事故恢复备份。任何清理只处理本次经过路径校验的暂存文件。
 
 ## 4. 发布后检查和回退
 
