@@ -31,7 +31,54 @@ const server=await createServer({server:{host:'127.0.0.1',port:0,proxy:{}},appTy
 const browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});const page=await browser.newPage({viewport:{width:1440,height:1050}}),results=[],errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());page.setDefaultTimeout(15000);const button=name=>page.getByRole('button',{name,exact:true})
 try{
  await page.goto(server.resolvedUrls.local[0]+'__material_import');await page.waitForFunction(()=>!!window.fixture);assert.equal(await page.locator('#material-raw').getAttribute('placeholder'),null);assert.equal(await page.locator('#material-raw').inputValue(),'');results.push('material_input_has_no_sample_placeholder');await page.locator('#material-raw').fill('1号87.6元 包邮新疆除外 切：切块 明天能到吗');await button('分析').click();await page.locator('article.claim').nth(4).waitFor();assert.equal(await page.locator('article.claim').count(),5);assert.equal(await page.evaluate(()=>window.fixture.state.library.length),0);results.push('analysis_is_draft_only_mixed_destinations')
- await page.getByRole('button',{name:'修改 1号链接 的显示名称'}).click();await page.getByRole('textbox',{name:'修改 1号链接 的显示名称'}).fill('1号套餐');await button('保存').click();await page.locator('.object-tree .tree-row>button').filter({hasText:/^1号套餐/}).waitFor();await button('刷新库').click();await page.locator('.object-tree .tree-row>button').filter({hasText:/^1号套餐/}).waitFor();assert.equal(await page.evaluate(()=>window.fixture.state.catalog.links[0].field_labels.display_name),'1号套餐');await page.setViewportSize({width:390,height:860});await page.getByRole('button',{name:'修改 1号套餐 的显示名称'}).click();assert.ok(await page.getByRole('textbox',{name:'修改 1号套餐 的显示名称'}).isVisible());assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.getByRole('textbox',{name:'修改 1号套餐 的显示名称'}).fill('');await button('保存').click();await page.locator('.object-tree .tree-row>button').filter({hasText:/^1号链接/}).waitFor();await page.setViewportSize({width:1440,height:1050});results.push('inline_pencil_renames_and_refreshes_without_changing_link_identity')
+ const linkNameButton = name => page.locator('.object-tree .tree-row>.tree-object')
+   .filter({has:page.getByText(name,{exact:true})})
+ const checkLinkLayout = async (name, wraps) => {
+   const link = linkNameButton(name)
+   await link.waitFor()
+   const layout = await link.evaluate(el => {
+     const name = el.querySelector('span')
+     const pencil = el.nextElementSibling.getBoundingClientRect()
+     const row = el.parentElement.getBoundingClientRect()
+     const range = document.createRange()
+     range.selectNodeContents(name)
+     return {
+       lines: range.getClientRects().length,
+       clipped: name.scrollWidth > name.clientWidth + 1 || name.scrollHeight > name.clientHeight + 1,
+       pencilWidth: pencil.width,
+       rightGap: row.right - pencil.right,
+       nameWidth: name.getBoundingClientRect().width,
+     }
+   })
+   assert.equal(layout.clipped,false)
+   assert.equal(layout.lines > 1,wraps)
+   assert.ok(layout.pencilWidth <= 36 && layout.nameWidth > layout.pencilWidth)
+   assert.ok(Math.abs(layout.rightGap) <= 1)
+ }
+ await checkLinkLayout('1号链接',false)
+ await checkLinkLayout('2号链接',false)
+ const longDisplayName = '1号链接 周末限定双人套餐含四季招牌菜与饮品组合到店核销专用'
+ await page.getByRole('button',{name:'修改 1号链接 的显示名称'}).click()
+ await page.getByRole('textbox',{name:'修改 1号链接 的显示名称'}).fill(longDisplayName)
+ await button('保存').click()
+ await checkLinkLayout(longDisplayName,true)
+ await button('刷新库').click()
+ await checkLinkLayout(longDisplayName,true)
+ assert.equal(await page.evaluate(()=>window.fixture.state.catalog.links[0].field_labels.display_name),longDisplayName)
+ await page.locator('.object-tree').screenshot({path:proof+'/link-names-desktop.png'})
+ await page.setViewportSize({width:390,height:860})
+ await checkLinkLayout('2号链接',false)
+ const pencil = page.getByRole('button',{name:'修改 '+longDisplayName+' 的显示名称'})
+ await pencil.click()
+ const nameInput = page.getByRole('textbox',{name:'修改 '+longDisplayName+' 的显示名称'})
+ assert.ok(await nameInput.isVisible())
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1))
+ await nameInput.fill('')
+ await button('保存').click()
+ await checkLinkLayout('1号链接',false)
+ await page.locator('.object-tree').screenshot({path:proof+'/link-names-mobile.png'})
+ await page.setViewportSize({width:1440,height:1050})
+ results.push('inline_pencil_renames_and_refreshes_without_changing_link_identity')
  await page.locator('.summary button').filter({hasText:'风险提示'}).click();assert.equal(await page.locator('article.claim').count(),1);await page.locator('.summary button').filter({hasText:'全部'}).click();results.push('real_risk_filter')
  assert.equal(await button('按问题').count(),0);assert.equal(await button('条件事实').count(),0);assert.equal(await button('重新生成问题').count(),0);assert.equal(await page.evaluate(()=>window.fixture.state.calls.filter(c=>c.path.endsWith('/review')).length),0);results.push('removed_controls_no_automatic_question_model_call')
  await button('按对象').click();await page.locator('#material-raw').fill('1号88.6元');await button('分析').click();await page.waitForFunction(()=>document.querySelectorAll('article.claim').length===1);assert.equal(await button('追加/更新').count(),0);assert.equal(await button('覆盖整批').count(),0);assert.ok((await page.locator('article.claim').innerText()).includes('88.6元'));results.push('every_successful_analysis_replaces_prior_draft_without_choice')
@@ -49,7 +96,7 @@ try{
  await page.evaluate(()=>window.fixture.plan(9));await page.waitForFunction(()=>document.querySelectorAll('article.claim').length===0);await page.evaluate(()=>window.fixture.state.analysis=1);await page.locator('#material-raw').fill('1号88.6元');await button('分析').click();await page.locator('article.claim').waitFor();await page.evaluate(()=>window.fixture.state.failAnalysis=true);await button('分析').click();await page.locator('.composer .error').waitFor();assert.equal(await page.locator('article.claim').count(),1);await page.evaluate(()=>window.fixture.state.failAnalysis=false);await button('分析').click();await page.waitForFunction(()=>!document.querySelector('.composer .error'));assert.equal(await page.locator('article.claim').count(),1);results.push('analysis_failure_retains_previous_valid_draft')
  await page.locator('article.claim').getByRole('button',{name:'再拆分',exact:true}).click();await button('模型重拆').click();await page.waitForFunction(()=>document.querySelector('.dialog textarea')?.value.includes('900g'));await button('保存切分').click();assert.equal(await page.locator('article.claim').count(),2);results.push('review_model_split_flow_preserves_other_rows')
  const stripped=await page.locator('.composer').innerText();assert.ok(!/填入杨鸭子示例|清空草稿|审核模型：|向量：|按实际调用计费|请检查原文覆盖/.test(stripped));results.push('marked_controls_and_noisy_model_coverage_text_removed')
- const boxes=await page.locator('.object-tree input[type=checkbox]').evaluateAll(nodes=>nodes.map(el=>({w:el.getBoundingClientRect().width,h:el.getBoundingClientRect().height})));assert.ok(boxes.every(b=>b.w===18&&b.h===18),JSON.stringify(boxes));const labels=await page.locator('.tree-row>button>span').evaluateAll(nodes=>nodes.map(el=>getComputedStyle(el).whiteSpace));assert.ok(labels.every(v=>v==='nowrap'));assert.ok(!(await page.locator('.object-tree').innerText()).includes('服务：未说明'));results.push('real_parent_and_global_styles_compact_tree_checkbox_dimensions')
+ const boxes=await page.locator('.object-tree input[type=checkbox]').evaluateAll(nodes=>nodes.map(el=>({w:el.getBoundingClientRect().width,h:el.getBoundingClientRect().height})));assert.ok(boxes.every(b=>b.w===18&&b.h===18),JSON.stringify(boxes));const labels=await page.locator('.tree-row:not(.link-row)>.tree-object>span').evaluateAll(nodes=>nodes.map(el=>getComputedStyle(el).whiteSpace));assert.ok(labels.every(v=>v==='nowrap'));assert.ok(!(await page.locator('.object-tree').innerText()).includes('服务：未说明'));results.push('real_parent_and_global_styles_compact_tree_checkbox_dimensions')
  await button('门店关联').click();const wang=page.locator('.store-binding').filter({hasText:'王家店'});await wang.locator('summary').click();await wang.getByRole('checkbox').nth(1).uncheck();await wang.getByRole('checkbox').nth(2).check();const beforeCalls=await page.evaluate(()=>window.fixture.state.calls.length);await button('保存关联').click();await page.locator('.bindings-panel').waitFor({state:'hidden'});const calls=await page.evaluate(n=>window.fixture.state.calls.slice(n),beforeCalls);assert.equal(calls.length,1);assert.ok(calls[0].path.endsWith('/material-objects'));assert.deepEqual(calls[0].body.stores.find(s=>s.name==='王家店').link_ids,[101,103]);results.push('store_multi_link_relation_save_without_model_or_embedding')
  const logic=await page.evaluate(()=>{const {logic:L,fact}=window.fixture,links=window.fixture.state.catalog.links,stores=window.fixture.state.catalog.stores;const make=extra=>L.resolveRowObjects(L.row(fact('pending','待核对','scope',extra)),links);const pending=make({scope_kind:'unresolved',object_targets:[]}),global=make({scope_kind:'plan',product_link_id:0}),store=make({scope_kind:'store',store_name:'王家店'}),multi=make({object_targets:[{kind:'product',link_id:101},{kind:'product',link_id:103}]}),unknown=make({object_targets:[{kind:'product',link_id:999}]}),voucher=make({scope_kind:'voucher',scope_name:'双人券'});return {pending:L.canConfirm(pending),global:L.matchesObject(global,'link:104',stores),store1:L.matchesObject(store,'link:101',stores),store2:L.matchesObject(store,'link:102',stores),store3:L.matchesObject(store,'link:103',stores),multi:L.objectKeys(multi),unknown:L.objectKeys(unknown),voucher:L.objectKeys(voucher)}});assert.deepEqual(logic,{pending:false,global:true,store1:true,store2:false,store3:true,multi:['link:101','link:103'],unknown:['unresolved'],voucher:['unresolved']});results.push('global_and_store_inheritance_pending_and_real_link_identity')
  // Recreate a pending draft through storage, then assign in-place to two actual cards.
