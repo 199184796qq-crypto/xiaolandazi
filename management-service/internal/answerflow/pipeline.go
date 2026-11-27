@@ -236,30 +236,14 @@ func answerFacts(hits []danmakutest.Hit) []map[string]any {
 }
 
 func intentPayload(lib Library, input Input, words *contextword.Context) map[string]any {
-	attributes := []string{}
-	catalog := []map[string]string{}
-	seen := map[string]bool{}
-	seenCatalog := map[string]bool{}
-	for _, r := range lib.Records {
-		c := r.Claim
-		attribute := danmakutest.AttributeName(c.Topic, lib.Links, lib.Stores)
-		if (c.Destination == "" || c.Destination == "fact" || c.Destination == "qa") && attribute != "" && !seen[attribute] {
-			seen[attribute] = true
-			attributes = append(attributes, attribute)
-			if key := strings.TrimSpace(c.ClaimKey); key != "" && key != "claim" && !seenCatalog[key] {
-				seenCatalog[key] = true
-				catalog = append(catalog, map[string]string{"key": key, "topic": attribute})
-			}
-		}
-	}
-	// Catalogs contain human names only. Internal IDs and relationships are
-	// program-owned; the model never maintains claim IDs or vector/index keys.
-	if len(attributes) > 150 {
-		attributes = attributes[:150]
-	}
+	resolver := danmakutest.NewIntentAttributeResolver(lib.Links, lib.Stores, "", nil)
+	return intentPayloadWithAttributes(lib, input, words, resolver.Directory(lib.Records))
+}
+
+func intentPayloadWithAttributes(lib Library, input Input, words *contextword.Context, directory danmakutest.IntentAttributeDirectory) map[string]any {
 	stores := []string{}
 	for _, s := range lib.Stores {
 		stores = append(stores, s.Name)
 	}
-	return conversation(input, map[string]any{"question": input.Question, "room_intro": input.RoomIntro, "context_words": words, "objects": lib.Links, "stores": stores, "attributes": attributes, "attribute_catalog": catalog})
+	return conversation(input, map[string]any{"question": input.Question, "room_intro": input.RoomIntro, "context_words": words, "objects": lib.Links, "stores": stores, "attributes": directory.Names, "attribute_catalog": directory.Entries})
 }

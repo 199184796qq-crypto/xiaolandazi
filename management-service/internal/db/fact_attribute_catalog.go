@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"strings"
 )
@@ -34,8 +35,12 @@ func NormalizeAttributeKey(text string) string {
 // for fact import normalization. Missing tables are treated as an empty catalog
 // so the caller can fail open instead of blocking fact drafts.
 func (s *Store) LoadFactAttributeCatalog(ctx context.Context) (FactAttributeCatalog, error) {
+	return ReadFactAttributeCatalog(ctx, s.db)
+}
+
+func ReadFactAttributeCatalog(ctx context.Context, database *sql.DB) (FactAttributeCatalog, error) {
 	out := FactAttributeCatalog{Aliases: map[string]int64{}, ByName: map[string]int64{}}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,attribute_key,canonical_name,scope_type,COALESCE(industry,''),COALESCE(embedding_json,'')
+	rows, err := database.QueryContext(ctx, `SELECT id,attribute_key,canonical_name,scope_type,COALESCE(industry,''),COALESCE(embedding_json,'')
 		FROM live_fact_attributes WHERE status='active'`)
 	if err != nil {
 		return out, err
@@ -56,7 +61,7 @@ func (s *Store) LoadFactAttributeCatalog(ctx context.Context) (FactAttributeCata
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
-	aliasRows, err := s.db.QueryContext(ctx, `SELECT alias,attribute_id FROM live_fact_attribute_aliases WHERE status='active'`)
+	aliasRows, err := database.QueryContext(ctx, `SELECT alias,attribute_id FROM live_fact_attribute_aliases WHERE status='active'`)
 	if err != nil {
 		return out, err
 	}
@@ -72,4 +77,23 @@ func (s *Store) LoadFactAttributeCatalog(ctx context.Context) (FactAttributeCata
 		}
 	}
 	return out, aliasRows.Err()
+}
+
+func (c FactAttributeCatalog) CanonicalNames() map[string]string {
+	names := make(map[int64]string, len(c.Attributes))
+	for _, item := range c.Attributes {
+		names[item.ID] = item.Name
+	}
+	out := make(map[string]string, len(c.Aliases)+len(c.ByName))
+	for key, id := range c.Aliases {
+		if name := names[id]; name != "" {
+			out[key] = name
+		}
+	}
+	for key, id := range c.ByName {
+		if name := names[id]; name != "" {
+			out[key] = name
+		}
+	}
+	return out
 }

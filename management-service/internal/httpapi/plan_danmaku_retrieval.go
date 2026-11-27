@@ -6,8 +6,6 @@ import (
 	"log"
 
 	"livecompanion/management/internal/answerflow"
-	"livecompanion/management/internal/danmakutest"
-	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/rerank"
 )
 
@@ -41,51 +39,11 @@ func (s *Server) loadDanmakuRetrieval(ctx context.Context, tenant, plan int64) (
 	if err != nil {
 		log.Printf("danmaku test attribute aliases unavailable tenant=%d plan=%d", tenant, plan)
 	} else {
-		config.AttributeAliases = danmakuAttributeAliases(catalog, out)
+		config.AttributeAliases = catalog.CanonicalNames()
 	}
 	ranker := rerank.NewFromEnv()
 	if ranker.Enabled() {
 		config.Rerank = ranker.Rerank
 	}
 	return out, config, ctx.Err()
-}
-
-func danmakuAttributeAliases(catalog appdb.FactAttributeCatalog, lib danmakuLibrary) map[string]string {
-	names := map[int64]string{}
-	for _, record := range lib.Records {
-		claim := record.Claim
-		key := appdb.NormalizeAttributeKey(claim.Attribute)
-		id := catalog.ByName[key]
-		if id == 0 {
-			id = catalog.Aliases[key]
-		}
-		name := danmakutest.AttributeName(claim.Topic, lib.Links, lib.Stores)
-		if id == 0 {
-			key = appdb.NormalizeAttributeKey(name)
-			id = catalog.ByName[key]
-			if id == 0 {
-				id = catalog.Aliases[key]
-			}
-		}
-		if id > 0 && name != "" {
-			previous, exists := names[id]
-			if exists && previous != name {
-				names[id] = ""
-			} else if !exists {
-				names[id] = name
-			}
-		}
-	}
-	aliases := map[string]string{}
-	for alias, id := range catalog.Aliases {
-		if name := names[id]; name != "" {
-			aliases[alias] = name
-		}
-	}
-	for alias, id := range catalog.ByName {
-		if name := names[id]; name != "" {
-			aliases[alias] = name
-		}
-	}
-	return aliases
 }

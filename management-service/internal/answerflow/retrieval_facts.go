@@ -34,6 +34,8 @@ type factRetrieval struct {
 	facts          []retrievalFact
 	objects        []danmakutest.Link
 	subjectAliases map[string]string
+	attributeNames danmakutest.IntentAttributeResolver
+	attributeDir   danmakutest.IntentAttributeDirectory
 	attributes     []string
 	terms          []string
 	conceptText    map[string]string
@@ -45,6 +47,7 @@ func newFactRetrieval(lib Library, config RetrievalConfig) factRetrieval {
 		config: config, subjectAliases: map[string]string{}, conceptText: map[string]string{},
 	}
 	r.config.GlobalName = strings.TrimSpace(config.GlobalName)
+	r.attributeNames = danmakutest.NewIntentAttributeResolver(lib.Links, lib.Stores, r.config.GlobalName, config.AttributeAliases)
 	r.regionCoverage = map[[2]string][]string{}
 	addObject := func(name string, originals ...string) {
 		name = strings.TrimSpace(name)
@@ -109,7 +112,7 @@ func newFactRetrieval(lib Library, config RetrievalConfig) factRetrieval {
 				continue
 			}
 			seen[hit.ID] = true
-			attribute := danmakutest.AttributeName(hit.Attribute, lib.Links, lib.Stores)
+			attribute, _ := r.attributeNames.ClaimName(record.Claim)
 			r.terms = append(r.terms, hit.Attribute, attribute)
 			hit.Attribute = attribute
 			hit.Scope = group.Ask.Text
@@ -125,10 +128,12 @@ func newFactRetrieval(lib Library, config RetrievalConfig) factRetrieval {
 		}
 	}
 	sort.SliceStable(r.facts, func(i, j int) bool { return r.facts[i].hit.ID < r.facts[j].hit.ID })
+	r.attributeDir = r.attributeNames.Directory(lib.Records)
+	r.attributes = r.attributeDir.Names
 	values := map[string][]string{}
 	for _, fact := range r.facts {
 		name := fact.hit.Attribute
-		if name == "" {
+		if !slices.Contains(r.attributes, name) {
 			continue
 		}
 		if len(values[name]) < 3 {
@@ -142,12 +147,10 @@ func newFactRetrieval(lib Library, config RetrievalConfig) factRetrieval {
 		}
 	}
 	for name, examples := range values {
-		r.attributes = append(r.attributes, name)
 		r.conceptText[name] = name + "：" + strings.Join(examples, "；")
 	}
-	slices.Sort(r.attributes)
-	for alias, canonical := range config.AttributeAliases {
-		if slices.Contains(r.attributes, canonical) {
+	for alias := range config.AttributeAliases {
+		if slices.Contains(r.attributes, r.attributeNames.CanonicalName(alias)) {
 			r.terms = append(r.terms, alias)
 		}
 	}
@@ -189,8 +192,8 @@ func (r factRetrieval) attributeNamed(question string, attributes []string) bool
 		if strings.Contains(question, keyOf(attribute)) {
 			return true
 		}
-		for alias, canonical := range r.config.AttributeAliases {
-			if canonical == attribute && strings.Contains(question, alias) {
+		for alias := range r.config.AttributeAliases {
+			if r.attributeNames.CanonicalName(alias) == attribute && strings.Contains(question, alias) {
 				return true
 			}
 		}
@@ -335,15 +338,12 @@ func (r factRetrieval) normalizeAttributes(ask *retrievedAsk, vectors retrievalV
 	}
 	normalized := []string{}
 	for _, attribute := range ask.Attributes {
-		name := attribute
-		if !slices.Contains(r.attributes, name) {
-			name = r.config.AttributeAliases[keyOf(attribute)]
-			if !slices.Contains(r.attributes, name) {
-				name = ""
-				matches := nearestAttributes(vectors.byText[attribute], vectors.concepts, nil, .55)
-				if len(matches) > 0 {
-					name = matches[0].name
-				}
+		name := r.attributeNames.CanonicalName(attribute)
+		if name != "" && !slices.Contains(r.attributes, name) {
+			name = ""
+			matches := nearestAttributes(vectors.byText[attribute], vectors.concepts, nil, .55)
+			if len(matches) > 0 {
+				name = matches[0].name
 			}
 		}
 		if name != "" {

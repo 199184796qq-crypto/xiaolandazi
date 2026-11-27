@@ -63,6 +63,12 @@ func (s *Store) ListPlanMaterialClaims(ctx context.Context, tenantID, planID int
 	return listMaterialClaims(ctx, s.db, tenantID, planID)
 }
 
+// ReadPlanMaterialClaims exposes the same projected facts to the offline
+// lab, which owns its SQL connection and does not initialize the service.
+func ReadPlanMaterialClaims(ctx context.Context, database *sql.DB, tenantID, planID int64) ([]model.PlanMaterialClaim, error) {
+	return listMaterialClaims(ctx, database, tenantID, planID)
+}
+
 // PlanRewriteFactsSnapshot reads claims and their object directory at one revision.
 func (s *Store) PlanRewriteFactsSnapshot(ctx context.Context, tenant, plan int64) ([]model.PlanMaterialClaim, model.MaterialObjectCatalog, []QALink, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})

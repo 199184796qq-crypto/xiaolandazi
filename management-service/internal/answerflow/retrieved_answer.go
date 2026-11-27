@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"slices"
 	"strings"
@@ -93,9 +94,11 @@ func (s Service) analyzeRetrieved(ctx context.Context, scope Scope, input Input,
 
 	searchInput := input
 	searchInput.Question = corrected
-	payload := intentPayload(lib, searchInput, out.ContextWords)
+	payload := intentPayloadWithAttributes(lib, searchInput, out.ContextWords, retrieval.attributeDir)
 	payload["objects"] = retrieval.objects
-	payload["attributes"] = retrieval.attributes
+	log.Printf("interaction intent catalog tenant=%d plan=%d facts=%d cataloged=%d filtered_objects=%d attributes=%d",
+		scope.Tenant, scope.Plan, len(lib.Records), retrieval.attributeDir.CatalogedFacts,
+		retrieval.attributeDir.FilteredObjects, len(retrieval.attributes))
 	history := make([]map[string]string, 0, len(input.Context)+len(input.Recent)*2)
 	for _, turn := range input.Recent {
 		history = append(history, map[string]string{"role": "user", "text": turn.Question},
@@ -119,6 +122,15 @@ func (s Service) analyzeRetrieved(ctx context.Context, scope Scope, input Input,
 	if err != nil {
 		return out, fmt.Errorf("意图分析：%w", err)
 	}
+	unknown := 0
+	for _, ask := range intent.Asks {
+		attributes := ask.Attributes
+		if len(attributes) == 0 && ask.Attribute != "" {
+			attributes = []string{ask.Attribute}
+		}
+		unknown += retrieval.attributeDir.CountUnknown(attributes)
+	}
+	log.Printf("interaction intent attributes tenant=%d plan=%d outside_catalog=%d", scope.Tenant, scope.Plan, unknown)
 	if err := retrieval.normalizeIntent(&intent, searchInput); err != nil {
 		return out, err
 	}
