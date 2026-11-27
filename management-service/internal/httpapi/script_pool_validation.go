@@ -15,6 +15,9 @@ import (
 // is still strict: the saved spoken text, model, voice, instructions and rate
 // must resolve to the cache we are about to use. Metadata alone is not readiness.
 func scriptVersionAudio(root string, unit volcengineScriptUnit, v model.LiveAgentPlanVersion, version scriptplay.Version) (volcengineCachedAudio, bool) {
+	if version.SpecHash != "" && version.SpecHash != scriptPieceVersionHash(unit) {
+		return volcengineCachedAudio{}, false
+	}
 	if current := scriptRewriteFactsKey(v); current != "" && version.Kind == scriptplay.KindOriginal &&
 		((version.FactsKey != "" && version.FactsKey != current) || (version.FactsKey == "" && strings.TrimSpace(version.Text) != strings.TrimSpace(unit.Text))) {
 		return volcengineCachedAudio{}, false
@@ -42,6 +45,7 @@ func scriptVersionAudio(root string, unit volcengineScriptUnit, v model.LiveAgen
 		return volcengineCachedAudio{}, false
 	}
 	audio.Text = version.Text
+	audio.SpecHash = version.SpecHash
 	return audio, true
 }
 
@@ -142,9 +146,14 @@ func commitScriptRewriteVersionRetiring(root string, v model.LiveAgentPlanVersio
 			// A freshly accepted reply can match an old paid WAV exactly. Refresh
 			// its rule approval without buying again or resetting real play counts.
 			if version.FactsKey != "" && version.FactsKey == scriptRewriteFactsKey(v) && existing.Text == version.Text &&
-				filepath.Base(version.SourcePath) == scriptFirstParagraphKey(v, version.Text) && existing.FactsKey != version.FactsKey {
-				pool.Versions[i].FactsKey = version.FactsKey
-				return false, saveScriptVoicePoolLocked(root, v.PlanID, unit.poolID(), pool)
+				filepath.Base(version.SourcePath) == scriptFirstParagraphKey(v, version.Text) {
+				if existing.FactsKey != version.FactsKey || (version.SpecHash != "" && version.SpecHash != existing.SpecHash) {
+					pool.Versions[i].FactsKey = version.FactsKey
+					if version.SpecHash != "" && existing.Kind == scriptplay.KindRewrite {
+						pool.Versions[i].SpecHash = version.SpecHash
+					}
+					return false, saveScriptVoicePoolLocked(root, v.PlanID, unit.poolID(), pool)
+				}
 			}
 			return false, nil
 		}

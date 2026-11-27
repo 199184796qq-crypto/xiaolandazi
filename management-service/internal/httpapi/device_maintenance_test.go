@@ -305,7 +305,39 @@ func TestDeviceMaintenanceFirmwareNoLiveOrWrongPurpose(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "catalog.json"), catalog, 0600)
 	path, _ := deviceops.FirmwarePath(s.deviceMaintenance.root, e.SHA256)
 	os.WriteFile(path, image, 0600)
-	offer, err := s.deviceMaintenance.firmwareOffer(f.identity, maintenanceProfile(), time.Now())
+	check := func(boot bool, profile deviceops.Profile, status int) (result struct {
+		Firmware    *deviceops.Offer `json:"firmware"`
+		Diagnostics json.RawMessage  `json:"diagnostics"`
+	}) {
+		input := maintenanceInput{HardwareMAC: "1c:29:04:31:0e:b8", DeviceProfile: profile}
+		handler := s.deviceFirmwareCheck
+		if !boot {
+			input.ConnectionID = "connection-current-0001"
+			handler = s.deviceMaintenanceGrant
+		}
+		body, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest("POST", "/", bytes.NewReader(body))
+		r.Header.Set("X-Xiaozhi-Internal-Token", s.xiaozhiInternalToken)
+		w := httptest.NewRecorder()
+		handler(w, r)
+		if w.Code != status || json.Unmarshal(w.Body.Bytes(), &result) != nil {
+			t.Fatalf("firmware check failed: %d", w.Code)
+		}
+		return result
+	}
+	if result := check(false, maintenanceProfile(), 200); result.Firmware != nil || len(result.Diagnostics) == 0 {
+		t.Fatal("diagnostics refresh must not offer an upgrade")
+	}
+	legacy := maintenanceProfile()
+	legacy.BootID = "lx"
+	check(false, legacy, 400)
+	if result := check(true, legacy, 200); result.Firmware == nil || result.Firmware.Version != e.Version || len(result.Diagnostics) > 0 {
+		t.Fatal("startup check did not offer the enabled release")
+	}
+	offer, err := s.deviceMaintenance.firmwareOffer(f.identity, legacy, time.Now())
 	if err != nil || offer == nil {
 		t.Fatal(offer, err)
 	}

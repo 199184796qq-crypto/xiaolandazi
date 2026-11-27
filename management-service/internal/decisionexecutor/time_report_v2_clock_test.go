@@ -61,14 +61,15 @@ func TestV2ReportTTSRetryKeepsOriginalTextAndGenerationClock(t *testing.T) {
 }
 
 func TestNonReportV2RequestDoesNotReceiveProgramClock(t *testing.T) {
-	w, _, core, agent, tts, session, _ := v2Fixture(t, 9064103)
+	w, _, core, agent, tts, session, envelope := v2Fixture(t, 9064103)
+	setManualRecoveryAnswerFlow(w, envelope)
 	core.claimRaw = `{"claimed":true,"item":{"id":"ordinary","mission_kind":"reply_question","sample_questions":["哪天发货"]}}`
-	agent.responses = []string{strings.ReplaceAll(reportV2Body, "下午了，感谢大家陪着。", "第二天上午发货。")}
+	agent.responses = []string{"第二天上午发货。"}
 	if err := w.processRoom(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
-	if tts.calls != 1 {
-		t.Fatal("ordinary answer rejected", tts.calls)
+	if tts.calls != 1 || len(agent.requests) != 1 || agent.requests[0].Stage != "interaction_answerflow_answer" {
+		t.Fatal("ordinary question did not use the answer flow", tts.calls, len(agent.requests))
 	}
 	for _, r := range agent.requests {
 		for _, m := range r.Messages {

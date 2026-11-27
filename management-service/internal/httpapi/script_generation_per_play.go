@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/model"
@@ -51,7 +52,12 @@ func (s *Server) completePlayedScriptModel(ctx context.Context, request agentgat
 	if err := checkScriptGenerationGuard(ctx); err != nil {
 		return agentgateway.Response{}, err
 	}
-	return s.completePaidScriptModel(ctx, request)
+	response, err := s.completePaidScriptModel(ctx, request)
+	// 改写链路不走交换表，这里单独留一份 24 小时缓存，便于事后查提示词与返回。
+	cacheModelExchange(ctx, time.Now().UnixNano(), "resp", map[string]any{
+		"stage": request.Stage, "request": request, "text": response.Text, "call_error": errorText(err),
+	})
+	return response, err
 }
 
 func scriptGenerationPlayPath(root string, tenant, room, plan int64) string {

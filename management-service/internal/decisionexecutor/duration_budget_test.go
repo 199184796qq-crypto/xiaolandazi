@@ -35,7 +35,7 @@ func TestFinalSpeechAndRateUseCoreEstimatorAndComputedWait(t *testing.T) {
 	core := &computedDurationCore{fakeCore: &fakeCore{}}
 	w := New(readyVoiceStore(), core, &fakeAgent{}, &fakeTTS{})
 	text := "小王、小李，" + strings.Repeat("字", 130)
-	wait, err := w.playoutPreflight(context.Background(), model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11}, decisionItem{ID: "long", ExpiresAt: time.Now().Add(time.Minute)}, text, "tts", 1.4)
+	wait, err := w.playoutPreflight(context.Background(), model.LiveRuntimeSession{ID: 9, TenantID: 7, RoomID: 11}, decisionItem{ID: "long", ExpiresAt: time.Now().Add(time.Minute)}, text, "tts", 1.4, nil)
 	if err != nil || !wait || core.text != text || core.rate != 1.4 || core.retry != "13750" {
 		t.Fatal(wait, err, core)
 	}

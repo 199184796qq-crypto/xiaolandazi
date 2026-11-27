@@ -17,6 +17,20 @@ func (s *Server) requireLiveSupportMedia(w http.ResponseWriter, r *http.Request,
 	if !actor.IsInternalStaff() {
 		return true
 	}
+	if planID, present, valid := livePlanSupportScope(r); present {
+		if !valid {
+			writeError(w, http.StatusForbidden, "方案协助范围无效")
+			return false
+		}
+		if _, ok := s.resolveScopedLivePlanSupport(w, r, actor, asset.TenantID, planID); !ok {
+			return false
+		}
+		if s.livePlanSupportMediaAllowed(r, asset, planID) {
+			return true
+		}
+		writeError(w, http.StatusForbidden, "该媒体资产不属于当前授权方案")
+		return false
+	}
 	roomID, _ := liveSupportScopeRoomID(r)
 	if !s.liveSupportMediaAllowed(r.Context(), roomID, asset) {
 		writeError(w, http.StatusForbidden, "该媒体资产不属于当前授权直播间")
@@ -60,6 +74,21 @@ func (s *Server) liveSupportVoiceAllowed(ctx context.Context, tenantID, roomID i
 
 func (s *Server) requireLiveSupportVoice(w http.ResponseWriter, r *http.Request, actor model.Actor, tenantID int64, profile model.VoiceProfile, write bool) bool {
 	if !actor.IsInternalStaff() {
+		return true
+	}
+	if planID, present, valid := livePlanSupportScope(r); present {
+		if !valid || write {
+			writeError(w, http.StatusForbidden, "协助不能修改客户的共享声音库")
+			return false
+		}
+		if _, ok := s.resolveScopedLivePlanSupport(w, r, actor, tenantID, planID); !ok {
+			return false
+		}
+		ids, err := s.livePlanSupportVoiceProfiles(r, tenantID, planID)
+		if err != nil || !ids[profile.ID] {
+			writeError(w, http.StatusForbidden, "该声音未被当前授权方案使用")
+			return false
+		}
 		return true
 	}
 	roomID, _ := liveSupportScopeRoomID(r)
@@ -195,6 +224,14 @@ func (s *Server) requireLiveStrategyRoomAccess(w http.ResponseWriter, r *http.Re
 func (s *Server) requireLiveSupportPlanScope(w http.ResponseWriter, r *http.Request, actor model.Actor, tenantID, planID int64, write bool) bool {
 	if !actor.IsInternalStaff() {
 		return true
+	}
+	if selectedPlanID, present, valid := livePlanSupportScope(r); present {
+		if !valid || selectedPlanID != planID {
+			writeError(w, http.StatusForbidden, "协助仅限客户授权的当前方案")
+			return false
+		}
+		_, ok := s.resolveScopedLivePlanSupport(w, r, actor, tenantID, planID)
+		return ok
 	}
 	roomID, valid := liveSupportScopeRoomID(r)
 	if !valid {

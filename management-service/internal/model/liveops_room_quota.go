@@ -10,6 +10,8 @@ type LiveOpsRoomQuotaSummary struct {
 	Phone               string     `json:"phone"`
 	Status              string     `json:"status"`
 	ParentOrgName       string     `json:"parent_org_name"`
+	ParentOrgID         int64      `json:"parent_org_id"`
+	CooperationStatus   string     `json:"cooperation_status"`
 	MembershipPlanID    int64      `json:"membership_plan_id"`
 	MembershipName      string     `json:"membership_name"`
 	MembershipRoomLimit int64      `json:"membership_room_limit"`

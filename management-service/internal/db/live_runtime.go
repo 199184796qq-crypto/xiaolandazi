@@ -1529,6 +1529,7 @@ func (s *Store) StartLiveRuntimeSession(
 	deviceID *int64,
 	executionRealm string,
 	now time.Time,
+	anchorVersion ...model.LiveAgentPlanVersion,
 ) (model.LiveRuntimeSession, error) {
 	executionRealm = model.NormalizeExecutionRealm(executionRealm)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1560,6 +1561,27 @@ func (s *Store) StartLiveRuntimeSession(
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return model.LiveRuntimeSession{}, err
+	}
+	if len(anchorVersion) > 0 {
+		if selectedPlan != anchorVersion[0].PlanID {
+			return model.LiveRuntimeSession{}, ErrLiveAgentPlanNotReady
+		}
+		draft, err := readPlanEditDraft(ctx, tx, tenantID, selectedPlan, true)
+		if err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+		if err := draft.CheckStart(); err != nil {
+			return model.LiveRuntimeSession{}, err
+		}
+		var currentVersion int64
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM live_agent_plan_versions
+			WHERE tenant_id=? AND plan_id=? AND lifecycle_status IN ('draft','published','superseded')
+			ORDER BY id DESC LIMIT 1 FOR UPDATE`, tenantID, selectedPlan).Scan(&currentVersion); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return model.LiveRuntimeSession{}, err
+		}
+		if currentVersion != anchorVersion[0].ID {
+			return model.LiveRuntimeSession{}, ErrLiveAgentPlanNotReady
+		}
 	}
 
 	// Every paid runtime needs a bound, physically connected primary box.
@@ -1608,9 +1630,10 @@ func (s *Store) StartLiveRuntimeSession(
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO live_runtime_events (
 			tenant_id, room_id, device_id, session_id,
-			actor_type, actor_user_id, event_code, title, occurred_at
-		) VALUES (?, ?, ?, ?, 'user', ?, 'AI_RUNTIME_STARTED', 'AI直播伴播已启动', ?)
-	`, tenantID, roomID, deviceID, sessionID, userID, now); err != nil {
+			actor_type, actor_user_id, event_code, title, detail_json, occurred_at
+		) VALUES (?, ?, ?, ?, 'user', ?, 'AI_RUNTIME_STARTED', 'AI直播伴播已启动',
+			JSON_OBJECT('plan_name',COALESCE((SELECT name FROM live_agent_plans WHERE tenant_id=? AND id=?),'')), ?)
+	`, tenantID, roomID, deviceID, sessionID, userID, tenantID, selectedPlan, now); err != nil {
 		return model.LiveRuntimeSession{}, err
 	}
 

@@ -43,6 +43,8 @@ type scriptVoiceVersion struct {
 	CreatedAt       string   `json:"created_at,omitempty"`
 	PlayedTracks    []string `json:"played_tracks,omitempty"`
 	FactsKey        string   `json:"facts_key,omitempty"`
+	Source          string   `json:"source,omitempty"`
+	SpecHash        string   `json:"spec_hash,omitempty"`
 	CompleteCount   int      `json:"complete_count,omitempty"`
 	CompletedTracks []string `json:"completed_tracks,omitempty"`
 }
@@ -107,6 +109,7 @@ func loadScriptVoicePoolLocked(root string, planID int64, pieceID string) (scrip
 			DurationMS:   v.DurationMS,
 			SourcePath:   v.SourcePath,
 			CreatedAt:    v.CreatedAt, PlayedTracks: v.PlayedTracks, FactsKey: v.FactsKey, CompleteCount: v.CompleteCount, CompletedTracks: v.CompletedTracks,
+			SpecHash: v.SpecHash,
 		})
 	}
 	return pool, nil
@@ -129,6 +132,10 @@ func saveScriptVoicePoolLocked(root string, planID int64, pieceID string, pool s
 	}
 	file := scriptVoicePoolFile{PieceID: pieceID}
 	for _, v := range pool.Versions {
+		source := ""
+		if v.SpecHash != "" {
+			source = "spec"
+		}
 		file.Versions = append(file.Versions, scriptVoiceVersion{
 			ID:           v.ID,
 			PieceID:      v.PieceID,
@@ -145,6 +152,8 @@ func saveScriptVoicePoolLocked(root string, planID int64, pieceID string, pool s
 			DurationMS:   v.DurationMS,
 			SourcePath:   v.SourcePath,
 			CreatedAt:    v.CreatedAt, PlayedTracks: v.PlayedTracks, FactsKey: v.FactsKey, CompleteCount: v.CompleteCount, CompletedTracks: v.CompletedTracks,
+			Source:   source,
+			SpecHash: v.SpecHash,
 		})
 	}
 	raw, err := json.Marshal(file)

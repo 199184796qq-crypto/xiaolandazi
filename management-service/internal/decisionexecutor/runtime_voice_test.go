@@ -100,8 +100,11 @@ func TestV2SynthesisFollowsAudibleHost(t *testing.T) {
 	if err := w.processRoom(t.Context(), session); err != nil {
 		t.Fatal(err)
 	}
-	if tts.calls != 1 || tts.last.VoiceID != "audible-B" || tts.last.Model != live.identity.Model || tts.last.Rate != 1.17 {
+	if tts.calls != 1 || tts.last.VoiceID != "audible-B" || tts.last.Model != live.identity.Model || tts.last.Rate != model.DefaultInteractionSpeechRate {
 		t.Fatalf("V2 used the frozen host: calls=%d request=%+v", tts.calls, tts.last)
+	}
+	if tts.last.Instruction != "" {
+		t.Fatalf("Qwen interaction instruction = %q, want provider default", tts.last.Instruction)
 	}
 	if agent.calls != 0 || core.dispatches != 1 {
 		t.Fatal(agent.calls, core.dispatches)
@@ -173,12 +176,13 @@ func (s *v2AudibleRateStore) GetPlanVoiceRate(context.Context, int64, int64) (mo
 
 func TestV2LiveSpeedDoesNotRestoreFrozenModel(t *testing.T) {
 	w, store, core, _, tts, session, e := v2Fixture(t, 10105)
+	store.interactionRate = 1.3
 	w.store = &v2AudibleRateStore{v2LiveHostStore: &v2LiveHostStore{v2Store: store, identity: model.LiveAgentVoiceIdentity{VoiceID: "B", Provider: "aliyun_qwen", Model: "qwen-audio-3.1-tts-flash", Rate: 1.1}}, rate: 1.4}
 	claimV2(core, e)
 	if err := w.processRoom(t.Context(), session); err != nil {
 		t.Fatal(err)
 	}
-	if tts.last.VoiceID != "B" || tts.last.Model != "qwen-audio-3.1-tts-flash" || tts.last.Rate != 1.4 {
+	if tts.last.VoiceID != "B" || tts.last.Model != "qwen-audio-3.1-tts-flash" || tts.last.Rate != 1.3 {
 		t.Fatalf("speed restored opening identity: %+v", tts.last)
 	}
 }

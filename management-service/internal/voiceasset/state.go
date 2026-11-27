@@ -18,6 +18,9 @@ var ErrCleared = errors.New("声音已清除，旧生成或缓存不可再次使
 var ErrBusy = errors.New("声音仍有播放或共享引用")
 var ErrConflict = errors.New("清理范围已变化，请刷新预览")
 
+const ScriptHumanAsset = "script_human_recording"
+const ScriptHumanCategory = "human_mainline"
+
 type Scope struct {
 	Tenant   int64  `json:"tenant_id"`
 	Plan     int64  `json:"plan_id"`
@@ -26,7 +29,7 @@ type Scope struct {
 }
 
 func (s Scope) Validate() error {
-	if s.Tenant <= 0 || s.Plan <= 0 || (s.Category != "mainline" && s.Category != "interaction") {
+	if s.Tenant <= 0 || s.Plan <= 0 || (s.Category != "mainline" && s.Category != "interaction" && s.Category != ScriptHumanCategory) {
 		return errors.New("声音清理归属无效")
 	}
 	if s.Voice != "" && !DigestValid(s.Voice) {
@@ -113,7 +116,7 @@ func Bind(ctx context.Context, voice string) (context.Context, error) {
 // Legacy classification is deliberately narrow. An absent/invalid owner is
 // review-required, never an excuse to delete the whole generated_voice prefix.
 func ScopeFromMetadata(tenant int64, assetType string, m map[string]any) (Scope, bool) {
-	if assetType != "generated_voice" {
+	if assetType != "generated_voice" && assetType != ScriptHumanAsset {
 		return Scope{}, false
 	}
 	if raw, ok := m["voice_cache_stamp"]; ok {
@@ -125,7 +128,13 @@ func ScopeFromMetadata(tenant int64, assetType string, m map[string]any) (Scope,
 		if p, exists := m["plan_id"]; exists && fmt.Sprint(p) != strconv.FormatInt(st.Scope.Plan, 10) {
 			return Scope{}, false
 		}
+		if (assetType == ScriptHumanAsset) != (st.Scope.Category == ScriptHumanCategory) {
+			return Scope{}, false
+		}
 		return st.Scope, true
+	}
+	if assetType == ScriptHumanAsset {
+		return Scope{}, false
 	}
 	plan, e := strconv.ParseInt(fmt.Sprint(m["plan_id"]), 10, 64)
 	if e != nil || plan <= 0 {
@@ -163,6 +172,9 @@ type ClearRequest struct {
 
 func (r ClearRequest) Validate() error {
 	if r.Mode != "" && r.Mode != "history" && r.Mode != "local_only" {
+		return ErrConflict
+	}
+	if r.Scope.Category == ScriptHumanCategory {
 		return ErrConflict
 	}
 	if e := r.Scope.Validate(); e != nil {

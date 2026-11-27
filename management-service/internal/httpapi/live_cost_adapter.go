@@ -545,13 +545,19 @@ func (s *Server) beginLiveModelCost(ctx context.Context, id int64, stage, profil
 			input += int64(utf8.RuneCountInString(message.Content) + 16 + len(message.ImageURLs)*1024)
 		}
 	}
-	if err := requireStrictModelBound(ctx, r.MaxTokens, images); err != nil {
+	outputLimit := r.MaxTokens
+	if r.UseProviderOutputLimit {
+		// Official DeepSeek Chat Completions defaults to 64K in high thinking.
+		// Reserve against that bound locally without sending it to the model.
+		outputLimit = 64 * 1024
+	}
+	if err := requireStrictModelBound(ctx, outputLimit, images); err != nil {
 		return err
 	}
 	if input == 0 {
 		input = 1
 	}
-	output := int64(r.MaxTokens)
+	output := int64(outputLimit)
 	if output <= 0 {
 		output = 500
 	}

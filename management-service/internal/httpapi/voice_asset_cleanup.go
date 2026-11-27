@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"livecompanion/management/internal/coreclient"
+	"livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/sharedfilelock"
 	"livecompanion/management/internal/storage"
@@ -307,6 +308,13 @@ func (s *Server) removeOneVoiceObject(ctx context.Context, a model.MediaAsset) (
 		return 0, errors.New("storage_unavailable")
 	}
 	prefix := fmt.Sprintf("tenants/%d/generated_voice/", a.TenantID)
+	if a.AssetType == voiceasset.ScriptHumanAsset {
+		stamp, ok := voiceasset.MetadataStamp(a.TenantID, a.AssetType, a.Metadata)
+		if !ok || !voiceasset.DigestValid(stamp.Scope.Voice) {
+			return 0, errors.New("object_scope_invalid")
+		}
+		prefix = db.ScriptHumanVoicePrefix(a.TenantID, stamp.Scope.Plan, stamp.Scope.Voice)
+	}
 	if !strings.HasPrefix(a.ObjectKey, prefix) || strings.Contains(a.ObjectKey, "..") || strings.Contains(a.ObjectKey, "\\") {
 		return 0, errors.New("object_scope_invalid")
 	}
@@ -462,8 +470,10 @@ func (s *Server) runVoiceCleanupJob(ctx context.Context, j voiceasset.Job) error
 			return e
 		}
 	}
-	if e := s.discoverVoiceLocalSources(ctx, j); e != nil {
-		return e
+	if j.Scope.Category != voiceasset.ScriptHumanCategory {
+		if e := s.discoverVoiceLocalSources(ctx, j); e != nil {
+			return e
+		}
 	}
 	var e error
 	if e = s.store.ScanVoiceCleanupJob(ctx, j); e != nil {

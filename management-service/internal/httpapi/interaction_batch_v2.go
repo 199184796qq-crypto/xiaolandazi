@@ -2,13 +2,67 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/decisionexecutor"
 	"livecompanion/management/internal/interactionplan"
 	"livecompanion/management/internal/model"
 )
+
+type welcomeTaskKey struct{}
+
+func preparedWelcomeResultsV2(ctx context.Context, snapshot interactionplan.Snapshot, session model.LiveRuntimeSession, inputs []interactionV2Input, items []interactionplan.BatchItem, write func(context.Context, model.LiveRuntimeSession, string, string, interactionplan.Snapshot) (string, error), prepareOther func([]interactionV2Input, []interactionplan.BatchItem) ([]interactionBatchResultV2, []string, error)) ([]interactionBatchResultV2, []string, error) {
+	results := make([]interactionBatchResultV2, len(inputs))
+	otherInputs := make([]interactionV2Input, 0, len(inputs))
+	otherItems := make([]interactionplan.BatchItem, 0, len(inputs))
+	otherPositions := make([]int, 0, len(inputs))
+	for i, in := range inputs {
+		if !decisionexecutor.IsWelcomeKind(in.Kind) {
+			otherInputs = append(otherInputs, in)
+			otherItems = append(otherItems, items[i])
+			otherPositions = append(otherPositions, i)
+			continue
+		}
+		results[i] = interactionBatchResultV2{Task: in.Task, Revision: in.Revision}
+		if !in.ExpiresAt.IsZero() && !time.Now().Before(in.ExpiresAt) {
+			results[i].Error = "该人候选已过期"
+			results[i].Parse = interactionplan.ParseDiagnostics{Outcome: "rejected", Reason: "candidate_expired"}
+			continue
+		}
+		body, err := write(context.WithValue(ctx, welcomeTaskKey{}, in.Task), session, in.Task, in.Kind, snapshot)
+		if err != nil {
+			results[i].Error = err.Error()
+			results[i].Parse = interactionplan.ParseDiagnostics{Outcome: "rejected", Reason: "welcome_writer_failed"}
+			continue
+		}
+		if !in.ExpiresAt.IsZero() && !time.Now().Before(in.ExpiresAt) {
+			results[i].Error = "该人候选已过期"
+			results[i].Parse = interactionplan.ParseDiagnostics{Outcome: "rejected", Reason: "candidate_expired"}
+			continue
+		}
+		results[i].Envelope = interactionplan.Envelope{Protocol: interactionplan.Protocol, Task: in.Task, Epoch: in.Epoch, Revision: in.Revision, Tenant: in.Tenant, Room: in.Room, Session: snapshot.Scope.Session, Plan: in.Plan, Fingerprint: snapshot.Fingerprint, Body: body, Intent: interactionplan.Intent{Relevant: true, Type: "欢迎", Priority: "普通", Meaning: "欢迎新进观众"}, ExpiresAt: in.ExpiresAt}
+		results[i].Parse = interactionplan.ParseDiagnostics{Outcome: "accepted", Reason: "welcome_writer_body_ready"}
+	}
+	if len(otherInputs) == 0 {
+		return results, nil, nil
+	}
+	other, issues, err := prepareOther(otherInputs, otherItems)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(other) != len(otherPositions) {
+		return nil, nil, fmt.Errorf("互动批次结果数量不一致")
+	}
+	for i, position := range otherPositions {
+		results[position] = other[i]
+	}
+	return results, issues, nil
+}
 
 type interactionBatchResultV2 struct {
 	Task     string                           `json:"task"`
@@ -43,7 +97,15 @@ func batchInputsV2(batchID string, inputs []interactionV2Input, now time.Time) (
 }
 
 func preparedBatchResultsV2(ctx context.Context, snapshot interactionplan.Snapshot, inputs []interactionV2Input, items []interactionplan.BatchItem, complete interactionplan.Complete) ([]interactionBatchResultV2, []string, error) {
-	generated, err := interactionplan.GenerateBatch(ctx, snapshot, items, complete)
+	var stages interactionplan.ModelStages
+	generated, err := interactionplan.GenerateBatch(ctx, snapshot, items, func(ctx context.Context, req agentgateway.Request) (agentgateway.Response, error) {
+		started := time.Now()
+		response, err := complete(ctx, req)
+		if err == nil {
+			stages.Record(req.Stage, response, time.Since(started))
+		}
+		return response, err
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -61,6 +123,7 @@ func preparedBatchResultsV2(ctx context.Context, snapshot interactionplan.Snapsh
 			continue
 		}
 		results[i].Envelope = interactionplan.Envelope{Protocol: interactionplan.Protocol, Task: in.Task, Epoch: in.Epoch, Revision: in.Revision, Tenant: in.Tenant, Room: in.Room, Session: snapshot.Scope.Session, Plan: in.Plan, Fingerprint: snapshot.Fingerprint, Body: item.Body, Intent: item.Intent, ExpiresAt: in.ExpiresAt}
+		results[i].Envelope.ModelStages = stages.Recorded()
 		results[i].Envelope.Template = in.Template
 		if in.Template != "" {
 			results[i].Envelope.EventCount = in.EventCount
@@ -69,7 +132,90 @@ func preparedBatchResultsV2(ctx context.Context, snapshot interactionplan.Snapsh
 	return results, generated.Issues, nil
 }
 
+// Route questions independently so a welcome or behavior in the same batch
+// cannot send them to the generic interaction generator.
+func prepareQuestionAndBehaviorResults(inputs []interactionV2Input, items []interactionplan.BatchItem, prepareQuestions, prepareBehavior func([]interactionV2Input, []interactionplan.BatchItem) ([]interactionBatchResultV2, []string, error)) ([]interactionBatchResultV2, []string, error) {
+	results := make([]interactionBatchResultV2, len(inputs))
+	var issues []string
+	for _, kind := range []string{"question", "engagement", "template", "behavior"} {
+		var groupInputs []interactionV2Input
+		var groupItems []interactionplan.BatchItem
+		var positions []int
+		for i, in := range inputs {
+			route := "behavior"
+			switch {
+			case interactionQuestionUsesAnswerFlow(in):
+				route = "question"
+			case in.Template != "":
+				route = "template"
+			case in.Kind == "engagement":
+				route = "engagement"
+			}
+			if route == kind {
+				groupInputs = append(groupInputs, in)
+				item := items[i]
+				item.ID = fmt.Sprintf("U%02d", len(groupInputs))
+				groupItems = append(groupItems, item)
+				positions = append(positions, i)
+			}
+		}
+		if len(positions) == 0 {
+			continue
+		}
+		prepare := prepareBehavior
+		if kind == "question" {
+			prepare = prepareQuestions
+		}
+		group, groupIssues, err := prepare(groupInputs, groupItems)
+		issues = append(issues, groupIssues...)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (err != nil && len(positions) == len(inputs)) {
+			return nil, nil, err
+		}
+		if err == nil && len(group) != len(positions) {
+			err = fmt.Errorf("互动批次结果数量不一致")
+		}
+		for i, pos := range positions {
+			if err != nil {
+				results[pos] = interactionBatchResultV2{Task: inputs[pos].Task, Revision: inputs[pos].Revision, Error: err.Error(), Parse: interactionplan.ParseDiagnostics{Outcome: "rejected", Reason: "interaction_generation_failed"}}
+			} else {
+				results[pos] = group[i]
+			}
+		}
+	}
+	return results, issues, nil
+}
+
 func (s *Server) prepareInteractionBatchV2(ctx context.Context, batchID string, inputs []interactionV2Input) ([]interactionBatchResultV2, []string, error) {
+	// 每条问题都带上该观众最近 5 条弹幕（含时间顺序），意图与回答共用同一份上下文。
+	for i := range inputs {
+		if inputs[i].Test || strings.TrimSpace(inputs[i].UserID) == "" || !interactionQuestionUsesAnswerFlow(inputs[i]) {
+			continue
+		}
+		turns, histErr := s.store.ListRecentInteractionTurns(ctx, inputs[i].Tenant, inputs[i].Room, inputs[i].UserID, 5)
+		if histErr != nil || len(turns) == 0 {
+			continue
+		}
+		history := make([]interactionplan.ContextMessage, 0, len(turns)+2)
+		// 先给模型一句边界：历史只用于理解上下文，不能当商品事实引用。
+		history = append(history, interactionplan.ContextMessage{
+			Role: "system",
+			Text: "以下为该观众此前的发言，只用于理解上下文，不作为商品事实。",
+		})
+		// 购买状态：已下单时“选好点的”是要发货质量，不是选购建议。
+		if signal, sigErr := s.store.LatestOrderSignal(ctx, inputs[i].Tenant, inputs[i].Room, inputs[i].UserID); sigErr == nil && signal != "" {
+			history = append(history, interactionplan.ContextMessage{
+				Role: "system",
+				Text: "该观众此前表示已下单（未经核实）：" + signal + "。若他要求挑好的、催发货，按已购买回应，不要再推荐规格或报价。",
+			})
+		}
+		for _, turn := range turns {
+			history = append(history, interactionplan.ContextMessage{
+				Role: "user",
+				Text: turn.At.Format("15:04:05") + " " + turn.Question,
+			})
+		}
+		inputs[i].Context = history
+	}
 	items, err := batchInputsV2(batchID, inputs, time.Now())
 	if err != nil {
 		return nil, nil, err
@@ -112,11 +258,11 @@ func (s *Server) prepareInteractionBatchV2(ctx context.Context, batchID string, 
 	if snapshot.Scope.Plan != in.Plan {
 		return nil, nil, fmt.Errorf("互动方案已变化")
 	}
+	if err := validateAnswerReasoningEffort(inputs); err != nil {
+		return nil, nil, err
+	}
 	bind := interactionPurposeCostBinder(s.store.GetLiveRuntimeByRoom, in.Tenant, in.Room, in.Plan)
 	complete := func(callCtx context.Context, req agentgateway.Request) (agentgateway.Response, error) {
-		if err := s.checkInteractionBatchBudgetV2(callCtx, len(inputs), req.MaxTokens); err != nil {
-			return agentgateway.Response{}, err
-		}
 		if !in.Test {
 			var err error
 			callCtx, err = bind(callCtx)
@@ -124,13 +270,69 @@ func (s *Server) prepareInteractionBatchV2(ctx context.Context, batchID string, 
 				return agentgateway.Response{}, err
 			}
 			cost := liveCostScope(callCtx)
-			cost.Key = fmt.Sprintf("interaction-v2-batch:%d:%s:%s", session.ID, batchID, req.Stage)
+			if cost.SessionID != session.ID {
+				return agentgateway.Response{}, fmt.Errorf("互动场次在生成前已变化")
+			}
+			cost.Key = fmt.Sprintf("interaction-v2-batch:%d:%s:%s", session.ID, batchID, req.StageCostKey())
+			if req.Stage == "interaction_welcome_writer" {
+				task, _ := callCtx.Value(welcomeTaskKey{}).(string)
+				if task == "" {
+					return agentgateway.Response{}, fmt.Errorf("欢迎任务身份缺失")
+				}
+				cost.Key = fmt.Sprintf("interaction-v2-welcome:%d:%x", session.ID, sha256.Sum256([]byte(task)))
+			}
 			callCtx = withLiveCostScope(callCtx, cost)
+		} else if err := s.checkInteractionTestBatchBudgetV2(callCtx, len(inputs), req.MaxTokens); err != nil {
+			return agentgateway.Response{}, err
 		}
-		result, _, err := s.completeAnchorStyleWorkbench(callCtx, "", req.Stage, req.ResponseFormat, req.Messages, req.MaxTokens, false)
+		// The workbench caps the live request at the leased model's output limit.
+		// The batch parser verifies the result for each input within that limit.
+		result, _, err := s.completeAnchorStyleRequest(callCtx, "", req, false)
 		return result, err
 	}
-	results, issues, err := preparedBatchResultsV2(interactionplan.WithParseRequest(ctx, batchID), snapshot, inputs, items, complete)
+	ctx = interactionplan.WithContextWordSource(ctx, s.store)
+	var results []interactionBatchResultV2
+	var issues []string
+	var writer *decisionexecutor.Worker
+	for _, item := range inputs {
+		if !decisionexecutor.IsWelcomeKind(item.Kind) {
+			continue
+		}
+		if in.Test {
+			plan, planErr := s.store.GetLiveAgentPlan(ctx, in.Tenant, in.Plan)
+			if planErr != nil {
+				return nil, nil, planErr
+			}
+			writer = decisionexecutor.New(&planSpeechTestStore{Store: s.store, tenantID: in.Tenant, roomID: in.Room, plan: plan}, nil, nil, nil)
+		} else {
+			writer = decisionexecutor.New(s.store, nil, nil, nil)
+		}
+		break
+	}
+	welcomeStages := make(map[string]*interactionplan.ModelStages)
+	results, issues, err = preparedWelcomeResultsV2(ctx, snapshot, session, inputs, items,
+		func(callCtx context.Context, current model.LiveRuntimeSession, task, kind string, frozen interactionplan.Snapshot) (string, error) {
+			var stages interactionplan.ModelStages
+			body, err := writer.PrepareWelcomeV2Body(callCtx, current, task, kind, frozen, func(ctx context.Context, req agentgateway.Request) (agentgateway.Response, error) {
+				started := time.Now()
+				response, err := complete(ctx, req)
+				if err == nil {
+					stages.Record(req.Stage, response, time.Since(started))
+				}
+				return response, err
+			})
+			welcomeStages[task] = stages.Recorded()
+			return body, err
+		},
+		func(otherInputs []interactionV2Input, otherItems []interactionplan.BatchItem) ([]interactionBatchResultV2, []string, error) {
+			return prepareQuestionAndBehaviorResults(otherInputs, otherItems,
+				func(questions []interactionV2Input, items []interactionplan.BatchItem) ([]interactionBatchResultV2, []string, error) {
+					return s.prepareAnswerFlowV2(ctx, snapshot, questions, items, complete)
+				},
+				func(behaviors []interactionV2Input, items []interactionplan.BatchItem) ([]interactionBatchResultV2, []string, error) {
+					return preparedBatchResultsV2(interactionplan.WithParseRequest(ctx, batchID), snapshot, behaviors, items, complete)
+				})
+		})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -140,7 +342,30 @@ func (s *Server) prepareInteractionBatchV2(ctx context.Context, batchID string, 
 			return nil, nil, fmt.Errorf("互动场次在生成期间已变化")
 		}
 	}
+	for i := range results {
+		if stages := welcomeStages[results[i].Task]; stages != nil && results[i].Envelope.Body != "" {
+			results[i].Envelope.ModelStages = stages
+		}
+	}
 	return results, issues, nil
+}
+
+func validateAnswerReasoningEffort(inputs []interactionV2Input) error {
+	for _, in := range inputs {
+		if !interactionQuestionUsesAnswerFlow(in) {
+			continue
+		}
+		switch in.AnswerReasoningEffort {
+		case "":
+		case "low":
+			if in.Test {
+				return fmt.Errorf("按次开启低思考仅支持正式互动")
+			}
+		default:
+			return fmt.Errorf("answer_reasoning_effort 仅支持 low，省略时关闭思考")
+		}
+	}
+	return nil
 }
 
 func interactionBatchBudgetV2(count, configured, requested int) error {
@@ -150,9 +375,8 @@ func interactionBatchBudgetV2(count, configured, requested int) error {
 	return nil
 }
 
-// Match the existing operator-pinned resolution route. A small profile must not
-// silently clip a ten-person request into a one-answer response.
-func (s *Server) checkInteractionBatchBudgetV2(ctx context.Context, count, requested int) error {
+// Offline tests retain the original review-profile budget check.
+func (s *Server) checkInteractionTestBatchBudgetV2(ctx context.Context, count, requested int) error {
 	if count <= 1 {
 		return nil
 	}

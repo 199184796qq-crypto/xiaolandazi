@@ -73,6 +73,11 @@ func TestInteractionAnswerPinsOperatorRoleOutsidePool(t *testing.T) {
 	if f.poolCalls != 1 || f.operatorCalls != 1 {
 		t.Fatalf("mainline no longer uses the pool: operator=%d pool=%d", f.operatorCalls, f.poolCalls)
 	}
+	ctx = WithRoomModelScope(ctx, RoomModelScope{TenantID: 14, RoomID: 4, RuntimeID: 123, RequireLease: true})
+	got, err = g.ModelRoleIdentity(ctx, "interaction_welcome_writer")
+	if err != nil || got != want || f.operatorCalls != 2 || f.poolCalls != 1 {
+		t.Fatalf("welcome writer did not use the operator review model: identity=%s err=%v operator=%d pool=%d", got, err, f.operatorCalls, f.poolCalls)
+	}
 }
 
 func TestInteractionAnswerStagesAreLimited(t *testing.T) {
@@ -82,7 +87,7 @@ func TestInteractionAnswerStagesAreLimited(t *testing.T) {
 		"interaction_single_direct_answer", "interaction_single_greet", "interaction_single_answer",
 		"interaction_no_fact_boundary", "interaction_boundary_line", "interaction_covered_facts",
 		"interaction_welcome_greeting", "interaction_welcome_hook", "interaction_welcome_intro",
-		"interaction_welcome_highlight", "interaction_welcome_humanize",
+		"interaction_welcome_highlight", "interaction_welcome_humanize", "interaction_welcome_writer",
 		"interaction_p0_sentence_rewrite", "interaction_order_thanks", "interaction_order_fulfillment",
 	} {
 		if !UsesInteractionAnswerModel(stage) {

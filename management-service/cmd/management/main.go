@@ -63,6 +63,9 @@ func main() {
 	if err := store.Migrate(ctx); err != nil {
 		log.Fatalf("migrate management database: %v", err)
 	}
+	if err := store.MigrateCustomerDeletions(ctx); err != nil {
+		log.Fatalf("migrate customer archive: %v", err)
+	}
 	if err := store.MigrateRoomDeletions(ctx); err != nil {
 		log.Fatalf("migrate room deletions: %v", err)
 	}
@@ -83,6 +86,12 @@ func main() {
 	}
 	if err := store.MigrateCommercial(ctx); err != nil {
 		log.Fatalf("migrate commercial database: %v", err)
+	}
+	if err := store.BackfillTimeCardSales(ctx); err != nil {
+		log.Fatalf("backfill time card sales: %v", err)
+	}
+	if err := store.BackfillSingleTimeCardRefunds(ctx); err != nil {
+		log.Fatalf("backfill time card refunds: %v", err)
 	}
 	if err := store.MigrateWechatPay(ctx); err != nil {
 		log.Fatalf("migrate wechat payment database: %v", err)
@@ -278,6 +287,8 @@ func main() {
 		leaderLease,
 	)
 	api.SetWorkInbox(inbox)
+	api.SetScriptChainRedis(inboxRedis)
+	api.SetModelExchangeRedis(inboxRedis)
 	go api.RunLiveCostReconciliation(appCtx)
 	api.SetSpeechLibrary(store)
 	api.SetStylePluginRegistry(stylePluginRegistry)
@@ -286,6 +297,11 @@ func main() {
 		log.Fatalf("initialize wechat pay: %v", err)
 	}
 	api.SetWechatPay(wechatService)
+	if cfg.WechatLoginEnabled {
+		if err := api.EnableWechatLogin(ctx, cfg.WechatPay); err != nil {
+			log.Fatalf("initialize wechat login: %v", err)
+		}
+	}
 	go api.RunWechatPaymentReconciliation(appCtx)
 	go api.RunWechatRefundReconciliation(appCtx)
 	api.SetXiaozhiInternalToken(cfg.XiaozhiInternalToken)
@@ -307,8 +323,12 @@ func main() {
 	go api.RunVoiceAssetCleanup(appCtx)
 	go api.RunSpeechAnalysisAudioCleanup(appCtx)
 	go api.RunCustomMainlineUploads(appCtx)
+	go api.RunScriptHumanUploadCleanup(appCtx)
+	go api.RunPlanHumanScriptASR(appCtx)
+	go api.RunHumanFission(appCtx)
 	go api.RunCoreStatusWatch(appCtx)
 	go api.RunRoomDeletionCleanup(appCtx)
+	go api.RunCustomerDeletionCleanup(appCtx)
 	go api.RunLiveContentRefresh(appCtx)
 	runtimeReconciler := liveruntime.NewReconciler(
 		store,
@@ -345,6 +365,7 @@ func main() {
 	decisionWorker.SetExecutionRealm(cfg.RuntimeExecutionRealm)
 	decisionWorker.SetSemanticEmbedder(semanticEmbedder)
 	decisionWorker.SetSemanticService(semanticService)
+	decisionWorker.SetManualAnswerFlow(api.PrepareManualAnswerFlow)
 	decisionWorker.SetBenefitRedis(cycleRedis)
 	api.SetSpeechMissionReader(decisionWorker)
 	api.SetBenefitInvalidator(decisionWorker.InvalidateBenefitCache)
@@ -432,6 +453,11 @@ func main() {
 					log.Printf("release commerce earnings: %v", err)
 				}
 				cancel()
+				expiryCtx, cancelExpiry := context.WithTimeout(appCtx, 25*time.Second)
+				if err := store.SweepTimeCardExpirations(expiryCtx, time.Now().UTC()); err != nil {
+					log.Printf("sweep time card expirations: %v", err)
+				}
+				cancelExpiry()
 			}
 		}
 	}()

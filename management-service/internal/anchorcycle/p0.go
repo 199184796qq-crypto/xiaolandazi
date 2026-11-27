@@ -31,6 +31,10 @@ var BaseP0Allowances = []P0Allowance{
 	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一篇", Decision: "基础排除：篇章用法"},
 	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一句", Decision: "基础排除：句子用法"},
 	{RuleID: "l1.p0.absolute_claim", MatchedText: "第一步", Decision: "基础排除：步骤用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第二步", Decision: "基础排除：步骤用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第三步", Decision: "基础排除：步骤用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第二遍", Decision: "基础排除：遍数用法"},
+	{RuleID: "l1.p0.absolute_claim", MatchedText: "第三遍", Decision: "基础排除：遍数用法"},
 
 	// “最好”作为日常建议，不是最好产品/最好品牌
 	{RuleID: "l1.p0.absolute_claim", MatchedText: "最好当天", Decision: "基础排除：食用建议"},
@@ -74,6 +78,32 @@ func p0AllowanceMatches(item P0Allowance, hit contentguard.Hit, p *contentguard.
 	return p.MatchKey(string(original[hit.Start:hit.Start+len(phrase)])) == key
 }
 
+func p0AllowsHitPrepared(p *contentguard.Policy, original []rune, hit contentguard.Hit, allowances []P0Allowance) bool {
+	for _, item := range allowances {
+		if item.RuleID == hit.RuleID && p0AllowanceMatches(item, hit, p, original) {
+			return true
+		}
+	}
+	return false
+}
+
+// FilterP0Annotations applies the runtime voice gate's exceptions to editor
+// annotations. P1/P2 annotations and the original Unicode offsets are retained.
+func (s *State) FilterP0Annotations(p *contentguard.Policy, text string, hits []contentguard.Annotation) []contentguard.Annotation {
+	if s == nil || p == nil {
+		return hits
+	}
+	allowances := append(append([]P0Allowance{}, BaseP0Allowances...), s.P0Allowances...)
+	original := []rune(text)
+	kept := make([]contentguard.Annotation, 0, len(hits))
+	for _, hit := range hits {
+		if hit.Severity != "P0" || !p0AllowsHitPrepared(p, original, hit.Hit, allowances) {
+			kept = append(kept, hit)
+		}
+	}
+	return kept
+}
+
 func (s *State) scanP0(p *contentguard.Policy, text string) contentguard.Report {
 	report := p.Scan(text, s.Config.ComplianceScope)
 	if report.Passed {
@@ -83,14 +113,7 @@ func (s *State) scanP0(p *contentguard.Policy, text string) contentguard.Report 
 	original := []rune(text)
 	blocked := report.Hits[:0]
 	for _, hit := range report.Hits {
-		allowed := false
-		for _, item := range allowances {
-			if item.RuleID == hit.RuleID && p0AllowanceMatches(item, hit, p, original) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
+		if !p0AllowsHitPrepared(p, original, hit, allowances) {
 			blocked = append(blocked, hit)
 		}
 	}

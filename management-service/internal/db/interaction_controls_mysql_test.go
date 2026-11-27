@@ -40,7 +40,7 @@ func TestRoomInteractionControlsMySQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.InteractionActive != nil || item.ControlsRevision != 0 {
+	if item.InteractionActive != nil || item.ControlsRevision != 0 || item.SpeechRate != 1 {
 		t.Fatal("legacy defaults changed")
 	}
 	on := true
@@ -52,6 +52,38 @@ func TestRoomInteractionControlsMySQL(t *testing.T) {
 	}
 	if saved.ControlsRevision != 1 || saved.Switches["welcome"] || saved.Cooldowns["like"] != 120 || saved.ControlsUpdatedByUserID == nil || *saved.ControlsUpdatedByUserID != 7 {
 		t.Fatal("save/read differs", saved)
+	}
+	exec(`ALTER TABLE live_room_interaction_preferences MODIFY COLUMN interaction_speech_rate DECIMAL(2,1) NOT NULL DEFAULT 1.0`)
+	if err := s.SaveRoomInteractionSpeechRate(ctx, 14, 29, 8, 1.3); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := s.migrateRoomInteractionSpeechRate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rate, err := s.RoomInteractionSpeechRate(ctx, 14, 29); err != nil || rate != 1.3 {
+		t.Fatal("legacy rate after precision migration", rate, err)
+	}
+	if err := s.SaveRoomInteractionSpeechRate(ctx, 14, 29, 8, 1.28); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveRoomInteractionSpeechRate(ctx, 14, 31, 8, 1.1); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("cross-tenant rate edit returned %v", err)
+	}
+	for _, invalid := range []float64{0.78, 0.81, 0.821, 1.29, 1.32} {
+		if err := s.SaveRoomInteractionSpeechRate(ctx, 14, 29, 8, invalid); err == nil {
+			t.Fatalf("unsupported rate %v was accepted", invalid)
+		}
+	}
+	if rate, err := s.RoomInteractionSpeechRate(ctx, 14, 30); err != nil || rate != 1 {
+		t.Fatal("room without saved preferences", rate, err)
+	}
+	if err := s.SaveRoomInteractionSpeechRate(ctx, 14, 30, 8, 0.82); err != nil {
+		t.Fatal(err)
+	}
+	if rate, err := s.RoomInteractionSpeechRate(ctx, 14, 30); err != nil || rate != 0.82 {
+		t.Fatal("first rate save", rate, err)
 	}
 	restarted := &Store{db: s.db}
 	restored, err := restarted.GetRoomInteractionControls(ctx, 14, 29)
@@ -65,7 +97,7 @@ func TestRoomInteractionControlsMySQL(t *testing.T) {
 	oldClient.ControlsRevision = nil
 	oldClient.QuestionPreference = 75
 	saved, err = s.UpsertRoomInteractionPreferences(ctx, 14, 29, 8, oldClient)
-	if err != nil || saved.ControlsRevision != 1 || saved.Cooldowns["like"] != 120 || saved.Switches["welcome"] {
+	if err != nil || saved.SpeechRate != 1.28 || saved.QuestionPreference != 75 || saved.ControlsRevision != 1 || saved.Cooldowns["like"] != 120 || saved.Switches["welcome"] {
 		t.Fatal("legacy save reset controls", saved, err)
 	}
 	// Two callers editing the same version must not silently overwrite each other.

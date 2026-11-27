@@ -161,6 +161,51 @@ func (s *Store) ClearSpeechAnalysisAudioObjectKey(
 	return err
 }
 
+func (s *Store) ListExpiredSpeechAnalysisResults(ctx context.Context, cutoff time.Time, afterID int64) ([]model.SpeechAnalysisTask, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT task.id, task.tenant_id, task.room_id, task.recording_id, task.recording_started_at,
+		       task.status, task.stage, task.progress, COALESCE(task.error_message, ''), task.asr_task_id,
+		       task.audio_object_key, task.transcript_object_key, task.report_object_key, task.report_file_name,
+		       task.created_by_user_id, task.created_at, task.updated_at, task.finished_at
+		FROM live_speech_analysis_tasks AS task
+		WHERE task.id > ?
+		  AND COALESCE(task.finished_at, task.created_at) <= ?
+		  AND (task.transcript_object_key <> '' OR task.report_object_key <> '')
+		  AND NOT EXISTS (
+			SELECT 1 FROM live_speech_analysis_tasks AS recent
+			WHERE recent.tenant_id=task.tenant_id AND recent.room_id=task.room_id
+			  AND COALESCE(recent.finished_at, recent.created_at) > ?
+			  AND ((task.transcript_object_key <> '' AND recent.transcript_object_key=task.transcript_object_key)
+			    OR (task.report_object_key <> '' AND recent.report_object_key=task.report_object_key))
+		  )
+		ORDER BY task.id ASC
+		LIMIT 200
+	`, afterID, cutoff.UTC(), cutoff.UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tasks []model.SpeechAnalysisTask
+	for rows.Next() {
+		task, err := scanSpeechAnalysisTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, rows.Err()
+}
+
+func (s *Store) ClearSpeechAnalysisResultKeys(ctx context.Context, task model.SpeechAnalysisTask, transcriptKey, reportKey string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE live_speech_analysis_tasks
+		SET transcript_object_key=IF(transcript_object_key=?, '', transcript_object_key),
+		    report_object_key=IF(report_object_key=?, '', report_object_key)
+		WHERE id=? AND tenant_id=? AND room_id=?
+	`, transcriptKey, reportKey, task.ID, task.TenantID, task.RoomID)
+	return err
+}
+
 type speechTaskScanner interface {
 	Scan(...any) error
 }

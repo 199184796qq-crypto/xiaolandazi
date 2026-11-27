@@ -45,6 +45,13 @@ func (s *Server) resolveLiveAgentPlanTenant(
 		writeError(w, http.StatusForbidden, "当前账号没有直播智能体方案权限")
 		return 0, false
 	}
+	if planID, present, valid := livePlanSupportScope(r); present {
+		if !valid {
+			writeError(w, http.StatusForbidden, "方案协助范围无效")
+			return 0, false
+		}
+		return s.resolveScopedLivePlanSupport(w, r, actor, requestedTenantID, planID)
+	}
 	roomID, valid := liveSupportScopeRoomID(r)
 	if valid && roomID > 0 {
 		tenantID, err := s.store.GetLiveSupportAuthorizedTenant(r.Context(), roomID, actor.UserID, model.LiveSupportCapabilityL3Policy)

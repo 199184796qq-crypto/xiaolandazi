@@ -19,6 +19,7 @@ import (
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	lib "livecompanion/management/internal/speechlibrary"
+	"livecompanion/management/internal/ttsgateway"
 )
 
 func (s *Server) SetSpeechLibrary(repo lib.Repository) { s.speechLibrary = repo }
@@ -104,12 +105,16 @@ func libraryVoiceSHA(state *anchorcycle.State) string {
 		return lib.Digest(nil)
 	}
 	v := state.Config.TTS
+	format := "pcm-exact-sentence-bundle-v1"
+	if ttsgateway.ProviderForModel(v.Model) == ttsgateway.ProviderQwen {
+		format += ":" + qwenMainlineCacheProfile
+	}
 	return lib.Digest(struct {
 		Source, ID, Model string
 		Profile           int64
 		Rate              float64
 		Format            string
-	}{v.Source, v.VoiceID, v.Model, v.ProfileID, v.Rate, "pcm-exact-sentence-bundle-v1"})
+	}{v.Source, v.VoiceID, v.Model, v.ProfileID, v.Rate, format})
 }
 func libraryTextSHA(state *anchorcycle.State, task anchorcycle.Task, plan *anchorcycle.AnglePlan) (string, error) {
 	if state.P0PolicyMD == "" || state.TextModel == nil || !state.Config.SkipReview && state.ReviewModel == nil {

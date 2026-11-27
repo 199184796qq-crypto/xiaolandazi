@@ -24,6 +24,7 @@ type FirmwareEntry struct {
 	PartitionLayout string   `json:"partition_layout"`
 	FromVersions    []string `json:"from_versions"`
 	DeviceIDs       []int64  `json:"device_ids"`
+	AllDevices      bool     `json:"all_devices,omitempty"`
 }
 type Catalog struct {
 	Version int             `json:"version"`
@@ -66,8 +67,11 @@ func ReadCatalog(root string) (Catalog, error) {
 	}
 	seen := map[string]bool{}
 	for _, e := range c.Entries {
-		if !versionText.MatchString(e.Version) || !HexID(e.SHA256, 64, 64) || e.Size < 288 || e.Size > MaxFirmwareBytes || e.Board != "bread-compact-wifi-s3cam" || e.Chip != "esp32s3" || e.FlashBytes != 16<<20 || !safeName.MatchString(e.PartitionLayout) || len(e.DeviceIDs) == 0 || len(e.DeviceIDs) > 256 || len(e.FromVersions) == 0 || len(e.FromVersions) > 32 || seen[e.SHA256] {
+		if !versionText.MatchString(e.Version) || !HexID(e.SHA256, 64, 64) || e.Size < 288 || e.Size > MaxFirmwareBytes || e.Board != "bread-compact-wifi-s3cam" || e.Chip != "esp32s3" || e.FlashBytes != 16<<20 || !safeName.MatchString(e.PartitionLayout) || len(e.FromVersions) == 0 || len(e.FromVersions) > 32 || seen[e.SHA256] {
 			return c, errors.New("固件清单资料无效")
+		}
+		if (e.AllDevices && len(e.DeviceIDs) != 0) || (!e.AllDevices && (len(e.DeviceIDs) == 0 || len(e.DeviceIDs) > 256)) {
+			return c, errors.New("固件设备范围无效")
 		}
 		seen[e.SHA256] = true
 		devices := map[int64]bool{}
@@ -117,15 +121,18 @@ func numericVersion(v string) ([3]int, bool) {
 	return out, true
 }
 func (c Catalog) Select(profile Profile, deviceID int64, artifact string) (*FirmwareEntry, error) {
-	if err := profile.Validate(); err != nil {
+	if err := profile.ValidateFirmware(); err != nil {
 		return nil, err
+	}
+	if deviceID <= 0 {
+		return nil, nil
 	}
 	var found *FirmwareEntry
 	for _, e := range c.Entries {
 		if !e.Enabled || e.Board != profile.Board || e.Chip != profile.Chip || e.FlashBytes != profile.FlashBytes || e.PartitionLayout != profile.PartitionLayout || (artifact != "" && artifact != e.SHA256) {
 			continue
 		}
-		allowed := false
+		allowed := e.AllDevices
 		for _, id := range e.DeviceIDs {
 			allowed = allowed || id == deviceID
 		}

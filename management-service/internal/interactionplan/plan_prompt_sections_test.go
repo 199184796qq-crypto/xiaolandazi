@@ -25,7 +25,7 @@ func TestSplitPromptUsesExistingInteractionFreezeAndSingleBatchCall(t *testing.T
 	sections := planprompt.Sections{PersonaMD: "真诚自然", FactsMD: "次日上午发货", SpeechRequirementsMD: "主线单独讲解规则", InteractionRequirementsMD: "只回答当前问题"}
 	source := &sectionPromptSource{prompt: sections.Interaction()}
 	snapshot, err := Freeze(context.Background(), source, model.LiveRuntimeSession{TenantID: 14, RoomID: 26})
-	if err != nil || snapshot.Prompt != sections.Interaction() {
+	if err != nil || snapshot.Prompt != sections.InteractionBackground("") {
 		t.Fatal(snapshot, err)
 	}
 	for _, n := range []int{1, 10} {
@@ -42,7 +42,7 @@ func TestSplitPromptUsesExistingInteractionFreezeAndSingleBatchCall(t *testing.T
 				if n == 1 {
 					contract = planprompt.InteractionOutputContract
 				}
-				if strings.Contains(all, sections.SpeechRequirementsMD) || strings.Count(all, stripFormatSection(sections.Interaction())) != 1 || strings.Count(all, "【输出格式") != 1 || !strings.Contains(all, contract) {
+				if strings.Contains(all, sections.SpeechRequirementsMD) || strings.Contains(all, sections.FactsMD) || strings.Contains(all, sections.InteractionRequirementsMD) || strings.Count(all, sections.InteractionBackground("")) != 1 || strings.Count(all, "【输出格式") != 1 || !strings.Contains(all, contract) {
 					t.Fatal("wrong prompt routing", all)
 				}
 				text := ""

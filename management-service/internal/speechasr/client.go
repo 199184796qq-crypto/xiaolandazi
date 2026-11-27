@@ -25,11 +25,18 @@ type Client struct {
 	http    *http.Client
 }
 
+type Word struct {
+	BeginTime int64  `json:"begin_time"`
+	EndTime   int64  `json:"end_time"`
+	Text      string `json:"text"`
+}
+
 type Sentence struct {
 	BeginTime int64  `json:"begin_time"`
 	EndTime   int64  `json:"end_time"`
 	Text      string `json:"text"`
 	SpeakerID *int   `json:"speaker_id,omitempty"`
+	Words     []Word `json:"words,omitempty"`
 }
 
 type Result struct {

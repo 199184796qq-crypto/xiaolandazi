@@ -469,6 +469,47 @@ func (s *Server) liveAgentPlanProductLinkUpdate(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, updated)
 }
 
+func (s *Server) liveAgentPlanProductLinkDisplayName(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.resolveActor(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := liveAgentPlanPathID(w, r)
+	if !ok {
+		return
+	}
+	productLinkID, ok := liveAgentPlanProductLinkPathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "显示名称格式错误")
+		return
+	}
+	tenantID, ok := s.resolveLiveAgentPlanTenant(w, r, actor, requestTenantID(r), true)
+	if !ok {
+		return
+	}
+	name := strings.TrimSpace(input.DisplayName)
+	if len([]rune(name)) > 50 {
+		writeError(w, http.StatusBadRequest, "显示名称最多50个字")
+		return
+	}
+	if err := s.store.UpdateLiveAgentPlanProductLinkDisplayName(r.Context(), tenantID, planID, productLinkID, name); err != nil {
+		if errors.Is(err, appdb.ErrLiveAgentPlanProductLinkNotFound) {
+			writeError(w, http.StatusNotFound, "正式商品链接不存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "修改显示名称失败")
+		return
+	}
+	s.scheduleFactCardRebuild(tenantID, planID)
+	writeJSON(w, http.StatusOK, map[string]any{"id": productLinkID, "display_name": name})
+}
+
 func (s *Server) liveAgentPlanProductLinkDelete(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {

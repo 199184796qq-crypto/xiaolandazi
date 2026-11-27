@@ -1046,6 +1046,28 @@ func (s *Store) ListStaffEmployees(
 	ctx context.Context,
 	groupID int64,
 ) ([]model.StaffEmployeeSummary, error) {
+	return s.listStaffEmployees(ctx, groupID, 0)
+}
+
+func (s *Store) GetStaffEmployeeByUserID(ctx context.Context, userID int64) (model.StaffEmployeeSummary, error) {
+	if userID <= 0 {
+		return model.StaffEmployeeSummary{}, sql.ErrNoRows
+	}
+	items, err := s.listStaffEmployees(ctx, 0, userID)
+	if err != nil {
+		return model.StaffEmployeeSummary{}, err
+	}
+	if len(items) == 0 {
+		return model.StaffEmployeeSummary{}, sql.ErrNoRows
+	}
+	return items[0], nil
+}
+
+func (s *Store) listStaffEmployees(
+	ctx context.Context,
+	groupID int64,
+	userID int64,
+) ([]model.StaffEmployeeSummary, error) {
 	query := `
 		SELECT
 			e.id,
@@ -1069,7 +1091,10 @@ func (s *Store) ListStaffEmployees(
 		INNER JOIN staff_groups g ON g.id=e.primary_group_id
 	`
 	args := make([]any, 0, 1)
-	if groupID > 0 {
+	if userID > 0 {
+		query += " WHERE e.user_id=?"
+		args = append(args, userID)
+	} else if groupID > 0 {
 		query += `
 			WHERE e.primary_group_id=? OR EXISTS (
 				SELECT 1

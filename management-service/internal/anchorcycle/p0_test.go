@@ -175,6 +175,11 @@ func TestBaseP0AllowancesOnlyReleaseTimeOrdinalContexts(t *testing.T) {
 		{"第一次来直播间，先看看。", true},
 		{"第一年做这个，慢慢来。", true},
 		{"第一步先解冻。", true},
+		{"第二步再下锅。", true},
+		{"第三步出锅。", true},
+		{"第一遍炸定型。", true},
+		{"第二遍复炸。", true},
+		{"第三遍上色。", true},
 		{"最好当天吃完。", true},
 		{"最好提前预约。", true},
 		{"最好先问一下。", true},
@@ -197,5 +202,42 @@ func TestBaseP0AllowancesOnlyReleaseTimeOrdinalContexts(t *testing.T) {
 		if report.Passed != c.pass {
 			t.Fatalf("%q passed=%t, want %t hits=%+v", c.text, report.Passed, c.pass, report.Hits)
 		}
+	}
+}
+
+func TestP0AnnotationFilterUsesRuntimeExceptionsWithoutHidingPromotion(t *testing.T) {
+	state := p0Fixture(t, 1)
+	policy, err := contentguard.Compile(state.P0PolicyMD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := "所以第一句先说明白；我们销量第一。"
+	start := func(fragment string) int {
+		for i := range []rune(text) {
+			if strings.HasPrefix(string([]rune(text)[i:]), fragment) {
+				return i
+			}
+		}
+		return -1
+	}
+	first, sales := start("第一句"), start("第一。")
+	if first < 0 || sales < 0 {
+		t.Fatal("fixture offsets missing")
+	}
+	hits := []contentguard.Annotation{
+		{Hit: contentguard.Hit{RuleID: "l1.p0.absolute_claim", Severity: "P0", Text: "第一", Start: first, End: first + 2}},
+		{Hit: contentguard.Hit{RuleID: "l1.p0.absolute_claim", Severity: "P0", Text: "第一", Start: sales, End: sales + 2}},
+		{Hit: contentguard.Hit{RuleID: "food.p1.example", Severity: "P1", Text: "说明", Start: start("说明"), End: start("说明") + 2}},
+	}
+	filtered := state.FilterP0Annotations(policy, text, hits)
+	if len(filtered) != 2 || filtered[0].Start != sales || filtered[1].Severity != "P1" {
+		t.Fatalf("wrong exception filter: %+v", filtered)
+	}
+	state.P0Allowances = []P0Allowance{{RuleID: "l1.p0.absolute_claim", MatchedText: "老字号", Decision: "已确认"}}
+	other := "我们是老字号，也不是全国第一。"
+	old := len([]rune("我们是"))
+	otherHits := []contentguard.Annotation{{Hit: contentguard.Hit{RuleID: "l1.p0.absolute_claim", Severity: "P0", Text: "老字号", Start: old, End: old + 3}}}
+	if got := state.FilterP0Annotations(policy, other, otherHits); len(got) != 0 {
+		t.Fatalf("confirmed term still marked: %+v", got)
 	}
 }

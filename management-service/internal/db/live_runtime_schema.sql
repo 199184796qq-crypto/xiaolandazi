@@ -222,6 +222,7 @@ CREATE TABLE IF NOT EXISTS live_room_interaction_preferences (
     chat_preference TINYINT UNSIGNED NOT NULL DEFAULT 50,
     conversion_preference TINYINT UNSIGNED NOT NULL DEFAULT 50,
     auto_heat TINYINT(1) NOT NULL DEFAULT 1,
+    interaction_speech_rate DECIMAL(3,2) NOT NULL DEFAULT 1.00,
     updated_by_user_id BIGINT UNSIGNED NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -983,6 +984,33 @@ CREATE TABLE IF NOT EXISTS live_agent_plans (
     KEY idx_live_agent_plans_name (tenant_id, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
+CREATE TABLE IF NOT EXISTS live_plan_support_requests (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    staff_user_id BIGINT UNSIGNED NOT NULL,
+    requested_by_user_id BIGINT UNSIGNED NOT NULL,
+    authorized_room_id BIGINT UNSIGNED NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'pending',
+    open_slot TINYINT GENERATED ALWAYS AS (CASE WHEN status IN ('pending','accepted') THEN 1 ELSE NULL END) STORED,
+    requested_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    decided_at DATETIME(3) NULL,
+    revoked_by_user_id BIGINT UNSIGNED NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_live_plan_support_open (plan_id, staff_user_id, open_slot),
+    KEY idx_live_plan_support_staff (staff_user_id, status, updated_at),
+    CONSTRAINT fk_live_plan_support_plan FOREIGN KEY (plan_id) REFERENCES live_agent_plans(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_edit_drafts (
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    revision VARCHAR(64) NOT NULL,
+    draft_json JSON NULL,
+    PRIMARY KEY (tenant_id, plan_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
 CREATE TABLE IF NOT EXISTS live_agent_plan_room_bindings (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     tenant_id BIGINT UNSIGNED NOT NULL,
@@ -1166,6 +1194,34 @@ CREATE TABLE IF NOT EXISTS live_agent_plan_facts (
     PRIMARY KEY (id),
     UNIQUE KEY uk_live_agent_plan_fact_current (plan_id, category, fact_key),
     KEY idx_live_agent_plan_facts_plan (tenant_id, plan_id, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_material_claims (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    claim_key VARCHAR(128) NOT NULL DEFAULT '',
+    topic VARCHAR(255) NOT NULL DEFAULT '',
+    attribute VARCHAR(255) NOT NULL DEFAULT '',
+    value TEXT NOT NULL,
+    content TEXT NOT NULL,
+    polarity VARCHAR(16) NOT NULL DEFAULT 'positive',
+    fact_type VARCHAR(24) NOT NULL DEFAULT 'positive',
+    conditions_json JSON NULL,
+    details_json JSON NULL,
+    source_quote TEXT NULL,
+    source_sentence TEXT NULL,
+    scope_kind VARCHAR(24) NOT NULL DEFAULT 'plan',
+    store_name VARCHAR(255) NOT NULL DEFAULT '',
+    product_link_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    embedding_model VARCHAR(160) NOT NULL DEFAULT '',
+    embedding_json MEDIUMTEXT NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'active',
+    created_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_live_plan_material_claims_plan (tenant_id, plan_id, status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
 CREATE TABLE IF NOT EXISTS live_agent_plan_fact_revisions (
@@ -1949,3 +2005,80 @@ CREATE TABLE IF NOT EXISTS live_room_interaction_control_history (
  PRIMARY KEY(id),
  UNIQUE KEY uq_room_control_revision(tenant_id,room_id,revision)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_material_objects (
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ plan_id BIGINT UNSIGNED NOT NULL,
+ revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+ stores_json JSON NOT NULL,
+ directory_json JSON NULL,
+ updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+ PRIMARY KEY (tenant_id,plan_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_context_words (
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ plan_id BIGINT UNSIGNED NOT NULL,
+ revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+ items_json JSON NOT NULL,
+ updated_by_user_id BIGINT UNSIGNED NOT NULL,
+ updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+ PRIMARY KEY (tenant_id,plan_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_qa_pairs (
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ plan_id BIGINT UNSIGNED NOT NULL,
+ qa_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ active_revision BIGINT UNSIGNED NOT NULL,
+ deleted TINYINT NOT NULL DEFAULT 0,
+ updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+ PRIMARY KEY(tenant_id,plan_id,qa_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_qa_revisions (
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ plan_id BIGINT UNSIGNED NOT NULL,
+ qa_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ revision BIGINT UNSIGNED NOT NULL,
+ content_json JSON NOT NULL,
+ operation_id VARCHAR(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ created_by_user_id BIGINT UNSIGNED NOT NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ PRIMARY KEY(tenant_id,plan_id,qa_id,revision)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_qa_question_vectors (
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ plan_id BIGINT UNSIGNED NOT NULL,
+ qa_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ revision BIGINT UNSIGNED NOT NULL,
+ variant_id INT UNSIGNED NOT NULL,
+ question_hash CHAR(64) CHARACTER SET ascii NOT NULL,
+ embedding_model VARCHAR(160) NOT NULL,
+ space_version VARCHAR(80) NOT NULL,
+ dimensions INT UNSIGNED NOT NULL,
+ embedding_json JSON NOT NULL,
+ PRIMARY KEY(tenant_id,plan_id,qa_id,revision,variant_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+-- +statement
+CREATE TABLE IF NOT EXISTS live_agent_plan_qa_save_operations (
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ plan_id BIGINT UNSIGNED NOT NULL,
+ operation_id VARCHAR(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ payload_hash CHAR(64) CHARACTER SET ascii NOT NULL,
+ state VARCHAR(24) NOT NULL,
+ data_json JSON NOT NULL,
+ created_by_user_id BIGINT UNSIGNED NOT NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+ PRIMARY KEY(tenant_id,plan_id,operation_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

@@ -12,6 +12,9 @@ import (
 )
 
 type scriptDeliveredTrack struct {
+	HumanSource        *mainlineHumanSource   `json:"human_source,omitempty"`
+	PieceID            string                 `json:"piece_id,omitempty"`
+	HumanVoice         bool                   `json:"human_voice,omitempty"`
 	GenerationObserved bool                   `json:"generation_observed,omitempty"`
 	PolicyRecordedMS   int64                  `json:"policy_recorded_ms,omitempty"`
 	PolicyText         string                 `json:"policy_text,omitempty"`
@@ -28,6 +31,26 @@ type scriptDeliveredTrack struct {
 	TotalBlocks        int                    `json:"total_blocks,omitempty"`
 	Block              scriptFirstCachedBlock `json:"block"`
 	Confirmed          bool                   `json:"confirmed,omitempty"`
+}
+
+func scriptPlayingChoice(delivered []scriptDeliveredTrack, units []volcengineScriptUnit, trackID string) (string, int64) {
+	for _, track := range delivered {
+		if track.TrackID != trackID || track.Completed {
+			continue
+		}
+		piece := track.PieceID
+		var recordingID int64
+		if track.Unit >= 0 && track.Unit < len(units) {
+			if piece == "" {
+				piece = units[track.Unit].poolID()
+			}
+			if track.HumanVoice {
+				recordingID = track.AssetID
+			}
+		}
+		return piece, recordingID
+	}
+	return "", 0
 }
 
 func scriptSupplyCheckpointPath(tenant, room, session int64) string {
@@ -135,8 +158,10 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 			if err := markScriptRoomPlayback(recordingCacheMediaRoot(), tenant, room, v.PlanID, units[first.Unit].poolID(), strconv.FormatInt(first.AssetID, 10), first.InstanceID, true); err != nil {
 				return err
 			}
-			if err := markScriptVersionCompletedOnce(recordingCacheMediaRoot(), v.PlanID, units[first.Unit].poolID(), strconv.FormatInt(first.AssetID, 10), first.InstanceID); err != nil {
-				return err
+			if !first.HumanVoice {
+				if err := markScriptVersionCompletedOnce(recordingCacheMediaRoot(), v.PlanID, units[first.Unit].poolID(), strconv.FormatInt(first.AssetID, 10), first.InstanceID); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -145,7 +170,7 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 		generationScopeMatches := (snapshot.VersionID == 0 || snapshot.VersionID == v.ID) &&
 			(cursor.VersionID == 0 || cursor.VersionID == v.ID) &&
 			(snapshot.ProgramID == "" || cursor.ProgramID == "" || snapshot.ProgramID == cursor.ProgramID)
-		if !track.GenerationObserved && generationScopeMatches && pcm[track.TrackID] && track.AssetID > 0 && track.Unit >= 0 && track.Unit < len(units) && ctx.Err() == nil {
+		if !track.HumanVoice && !track.GenerationObserved && generationScopeMatches && pcm[track.TrackID] && track.AssetID > 0 && track.Unit >= 0 && track.Unit < len(units) && ctx.Err() == nil {
 			voiceVersion := scriptVersionForVoice(v, recordingScriptVoice{VoiceID: track.VoiceID, Model: track.Model})
 			_, voiceVersion, epochErr := s.voiceAssetGeneration(ctx, tenant, voiceVersion)
 			if epochErr == nil {
@@ -164,9 +189,13 @@ func (s *Server) confirmScriptPlayback(ctx context.Context, tenant, room, sessio
 		if err := markScriptRoomPlayback(recordingCacheMediaRoot(), tenant, room, v.PlanID, units[track.Unit].poolID(), strconv.FormatInt(track.AssetID, 10), track.InstanceID, false); err != nil {
 			return err
 		}
-		fresh, err := markScriptVersionPlayedOnce(recordingCacheMediaRoot(), v.PlanID, units[track.Unit].poolID(), strconv.FormatInt(track.AssetID, 10), track.InstanceID)
-		if err != nil {
-			return err
+		fresh := track.HumanVoice
+		if !track.HumanVoice {
+			var err error
+			fresh, err = markScriptVersionPlayedOnce(recordingCacheMediaRoot(), v.PlanID, units[track.Unit].poolID(), strconv.FormatInt(track.AssetID, 10), track.InstanceID)
+			if err != nil {
+				return err
+			}
 		}
 		track.Confirmed = true
 		changed = true

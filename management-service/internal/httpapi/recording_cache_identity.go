@@ -9,6 +9,7 @@ import (
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/recordingcache"
+	"livecompanion/management/internal/ttsgateway"
 )
 
 // Changes to expression instructions, safety policy, facts or voice identity
@@ -20,7 +21,11 @@ func recordingCurrentCacheIdentity(version model.LiveAgentPlanVersion, texts []s
 		voice.Rate = 1
 	}
 	voiceJSON, _ := json.Marshal(voice)
-	voiceKey := recordingcache.VoiceKey("recording-voice-v3", string(voiceJSON), "instruction-v1")
+	profile := "instruction-v1"
+	if ttsgateway.ProviderForModel(voice.Model) == ttsgateway.ProviderQwen {
+		profile = qwenMainlineCacheProfile
+	}
+	voiceKey := recordingcache.VoiceKey("recording-voice-v3", string(voiceJSON), profile)
 	policyMD := ""
 	if policy != nil {
 		policyMD = policy.P0PolicyMD

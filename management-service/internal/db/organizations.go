@@ -10,6 +10,8 @@ import (
 	"livecompanion/management/internal/model"
 )
 
+const platformDirectRegistrationName = "系统直册"
+
 func (s *Store) MigrateOrganizations(ctx context.Context) error {
 	columns := []struct {
 		name string
@@ -35,12 +37,13 @@ func (s *Store) MigrateOrganizations(ctx context.Context) error {
 		INSERT INTO mgmt_tenants (
 			parent_id, org_type, level, code, name, status
 		)
-		VALUES (NULL, 'platform', 0, 'platform', '伴播搭子平台', 'active')
+		VALUES (NULL, 'platform', 0, 'platform', ?, 'active')
 		ON DUPLICATE KEY UPDATE
 			org_type='platform',
 			level=0,
+			name=VALUES(name),
 			status='active'
-	`); err != nil {
+	`, platformDirectRegistrationName); err != nil {
 		return fmt.Errorf("ensure platform organization: %w", err)
 	}
 
@@ -71,7 +74,7 @@ func (s *Store) PlatformOrganizationID(ctx context.Context) (int64, error) {
 	var id int64
 	err := s.db.QueryRowContext(
 		ctx,
-		"SELECT id FROM mgmt_tenants WHERE org_type='platform' ORDER BY id LIMIT 1",
+		"SELECT id FROM mgmt_tenants WHERE code='platform' AND org_type='platform' AND status='active'",
 	).Scan(&id)
 	return id, err
 }

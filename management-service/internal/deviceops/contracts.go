@@ -49,7 +49,16 @@ type Profile struct {
 }
 
 func (p Profile) Validate() error {
-	if p.Board != "bread-compact-wifi-s3cam" || p.Chip != "esp32s3" || p.FlashBytes != 16<<20 || !safeName.MatchString(p.PartitionLayout) || !versionText.MatchString(p.FirmwareVersion) || !HexID(p.FirmwareSHA256, 64, 64) || !HexID(p.BootID, 16, 64) {
+	if !HexID(p.BootID, 16, 64) {
+		return errors.New("设备日志启动标识无效")
+	}
+	return p.ValidateFirmware()
+}
+
+// Firmware admission uses the hardware and build profile. The boot ID groups
+// diagnostics and does not participate in firmware authorization.
+func (p Profile) ValidateFirmware() error {
+	if p.Board != "bread-compact-wifi-s3cam" || p.Chip != "esp32s3" || p.FlashBytes != 16<<20 || !safeName.MatchString(p.PartitionLayout) || !versionText.MatchString(p.FirmwareVersion) || !HexID(p.FirmwareSHA256, 64, 64) {
 		return errors.New("设备维护资料无效或硬件型号不匹配")
 	}
 	if p.Storage != "partition" && p.Storage != "rtc" && p.Storage != "ram" {

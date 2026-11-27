@@ -87,62 +87,10 @@ func (s *Store) MigrateAuth(ctx context.Context) error {
 		return fmt.Errorf("widen mgmt_users.phone: %w", err)
 	}
 
-	// Phone is an authentication identifier, so it must be globally unique
-	// across every user type. Existing duplicate test/legacy rows keep the
-	// oldest user's phone; later duplicates are replaced with an explicit
-	// marker and must be corrected before those accounts can use SMS login.
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE mgmt_users
-		SET phone=TRIM(phone)
-	`); err != nil {
-		return fmt.Errorf("normalize mgmt_users.phone: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE mgmt_users u
-		INNER JOIN (
-			SELECT phone_key, MIN(id) AS keep_id
-			FROM (
-				SELECT id, TRIM(phone) AS phone_key
-				FROM mgmt_users
-				WHERE TRIM(phone) <> ''
-			) normalized
-			GROUP BY phone_key
-			HAVING COUNT(*) > 1
-		) dup ON TRIM(u.phone)=dup.phone_key AND u.id<>dup.keep_id
-		SET u.phone=CONCAT('DUP-PHONE-', u.id)
-	`); err != nil {
-		return fmt.Errorf("deduplicate mgmt_users.phone: %w", err)
-	}
-
-	hasPhoneUniqueKey, err := s.columnExists(ctx, "mgmt_users", "phone_unique_key")
-	if err != nil {
-		return err
-	}
-	if !hasPhoneUniqueKey {
-		if _, err := s.db.ExecContext(ctx, `
-			ALTER TABLE mgmt_users
-			ADD COLUMN phone_unique_key VARCHAR(128)
-			GENERATED ALWAYS AS (NULLIF(TRIM(phone), '')) STORED AFTER phone
-		`); err != nil {
-			return fmt.Errorf("add mgmt_users.phone_unique_key: %w", err)
-		}
-	}
-	hasPhoneUniqueIndex, err := s.indexExists(ctx, "mgmt_users", "uk_mgmt_users_phone_unique")
-	if err != nil {
-		return err
-	}
-	if !hasPhoneUniqueIndex {
-		if _, err := s.db.ExecContext(ctx, `
-			CREATE UNIQUE INDEX uk_mgmt_users_phone_unique
-			ON mgmt_users (phone_unique_key)
-		`); err != nil {
-			return fmt.Errorf("create unique phone index: %w", err)
-		}
-	}
-
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS mgmt_sms_login_codes (
 			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
 			phone VARCHAR(32) NOT NULL,
 			code_hash VARCHAR(255) NOT NULL,
 			expires_at DATETIME(3) NOT NULL,
@@ -151,12 +99,26 @@ func (s *Store) MigrateAuth(ctx context.Context) error {
 			request_ip VARCHAR(64) NOT NULL DEFAULT '',
 			created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 			PRIMARY KEY (id),
+			KEY idx_mgmt_sms_login_account (user_id, phone, id),
 			KEY idx_mgmt_sms_login_phone_created (phone, created_at),
 			KEY idx_mgmt_sms_login_ip_created (request_ip, created_at),
 			KEY idx_mgmt_sms_login_expires (expires_at)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 	`); err != nil {
 		return fmt.Errorf("create sms login codes table: %w", err)
+	}
+	hasSMSAccount, err := s.columnExists(ctx, "mgmt_sms_login_codes", "user_id")
+	if err != nil {
+		return err
+	}
+	if !hasSMSAccount {
+		if _, err := s.db.ExecContext(ctx, `
+			ALTER TABLE mgmt_sms_login_codes
+			ADD COLUMN user_id BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER id,
+			ADD KEY idx_mgmt_sms_login_account (user_id, phone, id)
+		`); err != nil {
+			return fmt.Errorf("bind SMS login codes to accounts: %w", err)
+		}
 	}
 
 	if _, err := s.db.ExecContext(ctx, `
@@ -197,7 +159,13 @@ func (s *Store) MigrateAuth(ctx context.Context) error {
 		}
 	}
 
-	return nil
+	if err := s.migrateAccountTables(ctx); err != nil {
+		return err
+	}
+	if err := s.migratePhoneAccountScope(ctx); err != nil {
+		return err
+	}
+	return s.migrateUsernameAccountScope(ctx)
 }
 
 func (s *Store) columnExists(
@@ -231,11 +199,8 @@ func (s *Store) EnsureDefaultAdmin(
 			role,
 			status
 		)
-		VALUES (NULL, ?, ?, ?, 'platform_admin', 'active')
-		ON DUPLICATE KEY UPDATE
-			display_name = VALUES(display_name),
-			role = 'platform_admin',
-			status = 'active'
+		SELECT NULL, ?, ?, ?, 'platform_admin', 'active'
+		WHERE NOT EXISTS (SELECT 1 FROM mgmt_users WHERE role = 'platform_admin')
 	`, username, passwordHash, displayName)
 	if err != nil {
 		return fmt.Errorf("seed default admin: %w", err)
@@ -243,28 +208,45 @@ func (s *Store) EnsureDefaultAdmin(
 	return nil
 }
 
+var errUnscopedUsername = errors.New("username requires a scoped login")
+
 func (s *Store) GetUserByUsername(
 	ctx context.Context,
 	username string,
 ) (model.User, error) {
-	return s.queryUser(ctx, `
-		SELECT id, tenant_id, username, password_hash, display_name, avatar_url, role, must_change_password, phone, province, city, district, status, created_at
-		FROM mgmt_users
-		WHERE username = ?
-		LIMIT 1
-	`, strings.TrimSpace(username))
+	username = strings.TrimSpace(username)
+	user, err := s.queryAccount(ctx, `u.username = ? AND NOT EXISTS (
+		SELECT 1 FROM mgmt_users other WHERE other.username = u.username AND other.id <> u.id
+	)`, false, username)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return user, err
+	}
+	// Do not fall back to a phone lookup for a shared numeric username.
+	var found bool
+	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM mgmt_users WHERE username=?)", username).Scan(&found); err != nil {
+		return user, err
+	}
+	if found {
+		return user, errUnscopedUsername
+	}
+	return user, sql.ErrNoRows
 }
 
 func (s *Store) GetUserByPhone(
 	ctx context.Context,
 	phone string,
+	scope AccountScope,
 ) (model.User, error) {
-	return s.queryUser(ctx, `
-		SELECT id, tenant_id, username, password_hash, display_name, avatar_url, role, must_change_password, phone, province, city, district, status, created_at
-		FROM mgmt_users
-		WHERE phone_unique_key = ?
-		LIMIT 1
-	`, strings.TrimSpace(phone))
+	const phonePredicate = "u.phone_unique_key = ?"
+	if scope == AccountAny {
+		// Legacy callers do not identify an account type. A shared phone cannot
+		// authenticate either account through that entry point.
+		return s.queryAccount(ctx, phonePredicate+` AND NOT EXISTS (
+			SELECT 1 FROM mgmt_users other
+			WHERE other.phone_unique_key = u.phone_unique_key AND other.id <> u.id
+		)`, false, strings.TrimSpace(phone))
+	}
+	return s.queryScopedAccount(ctx, scope, phonePredicate, strings.TrimSpace(phone))
 }
 
 type SMSLoginChallenge struct {
@@ -281,6 +263,7 @@ var ErrSMSChallengeRateLimited = errors.New("sms challenge rate limited")
 
 func (s *Store) CreateSMSLoginChallenge(
 	ctx context.Context,
+	userID int64,
 	phone string,
 	codeHash string,
 	expiresAt time.Time,
@@ -335,16 +318,16 @@ func (s *Store) CreateSMSLoginChallenge(
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE mgmt_sms_login_codes
 		SET used_at=COALESCE(used_at, CURRENT_TIMESTAMP(3))
-		WHERE phone=? AND used_at IS NULL
-	`, phone); err != nil {
+		WHERE user_id=? AND phone=? AND used_at IS NULL
+	`, userID, phone); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO mgmt_sms_login_codes (
-			phone, code_hash, expires_at, request_ip
+			user_id, phone, code_hash, expires_at, request_ip
 		)
-		VALUES (?, ?, ?, ?)
-	`, phone, codeHash, expiresAt.UTC(), requestIP); err != nil {
+		VALUES (?, ?, ?, ?, ?)
+	`, userID, phone, codeHash, expiresAt.UTC(), requestIP); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -352,16 +335,17 @@ func (s *Store) CreateSMSLoginChallenge(
 
 func (s *Store) GetLatestSMSLoginChallenge(
 	ctx context.Context,
+	userID int64,
 	phone string,
 ) (SMSLoginChallenge, error) {
 	var item SMSLoginChallenge
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, phone, code_hash, expires_at, used_at, failed_attempts, created_at
 		FROM mgmt_sms_login_codes
-		WHERE phone=?
+		WHERE user_id=? AND phone=?
 		ORDER BY id DESC
 		LIMIT 1
-	`, strings.TrimSpace(phone)).Scan(
+	`, userID, strings.TrimSpace(phone)).Scan(
 		&item.ID,
 		&item.Phone,
 		&item.CodeHash,
@@ -408,12 +392,7 @@ func (s *Store) GetUserByID(
 	ctx context.Context,
 	userID int64,
 ) (model.User, error) {
-	return s.queryUser(ctx, `
-		SELECT id, tenant_id, username, password_hash, display_name, avatar_url, role, must_change_password, phone, province, city, district, status, created_at
-		FROM mgmt_users
-		WHERE id = ?
-		LIMIT 1
-	`, userID)
+	return s.queryAccount(ctx, "u.id = ?", false, userID)
 }
 
 func (s *Store) ResolveSession(
@@ -421,53 +400,11 @@ func (s *Store) ResolveSession(
 	tokenHash string,
 	now time.Time,
 ) (model.User, error) {
-	var item model.User
-	var tenantID sql.NullInt64
-
-	err := s.db.QueryRowContext(ctx, `
-		SELECT
-			u.id,
-			u.tenant_id,
-			u.username,
-			u.password_hash,
-			u.display_name,
-			u.avatar_url,
-			u.role,
-			u.must_change_password,
-			u.phone,
-			u.province,
-			u.city,
-			u.district,
-			u.status,
-			u.created_at
-		FROM mgmt_sessions s
-		INNER JOIN mgmt_users u ON u.id = s.user_id
-		WHERE s.token_hash = ?
-		  AND s.expires_at > ?
-		  AND u.status = 'active'
-		LIMIT 1
-	`, tokenHash, now.UTC()).Scan(
-		&item.ID,
-		&tenantID,
-		&item.Username,
-		&item.PasswordHash,
-		&item.DisplayName,
-		&item.AvatarURL,
-		&item.Role,
-		&item.MustChangePassword,
-		&item.Phone,
-		&item.Province,
-		&item.City,
-		&item.District,
-		&item.Status,
-		&item.CreatedAt,
-	)
+	item, err := s.queryAccount(ctx, `u.id = (
+		SELECT user_id FROM mgmt_sessions WHERE token_hash = ? AND expires_at > ?
+	)`, true, tokenHash, now.UTC())
 	if err != nil {
 		return model.User{}, err
-	}
-	if tenantID.Valid {
-		value := tenantID.Int64
-		item.TenantID = &value
 	}
 
 	_, _ = s.db.ExecContext(ctx, `

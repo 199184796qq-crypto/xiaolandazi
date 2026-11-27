@@ -42,8 +42,16 @@ type liveResumeAgentFence struct {
 }
 
 func (p liveResumeProgram) validSession(session int64) bool {
-	return p.ProgramID != "" && p.VersionID > 0 && p.Running && p.ManualPaused != nil && p.ControlRevision != nil &&
-		(p.SessionID == fmt.Sprintf("live-runtime-%d", session) || p.SessionID == fmt.Sprintf("recording-stream-%d", session))
+	if session <= 0 || p.ProgramID == "" || p.VersionID <= 0 || !p.Running || p.ManualPaused == nil || p.ControlRevision == nil {
+		return false
+	}
+	id := strconv.FormatInt(session, 10)
+	switch p.SessionID {
+	case "live-runtime-" + id, "recording-stream-" + id, "volcengine-long-" + id:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p liveResumeProgram) matches(f liveResumeFence, session int64) bool {

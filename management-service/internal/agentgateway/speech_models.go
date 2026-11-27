@@ -183,7 +183,7 @@ func (g *Gateway) completeSpeechModel(ctx context.Context, request Request) (Res
 	if request.Timeout <= 0 || request.Timeout > limit {
 		request.Timeout = limit
 	}
-	if request.MaxTokens <= 0 || request.MaxTokens > p.MaxTokens {
+	if !request.UseProviderOutputLimit && (request.MaxTokens <= 0 || request.MaxTokens > p.MaxTokens) {
 		request.MaxTokens = p.MaxTokens
 	}
 	request.Messages = append([]Message(nil), request.Messages...)

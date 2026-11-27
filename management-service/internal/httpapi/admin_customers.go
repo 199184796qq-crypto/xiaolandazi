@@ -2,12 +2,8 @@ package httpapi
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -19,11 +15,6 @@ import (
 type adminResetPasswordRequest struct {
 	DeliveryMethod string `json:"delivery_method"`
 	Email          string `json:"email,omitempty"`
-}
-type coreRoomListResponse struct {
-	Items []struct {
-		ID int64 `json:"id"`
-	} `json:"items"`
 }
 
 func (s *Server) requirePlatformAdmin(
@@ -120,11 +111,7 @@ func (s *Server) adminResetCustomerPassword(
 
 	var input adminResetPasswordRequest
 	scope := staffBusinessScope(actor, access, "customer.password_reset")
-	visible, err := s.store.AdminCustomerVisibleToScope(
-		r.Context(),
-		scope,
-		userID,
-	)
+	visible, err := s.store.CanResetCustomerPassword(r.Context(), scope, access.EmployeeID, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "校验终端权限失败")
 		return
@@ -203,56 +190,6 @@ func (s *Server) adminResetCustomerPassword(
 		"credential": credential,
 	})
 }
-func (s *Server) adminDeleteCustomer(
-	w http.ResponseWriter,
-	r *http.Request,
-) {
-	if _, ok := s.requirePlatformAdmin(w, r); !ok {
-		return
-	}
-
-	userID, ok := adminUserID(w, r)
-	if !ok {
-		return
-	}
-
-	customer, err := s.store.GetAdminCustomer(r.Context(), userID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "终端不存在")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "读取终端失败")
-		return
-	}
-
-	if err := s.deleteTenantCoreRooms(
-		r,
-		customer.TenantID,
-	); err != nil {
-		writeError(
-			w,
-			http.StatusBadGateway,
-			"删除终端失败：核心直播间清理未完成",
-		)
-		return
-	}
-
-	if _, err := s.store.DeleteAdminCustomer(
-		r.Context(),
-		userID,
-	); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "终端不存在")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "删除终端失败")
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (s *Server) adminListAuditLogs(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -358,69 +295,4 @@ func adminUserID(
 		return 0, false
 	}
 	return value, true
-}
-
-func (s *Server) deleteTenantCoreRooms(
-	r *http.Request,
-	tenantID int64,
-) error {
-	query := url.Values{}
-	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
-
-	resp, err := s.core.Do(
-		r.Context(),
-		http.MethodGet,
-		"/internal/v1/rooms",
-		query,
-		nil,
-	)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf(
-			"list core rooms status=%d body=%s",
-			resp.StatusCode,
-			string(payload),
-		)
-	}
-
-	var list coreRoomListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		return fmt.Errorf("decode core rooms: %w", err)
-	}
-
-	for _, room := range list.Items {
-		deleteResp, err := s.core.DoRoom(
-			r.Context(),
-			tenantID,
-			room.ID,
-			http.MethodDelete,
-			fmt.Sprintf("/internal/v1/rooms/%d", room.ID),
-			query,
-			nil,
-		)
-		if err != nil {
-			return err
-		}
-
-		status := deleteResp.StatusCode
-		payload, _ := io.ReadAll(
-			io.LimitReader(deleteResp.Body, 2048),
-		)
-		deleteResp.Body.Close()
-
-		if status < 200 || status >= 300 {
-			return fmt.Errorf(
-				"delete core room %d status=%d body=%s",
-				room.ID,
-				status,
-				string(payload),
-			)
-		}
-	}
-	return nil
 }

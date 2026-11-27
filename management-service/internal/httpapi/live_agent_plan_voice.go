@@ -133,7 +133,7 @@ func (s *Server) liveAgentPlanFullShowVariantVoice(w http.ResponseWriter, r *htt
 	gateway := ttsgateway.NewFromEnv()
 	pieces := make([]generatedVoiceWAVPiece, 0, len(segments))
 	for index, segmentText := range segments {
-		generated, synthErr := gateway.SynthesizeURL(ctx, withNaturalBreathInstruction(ttsgateway.SynthesizeRequest{
+		generated, synthErr := gateway.SynthesizeURL(ctx, withMainlineDeliveryInstruction(ttsgateway.SynthesizeRequest{
 			Model: modelName, VoiceID: voiceID, Text: segmentText, Rate: input.Rate,
 		}))
 		if synthErr != nil {

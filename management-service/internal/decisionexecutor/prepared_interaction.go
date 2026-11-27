@@ -18,6 +18,20 @@ const maxPreparedInteractions = 128
 
 var errPreparedInteractionWaiting = errors.New("prepared interaction waiting for a safe cut")
 
+func restoreClaimPreparation(item *decisionItem, prepared decisionItem) {
+	claim := *item
+	*item = prepared
+	item.CurrentMainline, item.ResumeMainline, item.ResumeSegmentID = claim.CurrentMainline, claim.ResumeMainline, claim.ResumeSegmentID
+	item.PreparationCutPlans = claim.PreparationCutPlans
+	item.AnswerDeferredUntil = claim.AnswerDeferredUntil
+	item.AnswerDraftExpected = claim.AnswerDraftExpected
+	if retryableTimeReport(claim) || !claim.AnswerDeferredUntil.IsZero() {
+		item.ID, item.MissionID = claim.ID, claim.MissionID
+		item.ExpiresAt, item.CompletionUntil = claim.ExpiresAt, claim.CompletionUntil
+		item.AudioPrepared, item.PreparedUntil = claim.AudioPrepared, claim.PreparedUntil
+	}
+}
+
 type preparedInteractionKey struct {
 	Tenant, Room, Session int64
 	Decision              string
@@ -29,6 +43,7 @@ type preparedInteraction struct {
 	Item           decisionItem
 	Text, AudioURL string
 	Scope, Memory  string
+	PlaybackScope  string
 	ExpiresAt      time.Time
 }
 
@@ -67,6 +82,8 @@ func (w *Worker) interactionContentScope(ctx context.Context, session model.Live
 		if !ready {
 			return "", fmt.Errorf("本场主播声音未就绪")
 		}
+		// Timing and model diagnostics are for history, independent of audio identity.
+		e.ModelStages = nil
 		return interactionDigest([]any{e, voice, item.Nicknames, w.readingRulesFor(ctx, session)}), nil
 	}
 	plan, err := w.store.GetLiveAgentPlanForRoom(ctx, session.TenantID, session.RoomID)
@@ -150,7 +167,7 @@ func (w *Worker) takePreparedInteraction(session model.LiveRuntimeSession, item 
 	return prepared, true
 }
 
-func (w *Worker) savePreparedInteraction(session model.LiveRuntimeSession, item decisionItem, text, audioURL, scope, memory string, expiresAt time.Time) {
+func (w *Worker) savePreparedInteraction(session model.LiveRuntimeSession, item decisionItem, text, audioURL, scope, memory, playbackScope string, expiresAt time.Time) {
 	if strings.TrimSpace(text) == "" || strings.TrimSpace(audioURL) == "" || !w.now().Before(expiresAt) {
 		return
 	}
@@ -174,7 +191,26 @@ func (w *Worker) savePreparedInteraction(session model.LiveRuntimeSession, item 
 		}
 		delete(w.prepared, oldest)
 	}
-	w.prepared[preparationKey(session, item)] = preparedInteraction{Item: item, Text: text, AudioURL: audioURL, Scope: scope, Memory: memory, ExpiresAt: expiresAt}
+	w.prepared[preparationKey(session, item)] = preparedInteraction{Item: item, Text: text, AudioURL: audioURL, Scope: scope, Memory: memory, PlaybackScope: playbackScope, ExpiresAt: expiresAt}
+}
+
+func (w *Worker) setDeferredCacheDeadline(session model.LiveRuntimeSession, item decisionItem) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := preparationKey(session, item)
+	deadline := item.AnswerDeferredUntil
+	for _, cache := range []map[preparedInteractionKey]preparedInteraction{w.preflightDrafts, w.prepared} {
+		if entry, ok := cache[key]; ok {
+			if !w.now().Before(deadline) {
+				delete(cache, key)
+				continue
+			}
+			if deadline.Before(entry.ExpiresAt) {
+				entry.ExpiresAt = deadline
+			}
+			cache[key] = entry
+		}
+	}
 }
 
 func (w *Worker) prunePreparedInteractions(sessions []model.LiveRuntimeSession) {
@@ -185,6 +221,9 @@ func (w *Worker) prunePreparedInteractions(sessions []model.LiveRuntimeSession) 
 	cached := map[[3]int64]bool{}
 	w.mu.Lock()
 	for key := range w.prepared {
+		cached[[3]int64{key.Tenant, key.Room, key.Session}] = true
+	}
+	for key := range w.preflightDrafts {
 		cached[[3]int64{key.Tenant, key.Room, key.Session}] = true
 	}
 	for key := range w.timeReportDrafts {
@@ -218,12 +257,19 @@ func (w *Worker) prunePreparedInteractions(sessions []model.LiveRuntimeSession) 
 		}
 	}
 	for key, value := range w.prepared {
-		if c, ok := controls[[3]int64{key.Tenant, key.Room, key.Session}]; ok && (!c.Enabled(interactionControlKind(value.Item)) || c.DisabledAt[interactionControlKind(value.Item)] > value.Item.ControlsRevision) {
+		if c, ok := controls[[3]int64{key.Tenant, key.Room, key.Session}]; ok && invalidatedByInteractionControls(value.Item, c) {
 			delete(w.prepared, key)
 			continue
 		}
 		if !active[[3]int64{key.Tenant, key.Room, key.Session}] || !w.now().Before(value.ExpiresAt) {
 			delete(w.prepared, key)
+		}
+	}
+	for key, value := range w.preflightDrafts {
+		sessionKey := [3]int64{key.Tenant, key.Room, key.Session}
+		c, ok := controls[sessionKey]
+		if !active[sessionKey] || !w.now().Before(value.ExpiresAt) || (ok && invalidatedByInteractionControls(value.Item, c)) {
+			delete(w.preflightDrafts, key)
 		}
 	}
 }

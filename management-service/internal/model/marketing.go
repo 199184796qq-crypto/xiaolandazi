@@ -19,6 +19,8 @@ type MarketingCampaignItem struct {
 // product targets, and each target can have its own package period, quantity
 // and discount. Product base definitions remain independent from marketing.
 type MarketingCampaign struct {
+	Stock            *MarketingCampaignStock       `json:"-"`
+	RemainingStock   *uint64                       `json:"remaining_stock,omitempty"`
 	Controls         MarketingCampaignControls     `json:"controls"`
 	Presentation     MarketingCampaignPresentation `json:"presentation"`
 	Eligible         *bool                         `json:"eligible,omitempty"`
@@ -49,19 +51,33 @@ type MarketingCampaign struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+type MarketingCampaignStock struct {
+	Limit     uint32 `json:"limit"`
+	Used      uint64 `json:"used"`
+	Reserved  uint64 `json:"reserved"`
+	Remaining uint64 `json:"remaining"`
+}
+
+func (s *MarketingCampaignStock) SoldOut() bool {
+	return s != nil && s.Limit > 0 && s.Used >= uint64(s.Limit)
+}
+
 type MarketingCampaignInput struct {
-	Controls         MarketingCampaignControls      `json:"controls"`
-	Presentation     *MarketingCampaignPresentation `json:"presentation,omitempty"`
-	Code             string                         `json:"code"`
-	Name             string                         `json:"name"`
-	Description      string                         `json:"description"`
-	Status           string                         `json:"status"`
-	SortOrder        int                            `json:"sort_order"`
-	PricingRule      string                         `json:"pricing_rule"`
-	StartsAt         string                         `json:"starts_at"`
-	EndsAt           string                         `json:"ends_at"`
-	Items            []MarketingCampaignItem        `json:"items"`
-	DisplayLocations []string                       `json:"display_locations"`
+	UnlimitedTime     *bool                          `json:"unlimited_time,omitempty"`
+	StockLimit        *uint32                        `json:"stock_limit,omitempty"`
+	PreserveSortOrder bool                           `json:"preserve_sort_order,omitempty"`
+	Controls          MarketingCampaignControls      `json:"controls"`
+	Presentation      *MarketingCampaignPresentation `json:"presentation,omitempty"`
+	Code              string                         `json:"code"`
+	Name              string                         `json:"name"`
+	Description       string                         `json:"description"`
+	Status            string                         `json:"status"`
+	SortOrder         int                            `json:"sort_order"`
+	PricingRule       string                         `json:"pricing_rule"`
+	StartsAt          string                         `json:"starts_at"`
+	EndsAt            string                         `json:"ends_at"`
+	Items             []MarketingCampaignItem        `json:"items"`
+	DisplayLocations  []string                       `json:"display_locations"`
 }
 
 // MarketingCampaignPresentation is presentation-only configuration. Pricing,

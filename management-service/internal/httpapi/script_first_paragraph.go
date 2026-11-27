@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
 )
+
+var errScriptFirstSynthesisDisabled = errors.New("循环缺少首轮声音，未重新合成")
 
 type scriptFirstPaidState struct {
 	Key       string                      `json:"key"`
@@ -54,7 +57,7 @@ func prepareScriptFirstPaid(ctx context.Context, unit volcengineScriptUnit, gene
 	out, err := generate(ctx, audioPath)
 	if err != nil {
 		var admission scriptBudgetAdmissionError
-		if ttsgateway.DefinitelyNotSent(err) || errors.As(err, &admission) {
+		if ttsgateway.DefinitelyNotSent(err) || errors.As(err, &admission) || errors.Is(err, errScriptFirstSynthesisDisabled) {
 			if e := os.Remove(path); e != nil {
 				return out, e
 			}
@@ -91,7 +94,7 @@ func (s *Server) ensureScriptFirstParagraph(ctx context.Context, tenant, room, s
 		}
 	} else {
 		var err error
-		audio, err = s.ensureQwenScriptParagraph(ctx, tenant, room, session, v, unit, allowSynthesis)
+		audio, err = s.ensureUntimedScriptParagraph(ctx, tenant, room, session, v, unit, allowSynthesis)
 		if err != nil {
 			return audio, err
 		}
@@ -101,7 +104,7 @@ func (s *Server) ensureScriptFirstParagraph(ctx context.Context, tenant, room, s
 	return audio, nil
 }
 
-func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, session int64, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, allowSynthesis bool) (volcengineCachedAudio, error) {
+func (s *Server) ensureUntimedScriptParagraph(ctx context.Context, tenant, room, session int64, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, allowSynthesis bool) (volcengineCachedAudio, error) {
 	var empty volcengineCachedAudio
 	unlock, err := lockVolcengineParagraph(ctx, unit.Dir)
 	if err != nil {
@@ -125,19 +128,24 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 	}
 	if !allowSynthesis {
 		if _, e := os.Stat(filepath.Join(unit.Dir, "paragraph-job.json")); errors.Is(e, os.ErrNotExist) {
-			return empty, errors.New("循环缺少首轮声音，未重新合成")
+			return empty, errScriptFirstSynthesisDisabled
 		}
 	}
-	generated, err := prepareScriptFirstPaid(ctx, unit, func(c context.Context, path string) (ttsgateway.SynthesizeResponse, error) {
+	synthesize := func(c context.Context, part volcengineScriptUnit, path string) (ttsgateway.SynthesizeResponse, error) {
 		if !allowSynthesis {
-			return ttsgateway.SynthesizeResponse{}, errors.New("循环缺少首轮声音，未重新合成")
+			return ttsgateway.SynthesizeResponse{}, errScriptFirstSynthesisDisabled
 		}
-		request := withNaturalBreathInstruction(ttsgateway.SynthesizeRequest{Provider: ttsgateway.ProviderQwen, Model: v.VoiceIdentity.Model, VoiceID: v.VoiceIdentity.VoiceID, Text: unit.Text, Rate: v.VoiceIdentity.Rate, Instruction: recordingInstructionForVersion(v, unit.Text), ParagraphPath: path})
-		release, err := reserveScriptVoiceSynthesis(v.PlanID, unit.Key, hanCount(unit.Text))
+		provider := ttsgateway.ProviderForModel(v.VoiceIdentity.Model)
+		request := withMainlineDeliveryInstruction(ttsgateway.SynthesizeRequest{
+			Provider: provider, Model: v.VoiceIdentity.Model, VoiceID: v.VoiceIdentity.VoiceID,
+			Text: part.Text, Rate: v.VoiceIdentity.Rate, Instruction: recordingInstructionForVersion(v, part.Text),
+			ParagraphPath: path, DrainOnCancel: provider == ttsgateway.ProviderTencent,
+		})
+		release, err := reserveScriptVoiceSynthesis(v.PlanID, part.Key, hanCount(part.Text))
 		if err != nil {
 			return ttsgateway.SynthesizeResponse{}, scriptBudgetAdmissionError{err}
 		}
-		scope := liveCostCallScope{TenantID: tenant, RoomID: room, SessionID: session, PlanID: v.PlanID, Priority: "necessary", Reason: "话术原文整段合成或恢复补合成", Key: fmt.Sprintf("script-paragraph:%d:%s:%s", session, unit.Key, anchorcycle.ID())}
+		scope := liveCostCallScope{TenantID: tenant, RoomID: room, SessionID: session, PlanID: v.PlanID, Priority: "necessary", Reason: "话术原文整段合成或恢复补合成", Key: fmt.Sprintf("script-paragraph:%d:%s:%s", session, part.Key, anchorcycle.ID())}
 		if parent := liveCostScope(c); parent.Priority == "optional" {
 			scope.Priority = "optional"
 			scope.Reason = parent.Reason
@@ -149,6 +157,15 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 		out, err := ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(c, scope), request)
 		release(ttsgateway.DefinitelyNotSent(err))
 		return out, err
+	}
+	generated, err := prepareScriptFirstPaid(ctx, unit, func(c context.Context, path string) (ttsgateway.SynthesizeResponse, error) {
+		if allowSynthesis {
+			reportScriptManualProgress(c, scriptManualSynthesizing)
+		}
+		if v.VoiceIdentity.Model == "qwen3-tts-flash" && utf8.RuneCountInString(unit.Text) > ttsgateway.QwenFlashMaxInputRunes {
+			return synthesizeQwenFlashParagraph(c, unit, path, synthesize)
+		}
+		return synthesize(c, unit, path)
 	})
 	if err != nil {
 		return empty, err
@@ -156,24 +173,16 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 	if err = checkScriptGenerationGuard(ctx); err != nil {
 		return empty, err
 	}
-	duration, err := volcengineWAVDuration(generated.AudioFile)
+	raw, duration, err := readScriptParagraphPlaybackWAV(ctx, v.VoiceIdentity.Model, unit, generated.AudioFile)
 	if err != nil {
-		if e := retireUnavailableScriptFiles(ctx, unit, "paragraph-job.json", "paragraph.wav"); e != nil {
-			return empty, e
-		}
 		return empty, err
 	}
 	// Keep the untimed transcript separate. No character-based cue timing.
-	var timeline []model.LiveAgentPlanTimelineSegment
-	raw, err := os.ReadFile(generated.AudioFile)
-	if err != nil {
-		return empty, err
-	}
 	assetID, err := s.archiveUntimedScriptFirstAudio(ctx, tenant, room, v, unit.Key, unit.Text, generated.VoiceID, raw, duration)
 	if err != nil {
 		return empty, err
 	}
-	audio := volcengineCachedAudio{AssetID: assetID, DurationMS: duration, VoiceID: generated.VoiceID, Timeline: timeline, UntimedTranscript: true}
+	audio := volcengineCachedAudio{AssetID: assetID, DurationMS: duration, VoiceID: generated.VoiceID, UntimedTranscript: true}
 	if err = checkScriptGenerationGuard(ctx); err != nil {
 		return empty, err
 	}
@@ -182,4 +191,29 @@ func (s *Server) ensureQwenScriptParagraph(ctx context.Context, tenant, room, se
 		return empty, err
 	}
 	return audio, nil
+}
+
+func readScriptParagraphPlaybackWAV(ctx context.Context, modelName string, unit volcengineScriptUnit, path string) ([]byte, int64, error) {
+	tencent := modelName == ttsgateway.TencentPremiumModel
+	if tencent {
+		// Keep the paid 16 kHz source for retries. Only the playback copy is
+		// normalized to the 24 kHz format shared by long-paragraph assets.
+		normalized, err := normalizeAudioToCoreWAV(ctx, path)
+		if err != nil {
+			return nil, 0, err
+		}
+		path = normalized
+		defer os.Remove(normalized)
+	}
+	duration, err := volcengineWAVDuration(path)
+	if err != nil {
+		if !tencent {
+			if e := retireUnavailableScriptFiles(ctx, unit, "paragraph-job.json", "paragraph.wav"); e != nil {
+				return nil, 0, e
+			}
+		}
+		return nil, 0, err
+	}
+	raw, err := os.ReadFile(path)
+	return raw, duration, err
 }

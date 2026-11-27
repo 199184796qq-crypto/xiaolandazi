@@ -1,6 +1,8 @@
-package db
+﻿package db
 
 import (
+	"database/sql"
+	"errors"
 	"context"
 	"strings"
 
@@ -48,4 +50,26 @@ WHERE tenant_id=? AND room_id=? AND event_type='chat' AND content IS NOT NULL AN
 		out[left], out[right] = out[right], out[left]
 	}
 	return out, rows.Err()
+}
+
+// LatestOrderSignal 返回该观众最近一条“已下单”类发言（未核实的下单信号）。
+// 只用于让回答分清“买前选规格”和“买后要承诺”，不能当作已付款凭证。
+func (s *Store) LatestOrderSignal(ctx context.Context, tenantID, roomID int64, userID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return "", nil
+	}
+	query := `
+SELECT content FROM live_room_event_archive
+WHERE tenant_id=? AND room_id=? AND event_type='order_signal' AND user_id=? AND content IS NOT NULL AND content <> ''
+ORDER BY occurred_at DESC, id DESC LIMIT 1`
+	var content string
+	err := s.db.QueryRowContext(ctx, query, tenantID, roomID, userID).Scan(&content)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(content), nil
 }

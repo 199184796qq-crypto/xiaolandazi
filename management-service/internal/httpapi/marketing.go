@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -51,6 +52,14 @@ func (s *Server) commercialCreateMarketingCampaign(w http.ResponseWriter, r *htt
 }
 
 func (s *Server) commercialUpdateMarketingCampaign(w http.ResponseWriter, r *http.Request) {
+	s.updateMarketingCampaign(w, r, s.store.UpdateMarketingCampaign)
+}
+
+func (s *Server) commercialUpdateWorkspaceMarketingCampaign(w http.ResponseWriter, r *http.Request) {
+	s.updateMarketingCampaign(w, r, s.store.UpdateWorkspaceMarketingCampaign)
+}
+
+func (s *Server) updateMarketingCampaign(w http.ResponseWriter, r *http.Request, update func(context.Context, int64, int64, model.MarketingCampaignInput) (model.MarketingCampaign, error)) {
 	actor, _, ok := s.requireStaffPermission(w, r, "commercial.marketing.manage")
 	if !ok {
 		return
@@ -63,7 +72,7 @@ func (s *Server) commercialUpdateMarketingCampaign(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
-	item, err := s.store.UpdateMarketingCampaign(
+	item, err := update(
 		r.Context(),
 		campaignID,
 		actor.UserID,
@@ -73,10 +82,14 @@ func (s *Server) commercialUpdateMarketingCampaign(w http.ResponseWriter, r *htt
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			writeError(w, http.StatusNotFound, "营销活动不存在")
+		case errors.Is(err, db.ErrMarketingCampaignStockBelowUsage):
+			writeError(w, http.StatusConflict, err.Error())
 		case errors.Is(err, db.ErrMarketingCampaignPendingOrders):
 			writeError(w, http.StatusConflict, "该活动存在待支付订单，请等待支付完成、取消或超时释放后再修改")
 		case errors.Is(err, db.ErrMarketingCampaignHistoryLocked):
 			writeError(w, http.StatusConflict, "该活动已经产生订单，只能修改名称、状态和活动时间，不能再改商品组合、数量或折扣")
+		case errors.Is(err, db.ErrMarketingCampaignArchived):
+			writeError(w, http.StatusConflict, "该活动已归档")
 		case errors.Is(err, db.ErrMarketingPresentationAssetNotFound):
 			writeError(w, http.StatusBadRequest, "活动主视觉图片不存在，请重新上传")
 		case isDuplicateDBError(err):
@@ -90,6 +103,14 @@ func (s *Server) commercialUpdateMarketingCampaign(w http.ResponseWriter, r *htt
 }
 
 func (s *Server) commercialDeleteMarketingCampaign(w http.ResponseWriter, r *http.Request) {
+	s.deleteMarketingCampaign(w, r, s.store.DeleteMarketingCampaign)
+}
+
+func (s *Server) commercialDeleteWorkspaceMarketingCampaign(w http.ResponseWriter, r *http.Request) {
+	s.deleteMarketingCampaign(w, r, s.store.DeleteWorkspaceMarketingCampaign)
+}
+
+func (s *Server) deleteMarketingCampaign(w http.ResponseWriter, r *http.Request, remove func(context.Context, int64) error) {
 	if _, _, ok := s.requireStaffPermission(w, r, "commercial.marketing.manage"); !ok {
 		return
 	}
@@ -97,7 +118,11 @@ func (s *Server) commercialDeleteMarketingCampaign(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
-	if err := s.store.DeleteMarketingCampaign(r.Context(), campaignID); err != nil {
+	if err := remove(r.Context(), campaignID); err != nil {
+		if errors.Is(err, db.ErrMarketingCampaignArchived) || errors.Is(err, db.ErrMarketingCampaignMustUnlist) {
+			writeMarketingWorkspaceStateError(w, err)
+			return
+		}
 		if errors.Is(err, db.ErrMarketingCampaignPendingOrders) {
 			writeError(w, http.StatusConflict, "该活动存在待支付订单，不能删除")
 			return
@@ -134,8 +159,8 @@ func readMarketingCampaignInput(
 	input.StartsAt = strings.TrimSpace(input.StartsAt)
 	input.EndsAt = strings.TrimSpace(input.EndsAt)
 
-	if input.Code == "" || len(input.Code) > 128 {
-		writeError(w, http.StatusBadRequest, "活动编码不能为空且最多 128 个字符")
+	if len(input.Code) > 128 {
+		writeError(w, http.StatusBadRequest, "活动编码最多 128 个字符")
 		return model.MarketingCampaignInput{}, false
 	}
 	if utf8.RuneCountInString(input.Name) < 2 || utf8.RuneCountInString(input.Name) > 160 {
@@ -162,6 +187,16 @@ func readMarketingCampaignInput(
 		writeError(w, http.StatusBadRequest, "当前仅支持整元结算规则")
 		return model.MarketingCampaignInput{}, false
 	}
+	if input.UnlimitedTime != nil {
+		if *input.UnlimitedTime && (input.StartsAt != "" || input.EndsAt != "") {
+			writeError(w, http.StatusBadRequest, "不限时间的活动请清空开始时间和结束时间")
+			return model.MarketingCampaignInput{}, false
+		}
+		if !*input.UnlimitedTime && (input.StartsAt == "" || input.EndsAt == "") {
+			writeError(w, http.StatusBadRequest, "请填写活动的开始时间和结束时间")
+			return model.MarketingCampaignInput{}, false
+		}
+	}
 	if input.StartsAt != "" {
 		if _, err := time.Parse(time.RFC3339, input.StartsAt); err != nil {
 			writeError(w, http.StatusBadRequest, "活动开始时间格式不正确")
@@ -182,6 +217,10 @@ func readMarketingCampaignInput(
 			return model.MarketingCampaignInput{}, false
 		}
 	}
+	seenTargets := make(map[struct {
+		kind string
+		id   int64
+	}]bool)
 	if len(input.Items) == 0 {
 		writeError(w, http.StatusBadRequest, "营销活动至少需要 1 个标的")
 		return model.MarketingCampaignInput{}, false
@@ -204,6 +243,15 @@ func readMarketingCampaignInput(
 			writeError(w, http.StatusBadRequest, "请选择具体营销标的")
 			return model.MarketingCampaignInput{}, false
 		}
+		key := struct {
+			kind string
+			id   int64
+		}{item.TargetType, item.TargetID}
+		if seenTargets[key] {
+			writeError(w, http.StatusBadRequest, "同一活动不能重复添加相同商品")
+			return model.MarketingCampaignInput{}, false
+		}
+		seenTargets[key] = true
 		if item.PricingMode == "" {
 			item.PricingMode = "discount"
 		}
@@ -277,5 +325,59 @@ func (s *Server) customerShopMarketingCampaigns(w http.ResponseWriter, r *http.R
 		writeError(w, 500, "读取活动资格失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+
+	cards, err := s.store.ListInternalTimeCardOffers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取活动时长卡失败")
+		return
+	}
+	cardOffers := make(map[int64]*campaignTimeCardOffer, len(cards))
+	for _, card := range cards {
+		version := card.ActiveVersion
+		cardOffers[card.ID] = &campaignTimeCardOffer{
+			ID:                     card.ID,
+			Name:                   card.Name,
+			Description:            card.Description,
+			DurationSeconds:        version.DurationSeconds,
+			ValidityDays:           version.ValidityDays,
+			ActivationMode:         version.ActivationMode,
+			ActivationDeadlineDays: timeCardCheckoutDeadline(version.ActivationDeadlineDays),
+			OriginalPriceCents:     version.PriceCents,
+		}
+	}
+	offers := make([]shopCampaign, 0, len(items))
+	for _, campaign := range items {
+		offer := shopCampaign{MarketingCampaign: campaign, Items: make([]shopCampaignItem, 0, len(campaign.Items))}
+		for _, item := range campaign.Items {
+			entry := shopCampaignItem{MarketingCampaignItem: item}
+			if item.TargetType == "time_card" {
+				entry.TimeCardOffer = cardOffers[item.TargetID]
+			}
+			offer.Items = append(offer.Items, entry)
+		}
+		offers = append(offers, offer)
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"items": offers})
+}
+
+type shopCampaign struct {
+	model.MarketingCampaign
+	Items []shopCampaignItem `json:"items"`
+}
+
+type shopCampaignItem struct {
+	model.MarketingCampaignItem
+	TimeCardOffer *campaignTimeCardOffer `json:"time_card_offer,omitempty"`
+}
+
+type campaignTimeCardOffer struct {
+	ID                     int64  `json:"id"`
+	Name                   string `json:"name"`
+	Description            string `json:"description"`
+	DurationSeconds        uint64 `json:"duration_seconds"`
+	ValidityDays           uint32 `json:"validity_days"`
+	ActivationMode         string `json:"activation_mode"`
+	ActivationDeadlineDays uint32 `json:"activation_deadline_days"`
+	OriginalPriceCents     uint64 `json:"original_price_cents"`
 }

@@ -127,7 +127,6 @@ func (s *Store) ListCustomerMembershipOffers(ctx context.Context) ([]model.Custo
 			IncludedSeconds:             version.IncludedSeconds,
 			TimeCardDiscountBPS:         version.DefaultTimeCardDiscountBPS,
 			DeviceDiscountBPS:           version.DefaultDeviceDiscountBPS,
-			AllowAutoRenew:              version.AllowAutoRenew,
 			VersionNo:                   version.VersionNo,
 			MarketingCampaigns:          activeCampaigns,
 		})
@@ -161,8 +160,9 @@ func (s *Store) listMembershipVersions(
 			recurring_month_discount_bps, recurring_quarter_discount_bps, annual_discount_bps,
 			billing_period_unit, billing_period_count, included_seconds,
 			default_time_card_discount_bps, default_device_discount_bps, allow_auto_renew,
-			effective_from, effective_to, published_at, created_at
-		FROM catalog_membership_plan_versions
+			effective_from, effective_to, published_at, created_at,
+			`+membershipCardReductionSQL+`,`+membershipDeviceReductionSQL+`
+		FROM catalog_membership_plan_versions v
 		WHERE plan_id = ?
 		ORDER BY version_no DESC
 	`, planID)
@@ -174,6 +174,7 @@ func (s *Store) listMembershipVersions(
 	items := make([]model.CommercialMembershipVersion, 0)
 	for rows.Next() {
 		var item model.CommercialMembershipVersion
+		var cardReduction, deviceReduction sql.NullInt64
 		if err := rows.Scan(
 			&item.ID,
 			&item.PlanID,
@@ -194,14 +195,16 @@ func (s *Store) listMembershipVersions(
 			&item.EffectiveTo,
 			&item.PublishedAt,
 			&item.CreatedAt,
+			&cardReduction,
+			&deviceReduction,
 		); err != nil {
 			return nil, err
 		}
 		item.RecurringMonthDiscountBPS = normalizeMembershipDiscountBPS(item.RecurringMonthDiscountBPS)
 		item.RecurringQuarterDiscountBPS = normalizeMembershipDiscountBPS(item.RecurringQuarterDiscountBPS)
 		item.AnnualDiscountBPS = normalizeMembershipDiscountBPS(item.AnnualDiscountBPS)
-		item.DefaultTimeCardDiscountBPS = normalizeMembershipDiscountBPS(item.DefaultTimeCardDiscountBPS)
-		item.DefaultDeviceDiscountBPS = normalizeMembershipDiscountBPS(item.DefaultDeviceDiscountBPS)
+		item.DefaultTimeCardDiscountBPS = membershipPaidBPS(item.DefaultTimeCardDiscountBPS, cardReduction)
+		item.DefaultDeviceDiscountBPS = membershipPaidBPS(item.DefaultDeviceDiscountBPS, deviceReduction)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -291,8 +294,9 @@ func (s *Store) SaveCommercialMembershipDraft(
 	var existingName string
 	var existingDescription string
 	var existingSortOrder int
+	var existingStatus string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT code, name, description, sort_order
+		SELECT code, name, description, sort_order, status
 		FROM catalog_membership_plans
 		WHERE id = ?
 		FOR UPDATE
@@ -301,8 +305,12 @@ func (s *Store) SaveCommercialMembershipDraft(
 		&existingName,
 		&existingDescription,
 		&existingSortOrder,
+		&existingStatus,
 	); err != nil {
 		return model.CommercialMembershipPlan{}, err
+	}
+	if existingStatus == "archived" {
+		return model.CommercialMembershipPlan{}, ErrMembershipArchived
 	}
 
 	before := map[string]any{
@@ -455,14 +463,17 @@ func (s *Store) PublishCommercialMembershipDraft(
 	}
 	defer tx.Rollback()
 
-	var planName string
+	var planName, planStatus string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT name
+		SELECT name,status
 		FROM catalog_membership_plans
 		WHERE id = ?
 		FOR UPDATE
-	`, planID).Scan(&planName); err != nil {
+	`, planID).Scan(&planName, &planStatus); err != nil {
 		return model.CommercialMembershipPlan{}, err
+	}
+	if planStatus == "archived" {
+		return model.CommercialMembershipPlan{}, ErrMembershipArchived
 	}
 
 	var draftID int64
@@ -553,6 +564,15 @@ func (s *Store) SetCommercialMembershipStatus(
 		SELECT name, status FROM catalog_membership_plans WHERE id=? FOR UPDATE
 	`, planID).Scan(&name, &beforeStatus); err != nil {
 		return model.CommercialMembershipPlan{}, err
+	}
+	if beforeStatus == "archived" {
+		if status == "archived" {
+			if err := tx.Commit(); err != nil {
+				return model.CommercialMembershipPlan{}, err
+			}
+			return s.GetCommercialMembershipPlan(ctx, planID)
+		}
+		return model.CommercialMembershipPlan{}, ErrMembershipArchived
 	}
 	if status == "active" {
 		var count int

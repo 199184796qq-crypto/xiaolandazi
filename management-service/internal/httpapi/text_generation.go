@@ -520,6 +520,9 @@ func (s *Server) completeCycleText(ctx context.Context, state *anchorcycle.State
 	stage := "mainline_text"
 	responseFormat := agentgateway.ResponseText
 	req := agentgateway.Request{Stage: stage, Model: profile.Model, Messages: messages, ResponseFormat: responseFormat, MaxTokens: 1800, EnableThinking: false, CacheSystemPrompt: true, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond}
+	if state.Surface == "formal_live" {
+		s.applyLiveScriptReasoning(ctx, &req)
+	}
 	if profile.SystemPrompt != "" {
 		req.Messages = append([]agentgateway.Message{{Role: "system", Content: profile.SystemPrompt}}, req.Messages...)
 	}

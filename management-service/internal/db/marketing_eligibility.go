@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-// Read-only hints; the order transaction always rechecks under locks.
+// Attach customer-facing eligibility and available stock. Order creation
+// rechecks both against current data under locks.
 func (s *Store) AnnotateCampaignEligibility(ctx context.Context, tenant int64, items []model.MarketingCampaign) error {
 	var created time.Time
 	var phone string
@@ -27,6 +28,10 @@ func (s *Store) AnnotateCampaignEligibility(ctx context.Context, tenant int64, i
 	}
 	for i := range items {
 		c := &items[i]
+		c.RemainingStock = nil
+		if c.Stock != nil {
+			c.RemainingStock = &c.Stock.Remaining
+		}
 		eligible := campaignAudienceEligible(*c, created, time.Now().UTC())
 		reason := "仅符合新开户条件的账户可以领取"
 		if c.Controls.RequirePhone && strings.TrimSpace(phone) == "" {

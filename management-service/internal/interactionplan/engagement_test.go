@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"livecompanion/management/internal/agentgateway"
+	"livecompanion/management/internal/planprompt"
 )
 
 func TestBatchParticipationHasExplicitTypeWithoutSpokenBody(t *testing.T) {
@@ -39,6 +40,37 @@ func TestBatchParticipationHasExplicitTypeWithoutSpokenBody(t *testing.T) {
 	}
 	if got.Items[1].Intent.Type != "下单意向" || got.Items[2].Intent.Type != "提问" {
 		t.Fatal(got)
+	}
+}
+
+func TestEngagementAnnouncementUsesOnlyActiveBackgroundAndStatistics(t *testing.T) {
+	ctx := context.Background()
+	s := fixture(t)
+	s.Prompt = planprompt.Sections{PersonaMD: "主播口吻", RedLinesMD: "禁止保证到货", FactsMD: "旧事实", InteractionRequirementsMD: "旧互动规则"}.InteractionBackground("烘焙直播间")
+	items := []BatchItem{{ID: "U01", Input: Input{
+		Kind: "engagement", Text: "本轮已播口令1，共有12位不同观众参与，请自然回应统计结果。", EventCount: 12, CurrentMainline: "当前主线",
+	}}}
+	calls := 0
+	out, err := GenerateBatch(ctx, s, items, func(_ context.Context, req agentgateway.Request) (agentgateway.Response, error) {
+		calls++
+		system, user := req.Messages[0].Content, req.Messages[1].Content
+		for _, want := range []string{"烘焙直播间", "主播口吻", "禁止保证到货", planprompt.InteractionOutputContract} {
+			if !strings.Contains(system, want) {
+				t.Fatalf("missing %q in %s", want, system)
+			}
+		}
+		for _, retired := range []string{"旧事实", "旧互动规则", "当前主线", "本次批量任务"} {
+			if strings.Contains(system+user, retired) {
+				t.Fatalf("unexpected %q in the request", retired)
+			}
+		}
+		if req.Stage != "interaction_engagement_announcement" || req.EnableThinking || !strings.Contains(user, `"event_count":12`) || !strings.Contains(user, "本轮已播口令1") {
+			t.Fatalf("unexpected request %+v", req)
+		}
+		return agentgateway.Response{Text: "意图：回应口令统计\n类型：闲聊\n歧义：否\n澄清句：\n话术：刚才有12位扣了1，谢谢捧场！"}, nil
+	})
+	if err != nil || calls != 1 || len(out.Items) != 1 || out.Items[0].Err != nil || out.Items[0].Body != "刚才有12位扣了1，谢谢捧场！" {
+		t.Fatalf("out=%+v calls=%d err=%v", out, calls, err)
 	}
 }
 

@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/recordingcache"
+	"livecompanion/management/internal/ttsgateway"
 )
 
 func TestRecordingCurrentCacheIdentityDependencies(t *testing.T) {
@@ -78,6 +81,21 @@ func TestRecordingCurrentCacheIdentityDependencies(t *testing.T) {
 	ids := recordingStableTabIDs(v, recordingStreamTexts(v))
 	if len(ids) != 2 || ids[0] != "second" || ids[1] != "first" {
 		t.Fatalf("tab identity lost after reordering: %v", ids)
+	}
+}
+
+func TestRecordingDefaultDeliveryRefreshesOnlyQwenCache(t *testing.T) {
+	for _, name := range []string{"qwen-audio-3.1-tts-flash", ttsgateway.TencentPremiumModel, ttsgateway.CosyVoicePlus, ttsgateway.VolcengineICL2} {
+		version := model.LiveAgentPlanVersion{VoiceIdentity: model.LiveAgentVoiceIdentity{Model: name, VoiceID: "voice", Rate: 1}}
+		voice, _ := recordingCurrentCacheIdentity(version, nil, nil)
+		identity, err := json.Marshal(version.VoiceIdentity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		previous := recordingcache.VoiceKey("recording-voice-v3", string(identity), "instruction-v1")
+		if (voice != previous) != (name == "qwen-audio-3.1-tts-flash") {
+			t.Errorf("unexpected cache change for %s", name)
+		}
 	}
 }
 

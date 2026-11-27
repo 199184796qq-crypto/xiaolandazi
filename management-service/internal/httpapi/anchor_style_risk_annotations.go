@@ -1,11 +1,28 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"unicode/utf8"
 
+	"livecompanion/management/internal/anchorcycle"
 	"livecompanion/management/internal/contentguard"
 )
+
+func (s *Server) planRiskAnnotationP0(ctx context.Context, tenant, plan int64, p0 string) (*anchorcycle.State, *contentguard.Policy, error) {
+	policy, err := contentguard.Compile(p0)
+	if err != nil {
+		return nil, nil, err
+	}
+	state := &anchorcycle.State{TenantID: tenant, PlanID: plan}
+	if err := state.InstallP0(p0, "risk_annotations"); err != nil {
+		return nil, nil, err
+	}
+	if err := s.installPlanP0Allowances(ctx, state); err != nil {
+		return nil, nil, err
+	}
+	return state, policy, nil
+}
 
 func loadRiskAnnotationMothers() (string, string, string, error) {
 	p0, _, err := loadP0Mother()
@@ -54,5 +71,11 @@ func (s *Server) anchorStyleRiskAnnotations(w http.ResponseWriter, r *http.Reque
 		writeError(w, 503, err.Error())
 		return
 	}
+	state, policy, err := s.planRiskAnnotationP0(r.Context(), tenant, plan, p0)
+	if err != nil {
+		writeError(w, 503, "读取P0例外规则失败，请稍后重试")
+		return
+	}
+	result.Hits = state.FilterP0Annotations(policy, input.Text, result.Hits)
 	writeJSON(w, 200, result)
 }

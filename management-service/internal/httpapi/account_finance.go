@@ -13,27 +13,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/go-sql-driver/mysql"
 
 	"livecompanion/management/internal/auth"
+	"livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
 
 const maxAvatarBytes = 2 * 1024 * 1024
-
-type updateAccountProfileRequest struct {
-	DisplayName string `json:"display_name"`
-	Phone       string `json:"phone"`
-	Email       string `json:"email"`
-	QQ          string `json:"qq"`
-	Wechat      string `json:"wechat"`
-	Province    string `json:"province"`
-	City        string `json:"city"`
-	District    string `json:"district"`
-	Address     string `json:"address"`
-}
 
 type customerRechargeRequest struct {
 	AmountCents uint64 `json:"amount_cents"`
@@ -41,6 +31,7 @@ type customerRechargeRequest struct {
 }
 
 func (s *Server) accountDashboard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
 		return
@@ -55,85 +46,44 @@ func (s *Server) accountDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) accountUpdateProfile(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
 	actor, ok := s.resolveActor(w, r)
 	if !ok {
 		return
 	}
 
-	var input updateAccountProfileRequest
+	var input model.AccountProfileChanges
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
+	if input.Username != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
 
-	input.DisplayName = strings.TrimSpace(input.DisplayName)
-	input.Phone = strings.TrimSpace(input.Phone)
-	input.Email = strings.TrimSpace(input.Email)
-	input.QQ = strings.TrimSpace(input.QQ)
-	input.Wechat = strings.TrimSpace(input.Wechat)
-	input.Province = strings.TrimSpace(input.Province)
-	input.City = strings.TrimSpace(input.City)
-	input.District = strings.TrimSpace(input.District)
-	input.Address = strings.TrimSpace(input.Address)
-
-	// Internal employee names are formal organization identities. They are maintained
-	// from the organization structure rather than self-edited in Personal Center.
 	if actor.IsInternalStaff() {
-		currentProfile, err := s.store.GetAccountProfile(r.Context(), actor.UserID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "读取员工正式姓名失败")
-			return
-		}
-		input.DisplayName = currentProfile.DisplayName
+		// Employee names are maintained by the organization.
+		input.DisplayName = nil
 	}
+	s.updateOwnAccountProfile(w, r, actor.UserID, input)
+}
 
-	nameLength := utf8.RuneCountInString(input.DisplayName)
-	if nameLength < 2 || nameLength > 64 {
-		writeError(w, http.StatusBadRequest, "账户名称需为 2-64 个字符")
-		return
-	}
-	normalizedPhone, phoneOK := auth.NormalizeMainlandPhone(input.Phone)
-	if !phoneOK {
-		writeError(w, http.StatusBadRequest, "请输入正确的中国大陆手机号码")
-		return
-	}
-	input.Phone = normalizedPhone
-	if input.Province == "" || input.City == "" || input.District == "" {
-		writeError(w, http.StatusBadRequest, "省、市、区/县不能为空")
-		return
-	}
-	if input.Email != "" {
-		parsed, err := mail.ParseAddress(input.Email)
-		if err != nil || !strings.EqualFold(parsed.Address, input.Email) {
-			writeError(w, http.StatusBadRequest, "邮箱格式不正确")
-			return
-		}
-	}
-	if !contactFieldLengthOK(input.Email, 254) ||
-		!contactFieldLengthOK(input.QQ, 32) ||
-		!contactFieldLengthOK(input.Wechat, 64) ||
-		!contactFieldLengthOK(input.Province, 64) ||
-		!contactFieldLengthOK(input.City, 64) ||
-		!contactFieldLengthOK(input.District, 64) ||
-		!contactFieldLengthOK(input.Address, 255) {
-		writeError(w, http.StatusBadRequest, "联系资料字段长度超出限制")
+func (s *Server) updateOwnAccountProfile(w http.ResponseWriter, r *http.Request, userID int64, input model.AccountProfileChanges) {
+	if message := normalizeAccountProfileChanges(input); message != "" {
+		writeError(w, http.StatusBadRequest, message)
 		return
 	}
 
-	profile, err := s.store.UpdateAccountProfile(
-		r.Context(),
-		actor.UserID,
-		input.DisplayName,
-		input.Phone,
-		input.Email,
-		input.QQ,
-		input.Wechat,
-		input.Province,
-		input.City,
-		input.District,
-		input.Address,
-	)
+	profile, err := s.store.UpdateAccountProfile(r.Context(), userID, input)
 	if err != nil {
+		var duplicate *mysql.MySQLError
+		if errors.As(err, &duplicate) && duplicate.Number == 1062 &&
+			(strings.Contains(duplicate.Message, db.UsernameAccountIndex) ||
+				strings.Contains(duplicate.Message, db.LegacyUsernameIndex)) {
+			writeError(w, http.StatusConflict, "该登录账号已被使用")
+			return
+		}
 		if isDuplicateDBError(err) {
 			writeError(w, http.StatusConflict, "该手机号已经绑定其他账号")
 			return
@@ -144,9 +94,57 @@ func (s *Server) accountUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, profile)
 }
 
-func contactFieldLengthOK(value string, max int) bool {
-	return utf8.RuneCountInString(value) <= max
+func normalizeAccountProfileChanges(input model.AccountProfileChanges) string {
+	if input.Username != nil {
+		*input.Username = strings.TrimSpace(*input.Username)
+		if *input.Username == "" || utf8.RuneCountInString(*input.Username) > 128 ||
+			strings.ContainsFunc(*input.Username, func(r rune) bool { return !unicode.IsGraphic(r) || unicode.IsSpace(r) }) {
+			return "登录账号须为 1–128 个字符，且不能包含空格或不可见字符"
+		}
+	}
+	fields := []struct {
+		value *string
+		limit int
+	}{
+		{input.DisplayName, 64}, {input.Phone, 64}, {input.Email, 254},
+		{input.QQ, 32}, {input.Wechat, 64}, {input.Province, 64},
+		{input.City, 64}, {input.District, 64}, {input.Address, 255},
+	}
+	for _, field := range fields {
+		if field.value == nil {
+			continue
+		}
+		*field.value = strings.TrimSpace(*field.value)
+		if utf8.RuneCountInString(*field.value) > field.limit {
+			return "账户资料字段长度超出限制"
+		}
+	}
+	if input.DisplayName != nil && utf8.RuneCountInString(*input.DisplayName) < 2 {
+		return "昵称需为 2-64 个字符"
+	}
+	if input.Phone != nil {
+		normalized, ok := auth.NormalizeMainlandPhone(*input.Phone)
+		if !ok {
+			return "请输入正确的中国大陆手机号码"
+		}
+		*input.Phone = normalized
+	}
+	if input.Email != nil && *input.Email != "" {
+		parsed, err := mail.ParseAddress(*input.Email)
+		if err != nil || !strings.EqualFold(parsed.Address, *input.Email) {
+			return "邮箱格式不正确"
+		}
+	}
+	if input.Province != nil || input.City != nil || input.District != nil {
+		for _, part := range []*string{input.Province, input.City, input.District} {
+			if part == nil || *part == "" {
+				return "请完整选择省、市和区县"
+			}
+		}
+	}
+	return ""
 }
+
 func (s *Server) accountUploadAvatar(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.resolveActor(w, r)
 	if !ok {

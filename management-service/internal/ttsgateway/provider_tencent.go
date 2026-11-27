@@ -210,6 +210,13 @@ func (p *tencentProvider) SynthesizeURL(parent context.Context, r SynthesizeRequ
 			}
 			// Premium voices are 16kHz. Declare the real format; Core normalizes it to its output rate.
 			wav := tencentPCMToWAV(pcm.Bytes())
+			if r.ParagraphPath != "" {
+				if err := storeParagraphWAV(r.ParagraphPath, bytes.NewReader(wav)); err != nil {
+					return result, err
+				}
+				result.AudioFile = r.ParagraphPath
+				return result, nil
+			}
 			audioURL, e := c.Publish(ctx, wav)
 			if e != nil {
 				return result, e

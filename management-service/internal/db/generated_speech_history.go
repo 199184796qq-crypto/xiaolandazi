@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"livecompanion/management/internal/model"
 )
@@ -73,7 +74,77 @@ func generatedSpeechHistorySourceLabelSQL() string {
 	return `CASE h.source_type
 		WHEN 'interrupt_quick' THEN '临时插播'
 		WHEN 'interrupt_answer' THEN '场控答疑'
+		WHEN 'interrupt_failed' THEN '未完成播报'
 		ELSE h.source_type END`
+}
+
+const playedAnswerFilter = ` AND EXISTS (
+	SELECT 1 FROM live_session_speech_assets a
+	WHERE a.tenant_id=h.tenant_id AND a.room_id=h.room_id AND a.session_id=h.runtime_session_id
+	  AND a.source_ref=CONCAT('reply:',h.decision_id) AND a.kind='interaction'
+	  AND a.played_at>UTC_TIMESTAMP(3)-INTERVAL 24 HOUR
+)`
+
+type LiveRecord struct {
+	SessionID       int64      `json:"session_id"`
+	RoomID          int64      `json:"room_id"`
+	RoomName        string     `json:"room_name"`
+	PlanName        string     `json:"plan_name"`
+	StartedAt       time.Time  `json:"started_at"`
+	EndedAt         *time.Time `json:"ended_at"`
+	DurationSeconds int64      `json:"duration_seconds"`
+	BilledSeconds   uint64     `json:"billed_seconds"`
+	AnswerCount     int        `json:"answer_count"`
+	AnswersExpired  bool       `json:"answers_expired"`
+}
+
+func (s *Store) ListLiveRecords(ctx context.Context, tenantID, roomID int64, realm string, settledUsageOnly bool, limit, offset int) ([]LiveRecord, error) {
+	filter := ""
+	args := []any{tenantID, model.NormalizeExecutionRealm(realm)}
+	if roomID > 0 {
+		filter = " AND s.room_id=?"
+		args = append(args, roomID)
+	}
+	if settledUsageOnly {
+		filter += " AND s.ended_at IS NOT NULL AND s.total_billed_seconds>0"
+	}
+	args = append(args, limit, offset)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.id, s.room_id, room.name,
+		       COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(start_event.detail_json,'$.plan_name')),''), plan.name, ''),
+		       s.started_at, s.ended_at,
+		       GREATEST(0,TIMESTAMPDIFF(SECOND,s.started_at,COALESCE(s.ended_at,UTC_TIMESTAMP(3)))),
+		       s.total_billed_seconds,
+		       s.ended_at IS NOT NULL AND s.ended_at<=UTC_TIMESTAMP(3)-INTERVAL 24 HOUR,
+		       (SELECT COUNT(*) FROM live_generated_speech_history h
+		        WHERE h.tenant_id=s.tenant_id AND h.room_id=s.room_id AND h.runtime_session_id=s.id
+		          AND h.created_at>UTC_TIMESTAMP(3)-INTERVAL 24 HOUR`+playedAnswerFilter+`)
+		FROM live_runtime_sessions s
+		JOIN core_rooms room ON room.tenant_id=s.tenant_id AND room.id=s.room_id
+		LEFT JOIN live_runtime_events start_event ON start_event.id=(
+			SELECT e.id FROM live_runtime_events e WHERE e.session_id=s.id AND e.tenant_id=s.tenant_id
+			  AND e.room_id=s.room_id AND e.event_code='AI_RUNTIME_STARTED' ORDER BY e.id LIMIT 1
+		)
+		LEFT JOIN live_agent_room_plan_selections selection ON selection.tenant_id=s.tenant_id
+		  AND selection.room_id=s.room_id AND selection.selected_at<=s.started_at
+		LEFT JOIN live_agent_plans plan ON plan.tenant_id=s.tenant_id AND plan.id=selection.plan_id
+		WHERE s.tenant_id=? AND s.execution_realm=?`+filter+`
+		  AND NOT EXISTS (SELECT 1 FROM mgmt_room_deletions d WHERE d.tenant_id=s.tenant_id AND d.room_id=s.room_id)
+		ORDER BY s.started_at DESC,s.id DESC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LiveRecord{}
+	for rows.Next() {
+		var item LiveRecord
+		if err := rows.Scan(&item.SessionID, &item.RoomID, &item.RoomName, &item.PlanName, &item.StartedAt,
+			&item.EndedAt, &item.DurationSeconds, &item.BilledSeconds, &item.AnswersExpired, &item.AnswerCount); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *Store) ListGeneratedSpeechHistory(
@@ -81,6 +152,7 @@ func (s *Store) ListGeneratedSpeechHistory(
 	tenantID, roomID, runtimeSessionID int64,
 	query string,
 	page, pageSize int,
+	playedOnly bool,
 ) (model.GeneratedSpeechHistoryPage, error) {
 	page, pageSize = normalizeGeneratedSpeechHistoryPage(page, pageSize)
 	result := model.GeneratedSpeechHistoryPage{
@@ -95,6 +167,9 @@ func (s *Store) ListGeneratedSpeechHistory(
 	query = strings.TrimSpace(query)
 	like := "%" + query + "%"
 	filter := " AND h.created_at>UTC_TIMESTAMP(3)-INTERVAL 24 HOUR"
+	if playedOnly {
+		filter += playedAnswerFilter
+	}
 	args := []any{tenantID, roomID, runtimeSessionID}
 	if query != "" {
 		filter += ` AND (

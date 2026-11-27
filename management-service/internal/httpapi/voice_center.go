@@ -171,7 +171,7 @@ func (s *Server) liveOfficialVoicePreview(w http.ResponseWriter, r *http.Request
 		return
 	}
 	assetID, durationMS, err := s.archiveGeneratedVoice(
-		r.Context(), tenantID, actor.UserID, audioURL, voice.ID, voice.Model, "official", supportRoomForMedia(r),
+		r, tenantID, actor, audioURL, voice.ID, voice.Model, "official",
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "声音已生成，但归档到声音资产失败："+err.Error())
@@ -386,12 +386,25 @@ func (s *Server) liveListVoiceModelBindings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if actor.IsInternalStaff() {
-		roomID, _ := liveSupportScopeRoomID(r)
 		filtered := make([]model.VoiceModelBinding, 0, len(items))
-		for _, item := range items {
-			profile, err := s.store.GetVoiceProfile(r.Context(), tenantID, item.ProfileID)
-			if err == nil && s.liveSupportVoiceAllowed(r.Context(), tenantID, roomID, profile) {
-				filtered = append(filtered, item)
+		if planID, _, valid := livePlanSupportScope(r); valid {
+			ids, err := s.livePlanSupportVoiceProfiles(r, tenantID, planID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "读取方案关联声音失败")
+				return
+			}
+			for _, item := range items {
+				if ids[item.ProfileID] {
+					filtered = append(filtered, item)
+				}
+			}
+		} else {
+			roomID, _ := liveSupportScopeRoomID(r)
+			for _, item := range items {
+				profile, err := s.store.GetVoiceProfile(r.Context(), tenantID, item.ProfileID)
+				if err == nil && s.liveSupportVoiceAllowed(r.Context(), tenantID, roomID, profile) {
+					filtered = append(filtered, item)
+				}
 			}
 		}
 		items = filtered
@@ -479,7 +492,7 @@ func (s *Server) liveVoiceModelBindingPreview(w http.ResponseWriter, r *http.Req
 		return
 	}
 	assetID, durationMS, err := s.archiveGeneratedVoice(
-		r.Context(), tenantID, actor.UserID, result.AudioURL, binding.VoiceID, binding.Model, "binding", supportRoomForMedia(r),
+		r, tenantID, actor, result.AudioURL, binding.VoiceID, binding.Model, "binding",
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "声音已生成，但归档到声音资产失败："+err.Error())
@@ -605,7 +618,7 @@ func (s *Server) liveVoiceProfilePreview(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	assetID, durationMS, err := s.archiveGeneratedVoice(
-		r.Context(), tenantID, actor.UserID, audioURL, profile.VoiceID, modelName, "clone", supportRoomForMedia(r),
+		r, tenantID, actor, audioURL, profile.VoiceID, modelName, "clone",
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "声音已生成，但归档到声音资产失败："+err.Error())
@@ -619,11 +632,12 @@ func (s *Server) liveVoiceProfilePreview(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) archiveGeneratedVoice(
-	ctx context.Context,
-	tenantID, actorUserID int64,
+	r *http.Request,
+	tenantID int64,
+	actor model.Actor,
 	providerURL, voiceID, modelName, source string,
-	supportRoomIDs ...int64,
 ) (int64, int64, error) {
+	ctx := r.Context()
 	if s.assetStorage == nil {
 		return 0, 0, fmt.Errorf("媒体存储尚未初始化")
 	}
@@ -660,10 +674,14 @@ func (s *Server) archiveGeneratedVoice(
 		}
 		contentType = http.DetectContentType(raw[:limit])
 	}
-	return s.archiveGeneratedVoiceBytes(ctx, tenantID, actorUserID, raw, contentType, voiceID, modelName, source, supportRoomIDs...)
+	var planID int64
+	if actor.IsInternalStaff() {
+		planID, _, _ = livePlanSupportScope(r)
+	}
+	return s.archiveGeneratedVoiceBytes(ctx, tenantID, actor.UserID, raw, contentType, voiceID, modelName, source, supportRoomForMedia(r), planID)
 }
 
-func (s *Server) archiveGeneratedVoiceBytes(ctx context.Context, tenantID, actorUserID int64, raw []byte, contentType, voiceID, modelName, source string, supportRoomIDs ...int64) (int64, int64, error) {
+func (s *Server) archiveGeneratedVoiceBytes(ctx context.Context, tenantID, actorUserID int64, raw []byte, contentType, voiceID, modelName, source string, supportRoomID, supportPlanID int64) (int64, int64, error) {
 	if s.assetStorage == nil {
 		return 0, 0, errors.New("媒体存储尚未初始化")
 	}
@@ -693,9 +711,12 @@ func (s *Server) archiveGeneratedVoiceBytes(ctx context.Context, tenantID, actor
 		"tts_model": strings.TrimSpace(modelName),
 		"purpose":   "live_agent_formal_voice_candidate",
 	}
-	if len(supportRoomIDs) > 0 && supportRoomIDs[0] > 0 {
-		metadata["room_id"] = supportRoomIDs[0]
-		metadata["support_room_id"] = supportRoomIDs[0]
+	if supportRoomID > 0 {
+		metadata["room_id"] = supportRoomID
+		metadata["support_room_id"] = supportRoomID
+	}
+	if supportPlanID > 0 {
+		metadata["plan_id"] = supportPlanID
 	}
 	item, err := s.store.CreateMediaAsset(ctx, model.CreateMediaAssetInput{
 		TenantID:        tenantID,

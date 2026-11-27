@@ -8,6 +8,7 @@ import (
 	"livecompanion/management/internal/model"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -19,7 +20,9 @@ import (
 const (
 	recordingScriptMaxTabs        = 20
 	recordingScriptMaxTitleRunes  = 30
+	recordingScriptMinTextRunes   = 400
 	recordingScriptMaxTextRunes   = 4000
+	recordingScriptMaxPromptRunes = 4000
 	recordingScriptMaxTotalRunes  = 80000
 	recordingScriptMaxAudioPerTab = 1
 )
@@ -39,8 +42,12 @@ type recordingScriptTab struct {
 }
 
 type recordingScriptEntry struct {
-	EntryID string `json:"entry_id"`
-	Text    string `json:"text"`
+	EntryID           string `json:"entry_id"`
+	Text              string `json:"text"`
+	Title             string `json:"title,omitempty"`
+	SpecPrompt        string `json:"spec_prompt,omitempty"`
+	SpecPromptEnabled bool   `json:"spec_prompt_enabled,omitempty"`
+	SpecPromptAt      string `json:"spec_prompt_at,omitempty"`
 }
 
 func (t recordingScriptTab) texts() []string {
@@ -197,9 +204,20 @@ func (s recordingScript) validate() error {
 					return fmt.Errorf("第%d组第%d条话术标识无效或重复", index+1, i+1)
 				}
 				entryIDs[entry.EntryID] = true
+				if utf8.RuneCountInString(strings.TrimSpace(entry.Title)) > recordingScriptMaxTitleRunes {
+					return fmt.Errorf("第%d组第%d条话术的名称须在%d字以内", index+1, i+1, recordingScriptMaxTitleRunes)
+				}
+				if utf8.RuneCountInString(strings.TrimSpace(entry.SpecPrompt)) > recordingScriptMaxPromptRunes {
+					return fmt.Errorf("第%d组第%d条话术的提示词须在%d字以内", index+1, i+1, recordingScriptMaxPromptRunes)
+				}
+				if entry.SpecPromptAt != "" {
+					if _, err := time.Parse(time.RFC3339Nano, entry.SpecPromptAt); err != nil {
+						return fmt.Errorf("第%d组第%d条话术的提示词修改时间无效", index+1, i+1)
+					}
+				}
 				n := utf8.RuneCountInString(entry.Text)
-				if strings.TrimSpace(entry.Text) == "" || n < 400 || n > 4000 {
-					return fmt.Errorf("第%d组第%d条话术为%d字符，每条须为400到4000字符", index+1, i+1, n)
+				if strings.TrimSpace(entry.Text) == "" || n < recordingScriptMinTextRunes || n > recordingScriptMaxTextRunes {
+					return fmt.Errorf("第%d组第%d条话术为%d字符，每条须为%d到%d字符", index+1, i+1, n, recordingScriptMinTextRunes, recordingScriptMaxTextRunes)
 				}
 				textRunes += n
 			}
@@ -270,6 +288,11 @@ func (s *recordingScript) normalize() {
 		}
 		tab.Title = strings.TrimSpace(tab.Title)
 		tab.Text = strings.TrimSpace(tab.Text)
+		for entryIndex := range tab.Entries {
+			entry := &tab.Entries[entryIndex]
+			entry.Title = strings.TrimSpace(entry.Title)
+			entry.SpecPrompt = strings.TrimSpace(entry.SpecPrompt)
+		}
 		tab.Order = index
 	}
 	if strings.TrimSpace(s.ActiveTabID) == "" && len(s.Tabs) > 0 {

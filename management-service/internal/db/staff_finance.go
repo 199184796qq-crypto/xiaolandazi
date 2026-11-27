@@ -873,7 +873,14 @@ func (s *Store) ApproveStaffFinanceTask(
 		).Scan(&refundNo, &sourceType, &sourceID, &refundMethod); err != nil {
 			return err
 		}
-		if sourceType == "order" && refundMethod == "sandbox_original" {
+		if sourceType == timeCardResidualRefund {
+			if approverUserID == requesterUserID {
+				return ErrFinanceDistinctReviewer
+			}
+			if err := applyTimeCardResidualRefundTx(ctx, tx, tenantID.Int64, payload.OrderID, approverUserID, payload.AmountCents); err != nil {
+				return err
+			}
+		} else if sourceType == "order" && (refundMethod == "sandbox_original" || refundMethod == "wallet_balance") {
 			if err := applyOrderRefundTx(
 				ctx,
 				tx,
@@ -884,6 +891,7 @@ func (s *Store) ApproveStaffFinanceTask(
 				payload.AmountCents,
 				approverUserID,
 				payload.Reason,
+				refundMethod,
 			); err != nil {
 				return err
 			}

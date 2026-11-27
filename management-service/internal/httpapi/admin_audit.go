@@ -60,7 +60,9 @@ func (s *Server) adminAuditMiddleware(next http.Handler) http.Handler {
 			RequestID:     strings.TrimSpace(r.Header.Get("X-Request-ID")),
 			Result:        "started",
 		}
-		enrichAuditFromPayload(readAuditJSONPayload(r), &entry)
+		if entry.Action != "device.wifi.configure" {
+			enrichAuditFromPayload(readAuditJSONPayload(r), &entry)
+		}
 		s.fillAuditTarget(r, &entry)
 
 		pendingID, err := s.audit.Begin(r.Context(), entry)
@@ -260,6 +262,8 @@ func shouldAuditRequest(method string, path string) bool {
 		return false
 	}
 	switch {
+	case path == "/api/v1/admin/workspace/account/check-identifier":
+		return false
 	case path == "/api/v1/payments/wechat/notify" || path == "/api/v1/payments/wechat/refund-notify":
 		// Provider callbacks are authenticated by their signature, not a user
 		// cookie; settlement writes the financial receipt and audit event itself.
@@ -442,6 +446,10 @@ func auditAction(method string, path string) string {
 		strings.HasPrefix(path, "/api/v1/live/devices/") &&
 		strings.HasSuffix(path, "/bind"):
 		return "device.bind_room"
+	case method == http.MethodPost &&
+		strings.HasPrefix(path, "/api/v1/live/devices/") &&
+		strings.HasSuffix(path, "/wifi"):
+		return "device.wifi.configure"
 	case method == http.MethodPost &&
 		strings.HasPrefix(path, "/api/v1/live/devices/") &&
 		strings.HasSuffix(path, "/control"):

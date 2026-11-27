@@ -50,22 +50,24 @@ type ProgramRefreshTrack struct {
 }
 
 type ProgramRefreshInput struct {
-	JobID              string                `json:"job_id"`
-	ExpectedProgramID  string                `json:"expected_program_id"`
-	ExpectedVersionID  int64                 `json:"expected_version_id"`
-	ExpectedGeneration uint64                `json:"expected_generation"`
-	Generation         uint64                `json:"generation"`
-	NewVersionID       int64                 `json:"new_version_id"`
-	NewVersionNo       int64                 `json:"new_version_no"`
-	ValidUntil         time.Time             `json:"valid_until"`
-	Tracks             []ProgramRefreshTrack `json:"tracks"`
+	ReplaceAfterCurrent bool                  `json:"replace_after_current,omitempty"`
+	JobID               string                `json:"job_id"`
+	ExpectedProgramID   string                `json:"expected_program_id"`
+	ExpectedVersionID   int64                 `json:"expected_version_id"`
+	ExpectedGeneration  uint64                `json:"expected_generation"`
+	Generation          uint64                `json:"generation"`
+	NewVersionID        int64                 `json:"new_version_id"`
+	NewVersionNo        int64                 `json:"new_version_no"`
+	ValidUntil          time.Time             `json:"valid_until"`
+	Tracks              []ProgramRefreshTrack `json:"tracks"`
 }
 
 type ProgramRefreshSnapshot struct {
-	TrackID      string                          `json:"track_id"`
-	TrackText    string                          `json:"track_text"`
-	Timeline     []ProgramRefreshTimelineSegment `json:"timeline"`
-	FutureWindow []struct {
+	ManualSelectionSupported bool                            `json:"manual_selection_supported"`
+	TrackID                  string                          `json:"track_id"`
+	TrackText                string                          `json:"track_text"`
+	Timeline                 []ProgramRefreshTimelineSegment `json:"timeline"`
+	FutureWindow             []struct {
 		ID         string `json:"track_id"`
 		Text       string `json:"text"`
 		DurationMS int    `json:"duration_ms"`

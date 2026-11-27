@@ -33,6 +33,26 @@ func TestGeneratedSpeechHistoryKeepsTaskKindSeparateFromModelIntent(t *testing.T
 	}
 }
 
+func TestGeneratedSpeechHistoryPreservesModelMetricsAndMarksModelFreeReplies(t *testing.T) {
+	for _, test := range []struct{ name, knowledge, mode, want string }{
+		{"generated", `{"protocol":"interaction_v2","task":"d","model_stages":{"intent":{"thinking":"off","elapsed_ms":322},"answer":{"thinking":"low","elapsed_ms":1234}}}`, "", `{"intent":{"thinking":"off","elapsed_ms":322},"answer":{"thinking":"low","elapsed_ms":1234}}`},
+		{"template", `{"protocol":"interaction_v2","task":"d","template":"like_v1"}`, "", `{"answer":{"thinking":"no_model","elapsed_ms":0}}`},
+		{"verbatim", `{}`, "verbatim", `{"answer":{"thinking":"no_model","elapsed_ms":0}}`},
+		{"legacy", `{}`, "", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			item := decisionItem{PurposeKnowledge: json.RawMessage(test.knowledge), ExecutionMode: test.mode}
+			var history map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(generatedSpeechHistoryIntentJSON(&item)), &history); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(history["model_stages"]); got != test.want || string(item.PurposeKnowledge) != test.knowledge {
+				t.Fatalf("history metrics = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
 func TestGeneratedSpeechHistoryPreservesMalformedLegacyPayload(t *testing.T) {
 	for _, raw := range []string{"", "null", "[]", "旧版原始意图", "{损坏JSON"} {
 		item := decisionItem{MissionKind: "warmup", PurposeKnowledge: json.RawMessage(raw)}

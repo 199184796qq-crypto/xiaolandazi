@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func fakeTencent(t *testing.T, scenario string) (*Gateway, <-chan map[string]string) {
+func fakeTencent(t *testing.T, scenario string, afterCommands ...func()) (*Gateway, <-chan map[string]string) {
 	t.Helper()
 	observed := make(chan map[string]string, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -41,6 +43,9 @@ func fakeTencent(t *testing.T, scenario string) (*Gateway, <-chan map[string]str
 				return
 			}
 			observed <- msg
+		}
+		for _, callback := range afterCommands {
+			callback()
 		}
 		if scenario == "cancel" {
 			c.ReadMessage()
@@ -81,6 +86,42 @@ func TestTencentPremiumStreamProtocolAndModelRouting(t *testing.T) {
 	complete := <-messages
 	if synthesis["action"] != "ACTION_SYNTHESIS" || synthesis["data"] != "欢迎来到直播间。" || complete["action"] != "ACTION_COMPLETE" || complete["data"] != "" || synthesis["session_id"] == "" || synthesis["message_id"] == complete["message_id"] {
 		t.Fatalf("protocol mismatch: %v %v", synthesis, complete)
+	}
+}
+
+func TestTencentParagraphKeepsCompleteWAVAfterSaveCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	gateway, messages := fakeTencent(t, "complete", cancel)
+	path := filepath.Join(t.TempDir(), "durable", "paragraph.wav")
+	text := strings.Repeat("原话术。", 1000)
+	out, err := gateway.SynthesizeURL(ctx, SynthesizeRequest{
+		Provider: ProviderTencent, Model: TencentPremiumModel, VoiceID: "101030", Text: text,
+		ParagraphPath: path, DrainOnCancel: true,
+	})
+	if err != nil || out.AudioFile != path || out.AudioURL != "" || ctx.Err() != context.Canceled {
+		t.Fatalf("paid paragraph was not retained after cancellation: %+v, %v", out, err)
+	}
+	if first, last := <-messages, <-messages; first["action"] != "ACTION_SYNTHESIS" || first["data"] != text || last["action"] != "ACTION_COMPLETE" {
+		t.Fatal("one complete 4000-character piece must be sent in one synthesis session")
+	}
+	wav, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(wav, tencentPCMToWAV([]byte{1, 2, 3, 4, 5, 6, 7, 8})) {
+		t.Fatal("durable WAV did not contain the complete result", err)
+	}
+}
+
+func TestTencentParagraphDoesNotStoreIncompleteAudio(t *testing.T) {
+	gateway, _ := fakeTencent(t, "partial")
+	path := filepath.Join(t.TempDir(), "paragraph.wav")
+	out, err := gateway.SynthesizeURL(t.Context(), SynthesizeRequest{
+		Model: TencentPremiumModel, VoiceID: "101030", Text: "完整话术。", ParagraphPath: path,
+	})
+	if err == nil || out.AudioFile != "" || out.AudioURL != "" {
+		t.Fatalf("incomplete audio became usable: %+v, %v", out, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("incomplete audio was persisted", err)
 	}
 }
 func TestTencentNeverPublishesPartialAudioOrSecrets(t *testing.T) {

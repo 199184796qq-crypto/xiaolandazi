@@ -11,6 +11,10 @@ import (
 var liveRuntimeSchema string
 
 func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
+	selectionsExist, err := s.columnExists(ctx, "live_agent_room_plan_selections", "plan_id")
+	if err != nil {
+		return fmt.Errorf("check room plan selections: %w", err)
+	}
 	schema := strings.ReplaceAll(liveRuntimeSchema, "\r\n", "\n")
 	for _, raw := range strings.Split(schema, "\n-- +statement\n") {
 		statement := strings.TrimSpace(raw)
@@ -20,6 +24,12 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("apply live runtime schema: %w", err)
 		}
+	}
+	if _, err := s.db.ExecContext(ctx, materialSourcesDDL); err != nil {
+		return fmt.Errorf("apply material source schema: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, agentFactEditReceiptsDDL); err != nil {
+		return fmt.Errorf("apply fact edit receipt schema: %w", err)
 	}
 	if err := s.MigrateInteractionLearning(ctx); err != nil {
 		return err
@@ -33,11 +43,17 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 	if err := s.migratePlanVoiceRate(ctx); err != nil {
 		return err
 	}
+	if err := s.migrateRoomInteractionSpeechRate(ctx); err != nil {
+		return fmt.Errorf("migrate room interaction speech rate: %w", err)
+	}
 	for _, column := range []struct {
 		table string
 		name  string
 		sql   string
 	}{
+		{"live_plan_support_requests", "authorized_room_id", "ALTER TABLE live_plan_support_requests ADD COLUMN authorized_room_id BIGINT UNSIGNED NULL"},
+		{"live_agent_plan_material_claims", "details_json", "ALTER TABLE live_agent_plan_material_claims ADD COLUMN details_json JSON NULL AFTER conditions_json"},
+		{"live_agent_plan_material_objects", "directory_json", "ALTER TABLE live_agent_plan_material_objects ADD COLUMN directory_json JSON NULL AFTER stores_json"},
 		{"live_anchor_styles", "active_analysis_version_id", "ALTER TABLE live_anchor_styles ADD COLUMN active_analysis_version_id BIGINT UNSIGNED NOT NULL DEFAULT 0"},
 		{"live_anchor_styles", "avatar_type", "ALTER TABLE live_anchor_styles ADD COLUMN avatar_type VARCHAR(32) NOT NULL DEFAULT 'female' AFTER description"},
 		{"live_anchor_styles", "avatar_data", "ALTER TABLE live_anchor_styles ADD COLUMN avatar_data MEDIUMTEXT NULL"},
@@ -204,17 +220,21 @@ func (s *Store) MigrateLiveRuntime(ctx context.Context) error {
 		}
 	}
 
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT IGNORE INTO live_agent_room_plan_selections (
-			tenant_id, room_id, plan_id, selected_by_user_id, selected_at
-		)
-		SELECT b.tenant_id, b.room_id, b.plan_id, b.bound_by_user_id, b.bound_at
-		FROM live_agent_plan_room_bindings b
-		INNER JOIN live_agent_plans p ON p.id=b.plan_id AND p.tenant_id=b.tenant_id
-		WHERE b.status='active' AND p.status='active'
-		ORDER BY b.id DESC
-	`); err != nil {
-		return fmt.Errorf("backfill live agent room plan selections: %w", err)
+	// Only bootstrap from bindings when upgrading a schema without selections.
+	// On subsequent starts, an unselected room may intentionally have bindings.
+	if !selectionsExist {
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT IGNORE INTO live_agent_room_plan_selections (
+				tenant_id, room_id, plan_id, selected_by_user_id, selected_at
+			)
+			SELECT b.tenant_id, b.room_id, b.plan_id, b.bound_by_user_id, b.bound_at
+			FROM live_agent_plan_room_bindings b
+			INNER JOIN live_agent_plans p ON p.id=b.plan_id AND p.tenant_id=b.tenant_id
+			WHERE b.status='active' AND p.status='active'
+			ORDER BY b.id DESC
+		`); err != nil {
+			return fmt.Errorf("backfill live agent room plan selections: %w", err)
+		}
 	}
 	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS live_fact_risk_reviews_dedup_backup LIKE live_fact_risk_reviews`); err != nil {
 		return fmt.Errorf("create risk review recovery backup: %w", err)

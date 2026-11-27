@@ -395,6 +395,10 @@ func (s *Server) liveDeleteMediaAsset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "媒体资产可能由多个方案使用，请由客户删除")
 		return
 	}
+	if item.AssetType == voiceasset.ScriptHumanAsset {
+		writeError(w, http.StatusConflict, "请在对应话术片中管理真人声音")
+		return
+	}
 	if isSharedScriptMedia(item) {
 		writeError(w, http.StatusConflict, "这是方案共享的话术声音，可能正在被其他直播间使用，不能在单个房间中删除。")
 		return
@@ -437,11 +441,24 @@ func (s *Server) liveListVoiceProfiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if actor.IsInternalStaff() {
-		roomID, _ := liveSupportScopeRoomID(r)
 		filtered := make([]model.VoiceProfile, 0, len(items))
-		for _, item := range items {
-			if s.liveSupportVoiceAllowed(r.Context(), tenantID, roomID, item) {
-				filtered = append(filtered, item)
+		if planID, _, valid := livePlanSupportScope(r); valid {
+			ids, err := s.livePlanSupportVoiceProfiles(r, tenantID, planID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "读取方案关联声音失败")
+				return
+			}
+			for _, item := range items {
+				if ids[item.ID] {
+					filtered = append(filtered, item)
+				}
+			}
+		} else {
+			roomID, _ := liveSupportScopeRoomID(r)
+			for _, item := range items {
+				if s.liveSupportVoiceAllowed(r.Context(), tenantID, roomID, item) {
+					filtered = append(filtered, item)
+				}
 			}
 		}
 		items = filtered

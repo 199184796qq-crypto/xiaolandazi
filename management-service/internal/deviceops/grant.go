@@ -75,7 +75,7 @@ func (g Grant) validate(now time.Time, purpose string) error {
 		return errors.New("设备维护授权无效或已过期")
 	}
 	if purpose == PurposeFirmware {
-		if !HexID(g.ArtifactSHA256, 64, 64) || g.Profile == nil || g.Profile.Validate() != nil {
+		if !HexID(g.ArtifactSHA256, 64, 64) || g.Profile == nil || g.Profile.ValidateFirmware() != nil {
 			return errors.New("固件下载授权无效")
 		}
 	} else if g.ArtifactSHA256 != "" || g.Profile != nil {

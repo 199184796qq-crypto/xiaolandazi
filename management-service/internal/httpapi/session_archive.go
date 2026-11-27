@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"livecompanion/management/internal/coreclient"
 	"livecompanion/management/internal/model"
@@ -28,7 +30,13 @@ func (s *Server) watchSessionArchive(session model.LiveRuntimeSession) {
 			s.syncSessionArchive(ctx, session)
 			current, err := s.store.GetLiveRuntimeByRoom(ctx, session.TenantID, session.RoomID)
 			cancel()
-			if err != nil || current.ID != session.ID || (current.Status != "running" && current.Status != "paused") {
+			ended := errors.Is(err, sql.ErrNoRows) || err == nil && (current.ID != session.ID || (current.Status != "running" && current.Status != "paused"))
+			if ended {
+				cleanup, done := context.WithTimeout(s.anchorProducerContext, 5*time.Second)
+				clearSessionScriptChains(cleanup, session.TenantID, session.ID)
+				done()
+			}
+			if ended || err != nil {
 				return
 			}
 			select {

@@ -19,6 +19,7 @@ import (
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/storage"
+	"livecompanion/management/internal/ttsgateway"
 )
 
 func (s *Server) SetAnchorVoiceCache(cache anchorvoicecache.Repository) { s.anchorVoiceCache = cache }
@@ -63,6 +64,9 @@ func cycleVoiceCacheGroup(state *anchorcycle.State, segment anchorcycle.Segment)
 	}
 	var voice any
 	if v := state.Config.TTS; v != nil {
+		if ttsgateway.ProviderForModel(v.Model) == ttsgateway.ProviderQwen {
+			contract += ":" + qwenMainlineCacheProfile
+		}
 		voice = struct {
 			Source, VoiceID, Model string
 			ProfileID              int64

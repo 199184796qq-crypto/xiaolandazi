@@ -53,15 +53,31 @@ func manualRecoveryClaim(id string) string {
 	return fmt.Sprintf(`{"claimed":true,"item":{"id":%q,"topic":"manual","mission_kind":"reply_question","manual_action":"quick","sample_questions":["哪天发货"]}}`, id)
 }
 
+func setManualRecoveryAnswerFlow(w *Worker, envelope interactionplan.Envelope) {
+	w.SetManualAnswerFlow(func(ctx context.Context, in ManualAnswerFlowInput, complete interactionplan.Complete) (interactionplan.Envelope, error) {
+		response, err := complete(ctx, agentgateway.Request{Stage: "interaction_answerflow_answer"})
+		if err != nil {
+			return interactionplan.Envelope{}, err
+		}
+		if response.FinishReason == "length" || strings.TrimSpace(response.Text) == "" {
+			return interactionplan.Envelope{}, interactionplan.ErrInvalidResult
+		}
+		result := envelope
+		result.Task, result.Epoch, result.Body = in.Task, "manual", response.Text
+		return result, nil
+	})
+}
+
 func TestManualUnrecoverableResultIsRemovedWithoutBlockingNextTask(t *testing.T) {
-	w, _, base, agent, tts, session, _ := v2Fixture(t, 10101)
+	w, _, base, agent, tts, session, envelope := v2Fixture(t, 10101)
+	setManualRecoveryAnswerFlow(w, envelope)
 	core := &recoveryCore{fakeCore: base, pending: true, id: "bad-item"}
 	w.core = core
 	w.agent = recoveryAgent{agent, "stop"}
 	base.claimRaw = manualRecoveryClaim(core.id)
 	agent.responses = []string{
-		"编号：U01\n意图：问发货\n类型：提问\n歧义：否\n话术：",         // cannot invent the missing body
-		"编号：U01\n意图：问发货\n类型：提问\n歧义：否\n话术：第二天上午发货。", // valid next task, missing only footer
+		"",
+		"第二天上午发货。",
 	}
 	err := w.processRoom(context.Background(), session)
 	var terminal v2TaskFailure
@@ -82,11 +98,12 @@ func TestManualUnrecoverableResultIsRemovedWithoutBlockingNextTask(t *testing.T)
 }
 
 func TestManualTruncatedReplyDoesNotGenerateTTS(t *testing.T) {
-	w, _, base, agent, tts, session, _ := v2Fixture(t, 10102)
+	w, _, base, agent, tts, session, envelope := v2Fixture(t, 10102)
+	setManualRecoveryAnswerFlow(w, envelope)
 	core := &recoveryCore{fakeCore: base, pending: true, id: "truncated"}
 	w.core, w.agent = core, recoveryAgent{agent, "length"}
 	base.claimRaw = manualRecoveryClaim(core.id)
-	agent.responses = []string{"编号：U01\n意图：问发货\n类型：提问\n歧义：否\n话术：第二天上午发货。"}
+	agent.responses = []string{"第二天上午发货。"}
 	err := w.processRoom(context.Background(), session)
 	var terminal v2TaskFailure
 	if !errors.As(err, &terminal) || !errors.Is(terminal.error, interactionplan.ErrInvalidResult) || tts.calls != 0 || core.removed != 1 || core.releases != 0 {
@@ -95,7 +112,8 @@ func TestManualTruncatedReplyDoesNotGenerateTTS(t *testing.T) {
 }
 
 func TestManualProviderFailureKeepsExistingRetryPolicy(t *testing.T) {
-	w, _, base, agent, tts, session, _ := v2Fixture(t, 10103)
+	w, _, base, agent, tts, session, envelope := v2Fixture(t, 10103)
+	setManualRecoveryAnswerFlow(w, envelope)
 	core := &recoveryCore{fakeCore: base, pending: true, id: "transport-error"}
 	w.core = core
 	base.claimRaw = manualRecoveryClaim(core.id)

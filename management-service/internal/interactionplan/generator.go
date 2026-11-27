@@ -18,6 +18,7 @@ import (
 
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/contentguard"
+	"livecompanion/management/internal/contextword"
 	"livecompanion/management/internal/interactionpolicy"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/planprompt"
@@ -33,8 +34,7 @@ type Snapshot struct {
 	FrozenAt                            time.Time
 	Voice                               model.VoiceProfile
 	Style                               model.LiveAgentPlanAnchorStyleProfile
-	RuntimeContextKey                   string
-	RuntimePromptRevision               string
+	PlanSections                        planprompt.Sections
 }
 type Turn struct {
 	Question string `json:"question"`
@@ -46,6 +46,7 @@ type ContextMessage struct {
 	At   time.Time `json:"at,omitempty"`
 }
 type Input struct {
+	ContextWords *contextword.Context `json:"context_words,omitempty"`
 	// Only time_report receives a program-owned wall clock. Ordinary events
 	// omit both fields; model output never supplies a validity timestamp.
 	ReportClock     string           `json:"当前北京时间,omitempty"`
@@ -83,20 +84,21 @@ type Intent struct {
 // Envelope is created by the program, never by the model. It travels in the
 // existing purpose_knowledge field so the queue retains one exact task/result.
 type Envelope struct {
-	Template    string    `json:"template,omitempty"`
-	EventCount  int       `json:"event_count,omitempty"`
-	Protocol    string    `json:"protocol"`
-	Task        string    `json:"task"`
-	Epoch       string    `json:"epoch"`
-	Revision    uint64    `json:"revision"`
-	Tenant      int64     `json:"tenant_id"`
-	Room        int64     `json:"room_id"`
-	Session     int64     `json:"session_id"`
-	Plan        int64     `json:"plan_id"`
-	Fingerprint string    `json:"fingerprint"`
-	Body        string    `json:"body"`
-	Intent      Intent    `json:"intent"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	Template    string       `json:"template,omitempty"`
+	EventCount  int          `json:"event_count,omitempty"`
+	Protocol    string       `json:"protocol"`
+	Task        string       `json:"task"`
+	Epoch       string       `json:"epoch"`
+	Revision    uint64       `json:"revision"`
+	Tenant      int64        `json:"tenant_id"`
+	Room        int64        `json:"room_id"`
+	Session     int64        `json:"session_id"`
+	Plan        int64        `json:"plan_id"`
+	Fingerprint string       `json:"fingerprint"`
+	Body        string       `json:"body"`
+	Intent      Intent       `json:"intent"`
+	ExpiresAt   time.Time    `json:"expires_at"`
+	ModelStages *ModelStages `json:"model_stages,omitempty"`
 }
 type Complete func(context.Context, agentgateway.Request) (agentgateway.Response, error)
 
@@ -166,26 +168,8 @@ type promptSource interface {
 	GetLiveAgentPlanPrompt(context.Context, int64, int64) (string, time.Time, error)
 }
 
-type runtimePromptSource interface {
-	GetLiveAgentPlanRuntimePrompts(context.Context, int64, int64) (planprompt.RuntimePrompts, error)
-}
-
-func runtimePromptFor(ctx context.Context, source Source, frozen Snapshot) (Snapshot, error) {
-	reader, ok := source.(runtimePromptSource)
-	if !ok || frozen.RuntimeContextKey == "" {
-		return frozen, nil
-	}
-	current, err := reader.GetLiveAgentPlanRuntimePrompts(ctx, frozen.Scope.Tenant, frozen.Scope.Plan)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if current.Enabled && current.ContextKey() == frozen.RuntimeContextKey {
-		// Keep the fixed run identity: a prepared body bought before the save must
-		// still finish. Only subsequent model requests use the new requirements.
-		frozen.Prompt = current.Sections.Interaction()
-		frozen.RuntimePromptRevision = current.Revision
-	}
-	return frozen, nil
+type interactionSectionsSource interface {
+	GetLiveAgentPlanInteractionSections(context.Context, int64, int64) (planprompt.Sections, error)
 }
 
 // Prepared content has already completed its model call and may already have
@@ -193,9 +177,6 @@ func runtimePromptFor(ctx context.Context, source Source, frozen Snapshot) (Snap
 // its original run identity or force another purchase.
 func FreezePrepared(ctx context.Context, source Source, session model.LiveRuntimeSession) (Snapshot, error) {
 	if s, ok := Frozen.ForSession(session.TenantID, session.RoomID, session.ID); ok && session.ID > 0 {
-		if strings.TrimSpace(s.Prompt) == "" {
-			return s, errors.New("本场冻结的方案提示词为空")
-		}
 		return s, nil
 	}
 	return Freeze(ctx, source, session)
@@ -203,28 +184,27 @@ func FreezePrepared(ctx context.Context, source Source, session model.LiveRuntim
 
 func Freeze(ctx context.Context, source Source, session model.LiveRuntimeSession) (Snapshot, error) {
 	if s, ok := Frozen.ForSession(session.TenantID, session.RoomID, session.ID); ok && session.ID > 0 {
-		if strings.TrimSpace(s.Prompt) == "" {
-			return s, errors.New("本场冻结的方案提示词为空，请配置后在新场使用")
-		}
-		return runtimePromptFor(ctx, source, s)
+		return s, nil
 	}
 	published, err := source.GetPublishedLiveAgentPlanVersionForRoom(ctx, session.TenantID, session.RoomID)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	prompts, ok := source.(promptSource)
-	if !ok {
-		return Snapshot{}, errors.New("方案提示词读取未接通")
+	var sections planprompt.Sections
+	if reader, ok := source.(interactionSectionsSource); ok {
+		sections, err = reader.GetLiveAgentPlanInteractionSections(ctx, session.TenantID, published.PlanID)
+	} else if reader, ok := source.(promptSource); ok {
+		var legacy string
+		legacy, _, err = reader.GetLiveAgentPlanPrompt(ctx, session.TenantID, published.PlanID)
+		sections = planprompt.LegacyInteractionBackground(legacy)
 	}
-	prompt, _, err := prompts.GetLiveAgentPlanPrompt(ctx, session.TenantID, published.PlanID)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if strings.TrimSpace(prompt) == "" {
-		if session.ID > 0 {
-			Frozen.Put(Snapshot{Scope: Scope{session.TenantID, session.RoomID, session.ID, published.PlanID, published.ID}, FrozenAt: time.Now().UTC()})
-		}
-		return Snapshot{}, errors.New("当前方案未配置方案提示词，互动保持主线并跳过")
+	roomIntro, _ := published.GenerationContext["room_intro"].(string)
+	background := sections.InteractionBackground(roomIntro)
+	if background == "" {
+		background = "按当前互动任务和输出格式生成。"
 	}
 	p0, err := policy.LoadGeneration()
 	if err != nil {
@@ -237,25 +217,11 @@ func Freeze(ctx context.Context, source Source, session model.LiveRuntimeSession
 	if err != nil {
 		return Snapshot{}, err
 	}
-	s, err := NewSnapshot(Scope{session.TenantID, session.RoomID, session.ID, published.PlanID, published.ID}, prompt, p0.PromptText, string(md))
+	s, err := NewSnapshot(Scope{session.TenantID, session.RoomID, session.ID, published.PlanID, published.ID}, background, p0.PromptText, string(md))
 	if err != nil {
 		return s, err
 	}
-	if reader, ok := source.(runtimePromptSource); ok {
-		current, err := reader.GetLiveAgentPlanRuntimePrompts(ctx, session.TenantID, published.PlanID)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		// Bind only a matching document. Do not mix two different reads if another
-		// author saves between initial prompt and context acquisition.
-		if current.Structured && current.Sections.Interaction() != prompt {
-			return Snapshot{}, errors.New("方案提示词保存中，请稍后重试")
-		}
-		if current.Structured {
-			s.RuntimeContextKey = current.ContextKey()
-			s.RuntimePromptRevision = current.Revision
-		}
-	}
+	s.PlanSections = sections
 	identity := published.VoiceIdentity
 	rate := identity.Rate
 	if rates, ok := source.(interface {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -94,6 +95,17 @@ func createDeviceOrderRefundRequestTx(
 	amountCents := paidAmount - refundedAmount
 	refundNo := fmt.Sprintf("REF-DEV-%d", time.Now().UTC().UnixNano())
 	reason := "设备退货售后验收完成 · " + rmaNo
+	refundMethod := "sandbox_original"
+	var paidByWallet bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM fin_payment_transactions
+		  WHERE order_id=? AND channel='wallet' AND payment_method='wallet_balance' AND status='paid')
+	`, sourceOrderID.Int64).Scan(&paidByWallet); err != nil {
+		return 0, "", err
+	}
+	if paidByWallet {
+		refundMethod = "wallet_balance"
+	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO fin_refund_orders (
 			refund_no, tenant_id, source_type, source_id,
@@ -103,7 +115,7 @@ func createDeviceOrderRefundRequestTx(
 		)
 		VALUES (
 			?, ?, 'order', ?,
-			'CNY', ?, 'sandbox_original',
+			'CNY', ?, ?,
 			'pending_approval', ?, ?,
 			?
 		)
@@ -112,6 +124,7 @@ func createDeviceOrderRefundRequestTx(
 		tenantID,
 		sourceOrderID.Int64,
 		amountCents,
+		refundMethod,
 		reason,
 		requesterUserID,
 		idempotencyKey,
@@ -138,7 +151,7 @@ func createDeviceOrderRefundRequestTx(
 		OrderID:       refundID,
 		SourceOrderID: sourceOrderID.Int64,
 		RMAID:         rmaID,
-		PaymentMethod: "sandbox_original",
+		PaymentMethod: refundMethod,
 		Reason:        reason,
 	}
 	if _, err := createFinanceApprovalTaskTx(
@@ -177,20 +190,23 @@ func applyOrderRefundTx(
 	amountCents uint64,
 	operatorUserID int64,
 	reason string,
+	refundMethod string,
 ) error {
 	var (
+		orderNo        string
 		orderType      string
 		orderStatus    string
 		paidAmount     uint64
 		refundedAmount uint64
 	)
 	if err := tx.QueryRowContext(ctx, `
-		SELECT order_type, status,
+		SELECT order_no, order_type, status,
 		       paid_amount_cents, refunded_amount_cents
 		FROM biz_orders
 		WHERE id=? AND tenant_id=?
 		FOR UPDATE
 	`, sourceOrderID, tenantID).Scan(
+		&orderNo,
 		&orderType,
 		&orderStatus,
 		&paidAmount,
@@ -207,6 +223,29 @@ func applyOrderRefundTx(
 	outstanding := paidAmount - refundedAmount
 	if amountCents == 0 || amountCents > outstanding {
 		return ErrRefundAmountInvalid
+	}
+	if refundMethod == "wallet_balance" {
+		walletID, balance, err := lockWalletAccountTx(ctx, tx, tenantID, "cash")
+		if err != nil {
+			return err
+		}
+		if balance < 0 || amountCents > uint64(math.MaxInt64-balance) {
+			return ErrRefundAmountInvalid
+		}
+		balanceAfter := balance + int64(amountCents)
+		if _, err := tx.ExecContext(ctx, `UPDATE fin_wallet_accounts SET balance_cents=? WHERE id=?`, balanceAfter, walletID); err != nil {
+			return err
+		}
+		ledgerKey := fmt.Sprintf("wallet-device-refund-%d", refundID)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO fin_wallet_ledger (external_id, tenant_id, wallet_account_id, direction,
+			  amount_cents, balance_before_cents, balance_after_cents, business_type, business_id,
+			  order_no, operator_user_id, reason, idempotency_key, occurred_at)
+			VALUES (?, ?, ?, 'in', ?, ?, ?, 'device_refund', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))
+		`, ledgerKey, tenantID, walletID, amountCents, balance, balanceAfter,
+			refundID, orderNo, operatorUserID, "直播终端退款 · "+orderNo, ledgerKey); err != nil {
+			return err
+		}
 	}
 
 	newRefunded := refundedAmount + amountCents

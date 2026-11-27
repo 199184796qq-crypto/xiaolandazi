@@ -20,6 +20,21 @@ type AccountProfile struct {
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 }
+
+// AccountProfileChanges distinguishes an omitted field from clearing a value.
+type AccountProfileChanges struct {
+	Username    *string `json:"username"`
+	DisplayName *string `json:"display_name"`
+	Phone       *string `json:"phone"`
+	Email       *string `json:"email"`
+	QQ          *string `json:"qq"`
+	Wechat      *string `json:"wechat"`
+	Province    *string `json:"province"`
+	City        *string `json:"city"`
+	District    *string `json:"district"`
+	Address     *string `json:"address"`
+}
+
 type MembershipSummary struct {
 	ID              int64     `json:"id"`
 	PlanID          int64     `json:"plan_id"`

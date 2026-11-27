@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -46,6 +47,10 @@ func copyAudioReaderToTemp(source io.Reader, suffix string) (string, error) {
 }
 
 func normalizeAudioToCoreWAV(ctx context.Context, inputPath string) (string, error) {
+	return normalizeCoreWAV(ctx, inputPath, "", 0)
+}
+
+func normalizeCoreWAV(ctx context.Context, inputPath, inputFormat string, maxSeconds int) (string, error) {
 	output, err := os.CreateTemp("", "xiaolan-core-mainline-*.wav")
 	if err != nil {
 		return "", err
@@ -57,19 +62,15 @@ func normalizeAudioToCoreWAV(ctx context.Context, inputPath string) (string, err
 	}
 	_ = os.Remove(outputPath)
 
-	cmd := exec.CommandContext(
-		ctx,
-		ffmpegExecutable(),
-		"-hide_banner",
-		"-loglevel", "error",
-		"-y",
-		"-i", inputPath,
-		"-vn",
-		"-ac", "1",
-		"-ar", "24000",
-		"-c:a", "pcm_s16le",
-		outputPath,
-	)
+	args := []string{"-hide_banner", "-loglevel", "error", "-y"}
+	if inputFormat != "" {
+		args = append(args, "-protocol_whitelist", "file", "-f", inputFormat)
+	}
+	args = append(args, "-i", inputPath, "-vn", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le")
+	if maxSeconds > 0 {
+		args = append(args, "-t", strconv.Itoa(maxSeconds))
+	}
+	cmd := exec.CommandContext(ctx, ffmpegExecutable(), append(args, outputPath)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

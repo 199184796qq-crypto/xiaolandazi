@@ -1,6 +1,7 @@
 package model
 
 import (
+	"math"
 	"strings"
 	"time"
 )
@@ -212,7 +213,17 @@ type LiveAgentSettingsInput struct {
 	Greeting         string `json:"greeting"`
 }
 
+const DefaultInteractionSpeechRate = 1.0
+
+const InteractionSpeechRateError = "互动语速须在 0.80～1.30 倍之间，每档 0.02 倍"
+
+func ValidInteractionSpeechRate(rate float64) bool {
+	hundredths := math.Round(rate * 100)
+	return hundredths >= 80 && hundredths <= 130 && math.Mod(hundredths, 2) == 0 && rate == hundredths/100
+}
+
 type RoomInteractionPreferences struct {
+	SpeechRate         float64           `json:"interaction_speech_rate"`
 	ControlsDisabledAt map[string]uint64 `json:"-"`
 	InteractionActive  *bool             `json:"interaction_active,omitempty"`
 	Switches           map[string]bool   `json:"interaction_switches,omitempty"`

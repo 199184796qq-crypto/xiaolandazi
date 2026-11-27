@@ -173,7 +173,12 @@ func (s *Server) getRoomSpeechRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	query := url.Values{}
 	query.Set("tenant_id", strconv.FormatInt(tenantID, 10))
-	resp, err := s.core.DoRoom(
+	workbench := r.URL.Query().Get("workbench") == "1"
+	readRuntime := s.core.DoRoom
+	if workbench {
+		readRuntime = s.core.DoRoomOwner
+	}
+	resp, err := readRuntime(
 		r.Context(),
 		tenantID,
 		roomID,
@@ -184,6 +189,10 @@ func (s *Server) getRoomSpeechRuntime(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "直播口播状态暂时不可用")
+		return
+	}
+	if resp.StatusCode == http.StatusOK && workbench {
+		s.writeWorkbenchSpeechRuntime(w, r, resp, tenantID, roomID, query)
 		return
 	}
 	s.copyCoreResponse(w, resp)

@@ -40,6 +40,7 @@ func interactionPurposeCostBinder(lookup func(context.Context, int64, int64) (mo
 		if loadErr != nil {
 			return nil, fmt.Errorf("purpose billing scope unavailable: %w", loadErr)
 		}
+		ctx = agentgateway.WithRoomModelScope(ctx, agentgateway.RoomModelScope{TenantID: tenant, RoomID: room, RuntimeID: session.ID, RequireLease: true})
 		ctx = withExchangeScope(ctx, appdb.ModelExchangeScope{TenantID: tenant, RoomID: room, PlanID: plan, RunID: session.ExternalID})
 		return withLiveCostScope(ctx, liveCostCallScope{TenantID: tenant, RoomID: room, PlanID: plan, SessionID: session.ID,
 			RunID: session.ExternalID, Priority: livecost.PriorityNecessary, Reason: "直播必要互动解意图",

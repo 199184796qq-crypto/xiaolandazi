@@ -645,6 +645,7 @@ func expireTimeCardAssetsTx(
 		  AND a.status='active'
 		  AND a.expires_at IS NOT NULL
 		  AND a.expires_at<=?
+		  AND q.reserved_seconds=0
 		ORDER BY a.id ASC
 		FOR UPDATE
 	`, tenantID, now)
@@ -950,6 +951,7 @@ func refundTimeCardAssetOrderTx(
 	}
 
 	remainingToReverse := secondsToReverse
+	var allocatedCents uint64
 	activeQuotaChanged := false
 	for _, item := range assets {
 		if remainingToReverse == 0 {
@@ -963,6 +965,13 @@ func refundTimeCardAssetOrderTx(
 			use = remainingToReverse
 		}
 		after := item.remaining - use
+		cumulativeCents := proportionalTimeCardCents(input.AmountCents, secondsToReverse-remainingToReverse+use, secondsToReverse)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO biz_time_card_sale_refunds (asset_id,refund_id,amount_cents) VALUES (?,?,?)
+		`, item.id, refundID, cumulativeCents-allocatedCents); err != nil {
+			return model.RefundRecord{}, true, err
+		}
+		allocatedCents = cumulativeCents
 		assetStatus := item.status
 		if after == 0 {
 			assetStatus = "refunded"

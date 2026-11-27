@@ -132,6 +132,72 @@ func TestFirmwareCatalogDefaultsCompatibilityAndAppOnly(t *testing.T) {
 		t.Fatal("corrupt artifact accepted")
 	}
 }
+func TestFirmwareCatalogAllDevicesCompatibilityAndScope(t *testing.T) {
+	root := t.TempDir()
+	entry := FirmwareEntry{
+		Enabled: true, Version: "2.2.11", SHA256: strings.Repeat("a", 64), Size: 320,
+		Board: "bread-compact-wifi-s3cam", Chip: "esp32s3", FlashBytes: 16 << 20,
+		PartitionLayout: "v2-16m", FromVersions: []string{"2.2.8", "2.2.9", "2.2.10"}, AllDevices: true,
+	}
+	writeCatalog(t, root, entry)
+	catalog, err := ReadCatalog(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := testProfile()
+	for _, version := range entry.FromVersions {
+		profile.FirmwareVersion = version
+		for _, deviceID := range []int64{1, 7, 8, 1000000} {
+			offer, err := catalog.Select(profile, deviceID, "")
+			if err != nil || offer == nil || offer.Version != entry.Version {
+				t.Fatalf("device %d version %s: offer=%v err=%v", deviceID, version, offer, err)
+			}
+		}
+	}
+	for _, deviceID := range []int64{0, -1} {
+		if offer, err := catalog.Select(profile, deviceID, ""); err != nil || offer != nil {
+			t.Fatalf("invalid device %d: offer=%v err=%v", deviceID, offer, err)
+		}
+	}
+	for _, mutate := range []func(*Profile){
+		func(p *Profile) { p.Board = "other-board" },
+		func(p *Profile) { p.Chip = "esp32" },
+		func(p *Profile) { p.FlashBytes = 8 << 20 },
+		func(p *Profile) { p.PartitionLayout = "legacy" },
+		func(p *Profile) { p.FirmwareVersion = "2.2.7" },
+		func(p *Profile) { p.FirmwareVersion = "2.2.11" },
+		func(p *Profile) { p.FirmwareVersion = "2.2.12" },
+	} {
+		p := profile
+		mutate(&p)
+		if offer, _ := catalog.Select(p, 8, ""); offer != nil {
+			t.Fatalf("incompatible profile received an offer: %+v", p)
+		}
+	}
+	if offer, err := catalog.Select(profile, 8, strings.Repeat("b", 64)); err != nil || offer != nil {
+		t.Fatal("wrong artifact offered", offer, err)
+	}
+	entry.Enabled = false
+	writeCatalog(t, root, entry)
+	catalog, err = ReadCatalog(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offer, err := catalog.Select(profile, 8, ""); err != nil || offer != nil {
+		t.Fatal("disabled release offered", offer, err)
+	}
+	for _, scope := range []struct {
+		all bool
+		ids []int64
+	}{{false, nil}, {true, []int64{7}}, {false, []int64{0}}, {false, []int64{7, 7}}} {
+		entry.AllDevices, entry.DeviceIDs = scope.all, scope.ids
+		writeCatalog(t, root, entry)
+		if _, err := ReadCatalog(root); err == nil {
+			t.Fatalf("invalid scope accepted: %+v", scope)
+		}
+	}
+}
+
 func TestDiagnosticPrivateImmutableWrite(t *testing.T) {
 	root := t.TempDir()
 	b := testBatch()

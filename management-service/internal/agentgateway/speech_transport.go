@@ -76,6 +76,14 @@ func CompleteSpeechEndpoint(ctx context.Context, p SpeechModel, request Request)
 	if err := ValidateSpeechTestOptions(p, request); err != nil {
 		return Response{}, err
 	}
+	if request.ReasoningEffort == "high" {
+		if !SupportsHighReasoning(p) {
+			return Response{}, errors.New("当前模型不支持高思考")
+		}
+		if !request.UseProviderOutputLimit && request.MaxTokens > p.MaxTokens {
+			return Response{}, fmt.Errorf("高思考输出上限超过模型配置的 %d Token", p.MaxTokens)
+		}
+	}
 	prepared, err := PrepareTextRequest(p, request)
 	if err != nil {
 		return Response{}, err
@@ -83,11 +91,52 @@ func CompleteSpeechEndpoint(ctx context.Context, p SpeechModel, request Request)
 	return completeSpeechEndpoint(ctx, p, prepared, speechHTTPClient)
 }
 
+func sentThinkingMode(payload map[string]any) string {
+	if effort, ok := payload["reasoning_effort"].(string); ok {
+		switch effort {
+		case "low":
+			return "low"
+		case "none":
+			return "off"
+		case "medium", "high", "xhigh", "max":
+			return "on"
+		}
+	}
+	if thinking, ok := payload["enable_thinking"].(bool); ok {
+		if thinking {
+			return "on"
+		}
+		return "off"
+	}
+	switch thinking := payload["thinking"].(type) {
+	case map[string]string:
+		return thinkingModeForType(thinking["type"])
+	case map[string]any:
+		kind, _ := thinking["type"].(string)
+		return thinkingModeForType(kind)
+	}
+	return ""
+}
+
+func thinkingModeForType(kind string) string {
+	switch kind {
+	case "disabled":
+		return "off"
+	case "enabled", "adaptive":
+		return "on"
+	default:
+		return ""
+	}
+}
+
 func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request, client *http.Client) (Response, error) {
 	if p.APIKey == "" {
 		return Response{}, errors.New("模型 API 密钥尚未配置")
 	}
-	if request.MaxTokens <= 0 {
+	if request.UseProviderOutputLimit && (request.ReasoningEffort != "high" || !SupportsHighReasoning(p)) {
+		return Response{}, errors.New("供应商默认输出额度仅支持官方 DeepSeek 高思考")
+	}
+	if request.MaxTokens <= 0 && !request.UseProviderOutputLimit {
 		request.MaxTokens = p.MaxTokens
 	}
 	if request.Timeout <= 0 {
@@ -99,11 +148,7 @@ func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request,
 		if dashScopeQwenEndpoint(base, p.Model) {
 			provider = NewQwenProvider(QwenConfig{BaseURL: base, APIKey: p.APIKey, Client: client, MaxTokenField: p.ChatTokenField})
 		}
-		response, err := provider.Complete(ctx, request)
-		if err != nil {
-			return Response{}, err
-		}
-		return response, nil
+		return provider.Complete(ctx, request)
 	}
 	var systems []string
 	messages := []map[string]any{}
@@ -265,7 +310,7 @@ func completeSpeechEndpoint(ctx context.Context, p SpeechModel, request Request,
 	if decoded.Usage.Total == 0 {
 		decoded.Usage.Total = decoded.Usage.Input + decoded.Usage.Output
 	}
-	return Response{Text: text, FinishReason: finishReason, Model: p.Model, Provider: p.Protocol, LatencyMS: time.Since(started).Milliseconds(), InputTokens: decoded.Usage.Input, OutputTokens: decoded.Usage.Output, TotalTokens: decoded.Usage.Total}, nil
+	return Response{Text: text, FinishReason: finishReason, Model: p.Model, Provider: p.Protocol, LatencyMS: time.Since(started).Milliseconds(), ThinkingMode: sentThinkingMode(payload), InputTokens: decoded.Usage.Input, OutputTokens: decoded.Usage.Output, TotalTokens: decoded.Usage.Total}, nil
 }
 
 func dashScopeQwenEndpoint(baseURL, model string) bool {

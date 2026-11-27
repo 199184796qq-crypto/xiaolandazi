@@ -20,12 +20,15 @@ import (
 )
 
 type volcengineCachedAudio struct {
+	HumanSource       *mainlineHumanSource                 `json:"human_source,omitempty"`
+	HumanVoice        bool                                 `json:"human_voice,omitempty"`
 	UntimedTranscript bool                                 `json:"untimed_transcript,omitempty"`
 	AssetID           int64                                `json:"asset_id"`
 	DurationMS        int64                                `json:"duration_ms"`
 	VoiceID           string                               `json:"voice_id"`
 	Timeline          []model.LiveAgentPlanTimelineSegment `json:"timeline"`
 	Blocks            []scriptFirstCachedBlock             `json:"blocks,omitempty"`
+	SpecHash          string                               `json:"spec_hash,omitempty"`
 	// Text 只在内存里表示"这条音频实际念的文本"，不落缓存文件。
 	Text string `json:"text,omitempty"`
 }
@@ -211,6 +214,7 @@ func (s *Server) ensureVolcengineParagraph(ctx context.Context, tenant, room, se
 			release(true)
 			return empty, err
 		}
+		reportScriptManualProgress(work, scriptManualSynthesizing)
 		generated, err = ttsgateway.NewFromEnv().SynthesizeURL(s.withLiveCostTTS(work, scope), r)
 		finish()
 		release(ttsgateway.DefinitelyNotSent(err))

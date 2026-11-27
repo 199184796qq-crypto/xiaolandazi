@@ -320,6 +320,27 @@ func (s *Store) AdoptLiveAgentPlanProductLink(
 	return result, nil
 }
 
+func (s *Store) UpdateLiveAgentPlanProductLinkDisplayName(ctx context.Context, tenantID, planID, linkID int64, displayName string) error {
+	displayName = strings.TrimSpace(displayName)
+	var result sql.Result
+	var err error
+	if displayName == "" {
+		result, err = s.db.ExecContext(ctx, `UPDATE live_agent_plan_product_links SET field_labels_json=JSON_REMOVE(COALESCE(field_labels_json,JSON_OBJECT()), '$.display_name'), version_no=version_no+1, updated_at=CURRENT_TIMESTAMP(3) WHERE tenant_id=? AND plan_id=? AND id=? AND status='active'`, tenantID, planID, linkID)
+	} else {
+		result, err = s.db.ExecContext(ctx, `UPDATE live_agent_plan_product_links SET field_labels_json=JSON_SET(COALESCE(field_labels_json,JSON_OBJECT()), '$.display_name', ?), version_no=version_no+1, updated_at=CURRENT_TIMESTAMP(3) WHERE tenant_id=? AND plan_id=? AND id=? AND status='active'`, displayName, tenantID, planID, linkID)
+	}
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrLiveAgentPlanProductLinkNotFound
+	}
+	return nil
+}
 func (s *Store) UpdateLiveAgentPlanProductLink(
 	ctx context.Context, tenantID, planID, productLinkID, actorUserID int64,
 	input model.UpdateLiveAgentPlanProductLinkInput,

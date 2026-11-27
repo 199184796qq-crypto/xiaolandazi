@@ -21,6 +21,7 @@ func groupedScriptFixture() recordingScript {
 
 func TestRecordingScriptGroupsSaveAndReadBack(t *testing.T) {
 	script := groupedScriptFixture()
+	script.Tabs[0].Entries[0].Title = "  当季果品  "
 	// Saving compacts hard line breaks, while punctuation, word spaces and
 	// literal ==== remain part of this one independent entry.
 	script.Tabs[0].Entries[0].Text = "价格 87.6元。\n====\n" + strings.Repeat("甲", 580)
@@ -29,6 +30,7 @@ func TestRecordingScriptGroupsSaveAndReadBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	script.Tabs[0].Entries[0].Text = "价格 87.6元。====" + strings.Repeat("甲", 580)
+	script.Tabs[0].Entries[0].Title = "当季果品"
 	raw, err := json.Marshal(ctx)
 	if err != nil {
 		t.Fatal(err)

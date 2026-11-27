@@ -960,13 +960,15 @@ type LiveAgentPlanVersionVariant struct {
 }
 
 type CreateLiveAgentPlanVersionInput struct {
-	TenantID          int64                         `json:"tenant_id,omitempty"`
-	RoomID            int64                         `json:"room_id"`
-	DurationMinutes   int                           `json:"duration_minutes"`
-	RoundMinutes      int                           `json:"round_minutes"`
-	VoiceIdentity     LiveAgentVoiceIdentity        `json:"voice_identity"`
-	Variants          []LiveAgentPlanVersionVariant `json:"variants"`
-	GenerationContext map[string]any                `json:"generation_context,omitempty"`
+	MaterialClaimsRevision string                        `json:"-"`
+	EditDraftRevision      string                        `json:"edit_draft_revision,omitempty"`
+	TenantID               int64                         `json:"tenant_id,omitempty"`
+	RoomID                 int64                         `json:"room_id"`
+	DurationMinutes        int                           `json:"duration_minutes"`
+	RoundMinutes           int                           `json:"round_minutes"`
+	VoiceIdentity          LiveAgentVoiceIdentity        `json:"voice_identity"`
+	Variants               []LiveAgentPlanVersionVariant `json:"variants"`
+	GenerationContext      map[string]any                `json:"generation_context,omitempty"`
 }
 
 type PublishLiveAgentPlanVersionInput struct {

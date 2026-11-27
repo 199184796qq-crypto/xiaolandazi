@@ -29,13 +29,14 @@ import (
 )
 
 const (
-	sessionCookieName = "lc_session"
-	captchaCookieName = "lc_captcha"
-	sessionDuration   = 7 * 24 * time.Hour
-	captchaDuration   = 5 * time.Minute
-	maxLoginFailures  = 5
-	loginWindow       = 10 * time.Minute
-	loginBlock        = 15 * time.Minute
+	sessionCookieName                = "lc_session"
+	captchaCookieName                = "lc_captcha"
+	sessionDuration                  = 7 * 24 * time.Hour
+	captchaDuration                  = 5 * time.Minute
+	registrationPhoneChecksPerWindow = 12
+	maxLoginFailures                 = 5
+	loginWindow                      = 10 * time.Minute
+	loginBlock                       = 15 * time.Minute
 )
 
 var (
@@ -76,6 +77,7 @@ type LoginInput struct {
 	Identifier string
 	Credential string
 	Captcha    string
+	Scope      appdb.AccountScope
 }
 
 type SMSCodeDelivery struct {
@@ -132,8 +134,10 @@ type Resolver struct {
 	store       *appdb.Store
 	smsProvider SMSProvider
 
-	captchaMu sync.Mutex
-	captchas  map[string]captchaChallenge
+	captchaMu        sync.Mutex
+	captchas         map[string]captchaChallenge
+	phoneCheckWindow time.Time
+	phoneChecksByIP  map[string]int
 
 	attemptMu sync.Mutex
 	attempts  map[string]loginAttempt
@@ -262,9 +266,20 @@ func (r *Resolver) Authenticate(
 	req *http.Request,
 	input LoginInput,
 ) (model.Actor, error) {
+	return r.AuthenticateWithAccess(ctx, w, req, input, nil)
+}
+
+// AuthenticateWithAccess checks access after verifying credentials and before issuing a session.
+func (r *Resolver) AuthenticateWithAccess(
+	ctx context.Context,
+	w http.ResponseWriter,
+	req *http.Request,
+	input LoginInput,
+	authorize func(model.Actor) error,
+) (model.Actor, error) {
 	method := LoginMethod(strings.ToLower(strings.TrimSpace(string(input.Method))))
 	identifier := strings.TrimSpace(input.Identifier)
-	key := loginKey(req, string(method)+":"+identifier)
+	key := loginKey(req, string(method)+":"+string(input.Scope)+":"+identifier)
 	if err := r.checkRateLimit(key); err != nil {
 		return model.Actor{}, err
 	}
@@ -279,9 +294,20 @@ func (r *Resolver) Authenticate(
 			r.recordFailure(key)
 			return model.Actor{}, ErrCaptchaInvalid
 		}
-		user, err = r.authenticatePassword(ctx, identifier, input.Credential)
+		user, err = r.findPasswordLoginUser(ctx, identifier, input.Scope)
+		if err == nil {
+			// Use one failure counter for the account across its login identifiers.
+			key = loginKey(req, fmt.Sprintf("%s:user-id:%d", method, user.ID))
+			if err := r.checkRateLimit(key); err != nil {
+				return model.Actor{}, err
+			}
+		}
+		if err != nil || user.Status != "active" || user.PasswordHash == "" ||
+			bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Credential)) != nil {
+			err = ErrInvalidCredentials
+		}
 	case LoginMethodSMS:
-		user, err = r.authenticateSMS(ctx, identifier, input.Credential)
+		user, err = r.authenticateSMS(ctx, identifier, input.Credential, input.Scope)
 	default:
 		return model.Actor{}, ErrUnsupportedLoginMethod
 	}
@@ -294,38 +320,57 @@ func (r *Resolver) Authenticate(
 		return model.Actor{}, ErrInvalidCredentials
 	}
 
+	actor := actorFromUser(user)
+	if authorize != nil {
+		if err := authorize(actor); err != nil {
+			return model.Actor{}, err
+		}
+	}
 	r.resetFailures(key)
 	if err := r.issueSession(ctx, w, req, user.ID); err != nil {
 		return model.Actor{}, err
 	}
-	return actorFromUser(user), nil
+	return actor, nil
 }
 
-func (r *Resolver) authenticatePassword(
-	ctx context.Context,
-	username string,
-	password string,
-) (model.User, error) {
-	user, err := r.store.GetUserByUsername(ctx, strings.TrimSpace(username))
-	if err != nil || user.Status != "active" || user.PasswordHash == "" {
-		return model.User{}, ErrInvalidCredentials
+// LoginWechatCustomer issues a session after the caller has verified a linked WeChat identity.
+func (r *Resolver) LoginWechatCustomer(ctx context.Context, w http.ResponseWriter, req *http.Request, userID int64, appID, identityHash string) error {
+	token, err := randomToken(32)
+	if err != nil {
+		return err
 	}
-	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
-		return model.User{}, ErrInvalidCredentials
+	session := newLoginSession(req, token)
+	if err := r.store.CreateWechatSession(ctx, userID, appID, identityHash, session); err != nil {
+		return err
 	}
-	return user, nil
+	r.writeSessionCookie(w, token, session.ExpiresAt)
+	return nil
+}
+
+func (r *Resolver) findPasswordLoginUser(ctx context.Context, identifier string, scope appdb.AccountScope) (model.User, error) {
+	// Keep existing numeric usernames usable even when another account uses that phone.
+	user, err := r.store.GetUserByScopedUsername(ctx, identifier, scope)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return user, err
+	}
+	phone := strings.TrimSpace(strings.TrimPrefix(identifier, "+86"))
+	if !mainlandPhonePattern.MatchString(phone) {
+		return user, err
+	}
+	return r.store.GetUserByPhone(ctx, phone, scope)
 }
 
 func (r *Resolver) authenticateSMS(
 	ctx context.Context,
 	phone string,
 	code string,
+	scope appdb.AccountScope,
 ) (model.User, error) {
 	normalizedPhone, ok := NormalizeMainlandPhone(phone)
 	if !ok {
 		return model.User{}, ErrInvalidPhone
 	}
-	user, err := r.store.GetUserByPhone(ctx, normalizedPhone)
+	user, err := r.store.GetUserByPhone(ctx, normalizedPhone, scope)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.User{}, ErrPhoneNotRegistered
@@ -336,7 +381,7 @@ func (r *Resolver) authenticateSMS(
 		return model.User{}, ErrInvalidCredentials
 	}
 
-	challenge, err := r.store.GetLatestSMSLoginChallenge(ctx, normalizedPhone)
+	challenge, err := r.store.GetLatestSMSLoginChallenge(ctx, user.ID, normalizedPhone)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.User{}, ErrSMSCodeInvalid
@@ -366,12 +411,13 @@ func (r *Resolver) SendSMSLoginCode(
 	ctx context.Context,
 	req *http.Request,
 	phone string,
+	scope appdb.AccountScope,
 ) (SMSCodeDelivery, error) {
 	normalizedPhone, ok := NormalizeMainlandPhone(phone)
 	if !ok {
 		return SMSCodeDelivery{}, ErrInvalidPhone
 	}
-	user, err := r.store.GetUserByPhone(ctx, normalizedPhone)
+	user, err := r.store.GetUserByPhone(ctx, normalizedPhone, scope)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SMSCodeDelivery{}, ErrPhoneNotRegistered
@@ -396,6 +442,7 @@ func (r *Resolver) SendSMSLoginCode(
 	}
 	if err := r.store.CreateSMSLoginChallenge(
 		ctx,
+		user.ID,
 		normalizedPhone,
 		string(codeHash),
 		time.Now().UTC().Add(5*time.Minute),
@@ -407,7 +454,7 @@ func (r *Resolver) SendSMSLoginCode(
 		return SMSCodeDelivery{}, err
 	}
 	if err := r.smsProvider.SendLoginCode(ctx, normalizedPhone, code); err != nil {
-		if challenge, loadErr := r.store.GetLatestSMSLoginChallenge(ctx, normalizedPhone); loadErr == nil {
+		if challenge, loadErr := r.store.GetLatestSMSLoginChallenge(ctx, user.ID, normalizedPhone); loadErr == nil {
 			_ = r.store.MarkSMSLoginChallengeUsed(ctx, challenge.ID)
 		}
 		return SMSCodeDelivery{}, err
@@ -421,6 +468,63 @@ func (r *Resolver) SendSMSLoginCode(
 		result.DebugCode = code
 	}
 	return result, nil
+}
+
+func (r *Resolver) CheckRegistrationPhone(ctx context.Context, req *http.Request, phone, inviteCode string) (bool, error) {
+	normalizedPhone, ok := NormalizeMainlandPhone(phone)
+	if !ok {
+		return false, ErrInvalidPhone
+	}
+	if err := r.allowRegistrationPhoneCheck(req); err != nil {
+		return false, err
+	}
+	if _, err := r.store.GetInvitePreview(ctx, inviteCode); err != nil {
+		if errors.Is(err, appdb.ErrInviteCodeInvalid) {
+			return false, ErrInvalidInviteCode
+		}
+		return false, err
+	}
+	_, err := r.store.GetUserByPhone(ctx, normalizedPhone, appdb.AccountCustomer)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	return false, err
+}
+
+func (r *Resolver) allowRegistrationPhoneCheck(req *http.Request) error {
+	cookie, err := req.Cookie(captchaCookieName)
+	if err != nil {
+		return ErrCaptchaInvalid
+	}
+	ip := net.ParseIP(requestIP(req))
+	if ip.IsLoopback() {
+		// The local reverse proxy replaces this header with its client address.
+		if clientIP := net.ParseIP(req.Header.Get("X-Real-IP")); clientIP != nil {
+			ip = clientIP
+		}
+	}
+	// Keep a client's IPv6 privacy addresses in the same rate-limit bucket.
+	if ip != nil && ip.To4() == nil {
+		ip = ip.Mask(net.CIDRMask(64, 128))
+	}
+	key := ip.String()
+	now := time.Now().UTC()
+	window := now.Truncate(captchaDuration)
+	r.captchaMu.Lock()
+	defer r.captchaMu.Unlock()
+	challenge, ok := r.captchas[cookie.Value]
+	if !ok || !now.Before(challenge.ExpiresAt) {
+		return ErrCaptchaInvalid
+	}
+	if !r.phoneCheckWindow.Equal(window) {
+		r.phoneCheckWindow = window
+		r.phoneChecksByIP = make(map[string]int)
+	}
+	if r.phoneChecksByIP[key] >= registrationPhoneChecksPerWindow {
+		return ErrRateLimited
+	}
+	r.phoneChecksByIP[key]++
+	return nil
 }
 
 func (r *Resolver) Register(
@@ -469,12 +573,12 @@ func (r *Resolver) Register(
 		return model.Actor{}, err
 	}
 
-	if _, err := r.store.GetUserByUsername(ctx, username); err == nil {
+	if _, err := r.store.GetUserByScopedUsername(ctx, username, appdb.AccountCustomer); err == nil {
 		return model.Actor{}, ErrUsernameTaken
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return model.Actor{}, err
 	}
-	if _, err := r.store.GetUserByPhone(ctx, phone); err == nil {
+	if _, err := r.store.GetUserByPhone(ctx, phone, appdb.AccountCustomer); err == nil {
 		return model.Actor{}, ErrPhoneTaken
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return model.Actor{}, err
@@ -497,7 +601,7 @@ func (r *Resolver) Register(
 		inviteCode,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "uk_mgmt_users_phone_unique") {
+		if strings.Contains(err.Error(), appdb.PhoneAccountIndex) {
 			return model.Actor{}, ErrPhoneTaken
 		}
 		if strings.Contains(err.Error(), "duplicate:") {
@@ -537,6 +641,7 @@ func (r *Resolver) ChangePassword(
 	req *http.Request,
 	currentPassword string,
 	newPassword string,
+	wechatAppID string,
 ) error {
 	actor, err := r.Resolve(req)
 	if err != nil {
@@ -546,6 +651,16 @@ func (r *Resolver) ChangePassword(
 	user, err := r.store.GetUserByID(ctx, actor.UserID)
 	if err != nil {
 		return err
+	}
+	useWechatPolicy := wechatAppID != "" && actor.Role == "customer"
+	if useWechatPolicy {
+		bound, verified, err := r.store.WechatAccountSecurity(ctx, wechatAppID, r.SessionKey(req), user.ID)
+		if err != nil {
+			return err
+		}
+		if bound && !verified {
+			return appdb.ErrWechatPasswordLoginRequired
+		}
 	}
 	if bcrypt.CompareHashAndPassword(
 		[]byte(user.PasswordHash),
@@ -563,6 +678,25 @@ func (r *Resolver) ChangePassword(
 	passwordHash, err := HashPassword(newPassword)
 	if err != nil {
 		return err
+	}
+	if useWechatPolicy {
+		token, err := randomToken(32)
+		if err != nil {
+			return err
+		}
+		session := newLoginSession(req, token)
+		err = r.store.UpdateWechatProtectedPassword(ctx, user.ID, wechatAppID, r.SessionKey(req), user.PasswordHash, passwordHash, session)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotAuthenticated
+		}
+		if errors.Is(err, appdb.ErrWechatPasswordChanged) {
+			return ErrCurrentPassword
+		}
+		if err != nil {
+			return err
+		}
+		r.writeSessionCookie(w, token, session.ExpiresAt)
+		return nil
 	}
 	if err := r.store.UpdatePassword(ctx, user.ID, passwordHash); err != nil {
 		return err
@@ -673,6 +807,20 @@ func (r *Resolver) issueSession(
 		return err
 	}
 
+	r.writeSessionCookie(w, token, expiresAt)
+	return nil
+}
+
+func newLoginSession(req *http.Request, token string) appdb.NewLoginSession {
+	return appdb.NewLoginSession{
+		TokenHash: hashToken(token),
+		ExpiresAt: time.Now().UTC().Add(sessionDuration),
+		ClientIP:  requestIP(req),
+		UserAgent: strings.TrimSpace(req.UserAgent()),
+	}
+}
+
+func (r *Resolver) writeSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
@@ -683,7 +831,6 @@ func (r *Resolver) issueSession(
 		MaxAge:   int(sessionDuration.Seconds()),
 		Expires:  expiresAt,
 	})
-	return nil
 }
 
 func (r *Resolver) clearSessionCookie(w http.ResponseWriter) {

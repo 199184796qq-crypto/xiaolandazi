@@ -14,8 +14,9 @@ import (
 )
 
 var (
-	ErrLiveAgentPlanNotFound     = errors.New("live agent plan not found")
-	ErrLiveAgentPlanNotPublished = errors.New("live agent plan not published for room")
+	ErrLiveAgentPlanNotFound         = errors.New("live agent plan not found")
+	ErrLiveAgentPlanNotPublished     = errors.New("live agent plan not published for room")
+	ErrLiveAgentPlanSelectionChanged = errors.New("live agent plan selection changed")
 )
 
 func (s *Store) CreateLiveAgentPlan(
@@ -308,6 +309,39 @@ func (s *Store) HardDeleteLiveAgentPlan(ctx context.Context, tenantID, planID in
 	}
 	defer tx.Rollback()
 
+	if err := retirePlanHumanScripts(ctx, tx, tenantID, planID, audit.ActorUserID); err != nil {
+		return err
+	}
+
+	if err := deleteLiveAgentPlanData(ctx, tx, tenantID, planID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM live_agent_plans WHERE id=? AND tenant_id=?`, planID, tenantID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrLiveAgentPlanNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	audit.Action = "plan.hard_delete"
+	audit.ObjectType = "live_agent_plan"
+	audit.ObjectID = strconv.FormatInt(planID, 10)
+	audit.ObjectName = plan.Name
+	audit.BeforeState = string(beforeJSON)
+	audit.AfterState = "{}"
+	audit.Result = "success"
+	audit.TargetTenantID = tenantID
+	if _, err := s.BeginAdminAudit(ctx, audit); err != nil {
+		return fmt.Errorf("record plan hard delete audit: %w", err)
+	}
+	return nil
+}
+
+func deleteLiveAgentPlanData(ctx context.Context, tx *sql.Tx, tenantID, planID int64) error {
 	// 先删不含 plan_id、但通过外键引用方案商品/内容集的派生数据（子查询定位，父表尚在）。
 	// 这些表(content_task_products / content_tasks / content_pool_records)无 tenant_id/plan_id 列，
 	// 只能经 product_links.id 与 content_sets.id 反查归属。
@@ -338,29 +372,6 @@ func (s *Store) HardDeleteLiveAgentPlan(ctx context.Context, tenantID, planID in
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE tenant_id=? AND plan_id=?`, tenantID, planID); err != nil {
 			return fmt.Errorf("hard delete plan %s: %w", table, err)
 		}
-	}
-	result, err := tx.ExecContext(ctx, `DELETE FROM live_agent_plans WHERE id=? AND tenant_id=?`, planID, tenantID)
-	if err != nil {
-		return err
-	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
-		return ErrLiveAgentPlanNotFound
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-
-	// 删除成功后写审计记录
-	audit.Action = "plan.hard_delete"
-	audit.ObjectType = "live_agent_plan"
-	audit.ObjectID = strconv.FormatInt(planID, 10)
-	audit.ObjectName = plan.Name
-	audit.BeforeState = string(beforeJSON)
-	audit.AfterState = "{}"
-	audit.Result = "success"
-	audit.TargetTenantID = tenantID
-	if _, err := s.BeginAdminAudit(ctx, audit); err != nil {
-		return fmt.Errorf("record plan hard delete audit: %w", err)
 	}
 	return nil
 }
@@ -497,13 +508,15 @@ func (s *Store) ListPublishedLiveAgentPlansForRoom(ctx context.Context, tenantID
 }
 
 func (s *Store) IsLiveAgentPlanPublishedForRoom(ctx context.Context, tenantID, roomID, planID int64) (bool, error) {
-	// Saving is the only activation step. A plan is considered "published for a
-	// room" as soon as it has any saved (effective) version, independent of the
-	// room the snapshot was originally saved against. This lets a room-agnostic
-	// archive (saved with room_id=0) become usable in a room the moment that
-	// room is bound — no separate republish step.
+	return hasPublishedLiveAgentPlan(ctx, s.db, tenantID, planID)
+}
+
+func hasPublishedLiveAgentPlan(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, tenantID, planID int64) (bool, error) {
+	// Saved versions are shared across rooms, including room-agnostic versions.
 	var exists int
-	err := s.db.QueryRowContext(ctx, `
+	err := db.QueryRowContext(ctx, `
 		SELECT 1
 		FROM live_agent_plan_versions
 		WHERE tenant_id=? AND plan_id=? AND lifecycle_status='published'
@@ -512,10 +525,7 @@ func (s *Store) IsLiveAgentPlanPublishedForRoom(ctx context.Context, tenantID, r
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+	return err == nil, err
 }
 
 func (s *Store) IsRoomBoundToLiveAgentPlan(ctx context.Context, tenantID, roomID, planID int64) (bool, error) {
@@ -545,14 +555,7 @@ func (s *Store) SelectLiveAgentPlanForRoom(ctx context.Context, tenantID, planID
 	if !published {
 		return model.LiveAgentPlan{}, ErrLiveAgentPlanNotPublished
 	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO live_agent_room_plan_selections (
-			tenant_id, room_id, plan_id, selected_by_user_id, selected_at
-		) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3))
-		ON DUPLICATE KEY UPDATE
-			plan_id=VALUES(plan_id), selected_by_user_id=VALUES(selected_by_user_id),
-			selected_at=CURRENT_TIMESTAMP(3), updated_at=CURRENT_TIMESTAMP(3)
-	`, tenantID, roomID, planID, actorUserID)
+	_, err = s.db.ExecContext(ctx, upsertLiveAgentRoomPlanSelection, tenantID, roomID, planID, actorUserID)
 	if err != nil {
 		return model.LiveAgentPlan{}, err
 	}
@@ -583,23 +586,7 @@ func (s *Store) BindRoomToLiveAgentPlan(
 		return model.LiveAgentPlan{}, ErrLiveAgentPlanNotFound
 	}
 
-	var existingID int64
-	err = tx.QueryRowContext(ctx, `
-		SELECT id FROM live_agent_plan_room_bindings
-		WHERE tenant_id=? AND plan_id=? AND room_id=? AND status='active'
-		LIMIT 1
-	`, tenantID, planID, roomID).Scan(&existingID)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO live_agent_plan_room_bindings (
-				tenant_id, plan_id, room_id, status, bound_by_user_id
-			) VALUES (?, ?, ?, 'active', ?)
-		`, tenantID, planID, roomID, actorUserID)
-		if err != nil {
-			return model.LiveAgentPlan{}, err
-		}
-	case err != nil:
+	if err := ensureLiveAgentPlanRoomBindingTx(ctx, tx, tenantID, planID, roomID, actorUserID); err != nil {
 		return model.LiveAgentPlan{}, err
 	}
 
@@ -613,6 +600,18 @@ func (s *Store) BindRoomToLiveAgentPlan(
 		return model.LiveAgentPlan{}, err
 	}
 	return s.GetLiveAgentPlan(ctx, tenantID, planID)
+}
+
+// An active binding is unique per tenant, plan and room. The no-op on a
+// duplicate keeps retries from changing the original actor or timestamp.
+func ensureLiveAgentPlanRoomBindingTx(ctx context.Context, tx *sql.Tx, tenantID, planID, roomID, staffID int64) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO live_agent_plan_room_bindings (
+			tenant_id, plan_id, room_id, status, bound_by_user_id
+		) VALUES (?, ?, ?, 'active', ?)
+		ON DUPLICATE KEY UPDATE id=live_agent_plan_room_bindings.id
+	`, tenantID, planID, roomID, staffID)
+	return err
 }
 
 func (s *Store) UnbindRoomFromLiveAgentPlan(ctx context.Context, tenantID, planID, roomID int64) error {

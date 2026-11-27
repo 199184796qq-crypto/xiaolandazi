@@ -9,6 +9,7 @@ import (
 	"livecompanion/management/internal/config"
 	appdb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/interactionpolicy"
+	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
 	"net/http"
 	"os"
@@ -59,7 +60,7 @@ func TestReturnBridgeProviderProbe(t *testing.T) {
 			t.Fatal("room voice unavailable", err)
 		}
 		start := time.Now()
-		audio, err := w.tts.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: voiceModel(voice), VoiceID: voice.VoiceID, Text: bridge.Text, Rate: voiceRate(voice)})
+		audio, err := w.tts.SynthesizeURL(ctx, ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: voiceModel(voice), VoiceID: voice.VoiceID, Text: bridge.Text, Rate: w.interactionSpeechRate(ctx, model.LiveRuntimeSession{TenantID: 14, RoomID: 26})})
 		result["tts_ms"] = time.Since(start).Milliseconds()
 		if err != nil {
 			t.Fatal(err)

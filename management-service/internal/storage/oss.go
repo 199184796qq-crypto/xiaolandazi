@@ -72,6 +72,10 @@ func (s *OSS) PutPrivate(ctx context.Context, objectKey string, source io.Reader
 func (s *OSS) Open(ctx context.Context, objectKey string) (io.ReadCloser, error) {
 	return s.bucket.GetObject(objectKey, oss.WithContext(ctx))
 }
+func (s *OSS) OpenRange(ctx context.Context, objectKey string, start, end int64) (io.ReadCloser, error) {
+	return s.bucket.GetObject(objectKey, oss.Range(start, end), oss.WithContext(ctx))
+}
+
 func (s *OSS) Exists(ctx context.Context, objectKey string) (bool, error) {
 	return s.bucket.IsObjectExist(objectKey, oss.WithContext(ctx))
 }

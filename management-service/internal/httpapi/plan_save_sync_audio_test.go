@@ -20,7 +20,7 @@ func syncSaveFixture() model.LiveAgentPlanVersion {
 
 func TestPlanSaveWaitsForExactOpeningAnchor(t *testing.T) {
 	t.Setenv("MEDIA_ROOT", t.TempDir())
-	for _, name := range []string{"qwen-audio-3.1-tts-flash", ttsgateway.VolcengineICL2} {
+	for _, name := range []string{"qwen-audio-3.1-tts-flash", "qwen3-tts-flash", ttsgateway.VolcengineICL2, ttsgateway.TencentPremiumModel} {
 		t.Run(name, func(t *testing.T) {
 			v := syncSaveFixture()
 			v.VoiceIdentity.Model = name

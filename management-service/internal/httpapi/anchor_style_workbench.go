@@ -1229,15 +1229,20 @@ func (s *Server) anchorStyleWorkbenchPlanData(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) completeAnchorStyleWorkbench(ctx context.Context, profileID, stage string, format agentgateway.ResponseFormat, messages []agentgateway.Message, maxTokens int, includeProfileSystem bool) (agentgateway.Response, []agentgateway.Message, error) {
+	return s.completeAnchorStyleRequest(ctx, profileID, agentgateway.Request{
+		Stage: stage, Messages: messages, MaxTokens: maxTokens, ResponseFormat: format, CacheSystemPrompt: true,
+	}, includeProfileSystem)
+}
+
+func (s *Server) completeAnchorStyleRequest(ctx context.Context, profileID string, request agentgateway.Request, includeProfileSystem bool) (agentgateway.Response, []agentgateway.Message, error) {
+	stage, messages, maxTokens := request.Stage, request.Messages, request.MaxTokens
 	profileID = strings.TrimSpace(profileID)
 	configured, configErr := s.store.SpeechModels(ctx)
 	if configErr != nil {
 		return agentgateway.Response{}, messages, configErr
 	}
 	profileID = workbenchProfileForStage(ctx, configured, profileID, stage)
-	// Interaction intent mining is pinned to the operator's review role and must
-	// not be captured by the room model pool. Thinking stays off for these calls.
-	pinned := agentgateway.UsesOperatorPinnedModel(stage)
+	pinned := agentgateway.UsesOperatorPinnedModelForContext(ctx, stage)
 	if pinned {
 		if operator, opErr := s.store.OperatorSpeechModels(ctx); opErr == nil && operator.ReviewDefaultID != "" {
 			profileID = operator.ReviewDefaultID
@@ -1264,9 +1269,16 @@ func (s *Server) completeAnchorStyleWorkbench(ctx context.Context, profileID, st
 		if includeProfileSystem && strings.TrimSpace(profile.SystemPrompt) != "" {
 			actual = append([]agentgateway.Message{{Role: "system", Content: profile.SystemPrompt}}, actual...)
 		}
-		request := agentgateway.Request{
-			Stage: stage, Model: profile.Model, Messages: actual, MaxTokens: min(maxTokens, profile.MaxTokens),
-			EnableThinking: false, ResponseFormat: format, CacheSystemPrompt: true, Timeout: time.Duration(profile.TimeoutMS) * time.Millisecond,
+		request.Model, request.Messages, request.MaxTokens = profile.Model, actual, min(maxTokens, profile.MaxTokens)
+		limit := time.Duration(profile.TimeoutMS) * time.Millisecond
+		if request.Timeout <= 0 || request.Timeout > limit {
+			request.Timeout = limit
+		}
+		if !agentgateway.SupportsLowReasoning(*profile) {
+			request.ReasoningEffort = ""
+		}
+		if stage == "qa_pairs_organize" && request.MaxTokens <= 0 {
+			request.MaxTokens = maxTokens
 		}
 		var prepareErr error
 		request, prepareErr = agentgateway.PrepareTextRequest(*profile, request)
@@ -1285,9 +1297,8 @@ func (s *Server) completeAnchorStyleWorkbench(ctx context.Context, profileID, st
 		err = s.finishModelExchange(ctx, id, result, result.Text, started, result.InputTokens, result.OutputTokens, err)
 		return result, actual, err
 	}
-	request := agentgateway.Request{
-		Stage: stage, Messages: messages, MaxTokens: maxTokens, EnableThinking: false,
-		ResponseFormat: format, Timeout: 120 * time.Second,
+	if request.Timeout <= 0 {
+		request.Timeout = 120 * time.Second
 	}
 	id, err := s.beginModelExchange(ctx, stage, profileID, request)
 	if err != nil {

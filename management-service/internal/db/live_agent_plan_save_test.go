@@ -59,6 +59,9 @@ func (c *planSaveConn) QueryContext(_ context.Context, q string, a []driver.Name
 		c.locked = strings.Contains(q, "FOR UPDATE")
 		return &contentPolicyTestRows{columns: []string{"id", "voice_rate"}, values: [][]driver.Value{{int64(4), nil}}}, nil
 	}
+	if strings.Contains(q, "LEFT JOIN live_agent_plan_edit_drafts") {
+		return &contentPolicyTestRows{columns: []string{"revision", "draft_json"}, values: [][]driver.Value{{"", nil}}}, nil
+	}
 	if strings.Contains(q, "SELECT voice_rate FROM live_agent_plans") {
 		return &contentPolicyTestRows{columns: []string{"voice_rate"}, values: [][]driver.Value{{nil}}}, nil
 	}

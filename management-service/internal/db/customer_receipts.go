@@ -114,8 +114,7 @@ func (s *Store) SubmitCustomerReceipt(ctx context.Context, sc model.CustomerBusi
 		return model.CustomerReceipt{}, e
 	}
 	if p.OrderID != nil {
-		var id int64
-		if err = tx.QueryRowContext(ctx, "SELECT id FROM biz_orders WHERE id=? AND tenant_id=?", p.OrderID, p.TenantID).Scan(&id); err != nil {
+		if err := checkReceiptOrderTx(ctx, tx, p); err != nil {
 			return model.CustomerReceipt{}, err
 		}
 	}
@@ -155,6 +154,17 @@ func (s *Store) SubmitCustomerReceipt(ctx context.Context, sc model.CustomerBusi
 	}
 	return v, nil
 }
+func checkReceiptOrderTx(ctx context.Context, tx *sql.Tx, p model.CustomerReceiptInput) error {
+	var status string
+	if err := tx.QueryRowContext(ctx, "SELECT status FROM biz_orders WHERE id=? AND tenant_id=? FOR UPDATE", p.OrderID, p.TenantID).Scan(&status); err != nil {
+		return err
+	}
+	if p.Purpose == "order" && status == "cancelled" {
+		return ErrCustomerBusinessConflict
+	}
+	return nil
+}
+
 func verifiedReceiptPaymentTx(ctx context.Context, tx *sql.Tx, p model.CustomerReceiptInput) (int64, error) {
 	var id, order int64
 	var amount uint64
@@ -438,6 +448,11 @@ func (s *Store) ResubmitCustomerReceipt(ctx context.Context, sc model.CustomerBu
 	}
 	if v.Version != version || (v.Status != "needs_info" && v.Status != "rejected") {
 		return v, ErrCustomerBusinessConflict
+	}
+	if v.Purpose == "order" && v.OrderID != nil {
+		if err := checkReceiptOrderTx(ctx, tx, v.CustomerReceiptInput); err != nil {
+			return v, err
+		}
 	}
 	// Immutable amount/source/beneficiary. Corrections do not turn an old approval into a different receipt.
 	if _, err = tx.ExecContext(ctx, "UPDATE fin_customer_receipts SET evidence=?,last_submitter_user_id=?,status='pending',reviewer_user_id=NULL,reviewed_at=NULL,version_no=version_no+1 WHERE id=?", evidence, sc.UserID, id); err != nil {

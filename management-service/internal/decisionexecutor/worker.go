@@ -62,6 +62,7 @@ type store interface {
 	ListLiveAgentPlanFacts(context.Context, int64, int64) ([]model.LiveAgentPlanFact, error)
 	ListLiveAgentPlanScripts(context.Context, int64, int64) ([]model.LiveAgentPlanScript, error)
 	ListActiveAgentMemories(context.Context, int64, int64) ([]model.AgentMemoryItem, error)
+	RoomInteractionSpeechRate(context.Context, int64, int64) (float64, error)
 	GetRoomAddressingPreferences(context.Context, int64, int64) (model.RoomAddressingPreferences, error)
 	RecordGeneratedSpeechHistory(context.Context, model.GeneratedSpeechHistoryInput) error
 	AgentPromptValue(context.Context, string, string) string
@@ -98,6 +99,7 @@ type Worker struct {
 	core               coreDoer
 	agent              completer
 	tts                synthesizer
+	manualAnswerFlow   ManualAnswerFlow
 	paidContextFactory PaidRequestContextFactory
 	paidModelCompleter PaidModelCompleter
 	leader             leader
@@ -112,9 +114,10 @@ type Worker struct {
 	welcomeStrategy    InteractionStrategy
 	orderStrategy      InteractionStrategy
 
-	mu         sync.Mutex
-	inFlight   map[int64]time.Time
-	retryAfter map[int64]time.Time
+	mu             sync.Mutex
+	inFlight       map[int64]time.Time
+	retryAfter     map[int64]time.Time
+	failureHistory map[int64]interactionFailureCursor
 
 	addressMu             sync.Mutex
 	recentNamed           map[int64]map[string]time.Time
@@ -148,6 +151,8 @@ type decisionItem struct {
 	RecentAnswers          []InteractionRecentAnswer  `json:"-"`
 	PreparationCutPlans    json.RawMessage            `json:"-"`
 	CompletionUntil        time.Time                  `json:"completion_until,omitempty"`
+	AnswerDeferredUntil    time.Time                  `json:"answer_deferred_until,omitzero"`
+	AnswerDraftExpected    bool                       `json:"answer_draft_expected,omitempty"`
 	AudioPrepared          bool                       `json:"audio_prepared,omitempty"`
 	PreparedUntil          time.Time                  `json:"prepared_until,omitempty"`
 	PurposeID              string                     `json:"purpose_id,omitempty"`
@@ -176,7 +181,9 @@ type decisionItem struct {
 	Summary                string                                `json:"summary"`
 	ReplyHint              string                                `json:"reply_hint"`
 	SampleQuestions        []string                              `json:"sample_questions"`
+	UserIDs                []string                              `json:"user_ids,omitempty"`
 	Nicknames              []string                              `json:"nicknames,omitempty"`
+	ManualPromoted         bool                                  `json:"manual_promoted,omitempty"`
 	PromptNicknames        []string                              `json:"-"`
 	PromptShortNames       []string                              `json:"-"`
 	PromptAddressPhrase    string                                `json:"-"`
@@ -1007,14 +1014,15 @@ func humanizationKindName(kind string) string {
 }
 
 type claimResponse struct {
-	CutPlans        json.RawMessage `json:"cut_plans,omitempty"`
-	Claimed         bool            `json:"claimed"`
-	Reason          string          `json:"reason"`
-	Item            *decisionItem   `json:"item"`
-	SwitchAtMS      int             `json:"switch_at_ms"`
-	CurrentMainline string          `json:"current_mainline"`
-	ResumeMainline  string          `json:"resume_mainline"`
-	ResumeSegmentID string          `json:"resume_segment_id"`
+	CutPlans           json.RawMessage      `json:"cut_plans,omitempty"`
+	Claimed            bool                 `json:"claimed"`
+	Reason             string               `json:"reason"`
+	Item               *decisionItem        `json:"item"`
+	SwitchAtMS         int                  `json:"switch_at_ms"`
+	CurrentMainline    string               `json:"current_mainline"`
+	ResumeMainline     string               `json:"resume_mainline"`
+	ResumeSegmentID    string               `json:"resume_segment_id"`
+	FailedInteractions []interactionFailure `json:"failed_interactions"`
 }
 
 func New(s store, core coreDoer, agent completer, tts synthesizer, leaders ...leader) *Worker {
@@ -1407,7 +1415,11 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		return nil
 	}
 	item := claim.Item
-	if e, ok := interactionplan.Decode(item.PurposeKnowledge); ok && !e.ExpiresAt.IsZero() {
+	if !item.AnswerDeferredUntil.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, item.AnswerDeferredUntil)
+		defer cancel()
+	} else if e, ok := interactionplan.Decode(item.PurposeKnowledge); ok && !e.ExpiresAt.IsZero() {
 		if !w.now().Before(e.ExpiresAt) {
 			return fmt.Errorf("互动任务已过期，等待重新调度")
 		}
@@ -1426,6 +1438,17 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	reschedule := false
 	defer func() {
 		if !completed {
+			if !item.AnswerDeferredUntil.IsZero() && !reschedule {
+				if !w.now().Before(item.AnswerDeferredUntil) {
+					w.transitionMission(item, speechmission.StateFailed, "deferred_answer_deadline", "已超过互动延期窗口")
+				}
+				releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := w.release(releaseCtx, session, item.ID, "deferred_answer_unavailable"); err != nil {
+					log.Printf("deferred answer release tenant=%d room=%d decision=%s: %v", session.TenantID, session.RoomID, item.ID, err)
+				}
+				return
+			}
 			if errors.Is(resultErr, errWelcomeTTSTimeInsufficient) {
 				releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
@@ -1453,6 +1476,9 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 			}
 		}
 	}()
+	if !item.AnswerDeferredUntil.IsZero() && !w.now().Before(item.AnswerDeferredUntil) {
+		return nil
+	}
 
 	guarded, stopControls, controlErr := w.watchInteractionControls(ctx, session, *item)
 	if controlErr != nil {
@@ -1465,8 +1491,8 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if isSimulation {
 		ctx = context.WithValue(ctx, workerPaidOptOutKey{}, true)
 	}
-	if !isSimulation {
-		if wait, err := w.playoutPreflight(ctx, session, *item, "", "model"); err != nil {
+	if !isSimulation && !item.AnswerDraftExpected && !item.AudioPrepared {
+		if wait, err := w.playoutPreflight(ctx, session, *item, "", "model", 1, nil); err != nil {
 			return err
 		} else if wait {
 			completed = true
@@ -1486,18 +1512,10 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		if prepared, ok := w.takePreparedInteraction(session, *item, preparationScope, memoryBefore); ok {
 			// Keep the generated reply and its voice directives, but let Core
 			// select a safe boundary on the current mainline instead of the old one.
-			current, resume, segment := item.CurrentMainline, item.ResumeMainline, item.ResumeSegmentID
-			execution := *item
-			*item = prepared.Item
-			if retryableTimeReport(execution) {
-				item.ID, item.MissionID = execution.ID, execution.MissionID
-				item.ExpiresAt, item.CompletionUntil = execution.ExpiresAt, execution.CompletionUntil
-				item.AudioPrepared, item.PreparedUntil = execution.AudioPrepared, execution.PreparedUntil
-			}
-			item.CurrentMainline, item.ResumeMainline, item.ResumeSegmentID = current, resume, segment
+			restoreClaimPreparation(item, prepared.Item)
 			item.PlannedSwitchAtMS = 0
 			w.transitionMission(item, speechmission.StateWaitingCutPoint, "prepared_audio_reused", "复用已审核正文和声音，仅重新安排当前主线切点")
-			err = w.dispatchPreparedInteraction(ctx, session, item, prepared.Text, prepared.AudioURL, preparationScope, memoryBefore, prepared.ExpiresAt)
+			err = w.dispatchPreparedInteraction(ctx, session, item, prepared)
 			if errors.Is(err, errPreparedInteractionWaiting) {
 				reschedule = true
 				return nil // release for scheduling without the room-wide error backoff
@@ -1505,6 +1523,10 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 			completed = err == nil
 			return err
 		}
+	}
+	if !item.AnswerDeferredUntil.IsZero() && item.AudioPrepared {
+		w.transitionMission(item, speechmission.StateFailed, "deferred_answer_unavailable", "延期前的声音已失效")
+		return nil
 	}
 	if item.AudioPrepared && !item.ExpiresAt.IsZero() && !w.now().Before(item.ExpiresAt) && (item.CompletionUntil.IsZero() || !w.now().Before(item.CompletionUntil)) {
 		return fmt.Errorf("已准备音频失效且原事件已到期，停止重新生成")
@@ -1519,8 +1541,13 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if isTimeReport(*item) {
 		ctx = context.WithValue(ctx, timeReportContextKey{}, timeReportIdentity{Scope: preparationScope, Memory: memoryBefore})
 	}
-	text, reusedDraft := w.preflightDraft(session, item, preparationScope, memoryBefore)
+	claimScope, claimMemory := preparationScope, memoryBefore
+	text, reusedDraft := w.preflightDraft(session, item, claimScope, claimMemory)
 	if !reusedDraft {
+		if !item.AnswerDeferredUntil.IsZero() && item.AnswerDraftExpected {
+			w.transitionMission(item, speechmission.StateFailed, "deferred_answer_unavailable", "延期前的答稿已失效")
+			return nil
+		}
 		text, err = w.generateDecisionTextMutable(ctx, session, item)
 	}
 	if err != nil {
@@ -1571,10 +1598,12 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		return err
 	}
 
-	if wait, err := w.playoutPreflight(ctx, session, *item, text, "tts", voiceRate(voice)); err != nil {
+	rate := w.interactionSpeechRate(ctx, session)
+	if wait, err := w.playoutPreflight(ctx, session, *item, text, "tts", rate, func() {
+		w.savePreflightDraft(session, *item, text, claimScope, claimMemory)
+	}); err != nil {
 		return err
 	} else if wait {
-		w.savePreflightDraft(session, *item, text, preparationScope, memoryBefore)
 		completed = true
 		return nil
 	}
@@ -1614,30 +1643,16 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	}
 
 	ttsModel := voiceModel(voice)
-	ttsProfile := ttsProfileForInterrupt(item.SelectedInterrupt)
-	ttsInstruction := ""
-	if !item.EmotionDisabled {
-		ttsInstruction = w.ttsInstructionForMission(item, ttsProfile.Instruction)
-		if ttsgateway.IsCosyVoiceModel(ttsModel) {
-			ttsInstruction, err = w.cosyVoiceInstructionForMission(item)
-			if err != nil {
-				return fmt.Errorf("准备CosyVoice表达指令失败: %w", err)
-			}
-		}
-	}
-	// 称呼之后让模型自己处理停顿：单人、多人统一。
-	if strings.TrimSpace(item.PromptAddressPhrase) != "" {
-		if ttsInstruction == "" {
-			ttsInstruction = "开头称呼之后停顿约0.2秒，再自然往下说。"
-		} else {
-			ttsInstruction += "；开头称呼之后停顿约0.2秒，再自然往下说。"
-		}
+	ttsText, ssmlUsed := buildTTSText(text, item.PromptAddressPhrase, w.readingRulesFor(ctx, session), ttsgateway.SupportsSSML(ttsModel))
+	ttsInstruction, err := w.interactionDeliveryInstruction(item, voice)
+	if err != nil {
+		return err
 	}
 	w.transitionMission(item, speechmission.StateSynthesizingTTS, "tts_start", "最终话术审核通过，开始生成语音")
 	w.updateMission(item, func(m *speechmission.Mission) {
 		m.TTS = speechmission.TTSDirective{
 			Provider: voiceProvider(voice), Model: ttsModel, VoiceID: voice.VoiceID,
-			Rate: voiceRate(voice), Instruction: ttsInstruction,
+			Rate: rate, Instruction: ttsInstruction,
 		}
 	})
 	if isTimeReport(*item) {
@@ -1649,22 +1664,21 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		ttsCtx, cancel = context.WithDeadline(ttsCtx, item.ExpiresAt)
 		defer cancel()
 	}
-	ttsText, ssmlUsed := buildTTSText(text, item.PromptAddressPhrase, w.readingRulesFor(ctx, session), ttsgateway.SupportsSSML(ttsModel))
 	audio, err := w.synthesizeInteractionAudio(ttsCtx, item, ttsgateway.SynthesizeRequest{
 		Provider:    voiceProvider(voice),
 		Model:       ttsModel,
 		VoiceID:     voice.VoiceID,
 		Text:        ttsText,
-		Rate:        voiceRate(voice),
+		Rate:        rate,
 		Instruction: ttsInstruction,
 	})
-	if err != nil && ssmlUsed && !errors.Is(err, voiceasset.ErrCleared) && !errors.Is(err, errWelcomeTTSTimeInsufficient) && !errors.Is(err, errWarmupPurchaseNotAllowed) {
+	if err != nil && ttsCtx.Err() == nil && ssmlUsed && !errors.Is(err, voiceasset.ErrCleared) && !errors.Is(err, errWelcomeTTSTimeInsufficient) && !errors.Is(err, errWarmupPurchaseNotAllowed) {
 		audio, err = w.synthesizeInteractionAudio(ttsCtx, item, ttsgateway.SynthesizeRequest{
 			Provider:    voiceProvider(voice),
 			Model:       ttsModel,
 			VoiceID:     voice.VoiceID,
 			Text:        text,
-			Rate:        voiceRate(voice),
+			Rate:        rate,
 			Instruction: ttsInstruction,
 		})
 	}
@@ -1683,7 +1697,7 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	})
 	log.Printf(
 		"decision tts profile tenant=%d room=%d decision=%s interrupt=%s rate=%.2f instruction=%t model=%s",
-		session.TenantID, session.RoomID, item.ID, item.SelectedInterrupt, voiceRate(voice), strings.TrimSpace(ttsInstruction) != "", ttsModel,
+		session.TenantID, session.RoomID, item.ID, item.SelectedInterrupt, rate, strings.TrimSpace(ttsInstruction) != "", ttsModel,
 	)
 
 	// Queue expiry governs admission. A claimed answer remains owned by its
@@ -1696,10 +1710,13 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 		if isTimeReport(*item) {
 			return fmt.Errorf("报时纠正规则已更新，撤销旧声音并重新调度")
 		}
+		if !item.AnswerDeferredUntil.IsZero() {
+			return fmt.Errorf("纠正规则已更新，撤销延期前的互动答稿")
+		}
 		// Corrections remain hard constraints, unlike advisory host style.
 		// 规则更新后只用最新文本重新合成语音，不再做长度兜底修复。
 		text = item.nicknameSpeechText(text)
-		audio, err = w.synthesizeInteractionAudioStage(ctx, item, "interaction_fact_refresh_tts", ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: ttsModel, VoiceID: voice.VoiceID, Text: text, Rate: voiceRate(voice), Instruction: ttsInstruction})
+		audio, err = w.synthesizeInteractionAudioStage(ctx, item, "interaction_fact_refresh_tts", ttsgateway.SynthesizeRequest{Provider: voiceProvider(voice), Model: ttsModel, VoiceID: voice.VoiceID, Text: text, Rate: rate, Instruction: ttsInstruction})
 		if err != nil {
 			return fmt.Errorf("纠正规则更新后重新生成语音失败: %w", err)
 		}
@@ -1726,7 +1743,13 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	if retryableTimeReport(*item) {
 		preparedUntil = item.TimeReportValidUntil
 	}
-	err = w.dispatchPreparedInteraction(ctx, session, item, text, audio.AudioURL, preparationScope, memoryNow, preparedUntil)
+	if retryableTimeReport(*item) {
+		claimScope, claimMemory = preparationScope, memoryNow
+	}
+	err = w.dispatchPreparedInteraction(ctx, session, item, preparedInteraction{
+		Text: text, AudioURL: audio.AudioURL, Scope: claimScope, Memory: claimMemory,
+		PlaybackScope: preparationScope, ExpiresAt: preparedUntil,
+	})
 	if errors.Is(err, errPreparedInteractionWaiting) {
 		reschedule = true
 		return nil
@@ -1735,7 +1758,11 @@ func (w *Worker) processRoom(ctx context.Context, session model.LiveRuntimeSessi
 	return err
 }
 
-func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem, text, audioURL, scope, memory string, expiresAt time.Time) error {
+func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.LiveRuntimeSession, item *decisionItem, prepared preparedInteraction) error {
+	text, audioURL, expiresAt := prepared.Text, prepared.AudioURL, prepared.ExpiresAt
+	if !item.AnswerDeferredUntil.IsZero() && item.AnswerDeferredUntil.Before(expiresAt) {
+		expiresAt = item.AnswerDeferredUntil
+	}
 	if err := w.checkTimeReport(*item); err != nil {
 		return err
 	}
@@ -1745,7 +1772,7 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 	if err != nil {
 		return err
 	}
-	if latestScope != scope {
+	if latestScope != prepared.PlaybackScope {
 		return fmt.Errorf("主播声音或播出身份已变化，撤销旧待播声音")
 	}
 	if retryableTimeReport(*item) {
@@ -1756,13 +1783,17 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 		if !w.now().Before(expiresAt) {
 			return fmt.Errorf("报时音频地址已失效，保留有效文字重新合成")
 		}
-		w.savePreparedInteraction(session, *item, text, audioURL, scope, memory, expiresAt)
+		w.savePreparedInteraction(session, *item, text, audioURL, prepared.Scope, prepared.Memory, prepared.PlaybackScope, expiresAt)
 	}
 	if welcome, _ := welcomeV2(*item); welcome {
 		if err := w.admitWelcomeV2(ctx, session, item); err != nil {
 			return err
 		}
 		expiresAt = item.ExpiresAt
+		if !item.AnswerDeferredUntil.IsZero() && item.AnswerDeferredUntil.Before(expiresAt) {
+			expiresAt = item.AnswerDeferredUntil
+		}
+		prepared.Scope = latestScope
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, expiresAt)
 		defer cancel()
@@ -1778,14 +1809,14 @@ func (w *Worker) dispatchPreparedInteraction(ctx context.Context, session model.
 	w.transitionMission(item, speechmission.StateWaitingCutPoint, "dispatch_start", "TTS已生成，等待Core确认实际打断与回归位置")
 	cancelBridge := func() {}
 	if _, v2 := interactionplan.Decode(item.PurposeKnowledge); !v2 {
-		cancelBridge = w.startReturnBridge(session, *item, scope, memory)
+		cancelBridge = w.startReturnBridge(session, *item, prepared.PlaybackScope, prepared.Memory)
 	}
 	dispatchResult, err := w.dispatch(ctx, session, *item, action, text, audioURL)
 	if err != nil {
 		cancelBridge()
 		var conflict *safeSwitchRetry
 		if errors.As(err, &conflict) && ctx.Err() == nil {
-			w.savePreparedInteraction(session, *item, text, audioURL, scope, memory, expiresAt)
+			w.savePreparedInteraction(session, *item, text, audioURL, prepared.Scope, prepared.Memory, prepared.PlaybackScope, expiresAt)
 			w.transitionMission(item, speechmission.StateCreated, "cut_reschedule", "切点已变化，保留已审核声音等待重新调度")
 			log.Printf("decision prepared audio retained tenant=%d room=%d decision=%s reason=%s", session.TenantID, session.RoomID, item.ID, conflict.message)
 			return errPreparedInteractionWaiting
@@ -1941,6 +1972,33 @@ func interruptStrategyInstruction(key string) string {
 	default:
 		return ""
 	}
+}
+
+func (w *Worker) interactionDeliveryInstruction(item *decisionItem, voice model.VoiceProfile) (string, error) {
+	if voiceProvider(voice) == ttsgateway.ProviderQwen {
+		return "", nil
+	}
+	ttsProfile := ttsProfileForInterrupt(item.SelectedInterrupt)
+	ttsInstruction := ""
+	if !item.EmotionDisabled {
+		ttsInstruction = w.ttsInstructionForMission(item, ttsProfile.Instruction)
+		if ttsgateway.IsCosyVoiceModel(voiceModel(voice)) {
+			var err error
+			ttsInstruction, err = w.cosyVoiceInstructionForMission(item)
+			if err != nil {
+				return "", fmt.Errorf("准备CosyVoice表达指令失败: %w", err)
+			}
+		}
+	}
+	// 称呼之后让模型自己处理停顿：单人、多人统一。
+	if strings.TrimSpace(item.PromptAddressPhrase) != "" {
+		if ttsInstruction == "" {
+			ttsInstruction = "开头称呼之后停顿约0.2秒，再自然往下说。"
+		} else {
+			ttsInstruction += "；开头称呼之后停顿约0.2秒，再自然往下说。"
+		}
+	}
+	return ttsInstruction, nil
 }
 
 type interruptTTSProfile struct {
@@ -2287,6 +2345,7 @@ func (w *Worker) simulateAnswer(
 
 func (w *Worker) claim(ctx context.Context, session model.LiveRuntimeSession) (claimResponse, error) {
 	query := tenantQuery(session.TenantID)
+	w.addInteractionFailureCursor(query, session)
 	resp, err := w.core.DoRoom(
 		ctx, session.TenantID, session.RoomID, http.MethodPost,
 		fmt.Sprintf("/internal/v1/rooms/%d/agent-decisions/claim", session.RoomID),
@@ -2304,6 +2363,7 @@ func (w *Worker) claim(ctx context.Context, session model.LiveRuntimeSession) (c
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return claimResponse{}, err
 	}
+	w.recordInteractionFailures(ctx, session, result.FailedInteractions)
 	return result, nil
 }
 
@@ -2315,6 +2375,12 @@ func (w *Worker) release(ctx context.Context, session model.LiveRuntimeSession, 
 		if len(reasons) > 1 {
 			query.Set("retry_after_ms", reasons[1])
 		}
+		if len(reasons) > 2 && reasons[2] == "answer_ready" {
+			query.Set("answer_ready", "true")
+		}
+	}
+	if len(reasons) > 0 && reasons[0] == "deferred_answer_unavailable" {
+		query.Set("reason", reasons[0])
 	}
 	if len(reasons) > 0 && reasons[0] == "cut_reschedule" {
 		query.Set("reason", "cut_reschedule")
@@ -2340,6 +2406,14 @@ func (w *Worker) release(ctx context.Context, session model.LiveRuntimeSession, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 		return fmt.Errorf("release http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if query.Get("answer_ready") == "true" || query.Get("reason") == "cut_reschedule" {
+		var result struct {
+			Item decisionItem `json:"item"`
+		}
+		if json.NewDecoder(io.LimitReader(resp.Body, 128<<10)).Decode(&result) == nil && result.Item.ID == decisionID && !result.Item.AnswerDeferredUntil.IsZero() {
+			w.setDeferredCacheDeadline(session, result.Item)
+		}
 	}
 	return nil
 }
@@ -2491,7 +2565,7 @@ func (w *Worker) dispatchOnce(
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		if resp.StatusCode == http.StatusConflict && (strings.Contains(string(raw), "主线已换段") || strings.Contains(string(raw), "安全句末切点已失效") || strings.Contains(string(raw), "当前35秒内没有安全句末切点") || strings.Contains(string(raw), "没有真实PCM声学切点") || strings.Contains(string(raw), "互动播出额度或原始期限暂不允许")) {
+		if resp.StatusCode == http.StatusConflict && (strings.Contains(string(raw), "主线已换段") || strings.Contains(string(raw), "安全句末切点已失效") || strings.Contains(string(raw), "当前35秒内没有安全句末切点") || strings.Contains(string(raw), "没有真实PCM声学切点") || strings.Contains(string(raw), "互动播出额度或原始期限暂不允许") || strings.Contains(string(raw), "上一条TTS尚未播放完成") || strings.Contains(string(raw), "没有可插播的主线音频")) {
 			return dispatchResult{}, &safeSwitchRetry{message: string(raw)}
 		}
 		return dispatchResult{}, fmt.Errorf("audio dispatch http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
@@ -2759,31 +2833,15 @@ func voiceProvider(profile model.VoiceProfile) string {
 	}
 }
 
-func voiceRate(profile model.VoiceProfile) float64 {
-	if profile.Config == nil {
-		return 1
+func (w *Worker) interactionSpeechRate(ctx context.Context, session model.LiveRuntimeSession) float64 {
+	rate, err := w.store.RoomInteractionSpeechRate(ctx, session.TenantID, session.RoomID)
+	if err != nil {
+		log.Printf("interaction rate read tenant=%d room=%d: %v", session.TenantID, session.RoomID, err)
 	}
-	raw, ok := profile.Config["rate"]
-	if !ok {
-		return 1
+	if err != nil || !model.ValidInteractionSpeechRate(rate) {
+		return model.DefaultInteractionSpeechRate
 	}
-	switch value := raw.(type) {
-	case float64:
-		if value >= 0.5 && value <= 2 {
-			return value
-		}
-	case float32:
-		rate := float64(value)
-		if rate >= 0.5 && rate <= 2 {
-			return rate
-		}
-	case int:
-		rate := float64(value)
-		if rate >= 0.5 && rate <= 2 {
-			return rate
-		}
-	}
-	return 1
+	return rate
 }
 
 func tenantQuery(tenantID int64) url.Values {

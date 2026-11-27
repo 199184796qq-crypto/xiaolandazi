@@ -54,6 +54,7 @@ type Config struct {
 	SMTPTLSMode               string
 	AnchorStylePluginDir      string
 	WechatPay                 wechatpay.Config
+	WechatLoginEnabled        bool
 }
 
 func Load() Config {
@@ -103,6 +104,7 @@ func Load() Config {
 		SMTPFromName:              envOrDefault("SMTP_FROM_NAME", "伴播搭子"),
 		SMTPTLSMode:               envOrDefault("SMTP_TLS_MODE", "starttls"),
 		AnchorStylePluginDir:      envOrDefault("ANCHOR_STYLE_PLUGIN_DIR", "plugins/anchor-style"),
+		WechatLoginEnabled:        strings.EqualFold(strings.TrimSpace(os.Getenv("WECHAT_LOGIN_ENABLED")), "true"),
 		WechatPay: wechatpay.Config{
 			Enabled:                   strings.EqualFold(strings.TrimSpace(os.Getenv("WECHAT_PAY_ENABLED")), "true"),
 			AppID:                     strings.TrimSpace(os.Getenv("WECHAT_PAY_APP_ID")),

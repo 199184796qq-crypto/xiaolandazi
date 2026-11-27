@@ -49,6 +49,27 @@ func TestLiveResumeLostAckReconcilesSameCursorWithoutSecondResume(t *testing.T) 
 	}
 }
 
+func TestLiveResumeLongStreamKeepsSameSessionAndProgram(t *testing.T) {
+	r, program, _, _ := newResumeRecoveryFixture()
+	program.SessionID = "volcengine-long-385"
+	resumed := false
+	r.Resume = func(_ context.Context, fence liveResumeFence) (liveResumeProgram, error) {
+		if fence != r.Fence {
+			t.Fatalf("resume used a different program or revision: %+v", fence)
+		}
+		resumed = true
+		*program.ManualPaused = false
+		return *program, nil
+	}
+	if err := r.attempt(context.Background()); !errors.Is(err, anchorcycle.ErrStale) || resumed {
+		t.Fatalf("another session's program must be rejected: resumed=%t, err=%v", resumed, err)
+	}
+	program.SessionID = "volcengine-long-386"
+	if err := r.attempt(context.Background()); err != nil || !resumed || *program.ManualPaused {
+		t.Fatalf("expected resumption of the same long stream: resumed=%t, err=%v", resumed, err)
+	}
+}
+
 func TestLiveResumeTemporaryFailureRetainsFenceAndBackoff(t *testing.T) {
 	r, program, _, _ := newResumeRecoveryFixture()
 	calls := 0

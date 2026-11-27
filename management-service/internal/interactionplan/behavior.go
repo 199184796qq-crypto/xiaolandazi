@@ -3,8 +3,46 @@ package interactionplan
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strings"
 )
+
+// 点赞/关注的播报文案：每个模板 ID 下多条变体，每次随机取一条，避免同场重复同一句。
+var likeBodies = []string{
+	"谢谢点赞支持。",
+	"感谢家人们的赞，收到啦。",
+	"赞都看到了，谢谢捧场。",
+	"谢谢点赞，喜欢的点个赞。",
+	"感谢点赞，手别停。",
+	"点赞的都记着呢，谢谢。",
+	"谢谢大家的小红心。",
+	"感谢支持，赞我都收下了。",
+	"谢谢点赞，接着给大家讲。",
+	"收到的赞不少，谢谢家人们。",
+}
+
+var followBodies = []string{
+	"谢谢关注，欢迎常来。",
+	"关注了就别走，一会儿还有好货。",
+	"感谢关注，明天同一时间还在。",
+	"谢谢关注，新朋友先听两句。",
+	"关注一下，后面讲得更细。",
+	"谢谢关注，回头不迷路。",
+	"欢迎新关注的家人们。",
+	"感谢关注，有需要随时问。",
+	"关注了就是自己人。",
+	"谢谢关注，接着往下讲。",
+}
+
+func pickBody(list []string) string {
+	if len(list) == 0 {
+		return ""
+	}
+	if len(list) == 1 {
+		return list[0]
+	}
+	return list[rand.Intn(len(list))]
+}
 
 // BehaviorBody accepts only program-owned identifiers, never arbitrary template
 // text from a request. Counts are distinct viewers, not verified paid orders.
@@ -14,9 +52,9 @@ func BehaviorBody(kind, template string, count int) (string, error) {
 	}
 	switch {
 	case kind == "like" && template == "like_v1":
-		return "谢谢点赞支持。", nil
+		return pickBody(likeBodies), nil
 	case kind == "follow" && template == "follow_v1":
-		return "谢谢关注，欢迎常来。", nil
+		return pickBody(followBodies), nil
 	case kind == "order" && template == "order_single_v1" && count == 1:
 		return "谢谢下单支持。", nil
 	case kind == "order" && template == "order_count_v1":

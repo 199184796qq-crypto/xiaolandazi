@@ -70,10 +70,11 @@ func (w *Worker) generateBehaviorTemplate(ctx context.Context, session model.Liv
 	}
 	text := ""
 	switch e.Template {
-	case "like_v1":
-		text = fmt.Sprintf("谢谢%s的点赞支持。", address)
-	case "follow_v1":
-		text = fmt.Sprintf("谢谢%s的关注，欢迎常来。", address)
+	case "like_v1", "follow_v1":
+		text, err = behaviorThanksText(session, item.ID, e.Template, address)
+		if err != nil {
+			return "", err
+		}
 	case "order_single_v1":
 		text = fmt.Sprintf("感谢%s下单支持。", address)
 	case "order_count_v1":

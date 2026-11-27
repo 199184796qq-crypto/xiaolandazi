@@ -213,13 +213,17 @@ func (s *Service) OAuthURL(state string) (string, error) {
 	if strings.TrimSpace(state) == "" {
 		return "", errors.New("wechat oauth state is required")
 	}
+	return officialOAuthURL(s.cfg.AppID, s.cfg.OAuthCallbackURL, state), nil
+}
+
+func officialOAuthURL(appID, callback, state string) string {
 	query := url.Values{}
-	query.Set("appid", s.cfg.AppID)
-	query.Set("redirect_uri", s.cfg.OAuthCallbackURL)
+	query.Set("appid", appID)
+	query.Set("redirect_uri", callback)
 	query.Set("response_type", "code")
 	query.Set("scope", "snsapi_base")
 	query.Set("state", state)
-	return oauthEndpoint + "?" + query.Encode() + "#wechat_redirect", nil
+	return oauthEndpoint + "?" + query.Encode() + "#wechat_redirect"
 }
 
 type oauthTokenResponse struct {
@@ -232,20 +236,24 @@ func (s *Service) ExchangeOAuthCode(ctx context.Context, code string) (string, e
 	if !s.Enabled() {
 		return "", errors.New("wechat pay is disabled")
 	}
+	return exchangeOfficialOAuthCode(ctx, s.httpClient, s.cfg.AppID, s.cfg.OfficialAccountAppSecret, code)
+}
+
+func exchangeOfficialOAuthCode(ctx context.Context, client *http.Client, appID, secret, code string) (string, error) {
 	code = strings.TrimSpace(code)
 	if code == "" {
 		return "", errors.New("wechat oauth code is required")
 	}
 	query := url.Values{}
-	query.Set("appid", s.cfg.AppID)
-	query.Set("secret", s.cfg.OfficialAccountAppSecret)
+	query.Set("appid", appID)
+	query.Set("secret", secret)
 	query.Set("code", code)
 	query.Set("grant_type", "authorization_code")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, oauthTokenEndpoint+"?"+query.Encode(), nil)
 	if err != nil {
 		return "", err
 	}
-	resp, err := s.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		// net/url.Error contains the URL including AppSecret and the OAuth code.
 		return "", errors.New("wechat oauth request failed")

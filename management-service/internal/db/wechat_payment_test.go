@@ -88,7 +88,7 @@ func TestWechatPaymentMySQL(t *testing.T) {
 	if err := s.SaveWechatPrepayID(ctx, attempt.PaymentID, "prepay-test"); err != nil {
 		t.Fatal("prepay idempotency", err)
 	}
-	if _, err := s.WalletPayCustomerTimeCardOrder(ctx, 10, 901, orderID, "wallet-no-double-pay"); !errors.Is(err, ErrWechatPaymentInProgress) {
+	if _, err := s.WalletPayCustomerShopOrder(ctx, 10, 901, orderID, "wallet-no-double-pay"); !errors.Is(err, ErrWechatPaymentInProgress) {
 		t.Fatal("wallet races wechat", err)
 	}
 	if _, err := s.CancelCustomerShopOrder(ctx, 10, orderID); !errors.Is(err, ErrWechatPaymentInProgress) {

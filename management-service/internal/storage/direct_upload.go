@@ -29,6 +29,10 @@ func (s *OSS) DirectUploadForm(key, contentType string, size int64, expires time
 	if time.Until(expires) <= 0 || time.Until(expires) > 2*time.Hour {
 		return DirectUploadForm{}, fmt.Errorf("invalid upload expiration")
 	}
+	return s.directUploadForm(key, contentType, size, expires)
+}
+
+func (s *OSS) directUploadForm(key, contentType string, size int64, expires time.Time) (DirectUploadForm, error) {
 	signed, err := s.publicBucket.SignURL(key, oss.HTTPGet, 60)
 	if err != nil {
 		return DirectUploadForm{}, err

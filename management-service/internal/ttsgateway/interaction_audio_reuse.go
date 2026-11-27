@@ -369,6 +369,36 @@ func (c *InteractionAudioCache) ScopedVoices(ctx context.Context, scope voiceass
 	return out, nil
 }
 func (c *InteractionAudioCache) ClearScopedFiles(ctx context.Context, j voiceasset.Job) error {
+	return c.clearScopedFiles(ctx, func(entry interactionAudioEntry) (bool, error) {
+		scope := entry.Stamp.Scope
+		match := scope.Tenant == j.Scope.Tenant && scope.Plan == j.Scope.Plan && scope.Category == j.Scope.Category && (j.Scope.Voice == "" || scope.Voice == j.Scope.Voice)
+		if !match {
+			return false, nil
+		}
+		if j.Mode == "local_only" {
+			return !entry.CreatedAt.After(j.Created), nil
+		}
+		if c.epochs == nil {
+			return false, nil
+		}
+		check := c.epochs.CheckVoiceCacheStamp(ctx, *entry.Stamp)
+		if errors.Is(check, voiceasset.ErrCleared) {
+			return true, nil
+		}
+		return false, check
+	})
+}
+
+func (c *InteractionAudioCache) PurgeCustomerFiles(ctx context.Context, tenantID int64) error {
+	if tenantID <= 0 {
+		return voiceasset.ErrConflict
+	}
+	return c.clearScopedFiles(ctx, func(entry interactionAudioEntry) (bool, error) {
+		return entry.Stamp.Scope.Tenant == tenantID, nil
+	})
+}
+
+func (c *InteractionAudioCache) clearScopedFiles(ctx context.Context, remove func(interactionAudioEntry) (bool, error)) error {
 	files, e := os.ReadDir(c.root)
 	if os.IsNotExist(e) {
 		return nil
@@ -399,17 +429,12 @@ func (c *InteractionAudioCache) ClearScopedFiles(ctx context.Context, j voiceass
 				release()
 				return voiceasset.ErrConflict
 			}
-			match := scope.Tenant == j.Scope.Tenant && scope.Plan == j.Scope.Plan && scope.Category == j.Scope.Category && (j.Scope.Voice == "" || scope.Voice == j.Scope.Voice)
-			remove := j.Mode == "local_only" && !entry.CreatedAt.After(j.Created)
-			if match && j.Mode != "local_only" && c.epochs != nil {
-				check := c.epochs.CheckVoiceCacheStamp(ctx, *entry.Stamp)
-				if check != nil && !errors.Is(check, voiceasset.ErrCleared) {
-					release()
-					return check
-				}
-				remove = errors.Is(check, voiceasset.ErrCleared)
+			drop, err := remove(entry)
+			if err != nil {
+				release()
+				return err
 			}
-			if match && remove {
+			if drop {
 				e = os.Remove(path)
 			}
 		}

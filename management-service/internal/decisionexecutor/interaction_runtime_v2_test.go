@@ -3,6 +3,7 @@ package decisionexecutor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"livecompanion/management/internal/interactionplan"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/ttsgateway"
@@ -107,15 +108,74 @@ func TestInteractionV2ExpiredOrCrossSessionBodyNeverCallsTTS(t *testing.T) {
 		})
 	}
 }
-func TestInteractionV2ManualRequestsUseSamePlanProtocol(t *testing.T) {
-	w, _, core, agent, tts, session, _ := v2Fixture(t, 10010)
-	agent.responses = []string{"意图：问发货时间\n歧义：否\n回答：第二天上午发货。", "小王，第二天上午发货。"}
-	core.claimRaw = `{"claimed":true,"item":{"id":"d-1","topic":"manual","mission_kind":"reply_question","sample_questions":["哪天发"],"nicknames":["小王"]}}`
+func TestManualSelectedQuestionUsesConfiguredAnswerFlowAndFrozenPlaybackEnvelope(t *testing.T) {
+	w, _, _, agent, _, session, envelope := v2Fixture(t, 10012)
+	item := decisionItem{ID: "chosen-1", MissionKind: "reply_question", ManualPromoted: true,
+		SampleQuestions: []string{"1号多少钱"}, UserIDs: []string{"viewer-1"},
+		CurrentMainline: "正在介绍1号", ExpiresAt: time.Now().Add(time.Minute)}
+	calls := 0
+	w.SetManualAnswerFlow(func(_ context.Context, in ManualAnswerFlowInput, _ interactionplan.Complete) (interactionplan.Envelope, error) {
+		calls++
+		if in.Task != item.ID || in.Question != "1号多少钱" || len(in.UserIDs) != 1 || in.UserIDs[0] != "viewer-1" ||
+			in.Session.ID != session.ID || in.Snapshot.Scope.Plan != 3 || in.CurrentMainline != item.CurrentMainline || !in.ExpiresAt.Equal(item.ExpiresAt) {
+			t.Fatalf("manual identity or context lost: %#v", in)
+		}
+		envelope.Task, envelope.Epoch, envelope.Body = item.ID, "manual", "1号链接价格是87.6元。"
+		return envelope, nil
+	})
+	text, err := w.generateInteractionV2(context.Background(), session, &item)
+	if err != nil || calls != 1 || agent.calls != 0 || !strings.HasSuffix(text, envelope.Body) {
+		t.Fatal(text, err, calls, agent.calls)
+	}
+	stored, ok := interactionplan.Decode(item.PurposeKnowledge)
+	if !ok || stored.Task != item.ID || stored.Body != envelope.Body || stored.Fingerprint != envelope.Fingerprint {
+		t.Fatal("answerflow body did not enter the existing speech contract", stored)
+	}
+}
+
+func TestManualSelectedQuestionUsesExistingTTSAndDispatch(t *testing.T) {
+	w, _, core, agent, tts, session, envelope := v2Fixture(t, 10015)
+	core.claimRaw = `{"claimed":true,"item":{"id":"chosen-4","topic":"manual","mission_kind":"reply_question","manual_promoted":true,"sample_questions":["1号多少钱"],"user_ids":["viewer-1"],"nicknames":["小王"]}}`
+	w.SetManualAnswerFlow(func(_ context.Context, in ManualAnswerFlowInput, _ interactionplan.Complete) (interactionplan.Envelope, error) {
+		envelope.Task, envelope.Epoch, envelope.Body = in.Task, "manual", "1号链接价格是87.6元。"
+		return envelope, nil
+	})
 	if err := w.processRoom(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
-	if agent.calls != 1 || tts.calls != 1 {
-		t.Fatal(agent.calls, tts.calls)
+	if agent.calls != 0 || tts.calls != 1 || core.dispatches != 1 || !strings.HasSuffix(tts.last.Text, envelope.Body) {
+		t.Fatal("manual answer bypassed existing speech path", agent.calls, tts.calls, core.dispatches, tts.last.Text)
+	}
+}
+
+func TestUnpreparedQuestionDoesNotFallBackOnAnswerFlowFailure(t *testing.T) {
+	for _, configured := range []bool{false, true} {
+		w, _, _, agent, _, session, _ := v2Fixture(t, 10013)
+		item := decisionItem{ID: "unprepared-question", MissionKind: "reply_question", SampleQuestions: []string{"哪天发货"}}
+		if configured {
+			w.SetManualAnswerFlow(func(context.Context, ManualAnswerFlowInput, interactionplan.Complete) (interactionplan.Envelope, error) {
+				return interactionplan.Envelope{}, errors.New("新版回答不可用")
+			})
+		}
+		text, err := w.generateInteractionV2(context.Background(), session, &item)
+		if err == nil || agent.calls != 0 || text != "" {
+			t.Fatal("unprepared question used the generic generator", text, err, agent.calls)
+		}
+	}
+}
+
+func TestManualSelectionDoesNotReanswerPreparedBodyOrWelcome(t *testing.T) {
+	w, _, _, agent, _, session, envelope := v2Fixture(t, 10014)
+	w.SetManualAnswerFlow(func(context.Context, ManualAnswerFlowInput, interactionplan.Complete) (interactionplan.Envelope, error) {
+		t.Fatal("prepared body called answerflow again")
+		return interactionplan.Envelope{}, nil
+	})
+	envelope.Task = "chosen-3"
+	raw, _ := json.Marshal(envelope)
+	item := decisionItem{ID: envelope.Task, MissionKind: "reply_question", ManualPromoted: true, PurposeKnowledge: raw}
+	text, err := w.generateInteractionV2(context.Background(), session, &item)
+	if err != nil || !strings.HasSuffix(text, envelope.Body) || agent.calls != 0 {
+		t.Fatal(text, err, agent.calls)
 	}
 }
 func TestInteractionV2FrozenVoiceAndPlanIgnoreLaterAuthorEdits(t *testing.T) {

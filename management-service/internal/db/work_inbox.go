@@ -98,6 +98,13 @@ func inboxQueries(sc model.InboxScope) []inboxQuery {
 			"r.id", "CAST(r.id AS CHAR)", "CONCAT('直播间 #',r.room_id,' 的协助申请')",
 			"r.status", "r.requested_at", "NULL", false, sc.Actor.UserID,
 		)
+		add(
+			"live_plan_support_accept", "support", "营销运维", "accept", "方案协助申请",
+			"/operations/support", "live_plan_support", "live_plan_support_requests r JOIN live_agent_plans p ON p.id=r.plan_id AND p.tenant_id=r.tenant_id AND p.status='active'",
+			"r.status='pending' AND r.staff_user_id=?",
+			"r.id", "CAST(r.id AS CHAR)", "CONCAT(p.name,' 的协助申请')",
+			"r.status", "r.requested_at", "NULL", false, sc.Actor.UserID,
+		)
 		add("support_accept", "support", "营销运维", "accept", "协助工单待接单", "/operations/support", "support", "crm_support_tickets k", "k.status='pending'", "k.id", "k.ticket_no", "k.title", "k.status", "k.created_at", "NULL", true)
 		w := "k.status IN ('accepted','in_progress') AND k.assigned_user_id=?"
 		args := []any{sc.Actor.UserID}

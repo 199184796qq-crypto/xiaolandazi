@@ -59,6 +59,7 @@ type qwenChatResponse struct {
 	Choices []struct {
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
+			// Deliberately decode only the final text, even in thinking mode.
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
@@ -125,6 +126,15 @@ func officialDeepSeekEndpoint(baseURL, model string) bool {
 		return false
 	}
 	return strings.EqualFold(parsed.Hostname(), "api.deepseek.com")
+}
+
+func SupportsLowReasoning(p SpeechModel) bool {
+	return SupportsHighReasoning(p)
+}
+
+func SupportsHighReasoning(p SpeechModel) bool {
+	model := strings.ToLower(strings.TrimSpace(p.Model))
+	return p.Protocol == "openai_chat" && (model == "deepseek-flash" || model == "deepseek-v4-pro") && officialDeepSeekEndpoint(p.BaseURL, model)
 }
 
 // applyCompatibleRequestOptions keeps the generic OpenAI transport portable,
@@ -285,6 +295,21 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 		}
 		applySpeechTestOptions(payload, SpeechModel{Protocol: "openai_chat", BaseURL: p.baseURL, Model: request.Model}, request)
 	}
+	if (request.ReasoningEffort == "low" || request.ReasoningEffort == "high") &&
+		SupportsHighReasoning(SpeechModel{Protocol: "openai_chat", BaseURL: p.baseURL, Model: request.Model}) {
+		payload["thinking"] = map[string]string{"type": "enabled"}
+		payload["reasoning_effort"] = request.ReasoningEffort
+	}
+	readLimit := int64(1 << 20)
+	if request.UseProviderOutputLimit {
+		if request.ReasoningEffort != "high" ||
+			!SupportsHighReasoning(SpeechModel{Protocol: "openai_chat", BaseURL: p.baseURL, Model: request.Model}) {
+			return Response{}, errors.New("供应商默认输出额度仅支持官方 DeepSeek 高思考")
+		}
+		delete(payload, "max_tokens")
+		delete(payload, "max_completion_tokens")
+		readLimit = 4 << 20
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, request.Timeout)
 	defer cancel()
 
@@ -312,9 +337,12 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 			return 0, nil, latencyMS, err
 		}
 		defer resp.Body.Close()
-		responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		responseBody, err := io.ReadAll(io.LimitReader(resp.Body, readLimit+1))
 		if err != nil {
 			return resp.StatusCode, nil, latencyMS, err
+		}
+		if request.UseProviderOutputLimit && int64(len(responseBody)) > readLimit {
+			return resp.StatusCode, nil, latencyMS, errors.New("模型响应过大")
 		}
 		return resp.StatusCode, responseBody, latencyMS, nil
 	}
@@ -348,6 +376,9 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 		}
 	}
 	if statusCode != http.StatusOK {
+		if request.UseProviderOutputLimit {
+			return Response{}, fmt.Errorf("模型 API 返回 HTTP %d", statusCode)
+		}
 		return Response{}, qwenProviderError(p.Name(), statusCode, responseBody)
 	}
 
@@ -359,20 +390,25 @@ func (p *qwenProvider) Complete(ctx context.Context, request Request) (Response,
 		return Response{}, fmt.Errorf("qwen provider returned no choices")
 	}
 	text := strings.TrimSpace(decoded.Choices[0].Message.Content)
-	if text == "" {
-		return Response{}, fmt.Errorf("qwen provider returned empty reply")
-	}
-	return Response{
+	result := Response{
 		Text:              text,
 		FinishReason:      decoded.Choices[0].FinishReason,
 		Provider:          p.Name(),
 		Model:             request.Model,
 		LatencyMS:         latencyMS,
+		ThinkingMode:      sentThinkingMode(payload),
 		InputTokens:       decoded.Usage.PromptTokens,
 		OutputTokens:      decoded.Usage.CompletionTokens,
 		TotalTokens:       decoded.Usage.TotalTokens,
 		CachedInputTokens: decoded.Usage.PromptTokensDetails.CachedTokens,
-	}, nil
+	}
+	if text == "" {
+		if !request.UseProviderOutputLimit {
+			result = Response{}
+		}
+		return result, fmt.Errorf("qwen provider returned empty reply")
+	}
+	return result, nil
 }
 
 // structuredOutputHint turns a caller-supplied json_schema descriptor into the

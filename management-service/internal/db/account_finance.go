@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -100,52 +101,52 @@ func (s *Store) GetAccountProfile(ctx context.Context, userID int64) (model.Acco
 func (s *Store) UpdateAccountProfile(
 	ctx context.Context,
 	userID int64,
-	displayName string,
-	phone string,
-	email string,
-	qq string,
-	wechat string,
-	province string,
-	city string,
-	district string,
-	address string,
+	changes model.AccountProfileChanges,
 ) (model.AccountProfile, error) {
-	result, err := s.db.ExecContext(ctx, `
+	_, err := s.db.ExecContext(ctx, `
 		UPDATE mgmt_users
-		SET display_name = ?,
-		    phone = ?,
-		    email = ?,
-		    qq = ?,
-		    wechat = ?,
-		    province = ?,
-		    city = ?,
-		    district = ?,
-		    address = ?
+		SET username = COALESCE(?, username),
+		    display_name = COALESCE(?, display_name),
+		    phone = COALESCE(?, phone),
+		    email = COALESCE(?, email),
+		    qq = COALESCE(?, qq),
+		    wechat = COALESCE(?, wechat),
+		    province = COALESCE(?, province),
+		    city = COALESCE(?, city),
+		    district = COALESCE(?, district),
+		    address = COALESCE(?, address)
 		WHERE id = ? AND status = 'active'
-	`,
-		strings.TrimSpace(displayName),
-		strings.TrimSpace(phone),
-		strings.TrimSpace(email),
-		strings.TrimSpace(qq),
-		strings.TrimSpace(wechat),
-		strings.TrimSpace(province),
-		strings.TrimSpace(city),
-		strings.TrimSpace(district),
-		strings.TrimSpace(address),
-		userID,
-	)
+	`, changes.Username, changes.DisplayName, changes.Phone, changes.Email, changes.QQ, changes.Wechat,
+		changes.Province, changes.City, changes.District, changes.Address, userID)
 	if err != nil {
 		return model.AccountProfile{}, err
 	}
-	affected, err := result.RowsAffected()
+	profile, err := s.GetAccountProfile(ctx, userID)
 	if err != nil {
 		return model.AccountProfile{}, err
 	}
-	if affected == 0 {
+	if profile.Status != "active" {
 		return model.AccountProfile{}, sql.ErrNoRows
 	}
-	return s.GetAccountProfile(ctx, userID)
+	return profile, nil
 }
+
+func (s *Store) StaffIdentifierInUse(ctx context.Context, userID int64, identifier, value string) (bool, error) {
+	var column string
+	switch identifier {
+	case "username":
+		column = "username"
+	case "phone":
+		column = "phone_unique_key"
+	default:
+		return false, fmt.Errorf("invalid staff identifier field %q", identifier)
+	}
+	var used bool
+	err := s.db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM mgmt_users WHERE "+column+
+		" = ? AND phone_account_type = 'staff' AND id <> ?)", value, userID).Scan(&used)
+	return used, err
+}
+
 func (s *Store) UpdateAccountAvatar(
 	ctx context.Context,
 	userID int64,
@@ -183,8 +184,7 @@ func (s *Store) getCurrentMembership(
 			m.status,
 			m.cycle_start_at,
 			m.cycle_end_at,
-			v.included_seconds,
-			m.auto_renew
+			v.included_seconds
 		FROM biz_memberships m
 		INNER JOIN catalog_membership_plans p ON p.id = m.plan_id
 		INNER JOIN catalog_membership_plan_versions v ON v.id = m.plan_version_id
@@ -203,7 +203,6 @@ func (s *Store) getCurrentMembership(
 		&item.CycleStartAt,
 		&item.CycleEndAt,
 		&item.IncludedSeconds,
-		&item.AutoRenew,
 	)
 	return item, err
 }

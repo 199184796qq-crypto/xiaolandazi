@@ -15,6 +15,26 @@ import (
 	"time"
 )
 
+// ManualAnswerFlowInput carries the claimed question's frozen live identity.
+// UserIDs are supplied only to recover the selected viewer's own history.
+type ManualAnswerFlowInput struct {
+	Session         model.LiveRuntimeSession
+	Snapshot        interactionplan.Snapshot
+	Task            string
+	Question        string
+	UserIDs         []string
+	CurrentMainline string
+	ExpiresAt       time.Time
+}
+
+type ManualAnswerFlow func(context.Context, ManualAnswerFlowInput, interactionplan.Complete) (interactionplan.Envelope, error)
+
+func (w *Worker) SetManualAnswerFlow(flow ManualAnswerFlow) {
+	if w != nil {
+		w.manualAnswerFlow = flow
+	}
+}
+
 func (w *Worker) isInteractionV2(item *decisionItem, session model.LiveRuntimeSession) bool {
 	if item == nil || strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
 		return false
@@ -217,35 +237,88 @@ func (w *Worker) generateInteractionV2(ctx context.Context, session model.LiveRu
 	if err != nil {
 		return "", err
 	}
+	var stages interactionplan.ModelStages
 	complete := func(callCtx context.Context, req agentgateway.Request) (agentgateway.Response, error) {
-		return w.completeV2RecordedModel(callCtx, session, snapshot, req, item.ID+":"+req.Stage)
+		started := time.Now()
+		response, err := w.completeV2RecordedModel(callCtx, session, snapshot, req, item.ID+":"+req.StageCostKey())
+		if err == nil {
+			stages.Record(req.Stage, response, time.Since(started))
+		}
+		return response, err
 	}
 	if prepared {
 		if e.Tenant != session.TenantID || e.Room != session.RoomID || e.Session != session.ID || e.Plan != snapshot.Scope.Plan || e.Fingerprint != snapshot.Fingerprint {
 			return "", fmt.Errorf("互动正文与当前场次或方案不匹配")
 		}
-		if !e.ExpiresAt.IsZero() {
+		deadline := e.ExpiresAt
+		if !item.AnswerDeferredUntil.IsZero() {
+			deadline = item.AnswerDeferredUntil
+		}
+		if !deadline.IsZero() {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithDeadline(ctx, e.ExpiresAt)
+			ctx, cancel = context.WithDeadline(ctx, deadline)
 			defer cancel()
 		}
 	} else {
-		// Explicit/manual requests also use this content protocol. Automatic events
-		// already have body_ready and never call the intent/body models a second time.
-		input := interactionplan.Input{Kind: item.MissionKind, Text: primaryQuestion(*item), AllowClarify: true, EventCount: item.MissionEventCount, CurrentMainline: item.CurrentMainline}
-		if isTimeReport(*item) {
-			// The timestamp belongs to this model request, not to the task's
-			// creation or a later TTS retry. Ordinary interactions omit it.
-			at := item.TimeReportGeneratedAt.In(beijingZone)
-			input.ReportClock = at.Format("2006-01-02 15:04")
-			input.ReportPeriod = timeOfDay(at)
+		// Unprepared viewer questions use the same answer service as automatic
+		// batches. Already prepared tasks keep their frozen content.
+		if (item.MissionKind == "reply_question" || item.MissionKind == "reply_chat" || item.MissionKind == "complaint") &&
+			item.InteractionDecision.PrimaryEvent != "engagement" &&
+			item.ManualOrigin != "test_simulation" && item.ManualOrigin != "agent_input_preview" {
+			if w.manualAnswerFlow == nil {
+				return "", fmt.Errorf("人工问题回答流程未配置")
+			}
+			e, err = w.manualAnswerFlow(ctx, ManualAnswerFlowInput{
+				Session: session, Snapshot: snapshot, Task: item.ID,
+				Question: primaryQuestion(*item), UserIDs: append([]string(nil), item.UserIDs...),
+				CurrentMainline: item.CurrentMainline, ExpiresAt: item.ExpiresAt,
+			}, complete)
+			if err != nil {
+				return "", err
+			}
+		} else {
+			input := interactionplan.Input{Kind: item.MissionKind, Text: primaryQuestion(*item), AllowClarify: true, EventCount: item.MissionEventCount, CurrentMainline: item.CurrentMainline}
+			if item.InteractionDecision.PrimaryEvent == "engagement" {
+				input.Kind = "engagement"
+			}
+			if isTimeReport(*item) {
+				// The timestamp belongs to this model request, not task creation.
+				at := item.TimeReportGeneratedAt.In(beijingZone)
+				input.ReportClock = at.Format("2006-01-02 15:04")
+				input.ReportPeriod = timeOfDay(at)
+			}
+			var intent interactionplan.Intent
+			var body string
+			if isWelcomeMission(item.MissionKind) {
+				// Unprepared welcomes use the same semantic-library writer as
+				// the upstream prepared path. A writer failure must not silently
+				// re-enter the old generic interaction generator.
+				body, err = w.PrepareWelcomeV2Body(ctx, session, item.ID, item.MissionKind, snapshot, complete)
+				if err != nil {
+					return "", err
+				}
+				intent = interactionplan.Intent{Relevant: true, Type: "欢迎", Meaning: "欢迎新进观众"}
+			} else {
+				intent, body, err = interactionplan.Generate(interactionplan.WithContextWordSource(interactionplan.WithParseRequest(ctx, item.ID), w.store), snapshot, input, complete)
+				if err != nil {
+					return "", err
+				}
+			}
+			e = interactionplan.Envelope{Protocol: interactionplan.Protocol, Task: item.ID, Epoch: "manual", Tenant: session.TenantID, Room: session.RoomID, Session: session.ID, Plan: snapshot.Scope.Plan, Fingerprint: snapshot.Fingerprint, Intent: intent, Body: body, ExpiresAt: item.ExpiresAt}
 		}
-		intent, body, err := interactionplan.Generate(interactionplan.WithParseRequest(ctx, item.ID), snapshot, input, complete)
-		if err != nil {
-			return "", err
+		if e.ModelStages == nil {
+			e.ModelStages = stages.Recorded()
 		}
-		e = interactionplan.Envelope{Protocol: interactionplan.Protocol, Task: item.ID, Epoch: "manual", Tenant: session.TenantID, Room: session.RoomID, Session: session.ID, Plan: snapshot.Scope.Plan, Fingerprint: snapshot.Fingerprint, Intent: intent, Body: body, ExpiresAt: item.ExpiresAt}
 		item.PurposeKnowledge, _ = json.Marshal(e)
+	}
+	// 欢迎正文在进入播出链路前校验一次：挡掉"判断/建议"外泄和正文自带称呼，
+	// 不合格时换兜底句，保证"有欢迎"。真实场次欢迎走本路径，不走
+	// modelWelcomeStrategy，所以校验必须挂在这里。
+	if isWelcomeMission(item.MissionKind) {
+		e.Body = welcomeBodyForBroadcast(item.MissionKind, e.Body)
+		if strings.TrimSpace(e.Body) != "" {
+			e.Intent.Relevant = true
+		}
 	}
 	if !e.Intent.Relevant || strings.TrimSpace(e.Body) == "" {
 		return "", fmt.Errorf("本条互动无需口播")

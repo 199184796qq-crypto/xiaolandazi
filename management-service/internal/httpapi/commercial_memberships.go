@@ -7,8 +7,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	storedb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
 
@@ -27,12 +29,36 @@ func (s *Server) commercialListMemberships(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	period := r.URL.Query().Get("period")
+	start, end, ok := workspaceTimeCardPeriod(time.Now(), period)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "订阅统计时段无效")
+		return
+	}
 	items, err := s.store.ListCommercialMembershipPlans(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取会员方案失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	if period == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		return
+	}
+
+	totals, err := s.store.MembershipSubscriptionTotals(r.Context(), start, end)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取订阅统计失败")
+		return
+	}
+	type planWithSubscriptions struct {
+		model.CommercialMembershipPlan
+		storedb.MembershipSubscriptionTotal
+	}
+	plans := make([]planWithSubscriptions, 0, len(items))
+	for _, plan := range items {
+		plans = append(plans, planWithSubscriptions{plan, totals[plan.ID]})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": plans})
 }
 
 func (s *Server) customerShopMemberships(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +81,7 @@ func (s *Server) customerShopMemberships(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	w.Header().Set("Cache-Control", "private, no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -118,6 +145,8 @@ func (s *Server) commercialSaveMembershipDraft(w http.ResponseWriter, r *http.Re
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			writeError(w, http.StatusNotFound, "会员方案不存在")
+		case errors.Is(err, storedb.ErrMembershipArchived):
+			writeError(w, http.StatusConflict, err.Error())
 		case isDuplicateDBError(err):
 			writeError(w, http.StatusConflict, "会员内部编码已存在")
 		default:
@@ -149,6 +178,10 @@ func (s *Server) commercialPublishMembership(w http.ResponseWriter, r *http.Requ
 		planID,
 	)
 	if err != nil {
+		if errors.Is(err, storedb.ErrMembershipArchived) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusBadRequest, "当前会员方案没有可发布的草稿")
 			return
@@ -180,6 +213,10 @@ func (s *Server) commercialSetMembershipListing(w http.ResponseWriter, r *http.R
 	}
 	item, err := s.store.SetCommercialMembershipStatus(r.Context(), actor.UserID, planID, input.Status)
 	if err != nil {
+		if errors.Is(err, storedb.ErrMembershipArchived) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "会员方案不存在")
 			return
@@ -192,6 +229,59 @@ func (s *Server) commercialSetMembershipListing(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) workspaceSaveMembership(w http.ResponseWriter, r *http.Request) {
+	actor, _, ok := s.requireStaffPermission(w, r, "commercial.membership.manage")
+	if !ok {
+		return
+	}
+	var planID int64
+	if r.Method == http.MethodPut {
+		if planID, ok = commercialPlanID(w, r); !ok {
+			return
+		}
+	}
+	input, ok := readWorkspaceMembership(w, r)
+	if !ok {
+		return
+	}
+	if err := s.store.SaveWorkspaceMembership(r.Context(), actor.UserID, planID, input); err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			writeError(w, http.StatusNotFound, "会员方案不存在")
+		case errors.Is(err, storedb.ErrMembershipArchived):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "保存会员方案失败")
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func readWorkspaceMembership(w http.ResponseWriter, r *http.Request) (storedb.WorkspaceMembershipInput, bool) {
+	var input storedb.WorkspaceMembershipInput
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "会员方案格式无效")
+		return input, false
+	}
+	input.Name, input.Description = strings.TrimSpace(input.Name), strings.TrimSpace(input.Description)
+	switch {
+	case utf8.RuneCountInString(input.Name) < 2 || utf8.RuneCountInString(input.Name) > 128:
+		writeError(w, http.StatusBadRequest, "会员名称需为 2–128 个字符")
+	case utf8.RuneCountInString(input.Description) > 1024:
+		writeError(w, http.StatusBadRequest, "会员说明最多 1024 个字符")
+	case input.PriceCents > 100000000:
+		writeError(w, http.StatusBadRequest, "会员月费超出允许范围")
+	case input.IncludedSeconds > 10*365*24*3600:
+		writeError(w, http.StatusBadRequest, "基础时长超出允许范围")
+	case input.TimeCardReduction > 10000 || input.DeviceReduction > 10000:
+		writeError(w, http.StatusBadRequest, "会员优惠需在 0–100% 之间")
+	default:
+		return input, true
+	}
+	return input, false
 }
 
 func (s *Server) commercialArchiveMembership(w http.ResponseWriter, r *http.Request) {
@@ -228,6 +318,7 @@ func readMembershipInput(
 	input.Code = strings.ToLower(strings.TrimSpace(input.Code))
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
+	input.AllowAutoRenew = false
 	if input.RecurringMonthDiscountBPS == 0 {
 		input.RecurringMonthDiscountBPS = 10000
 	}

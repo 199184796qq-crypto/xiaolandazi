@@ -12,31 +12,32 @@ import (
 )
 
 type interactionV2Input struct {
-	Template           string                           `json:"template,omitempty"`
-	PreviewInstruction string                           `json:"preview_instruction,omitempty"`
-	Context            []interactionplan.ContextMessage `json:"context,omitempty"`
-	Items              []interactionV2Input             `json:"items,omitempty"`
-	BatchID            string                           `json:"batch_id,omitempty"`
-	Tenant             int64                            `json:"tenant_id"`
-	Room               int64                            `json:"room_id"`
-	Plan               int64                            `json:"plan_id"`
-	UserID             string                           `json:"user_id"`
-	Nickname           string                           `json:"nickname"`
-	Test               bool                             `json:"test_simulation"`
-	Text               string                           `json:"text"`
-	Protocol           string                           `json:"protocol"`
-	Task               string                           `json:"task"`
-	Epoch              string                           `json:"epoch"`
-	Revision           uint64                           `json:"revision"`
-	Kind               string                           `json:"kind"`
-	Original           string                           `json:"original,omitempty"`
-	Clarification      string                           `json:"clarification,omitempty"`
-	Recent             []interactionplan.Turn           `json:"recent,omitempty"`
-	CurrentMainline    string                           `json:"current_mainline,omitempty"`
-	EngagementToken    string                           `json:"engagement_token,omitempty"`
-	EventCount         int                              `json:"event_count,omitempty"`
-	AllowClarify       bool                             `json:"allow_clarify"`
-	ExpiresAt          time.Time                        `json:"expires_at"`
+	Template              string                           `json:"template,omitempty"`
+	PreviewInstruction    string                           `json:"preview_instruction,omitempty"`
+	Context               []interactionplan.ContextMessage `json:"context,omitempty"`
+	Items                 []interactionV2Input             `json:"items,omitempty"`
+	AnswerReasoningEffort string                           `json:"answer_reasoning_effort,omitempty"`
+	BatchID               string                           `json:"batch_id,omitempty"`
+	Tenant                int64                            `json:"tenant_id"`
+	Room                  int64                            `json:"room_id"`
+	Plan                  int64                            `json:"plan_id"`
+	UserID                string                           `json:"user_id"`
+	Nickname              string                           `json:"nickname"`
+	Test                  bool                             `json:"test_simulation"`
+	Text                  string                           `json:"text"`
+	Protocol              string                           `json:"protocol"`
+	Task                  string                           `json:"task"`
+	Epoch                 string                           `json:"epoch"`
+	Revision              uint64                           `json:"revision"`
+	Kind                  string                           `json:"kind"`
+	Original              string                           `json:"original,omitempty"`
+	Clarification         string                           `json:"clarification,omitempty"`
+	Recent                []interactionplan.Turn           `json:"recent,omitempty"`
+	CurrentMainline       string                           `json:"current_mainline,omitempty"`
+	EngagementToken       string                           `json:"engagement_token,omitempty"`
+	EventCount            int                              `json:"event_count,omitempty"`
+	AllowClarify          bool                             `json:"allow_clarify"`
+	ExpiresAt             time.Time                        `json:"expires_at"`
 }
 
 func (s *Server) testInteractionV2(w http.ResponseWriter, r *http.Request, in interactionV2Input, planName string) {
@@ -80,6 +81,10 @@ func (s *Server) resolveInteractionV2(w http.ResponseWriter, r *http.Request, in
 	if in.Items != nil {
 		if in.Test {
 			writeError(w, 400, "内部批次不能使用测试身份")
+			return
+		}
+		if in.AnswerReasoningEffort != "" {
+			writeError(w, 400, "请将回答思考档位放在具体的 items 条目上")
 			return
 		}
 		for _, item := range in.Items {

@@ -10,14 +10,17 @@ import (
 	"time"
 )
 
-// Qwen keeps its current HTTP non-streaming interface with no subtitle timing.
+// Complete paragraph playback accepts native long-text jobs and durable WAVs.
 func SupportsScriptParagraphs(model string) bool {
 	switch model {
-	case VolcengineICL2, "qwen-audio-3.1-tts-flash", "qwen-audio-3.1-tts-plus", "qwen-audio-3.0-tts-flash", "qwen-audio-3.0-tts-plus":
+	case VolcengineICL2, TencentPremiumModel, "qwen3-tts-flash", "qwen-audio-3.1-tts-flash", "qwen-audio-3.1-tts-plus", "qwen-audio-3.0-tts-flash", "qwen-audio-3.0-tts-plus":
 		return true
 	}
 	return false
 }
+
+// QwenFlashMaxInputRunes is the per-request limit of the Qwen3-TTS-Flash HTTP API.
+const QwenFlashMaxInputRunes = 600
 
 func retainQwenParagraphWAV(ctx context.Context, client *http.Client, address, path string) error {
 	var err error
@@ -55,7 +58,12 @@ func downloadQwenParagraphWAV(ctx context.Context, client *http.Client, address,
 	if resp.StatusCode != http.StatusOK {
 		return errors.New("标准声音下载未成功，未重复合成")
 	}
-	if err = os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+	return storeParagraphWAV(path, resp.Body)
+}
+
+// The paragraph checkpoint may only reference a fully written WAV.
+func storeParagraphWAV(path string, audio io.Reader) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".paragraph-*.wav")
@@ -66,7 +74,7 @@ func downloadQwenParagraphWAV(ctx context.Context, client *http.Client, address,
 	defer os.Remove(name)
 	if err = f.Chmod(0600); err == nil {
 		var n int64
-		n, err = io.Copy(f, io.LimitReader(resp.Body, (32<<20)+1))
+		n, err = io.Copy(f, io.LimitReader(audio, (32<<20)+1))
 		if n > 32<<20 || n <= 44 {
 			err = errors.New("标准声音文件为空或过大")
 		}

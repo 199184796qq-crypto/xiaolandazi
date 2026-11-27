@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"errors"
+	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/sharedfilelock"
 	"path/filepath"
 	"strconv"
@@ -23,4 +25,32 @@ func lockScriptPoolStore(root string) (func(), error) {
 // receipt can request more versions after the current shared task completes.
 func tryScriptGeneration(root string, tenant, plan int64, piece string) (func(), bool, error) {
 	return sharedfilelock.TryLock(filepath.Join(root, "script-generation-locks", strconv.FormatInt(tenant, 10), strconv.FormatInt(plan, 10), shortScriptIdentity(piece)+".lock"))
+}
+
+var errRoomScriptGenerationBusy = errors.New("mainline script generation is busy")
+
+func tryRoomScriptGeneration(root string, tenant, room int64) (func(), bool, error) {
+	return sharedfilelock.TryLock(filepath.Join(root, "script-generation-locks", strconv.FormatInt(tenant, 10), "rooms", strconv.FormatInt(room, 10)+".lock"))
+}
+
+func tryManualScriptGeneration(root string, tenant int64, v model.LiveAgentPlanVersion, unit volcengineScriptUnit) (func(), error) {
+	releasePiece, acquired, err := tryScriptGeneration(root, tenant, v.PlanID, unit.poolID())
+	if err != nil {
+		return nil, err
+	}
+	if !acquired {
+		return nil, errRoomScriptGenerationBusy
+	}
+	releasePlan, acquired, err := tryScriptGeneration(root, tenant, v.PlanID, "policy-"+scriptFirstParagraphKey(v, "policy"))
+	if err != nil || !acquired {
+		releasePiece()
+		if err != nil {
+			return nil, err
+		}
+		return nil, errRoomScriptGenerationBusy
+	}
+	return func() {
+		releasePlan()
+		releasePiece()
+	}, nil
 }

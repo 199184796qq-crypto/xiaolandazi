@@ -343,6 +343,23 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 	if !s.allowPlanSave(w, r, tenantID, planID) {
 		return
 	}
+	draft, err := s.store.GetLiveAgentPlanEditDraft(r.Context(), tenantID, planID)
+	switch {
+	case errors.Is(err, appdb.ErrLiveAgentPlanNotFound):
+		writeError(w, http.StatusNotFound, "直播智能体方案不存在")
+		return
+	case err != nil:
+		writeError(w, http.StatusServiceUnavailable, "读取方案草稿失败，请重试")
+		return
+	case !draft.AllowsPublish(input.EditDraftRevision):
+		writeError(w, http.StatusConflict, appdb.ErrLiveAgentPlanEditConflict.Error())
+		return
+	case draft.Draft != nil && draft.Draft.Prompt != nil:
+		if err := draft.Draft.Prompt.Validate(); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+	}
 	if input.GenerationContext == nil {
 		input.GenerationContext = map[string]any{}
 	}
@@ -442,31 +459,42 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	if input.EditDraftRevision != "" && isRealtimeScheme(input.GenerationContext) {
+		if err := s.validateRealtimeScheme(r.Context(), tenantID, planID, input.GenerationContext); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
 	// 话术违规检测：P0 命中就不允许入库，避免违规话术（极限词、编造承诺等）被保存。
-	if err := s.validateScriptEntriesAgainstP0(r.Context(), &input); err != nil {
+	if err := s.validateScriptEntriesAgainstP0(r.Context(), tenantID, planID, &input); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	// 保存只做基础校验与资产生成；方案级匹配核对（validateRealtimeScheme）不卡保存入口，
-	// 其存在性检查仍由内容策略/工作区检查/派生安全三处链路承担。
+	input.MaterialClaimsRevision, err = s.validatePlanSaveFactReferences(r.Context(), tenantID, planID, input.GenerationContext)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	// Editing drafts have already committed. Only the formal snapshot continues
+	// into voice preparation and version publication.
 	var readyVoiceRate []float64
 	if usesScriptFirstParagraphs(paragraphVersion) {
 		// The plan's independent rate is authoritative, including legacy defaults;
 		// preparing the rate from a stale browser payload would warm the wrong key.
 		rate, rateErr := s.store.GetPlanVoiceRate(r.Context(), tenantID, planID)
 		if rateErr != nil {
-			writeError(w, http.StatusConflict, "读取方案语速失败，本次未保存，请重试")
+			writeError(w, http.StatusConflict, "读取方案语速失败，请重新保存方案")
 			return
 		}
 		input.VoiceIdentity.Rate = rate.Rate
 		prepared := model.LiveAgentPlanVersion{TenantID: tenantID, PlanID: planID, VoiceIdentity: input.VoiceIdentity, Variants: input.Variants, GenerationContext: input.GenerationContext}
 		reportAnchorAnalysis(r.Context(), 94, "正在准备开场声音缓存，最多等待60秒")
 		if err := s.warmPlanFirstParagraph(r.Context(), tenantID, planID, prepared); err != nil {
-			status, message := http.StatusBadGateway, "开场声音生成失败，本次未保存，原正式版本保持不变，请重试"
+			status, message := http.StatusBadGateway, "开场声音生成失败，请重新保存方案"
 			if errors.Is(err, context.DeadlineExceeded) {
-				status, message = http.StatusGatewayTimeout, "开场声音准备超过60秒，本次保存已放弃，原正式版本保持不变，请重试"
+				status, message = http.StatusGatewayTimeout, "开场声音准备超过60秒，请重新保存方案"
 			} else if errors.Is(err, context.Canceled) {
-				status, message = http.StatusRequestTimeout, "本次保存已取消，原正式版本保持不变"
+				status, message = http.StatusRequestTimeout, "开场声音准备已取消，请重新保存方案"
 			}
 			writeError(w, status, message)
 			return
@@ -475,7 +503,11 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 	}
 	reportAnchorAnalysis(r.Context(), 98, "开场准备已完成，正在保存智能体方案")
 	item, err := s.store.CreateLiveAgentPlanVersion(r.Context(), tenantID, planID, actor.UserID, input, readyVoiceRate...)
-	if errors.Is(err, appdb.ErrPlanPreparedVoiceRateChanged) {
+	if errors.Is(err, appdb.ErrMaterialClaimConflict) {
+		writeError(w, http.StatusConflict, "事实清单在保存期间已更新，请重新保存方案")
+		return
+	}
+	if errors.Is(err, appdb.ErrPlanPreparedVoiceRateChanged) || errors.Is(err, appdb.ErrLiveAgentPlanEditConflict) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -499,6 +531,7 @@ func (s *Server) liveAgentPlanVersionCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "保存直播智能体版本失败")
 		return
 	}
+	s.scheduleFactCardRebuild(tenantID, planID)
 	reportAnchorAnalysis(r.Context(), 100, "智能体方案已保存，下次开播直接使用")
 	writeJSON(w, http.StatusCreated, item)
 }
@@ -1033,7 +1066,7 @@ func (s *Server) validatePlanVoiceIdentity(ctx context.Context, tenantID int64, 
 //
 // 命中就返回错误，保存入口拦下；错误里逐条列出第几条、命中了什么词、属于哪条规则，
 // 前端可以直接展示给用户改。
-func (s *Server) validateScriptEntriesAgainstP0(ctx context.Context, input *model.CreateLiveAgentPlanVersionInput) error {
+func (s *Server) validateScriptEntriesAgainstP0(ctx context.Context, tenant, plan int64, input *model.CreateLiveAgentPlanVersionInput) error {
 	script, ok := recordingScriptFromContext(input.GenerationContext)
 	if !ok || script.Version != 2 {
 		return nil
@@ -1041,6 +1074,10 @@ func (s *Server) validateScriptEntriesAgainstP0(ctx context.Context, input *mode
 	p0, p1, p2, err := loadRiskAnnotationMothers()
 	if err != nil {
 		return fmt.Errorf("话术违规检测不可用（P0 规则缺失），本次不保存: %w", err)
+	}
+	state, policy, err := s.planRiskAnnotationP0(ctx, tenant, plan, p0)
+	if err != nil {
+		return fmt.Errorf("读取P0例外规则失败，本次不保存: %w", err)
 	}
 	var problems []string
 	for tabIndex, tab := range script.Tabs {
@@ -1053,6 +1090,7 @@ func (s *Server) validateScriptEntriesAgainstP0(ctx context.Context, input *mode
 			if err != nil {
 				return fmt.Errorf("话术违规检测失败，本次不保存: %w", err)
 			}
+			result.Hits = state.FilterP0Annotations(policy, text, result.Hits)
 			for _, hit := range result.Hits {
 				// 只给中文原因：前端会把含英文标识的整行过滤掉，导致只剩"后台未提供原因"。
 				reason := "需核对对应资质或依据"

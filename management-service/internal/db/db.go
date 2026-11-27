@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -17,6 +18,7 @@ type Store struct {
 	db                 *sql.DB
 	inboxEventsEnabled bool
 	modelPoolReady     bool
+	accountTablesReady atomic.Bool
 }
 
 func Open(cfg config.Config) (*Store, error) {
@@ -60,6 +62,9 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
+	if err := s.MigrateHumanFission(ctx); err != nil {
+		return fmt.Errorf("migrate human fission: %w", err)
+	}
 	if err := s.ensureVoiceAssetCleanupSchema(ctx); err != nil {
 		return fmt.Errorf("migrate voice asset cleanup: %w", err)
 	}
@@ -89,7 +94,6 @@ func (s *Store) Migrate(ctx context.Context) error {
 			created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 			updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
 			PRIMARY KEY (id),
-			UNIQUE KEY uk_mgmt_users_username (username),
 			KEY idx_mgmt_users_tenant (tenant_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
 		`CREATE TABLE IF NOT EXISTS mgmt_admin_audit_ledger (
@@ -178,11 +182,8 @@ func (s *Store) EnsureDevelopmentSeed(
 
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO mgmt_users (tenant_id, username, display_name, role, status)
-		VALUES (NULL, 'platform-admin', '超级系统管理员', 'platform_admin', 'active')
-		ON DUPLICATE KEY UPDATE
-			display_name = VALUES(display_name),
-			role = VALUES(role),
-			status = 'active'
+		SELECT NULL, 'platform-admin', '超级系统管理员', 'platform_admin', 'active'
+		WHERE NOT EXISTS (SELECT 1 FROM mgmt_users WHERE role = 'platform_admin')
 	`); err != nil {
 		return 0, fmt.Errorf("seed platform admin: %w", err)
 	}

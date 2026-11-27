@@ -21,6 +21,8 @@ func (s *Store) ListLiveOpsRoomQuotas(
 			u.phone,
 			u.status,
 			COALESCE(parent.name, ''),
+			COALESCE(parent.id, 0),
+			CASE WHEN u.status='archived' THEN 'non_cooperating' ELSE COALESCE(profile.cooperation_status, 'cooperating') END,
 			COALESCE(m.plan_id, 0),
 			COALESCE(p.name, '无会员'),
 			LEAST(COALESCE(ml.room_limit, ?), ?),
@@ -36,6 +38,7 @@ func (s *Store) ListLiveOpsRoomQuotas(
 		FROM mgmt_users u
 		INNER JOIN mgmt_tenants customer_org ON customer_org.id=u.tenant_id
 		LEFT JOIN mgmt_tenants parent ON parent.id=customer_org.parent_id
+		LEFT JOIN crm_customer_profiles profile ON profile.tenant_id=u.tenant_id
 		LEFT JOIN biz_memberships m ON m.id=(
 			SELECT m2.id
 			FROM biz_memberships m2
@@ -94,6 +97,8 @@ func (s *Store) ListLiveOpsRoomQuotas(
 			&item.Phone,
 			&item.Status,
 			&item.ParentOrgName,
+			&item.ParentOrgID,
+			&item.CooperationStatus,
 			&item.MembershipPlanID,
 			&item.MembershipName,
 			&item.MembershipRoomLimit,

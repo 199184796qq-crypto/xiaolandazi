@@ -45,41 +45,56 @@ type modelResolverContextKey struct{}
 // Review uses the operator-owned review role. Planning and normalization remain
 // analysis; registering existing review stages does not add model calls.
 func UsesReviewModel(stage string) bool {
+	if stage == "qa_pairs_organize" {
+		return true
+	}
 	switch stage {
-	case "mainline_p0_context", "speech_review", "interaction_p0_context", "fact_fields_normalize", "fact_fields_normalize_review", "fact_expression_examples_review", "fact_template_influence_review", "speech_constraint_review", "speech_constraint_text_review", "angle_direction_review", "content_pool_task_review", "content_pool_fact_scope_review", "mainline_final_content_review", "fact_gap_check", "selling_point_extraction", "product_selling_point_extraction", "selling_point_incremental_update", "selling_point_incremental_review", "wheel_p0_rewrite", "fact_content_purposes", "fact_content_angles":
+	case "mainline_p0_context", "speech_review", "interaction_p0_context", "fact_fields_normalize", "fact_fields_normalize_review", "fact_expression_examples_review", "fact_template_influence_review", "speech_constraint_review", "speech_constraint_text_review", "angle_direction_review", "content_pool_task_review", "content_pool_fact_scope_review", "mainline_final_content_review", "fact_gap_check", "material_import_analyze", "selling_point_extraction", "product_selling_point_extraction", "selling_point_incremental_update", "selling_point_incremental_review", "wheel_p0_rewrite", "fact_content_purposes", "fact_content_angles", "script_auto_planner", "script_auto_writer", "script_auto_fact_review", "script_auto_p0_sentence_rewrite":
 		return true
 	default:
 		return false
 	}
 }
 
-// Interaction answers are spoken to viewers. The operator may pin them to a
-// named role instead of the room's leased 口播 model, so these stages resolve
-// outside the model pool and use the operator's own profile and key.
+// These spoken interaction stages use the operator review role when they
+// aren't routed through the active room's model lease.
 func UsesInteractionAnswerModel(stage string) bool {
 	switch stage {
-	case "interaction_single_direct_answer", "interaction_single_greet", "interaction_single_answer", "interaction_no_fact_boundary", "interaction_boundary_line", "interaction_covered_facts", "interaction_welcome_intro", "interaction_welcome_humanize", "interaction_welcome_highlight", "interaction_welcome_greeting", "interaction_welcome_hook", "interaction_p0_sentence_rewrite", "interaction_order_thanks", "interaction_order_fulfillment", "interaction_addressing_plan":
+	case "interaction_single_direct_answer", "interaction_single_greet", "interaction_single_answer", "interaction_no_fact_boundary", "interaction_boundary_line", "interaction_covered_facts", "interaction_welcome_intro", "interaction_welcome_humanize", "interaction_welcome_highlight", "interaction_welcome_greeting", "interaction_welcome_hook", "interaction_welcome_writer", "interaction_p0_sentence_rewrite", "interaction_order_thanks", "interaction_order_fulfillment", "interaction_addressing_plan":
 		return true
 	default:
 		return false
 	}
 }
 
-// Intent mining for interaction questions is pinned the same way: the operator
-// answers viewers with the review role, without the room pool taking over.
+// Intent and answer tests use the operator's review role.
 func UsesInteractionPurposeModel(stage string) bool {
 	switch stage {
-	case "interaction_purpose_resolution", "interaction_purpose_judge":
+	case "interaction_purpose_resolution", "interaction_purpose_judge", "interaction_engagement_announcement", "danmaku_test_intent", "danmaku_test_intent_qa", "danmaku_test_answer", "interaction_answerflow_intent", "interaction_answerflow_intent_qa", "interaction_answerflow_answer", "interaction_answerflow_batch_intent", "interaction_answerflow_recall_query":
 		return true
 	default:
 		return false
 	}
 }
 
-// UsesOperatorPinnedModel reports stages that must resolve outside the room
-// model pool and use the operator's own profile.
+// UsesOperatorPinnedModel reports the configured role outside a live lease.
 func UsesOperatorPinnedModel(stage string) bool {
-	return UsesInteractionAnswerModel(stage) || UsesInteractionPurposeModel(stage)
+	return stage == "qa_pairs_organize" || stage == "script_auto_planner" || stage == "script_auto_writer" || stage == "script_auto_fact_review" || stage == "script_auto_p0_sentence_rewrite" || UsesInteractionAnswerModel(stage) || UsesInteractionPurposeModel(stage)
+}
+
+// Use the same routing decision for generation, cost and model-exchange logs.
+func UsesOperatorPinnedModelForContext(ctx context.Context, stage string) bool {
+	if ContextRoomModelScope(ctx).RequireLease {
+		switch stage {
+		case "interaction_purpose_resolution", "interaction_purpose_judge", "interaction_engagement_announcement",
+			"interaction_answerflow_intent", "interaction_answerflow_intent_qa", "interaction_answerflow_batch_intent", "interaction_answerflow_answer", "interaction_answerflow_recall_query",
+			"interaction_single_direct_answer", "interaction_single_greet", "interaction_single_answer",
+			"interaction_no_fact_boundary", "interaction_boundary_line", "interaction_covered_facts",
+			"interaction_addressing_plan", "interaction_p0_sentence_rewrite":
+			return false
+		}
+	}
+	return UsesOperatorPinnedModel(stage)
 }
 
 // ResolveStageModel reports the provider identity and model a stage will use,
@@ -110,7 +125,7 @@ type OperatorModelResolver interface {
 }
 
 func (g *Gateway) resolveStageProfile(ctx context.Context, stage, id string) (*SpeechModel, error) {
-	if UsesOperatorPinnedModel(stage) {
+	if UsesOperatorPinnedModelForContext(ctx, stage) {
 		if pinned, ok := g.speechModels.(OperatorModelResolver); ok {
 			return pinned.ResolveOperatorSpeechModel(ctx, id)
 		}

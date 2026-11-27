@@ -29,12 +29,9 @@ func (s *Server) liveAgentPlanPromptGet(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "方案提示词读取失败")
 		return
 	}
-	planning, err := resolvePlanRewritePlanning(document)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	if document.LegacyUnstructured {
+		document.Sections = planprompt.LegacyInteractionBackground(document.LegacyPromptMD)
 	}
-	document.RewritePlanningMD = &planning
 	writeJSON(w, http.StatusOK, document)
 }
 
@@ -57,11 +54,21 @@ func (s *Server) liveAgentPlanPromptPut(w http.ResponseWriter, r *http.Request) 
 	var input struct {
 		PromptMD          string               `json:"prompt_md"`
 		Sections          *planprompt.Sections `json:"sections"`
+		ActiveSections    *planprompt.Sections `json:"active_sections"`
 		RewritePromptMD   *string              `json:"rewrite_prompt_md"`
 		RewritePlanningMD *string              `json:"rewrite_planning_md"`
 	}
 	if readJSON(w, r, &input) != nil {
 		writeError(w, http.StatusBadRequest, "方案提示词请求格式错误")
+		return
+	}
+	if input.ActiveSections != nil {
+		document, err := s.store.SaveLiveAgentPlanActivePromptSections(r.Context(), tenantID, planID, actor.UserID, *input.ActiveSections)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "方案提示词保存失败")
+			return
+		}
+		writeJSON(w, http.StatusOK, document)
 		return
 	}
 	if input.Sections == nil {

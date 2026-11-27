@@ -15,6 +15,9 @@ import (
 var ErrMarketingCampaignStockInsufficient = errors.New("marketing campaign stock insufficient")
 var ErrMarketingCampaignPendingOrders = errors.New("marketing campaign has pending orders")
 var ErrMarketingCampaignHistoryLocked = errors.New("marketing campaign has historical usage")
+var ErrMarketingCampaignArchived = errors.New("marketing campaign is archived")
+var ErrMarketingCampaignMustUnlist = errors.New("marketing campaign is listed")
+var ErrMarketingCampaignUnavailable = errors.New("marketing campaign unavailable")
 
 func campaignTimeValue(value string) (any, error) {
 	value = strings.TrimSpace(value)
@@ -63,7 +66,7 @@ func normalizeMarketingCampaignInput(input model.MarketingCampaignInput) (model.
 	if input.Status == "" {
 		input.Status = "active"
 	}
-	if input.Code == "" || input.Name == "" {
+	if input.Name == "" {
 		return model.MarketingCampaignInput{}, errors.New("invalid marketing campaign")
 	}
 	if len(input.Items) == 0 {
@@ -358,6 +361,12 @@ func (s *Store) CreateMarketingCampaign(
 	}
 	defer tx.Rollback()
 
+	if input.Code == "" {
+		input.Code, err = newInternalCode(ctx, tx, "mkt", time.Now())
+		if err != nil {
+			return model.MarketingCampaign{}, err
+		}
+	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO mkt_campaigns (
 			code, name, description, status, sort_order, pricing_rule,
@@ -384,6 +393,9 @@ func (s *Store) CreateMarketingCampaign(
 		return model.MarketingCampaign{}, err
 	}
 	if err := saveCampaignControlsTx(ctx, tx, campaignID, input.Controls); err != nil {
+		return model.MarketingCampaign{}, err
+	}
+	if err := saveMarketingStockLimitTx(ctx, tx, campaignID, input.StockLimit); err != nil {
 		return model.MarketingCampaign{}, err
 	}
 	if err := saveMarketingCampaignPresentationTx(ctx, tx, campaignID, userID, input.Presentation); err != nil {
@@ -478,11 +490,20 @@ func marketingCampaignItemsMatchTx(
 	return true, nil
 }
 
-func (s *Store) UpdateMarketingCampaign(
+func (s *Store) UpdateMarketingCampaign(ctx context.Context, campaignID, userID int64, input model.MarketingCampaignInput) (model.MarketingCampaign, error) {
+	return s.updateMarketingCampaign(ctx, campaignID, userID, input, false)
+}
+
+func (s *Store) UpdateWorkspaceMarketingCampaign(ctx context.Context, campaignID, userID int64, input model.MarketingCampaignInput) (model.MarketingCampaign, error) {
+	return s.updateMarketingCampaign(ctx, campaignID, userID, input, true)
+}
+
+func (s *Store) updateMarketingCampaign(
 	ctx context.Context,
 	campaignID int64,
 	userID int64,
 	input model.MarketingCampaignInput,
+	preserveStatus bool,
 ) (model.MarketingCampaign, error) {
 	input, err := normalizeMarketingCampaignInput(input)
 	if err != nil {
@@ -497,34 +518,47 @@ func (s *Store) UpdateMarketingCampaign(
 	}
 	defer tx.Rollback()
 
-	var existingID int64
+	var currentStatus string
+	var currentSortOrder int
 	if err := tx.QueryRowContext(ctx, `
-		SELECT id
+		SELECT status, code, sort_order
 		FROM mkt_campaigns
 		WHERE id=?
 		FOR UPDATE
-	`, campaignID).Scan(&existingID); err != nil {
+	`, campaignID).Scan(&currentStatus, &input.Code, &currentSortOrder); err != nil {
 		return model.MarketingCampaign{}, err
+	}
+	if currentStatus == "archived" {
+		return model.MarketingCampaign{}, ErrMarketingCampaignArchived
+	}
+
+	if preserveStatus {
+		input.Status = currentStatus
+		if input.PreserveSortOrder {
+			input.SortOrder = currentSortOrder
+		}
 	}
 
 	var pendingUsage int
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM mkt_campaign_usage
-		WHERE campaign_id=? AND status='pending'
-	`, campaignID).Scan(&pendingUsage); err != nil {
+		SELECT EXISTS (SELECT 1 FROM mkt_campaign_usage WHERE campaign_id=? AND status='pending')
+		    OR EXISTS (SELECT 1 FROM mkt_campaign_order_snapshots s JOIN biz_orders o ON o.id=s.order_id
+		               WHERE s.campaign_id=? AND o.status='pending')
+	`, campaignID, campaignID).Scan(&pendingUsage); err != nil {
 		return model.MarketingCampaign{}, err
 	}
 	if pendingUsage > 0 {
 		return model.MarketingCampaign{}, ErrMarketingCampaignPendingOrders
 	}
+	if err := saveMarketingStockLimitTx(ctx, tx, campaignID, input.StockLimit); err != nil {
+		return model.MarketingCampaign{}, err
+	}
 
 	var historicalUsage int
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM mkt_campaign_usage
-		WHERE campaign_id=?
-	`, campaignID).Scan(&historicalUsage); err != nil {
+		SELECT EXISTS (SELECT 1 FROM mkt_campaign_usage WHERE campaign_id=?)
+		    OR EXISTS (SELECT 1 FROM mkt_campaign_order_snapshots WHERE campaign_id=?)
+	`, campaignID, campaignID).Scan(&historicalUsage); err != nil {
 		return model.MarketingCampaign{}, err
 	}
 	preserveItems := historicalUsage > 0
@@ -635,28 +669,42 @@ func (s *Store) UpdateMarketingCampaign(
 }
 
 func (s *Store) DeleteMarketingCampaign(ctx context.Context, campaignID int64) error {
+	return s.deleteMarketingCampaign(ctx, campaignID, false)
+}
+
+func (s *Store) DeleteWorkspaceMarketingCampaign(ctx context.Context, campaignID int64) error {
+	return s.deleteMarketingCampaign(ctx, campaignID, true)
+}
+
+func (s *Store) deleteMarketingCampaign(ctx context.Context, campaignID int64, workspace bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	var existingID int64
+	var status string
+	var ended bool
 	if err := tx.QueryRowContext(ctx, `
-		SELECT id
+		SELECT status, COALESCE(ends_at <= UTC_TIMESTAMP(3), FALSE)
 		FROM mkt_campaigns
 		WHERE id=?
 		FOR UPDATE
-	`, campaignID).Scan(&existingID); err != nil {
+	`, campaignID).Scan(&status, &ended); err != nil {
 		return err
+	}
+	if status == "archived" {
+		return ErrMarketingCampaignArchived
+	}
+	if workspace && status == "active" && !ended {
+		return ErrMarketingCampaignMustUnlist
 	}
 
 	var usageCount int
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM mkt_campaign_usage
-		WHERE campaign_id=?
-	`, campaignID).Scan(&usageCount); err != nil {
+		SELECT EXISTS (SELECT 1 FROM mkt_campaign_usage WHERE campaign_id=?)
+		    OR EXISTS (SELECT 1 FROM mkt_campaign_order_snapshots WHERE campaign_id=?)
+	`, campaignID, campaignID).Scan(&usageCount); err != nil {
 		return err
 	}
 	if usageCount > 0 {
@@ -682,8 +730,36 @@ func reserveMarketingCampaignOrderTx(
 	listAmountCents uint64,
 	payableAmountCents uint64,
 ) error {
+	var current model.MarketingCampaign
+	var startsAt, endsAt sql.NullTime
+	err := tx.QueryRowContext(ctx, `
+		SELECT status, starts_at, ends_at FROM mkt_campaigns WHERE id=? FOR UPDATE
+	`, campaign.ID).Scan(&current.Status, &startsAt, &endsAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrMarketingCampaignUnavailable
+	}
+	if err != nil {
+		return err
+	}
+	current.StartsAt, current.EndsAt = campaignTimeString(startsAt), campaignTimeString(endsAt)
+	if !marketingCampaignWindowActive(current, time.Now()) {
+		return ErrMarketingCampaignUnavailable
+	}
 	if err := reserveCampaignClaimTx(ctx, tx, tenantID, orderID, campaign, item); err != nil {
 		return err
+	}
+	limit, err := readMarketingStockLimitTx(ctx, tx, campaign.ID)
+	if err != nil {
+		return err
+	}
+	if limit > 0 {
+		stock, err := readMarketingStock(ctx, tx, campaign.ID, orderID, limit, true)
+		if err != nil {
+			return err
+		}
+		if stock.Remaining == 0 {
+			return ErrMarketingCampaignStockInsufficient
+		}
 	}
 	if campaign.ID <= 0 || item.ID <= 0 {
 		return errors.New("invalid marketing campaign snapshot")

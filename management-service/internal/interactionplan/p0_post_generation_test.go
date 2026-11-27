@@ -24,7 +24,11 @@ func TestGenerationOmitsAdditionalP0AcrossInteractionKinds(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			s := fixture(t)
 			calls := 0
-			_, body, err := Generate(context.Background(), s, Input{Kind: kind, Text: "按当前方案回答", AllowClarify: true}, func(_ context.Context, req agentgateway.Request) (agentgateway.Response, error) {
+			input := Input{Kind: kind, Text: "按当前方案回答", AllowClarify: true}
+			if kind == "engagement" {
+				input.Text, input.EventCount = "本轮口令1，共3人参与。", 3
+			}
+			_, body, err := Generate(context.Background(), s, input, func(_ context.Context, req agentgateway.Request) (agentgateway.Response, error) {
 				calls++
 				assertNoAdditionalP0(t, s, req)
 				if !strings.Contains(req.Messages[0].Content, s.Prompt) {

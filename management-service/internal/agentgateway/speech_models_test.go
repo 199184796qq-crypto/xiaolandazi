@@ -139,6 +139,91 @@ func TestOfficialDeepSeekThinkingControl(t *testing.T) {
 	}
 }
 
+func TestDeepSeekReasoningIsPerRequest(t *testing.T) {
+	var payloads []map[string]any
+	client := &http.Client{Transport: modelTestTransport(func(r *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		payloads = append(payloads, payload)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"回答正文","reasoning_content":"内部推理"}}],"usage":{"completion_tokens":12}}`))}, nil
+	})}
+	p := speechFixture()
+	p.BaseURL, p.Model = "https://api.deepseek.com/v1", "deepseek-flash"
+	request := Request{Model: p.Model, Messages: []Message{{Role: "user", Content: "测试"}}, Timeout: time.Second}
+	for _, tc := range []struct {
+		effort, sentMode, thinking string
+		maxTokens                  int
+	}{
+		{"high", "on", "enabled", 12000},
+		{"", "off", "disabled", 1800},
+		{"low", "low", "enabled", 4000},
+	} {
+		request.ReasoningEffort, request.MaxTokens = tc.effort, tc.maxTokens
+		response, err := completeSpeechEndpoint(t.Context(), p, request, client)
+		if err != nil || response.Text != "回答正文" || response.OutputTokens != 12 || response.ThinkingMode != tc.sentMode {
+			t.Fatal(response, err)
+		}
+		payload := payloads[len(payloads)-1]
+		sentEffort, _ := payload["reasoning_effort"].(string)
+		thinking, _ := payload["thinking"].(map[string]any)
+		if sentEffort != tc.effort || thinking["type"] != tc.thinking || payload["max_tokens"] != float64(tc.maxTokens) {
+			t.Fatal(payload)
+		}
+	}
+	p.BaseURL = "https://api.example.com/v1"
+	request.ReasoningEffort = "low"
+	if response, err := completeSpeechEndpoint(t.Context(), p, request, client); err != nil || response.ThinkingMode != "" {
+		t.Fatal(response, err)
+	}
+	if len(payloads) != 4 || payloads[3]["reasoning_effort"] != nil || payloads[3]["thinking"] != nil {
+		t.Fatal(payloads)
+	}
+}
+
+func TestDeepSeekProviderOutputLimitKeepsOnlyFinalText(t *testing.T) {
+	for _, tokenField := range []string{"max_tokens", "max_completion_tokens"} {
+		t.Run(tokenField, func(t *testing.T) {
+			var payload map[string]any
+			calls := 0
+			client := &http.Client{Transport: modelTestTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					return nil, err
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(
+					`{"choices":[{"finish_reason":"stop","message":{"content":"话术正文","reasoning_content":"不应流入业务的内部推理"}}],"usage":{"prompt_tokens":13,"completion_tokens":24567}}`))}, nil
+			})}
+			p := speechFixture()
+			p.BaseURL, p.Model, p.ChatTokenField = "https://api.deepseek.com/v1", "deepseek-flash", tokenField
+			request := Request{Model: p.Model, Messages: []Message{{Role: "user", Content: "测试"}}, Timeout: time.Second,
+				EnableThinking: true, ReasoningEffort: "high", UseProviderOutputLimit: true}
+			response, err := completeSpeechEndpoint(t.Context(), p, request, client)
+			if err != nil || response.Text != "话术正文" || response.InputTokens != 13 || response.OutputTokens != 24567 || calls != 1 {
+				t.Fatal(response, err, calls)
+			}
+			thinking, _ := payload["thinking"].(map[string]any)
+			if payload["reasoning_effort"] != "high" || thinking["type"] != "enabled" {
+				t.Fatal(payload)
+			}
+			for _, key := range []string{"max_tokens", "max_completion_tokens"} {
+				if _, sent := payload[key]; sent {
+					t.Fatalf("%s was sent: %v", key, payload)
+				}
+			}
+			p.BaseURL = "https://api.example.com/v1"
+			if _, err := completeSpeechEndpoint(t.Context(), p, request, client); err == nil || calls != 1 {
+				t.Fatal("provider defaults must fail closed on an unsupported endpoint", err, calls)
+			}
+		})
+	}
+}
+
+type modelTestTransport func(*http.Request) (*http.Response, error)
+
+func (f modelTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func TestSpeechProtocolRequestsAndResponses(t *testing.T) {
 	for _, tc := range []struct{ protocol, path, header, value, reply string }{
 		{"openai_chat", "/v1/chat/completions", "Authorization", "Bearer fixture-only-secret", `{"choices":[{"message":{"content":"哥哥姐们，盖好啊。"}}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`},

@@ -167,6 +167,22 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if err := assertPlanNotLive(ctx, tx, tenantID, planID, true); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
+	if input.MaterialClaimsRevision != "" {
+		claims, err := listMaterialClaims(ctx, lockedMaterialQuery{tx}, tenantID, planID)
+		if err != nil {
+			return model.LiveAgentPlanVersion{}, err
+		}
+		if MaterialLibraryRevision(claims) != input.MaterialClaimsRevision {
+			return model.LiveAgentPlanVersion{}, ErrMaterialClaimConflict
+		}
+	}
+	draft, err := readPlanEditDraft(ctx, tx, tenantID, planID, true)
+	if err != nil {
+		return model.LiveAgentPlanVersion{}, err
+	}
+	if !draft.AllowsPublish(input.EditDraftRevision) {
+		return model.LiveAgentPlanVersion{}, ErrLiveAgentPlanEditConflict
+	}
 	input.VoiceIdentity.Rate = 1
 	if savedVoiceRate.Valid {
 		if rate, valid := model.NormalizePlanVoiceRate(savedVoiceRate.Float64); valid {
@@ -245,6 +261,9 @@ func (s *Store) CreateLiveAgentPlanVersion(
 	if err := pruneSavedPlanVersions(ctx, tx, tenantID, planID, input.RoomID); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
+	if err := finishLiveAgentPlanEditDraft(ctx, tx, tenantID, planID, actorUserID, draft); err != nil {
+		return model.LiveAgentPlanVersion{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.LiveAgentPlanVersion{}, err
 	}
@@ -273,6 +292,23 @@ func (s *Store) ListLiveAgentPlanVersions(
 	tenantID, planID, roomID int64,
 ) ([]model.LiveAgentPlanVersion, error) {
 	return s.ListLiveAgentPlanVersionsForPlan(ctx, tenantID, planID)
+}
+
+// LiveAgentPlanRoomIntro reads the latest saved intro across content modes.
+// A saved empty intro takes precedence over earlier text.
+func (s *Store) LiveAgentPlanRoomIntro(ctx context.Context, tenantID, planID int64) (string, error) {
+	var intro string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT CASE WHEN JSON_TYPE(JSON_EXTRACT(generation_context_json, '$.room_intro')) = 'STRING'
+			THEN JSON_UNQUOTE(JSON_EXTRACT(generation_context_json, '$.room_intro')) ELSE '' END
+		FROM live_agent_plan_versions
+		WHERE tenant_id=? AND plan_id=? AND lifecycle_status NOT IN ('prepared','abandoned')
+		  AND JSON_CONTAINS_PATH(generation_context_json, 'one', '$.room_intro')
+		ORDER BY id DESC LIMIT 1`, tenantID, planID).Scan(&intro)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return intro, err
 }
 
 func (s *Store) ListLiveAgentPlanVersionsForPlan(

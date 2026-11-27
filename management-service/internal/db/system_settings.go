@@ -12,6 +12,9 @@ import (
 	"livecompanion/management/internal/speechlibrary"
 )
 
+// Keep retired answer-flow settings out of the general settings editor.
+const planAnswerFlowSettingPrefix = "plan_interaction_answerflow:"
+
 type seededSystemSetting struct {
 	Key       string
 	Group     string
@@ -187,7 +190,7 @@ func (s *Store) ListSystemSettings(ctx context.Context) ([]model.SystemSetting, 
 		SELECT setting_key, setting_group, label, value_text, input_type,
 		       sort_order, updated_by_user_id, updated_at
 		FROM mgmt_system_settings
-		WHERE setting_group NOT IN ('user_voice_cache', 'tts_voice_display', 'plan_prompt_templates', 'plan_prompt_template_catalog')
+		WHERE setting_group NOT IN ('user_voice_cache', 'tts_voice_display', 'plan_prompt_templates', 'plan_prompt_template_catalog', 'plan_interaction_answerflow')
 		ORDER BY setting_group ASC, sort_order ASC, setting_key ASC
 	`)
 	if err != nil {
@@ -221,6 +224,9 @@ func (s *Store) UpdateSystemSettings(
 	actorUserID int64,
 ) error {
 	for _, update := range updates {
+		if strings.HasPrefix(strings.TrimSpace(update.Key), planAnswerFlowSettingPrefix) {
+			return errors.New("旧版互动流程开关已停用")
+		}
 		if strings.HasPrefix(strings.TrimSpace(update.Key), planPromptCatalogPrefix) {
 			return errors.New("模板目录请使用提示词维护页面保存")
 		}

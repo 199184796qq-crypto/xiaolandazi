@@ -84,6 +84,10 @@ func (s *Store) MigrateModelPool(ctx context.Context) error {
 		 created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 		 UNIQUE KEY uk_model_pool_account_model(account_name,model), UNIQUE KEY uk_model_pool_key_model(key_fingerprint,model)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
+		`CREATE TABLE IF NOT EXISTS mgmt_model_pool_task_leases (
+         lease_id VARCHAR(64) PRIMARY KEY, entry_id VARCHAR(64) NOT NULL, expires_at DATETIME(3) NOT NULL,
+         KEY idx_pool_task_capacity(entry_id,expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS mgmt_model_pool_leases (
 		 tenant_id BIGINT UNSIGNED NOT NULL, room_id BIGINT UNSIGNED NOT NULL, lease_id VARCHAR(64) NOT NULL,
 		 runtime_id BIGINT UNSIGNED NOT NULL, entry_id VARCHAR(64) NOT NULL, account_name VARCHAR(80) NOT NULL,
@@ -222,12 +226,16 @@ func (s *Store) SaveModelPoolEntry(ctx context.Context, input ModelPoolEntryInpu
 	if used > input.MaxRooms {
 		return ModelPoolEntry{}, errors.New("名额不能小于当前仍在占用的直播间数量")
 	}
+	taskInUse, err := planModelPoolEntryActiveTx(ctx, tx, input.ID)
+	if err != nil {
+		return ModelPoolEntry{}, err
+	}
 	var old agentgateway.SpeechModel
 	if len(oldProfileRaw) > 0 {
 		if err = json.Unmarshal(oldProfileRaw, &old); err != nil {
 			return ModelPoolEntry{}, err
 		}
-		if used > 0 && (oldAccount != input.AccountName || old.Model != input.Profile.Model || old.Protocol != input.Profile.Protocol || old.BaseURL != input.Profile.BaseURL) {
+		if active := used > 0 || taskInUse; active && (oldAccount != input.AccountName || old.Model != input.Profile.Model || old.Protocol != input.Profile.Protocol || old.BaseURL != input.Profile.BaseURL) {
 			return ModelPoolEntry{}, ErrModelPoolInUse
 		}
 	}
@@ -338,7 +346,11 @@ func (s *Store) DeleteModelPoolEntry(ctx context.Context, id string, revision ui
 	if err != nil {
 		return err
 	}
-	if usage[id] > 0 {
+	taskInUse, err := planModelPoolEntryActiveTx(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if usage[id] > 0 || taskInUse {
 		return ErrModelPoolInUse
 	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM mgmt_model_pool_entries WHERE id=? AND revision=?`, id, revision)

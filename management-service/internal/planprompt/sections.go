@@ -53,6 +53,40 @@ func (s Sections) Interaction() string {
 	return WithOutputContractUnlessEmpty(compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "红线禁止", s.RedLinesMD, "互动回答要求", s.InteractionRequirementsMD), InteractionOutputContract)
 }
 
+// InteractionBackground is the plan context used by the current interaction services.
+func (s Sections) InteractionBackground(roomIntro string) string {
+	s = s.Normalize()
+	return compose("直播简介", clean(roomIntro), "主播人设", s.PersonaMD, "红线禁止", s.RedLinesMD)
+}
+
+// LegacyInteractionBackground recovers only explicitly labelled active sections.
+func LegacyInteractionBackground(prompt string) Sections {
+	var sections Sections
+	var target *string
+	for _, line := range strings.Split(strings.ReplaceAll(prompt, "\r\n", "\n"), "\n") {
+		title := strings.TrimSpace(line)
+		switch title {
+		case "【主播人设】", "# 主播人设", "## 主播人设":
+			target = &sections.PersonaMD
+			continue
+		case "【红线禁止】", "# 红线禁止", "## 红线禁止":
+			target = &sections.RedLinesMD
+			continue
+		case "【事实依据】", "【互动回答要求】", "【话术规划】", "【直播话术要求】",
+			"【商品卡】", "【活动福利】", "【用词消歧】", "【输出格式】", "【输出格式要求】":
+			target = nil
+			continue
+		}
+		if strings.HasPrefix(title, "#") || strings.HasPrefix(title, "【输出格式（") {
+			target = nil
+		}
+		if target != nil {
+			*target += line + "\n"
+		}
+	}
+	return sections.Normalize()
+}
+
 func (s Sections) Speech() string {
 	s = s.Normalize()
 	return WithOutputContractUnlessEmpty(compose("主播人设", s.PersonaMD, "事实依据", s.FactsMD, "红线禁止", s.RedLinesMD, "直播话术要求", s.SpeechRequirementsMD), SpeechOutputContract)

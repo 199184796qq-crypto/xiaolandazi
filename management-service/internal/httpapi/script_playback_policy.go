@@ -153,12 +153,22 @@ func reserveScriptPolicyAudio(root string, v model.LiveAgentPlanVersion, u volce
 	}
 	key := scriptCycleKey(v, u)
 	cycle := st.Cycles[key]
+	reservationRemoved := false
+	for _, c := range st.Cycles {
+		if _, pending := c.Pending[instance]; pending {
+			delete(c.Pending, instance)
+			reservationRemoved = true
+		}
+	}
+	if a.HumanVoice {
+		if reservationRemoved {
+			return writeVolcengineJSON(path, st)
+		}
+		return nil
+	}
 	if cycle == nil {
 		cycle = &scriptPolicyCycle{Used: map[string]bool{}, Pending: map[string]string{}}
 		st.Cycles[key] = cycle
-	}
-	for _, c := range st.Cycles {
-		delete(c.Pending, instance)
 	}
 	if cycle.Pending == nil {
 		cycle.Pending = map[string]string{}
@@ -464,10 +474,12 @@ func recordScriptPolicyPCM(root string, tenant, room, plan int64, track scriptDe
 	if st.Session > 0 && st.SessionStartedAt.IsZero() {
 		st.SessionStartedAt = time.UnixMilli(start).UTC()
 	}
-	for _, cycle := range st.Cycles {
-		if cycle.Pending[track.InstanceID] == content {
-			cycle.Used[content] = true
-			delete(cycle.Pending, track.InstanceID)
+	if !track.HumanVoice {
+		for _, cycle := range st.Cycles {
+			if cycle.Pending[track.InstanceID] == content {
+				cycle.Used[content] = true
+				delete(cycle.Pending, track.InstanceID)
+			}
 		}
 	}
 	cutoff := now.UnixMilli() - scriptPolicyWindowMS

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,13 +15,9 @@ import (
 	"livecompanion/management/internal/contentguard"
 	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/planprompt"
+	"livecompanion/management/internal/scriptchain"
 	"livecompanion/management/internal/scriptplay"
 	"livecompanion/management/internal/voicebatch"
-)
-
-const (
-	rewriteMinRunes = 400
-	rewriteMaxRunes = 1600
 )
 
 // 后台补改写版本：同一时间只跑一条，避免模型并发和 TTS 抢占。
@@ -51,7 +46,7 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	if strings.TrimSpace(unit.Text) == "" {
 		return
 	}
-	if frozen, ok := scriptRewriteSnapshotFor(v); ok && frozen.Prompt == "" {
+	if frozen, ok := scriptRewriteSnapshotFor(v); ok && frozen.RedLines == nil && frozen.Prompt == "" {
 		return
 	}
 	session := agentgateway.ContextRoomModelScope(ctx).RuntimeID
@@ -98,6 +93,14 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 	case rewriteWorker.slot <- struct{}{}:
 		defer func() { <-rewriteWorker.slot }()
 	case <-ctx.Done():
+		return
+	}
+	roomRelease, idle, roomErr := tryRoomScriptGeneration(recordingCacheMediaRoot(), tenant, room)
+	if roomErr != nil || !idle {
+		return
+	}
+	defer roomRelease()
+	if pending, err := scriptManualGenerationPending(tenant, room, session); err != nil || pending {
 		return
 	}
 	sharedRelease, acquired, lockErr := tryScriptGeneration(recordingCacheMediaRoot(), tenant, v.PlanID, unit.poolID())
@@ -164,60 +167,61 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		}
 		return
 	}
-	openings := scriptUsedOpenings(pool, voiceID)
-	kind := pickOpeningKind(rand.New(rand.NewSource(time.Now().UnixNano())), nil)
-	document, err := s.loadScriptRewriteSnapshot(ctx, tenant, v)
-	if err != nil || strings.TrimSpace(document.Prompt) == "" {
+	document, frozen := scriptRewriteSnapshotFor(v)
+	if !frozen {
+		var err error
+		document, err = s.loadScriptRewriteSnapshot(ctx, tenant, v)
+		if err != nil {
+			return
+		}
+	}
+	if document.RedLines == nil && strings.TrimSpace(document.Prompt) == "" {
 		return
 	}
-	turn, err := beginScriptRewriteTurn(ctx, recordingCacheMediaRoot(), newScriptRewriteContextScope(tenant, v.PlanID, unit.Text, document.Facts))
+	facts, err := s.rewriteFactsJSON(ctx, tenant, v.PlanID)
+	if err != nil {
+		log.Printf("script rewrite facts unavailable plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
+		return
+	}
+	if len(facts) == 0 || string(facts) == "[]" {
+		log.Printf("script rewrite skipped without confirmed facts plan=%d piece=%s", v.PlanID, unit.poolID())
+		return
+	}
+	redlines, ok := backgroundRewriteRedLines(document)
+	if !ok {
+		log.Printf("script rewrite redlines unavailable plan=%d piece=%s", v.PlanID, unit.poolID())
+		return
+	}
+	turn, err := beginScriptRewriteTurn(ctx, recordingCacheMediaRoot(), newScriptRewriteContextScope(tenant, v.PlanID, unit.Text, string(facts)))
 	if err != nil {
 		log.Printf("script rewrite context unavailable plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
 		return
 	}
 	defer turn.Close()
-	prompt, err := renderBackgroundScriptRewritePrompt(document.Prompt, unit.Text, openings, kind, turn.Previous)
-	if err != nil || strings.TrimSpace(prompt) == "" {
-		return
-	}
-	work, cancel := context.WithTimeout(ctx, 180*time.Second)
-	defer cancel()
-	result, err := s.completePlayedScriptModel(work, agentgateway.Request{
-		Stage:          "script_rewrite",
-		Messages:       scriptRewriteMessages(prompt),
-		ResponseFormat: agentgateway.ResponseText,
-		MaxTokens:      2400,
-		Timeout:        180 * time.Second,
+	work := ctx
+	var cancel context.CancelFunc
+	defer func() {
+		if cancel != nil {
+			cancel()
+		}
+	}()
+	parsed, err := s.generateScriptText(ctx, scriptGenerationDefault, scriptTextGenerationInput{
+		material: scriptTextMaterial{version: v, unit: unit, facts: facts, redLines: redlines},
+		session:  session,
+		writingContext: func(ctx context.Context) context.Context {
+			work, cancel = context.WithTimeout(ctx, 180*time.Second)
+			return work
+		},
 	})
 	if err != nil {
 		log.Printf("script rewrite failed plan=%d piece=%s: %v", v.PlanID, shortKey(unit.Key), err)
 		return
 	}
-	parsed, err := parseScriptRewriteResponse(result.Text)
-	if err != nil {
-		log.Printf("script rewrite output rejected plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
-		return
-	}
-	script := strings.TrimSpace(parsed.Script)
-	// P0 命中时只改命中的那几句：先让模型改写，改不好就删掉这句，不整段丢掉。
-	script = s.repairRewriteViolations(work, v, script)
-	// 删句之后可能不足 400 字：先试着用事实补写；补不上也照用，不丢弃。
-	if utf8.RuneCountInString(script) < rewriteMinRunes {
-		if extended, ok := s.extendRewriteScript(work, v, script); ok {
-			script = s.repairRewriteViolations(work, v, extended)
-		} else {
-			log.Printf("script rewrite short but kept plan=%d piece=%s runes=%d", v.PlanID, shortKey(unit.Key), utf8.RuneCountInString(script))
-		}
-	}
-	if !rewriteScriptAcceptable(v, unit.Text, script) {
-		log.Printf("script rewrite rejected plan=%d piece=%s runes=%d", v.PlanID, shortKey(unit.Key), utf8.RuneCountInString(script))
-		return
-	}
+	script := parsed.Script
 	if err := saveScriptSharedText(recordingCacheMediaRoot(), v, unit, script); err != nil {
 		log.Printf("script shared text save failed plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
 		return
 	}
-	parsed.Script = script
 	if err := turn.Save(parsed); err != nil {
 		log.Printf("script rewrite context save failed plan=%d piece=%s: %v", v.PlanID, unit.poolID(), err)
 		return
@@ -266,6 +270,65 @@ func (s *Server) maybeGenerateRewriteVersion(ctx context.Context, tenant, room i
 		log.Printf("script rewrite time drift plan=%d piece=%s words=%v", v.PlanID, shortKey(unit.Key), hits)
 	}
 	log.Printf("script rewrite ready plan=%d piece=%s runes=%d budget_left=%d", v.PlanID, shortKey(unit.Key), utf8.RuneCountInString(script), scriptVoiceBudgetLeft(v.PlanID))
+}
+
+// writeScriptRewrite is shared by live supply and the editor preview. The
+// caller decides whether and when the returned text is admitted to the pool.
+func (s *Server) writeScriptRewrite(ctx context.Context, v model.LiveAgentPlanVersion, unit volcengineScriptUnit, prompt string) (scriptRewriteOutput, error) {
+	request := agentgateway.Request{
+		Stage:          "script_rewrite",
+		Messages:       scriptRewriteMessages(prompt),
+		ResponseFormat: agentgateway.ResponseText,
+		MaxTokens:      4000,
+		Timeout:        180 * time.Second,
+	}
+	if _, live := ctx.Value(scriptGenerationGuardKey{}).(func(context.Context) error); live {
+		s.applyLiveScriptReasoning(ctx, &request)
+	}
+	reportScriptManualProgress(ctx, scriptManualWriting)
+	result, err := s.completePlayedScriptModel(ctx, request)
+	if err != nil {
+		return scriptRewriteOutput{}, err
+	}
+	parsed, err := parseScriptRewriteResponse(joinRewriteBodyLines(result.Text))
+	if err != nil {
+		return scriptRewriteOutput{}, fmt.Errorf("改写输出格式错误: %w", err)
+	}
+	script := stripBracketed(scriptchain.NormalizeScript(parsed.Script))
+	// P0 命中时只修命中的句子，修不好就删句；较短的有效正文仍然保留。
+	reportScriptManualProgress(ctx, scriptManualReviewing)
+	script = s.repairRewriteViolations(ctx, v, script)
+	parsed.Script = stripBracketed(scriptchain.NormalizeScript(script))
+	if !rewriteScriptAcceptable(v, unit.Text, parsed.Script) {
+		return scriptRewriteOutput{}, fmt.Errorf("改写正文为空")
+	}
+	return parsed, nil
+}
+
+// renderChainRewritePrompt 拼接：结构（分析模型）+ 程序允许的通用要求 + 话术要求（客户原文）+ 红线 + 事实。
+func renderChainRewritePrompt(persona, requirement, speechRequirements, redlines, facts string) string {
+	var b strings.Builder
+	if p := strings.TrimSpace(persona); p != "" {
+		b.WriteString("【主播人设】\n")
+		b.WriteString(p)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("以下内容是给你的结构说明，只用于安排讲述顺序。正文里不许出现其中的词：收口、段落、节点、链条、逻辑链、路径、门槛、环节。\n")
+	b.WriteString(strings.TrimSpace(requirement))
+	b.WriteString("\n只使用事实清单中的事实，保留适用条件和例外。资料没有写的，不作承诺。正文不朗读字段名和数组符号。\n")
+	b.WriteString("开场和与观众聊天时避免绑定播放时段。事实清单中明确的发货、配送等时效照实表达。\n")
+	b.WriteString("如果按这个顺序讲完还不到目标字数，换一个角度把同一件事再讲一次；不要写“再讲一遍”“换个说法”这类说明自己在重复的话。\n")
+	if req := strings.TrimSpace(speechRequirements); req != "" {
+		b.WriteString("\n【话术要求】\n")
+		b.WriteString(req)
+	}
+	b.WriteString("\n\n【红线禁止】\n")
+	b.WriteString(strings.TrimSpace(redlines))
+	b.WriteString("\n\n【事实清单】\n")
+	b.WriteString(facts)
+	b.WriteString("\n\n")
+	b.WriteString(planprompt.RewriteOutputContract)
+	return b.String()
 }
 
 func (s *Server) checkScriptGenerationOwner(ctx context.Context, tenant, room, session int64, v model.LiveAgentPlanVersion) error {
@@ -323,10 +386,7 @@ func renderBackgroundScriptRewritePrompt(template, sample, openings, openingKind
 	return prompt + "\n\n" + planprompt.RewriteOutputContract, nil
 }
 
-// rewriteScriptAcceptable 只挡空内容。
-//
-// 用户口径：删句之后即使不足 400 字，也要入库并合成 TTS，不要整段丢掉；
-// 补写只是尽量做，补不上也照用。重复度也不再卡。
+// rewriteScriptAcceptable accepts any nonempty body after review.
 func rewriteScriptAcceptable(v model.LiveAgentPlanVersion, sample, script string) bool {
 	return strings.TrimSpace(script) != ""
 }
@@ -388,8 +448,10 @@ func (s *Server) repairRewriteViolations(ctx context.Context, v model.LiveAgentP
 			return script
 		}
 		if attempt == 0 {
+			reportScriptManualProgress(ctx, scriptManualRevising)
 			if patched, ok := s.askRewriteSentences(ctx, v, targets); ok {
 				script = replaceRewriteSentences(script, sentences, targets, patched)
+				reportScriptManualProgress(ctx, scriptManualReviewing)
 				continue
 			}
 		}
@@ -493,39 +555,6 @@ func removeRewriteSentences(script string, sentences, targets []string) string {
 		}
 	}
 	return strings.Join(kept, "")
-}
-
-// extendRewriteScript 把过短的改写稿补到 400 字以上。
-//
-// 只允许用方案的事实依据补，不许编；补完仍不够就放弃这次改写。
-func (s *Server) extendRewriteScript(ctx context.Context, v model.LiveAgentPlanVersion, script string) (string, bool) {
-	document, err := s.loadScriptRewriteSnapshot(ctx, v.TenantID, v)
-	if err != nil {
-		return "", false
-	}
-	facts := strings.TrimSpace(document.Facts)
-	if facts == "" {
-		return "", false
-	}
-	prompt := "下面这段直播话术太短了，请补到 400 字以上。" +
-		"只能用【事实依据】里已有的内容补细节，不许编价格、时效、规格、售后，不许加事实里没有的数字；" +
-		"保持原来的说法和顺序，只把没讲透的地方讲开；" +
-		"直接输出补好后的完整话术，一段连续文字，不要解释、不要小标题。\n\n" +
-		"【现有话术】\n" + strings.TrimSpace(script) + "\n\n【事实依据】\n" + facts
-	result, err := s.completePlayedScriptModel(ctx, agentgateway.Request{
-		Stage:     "script_rewrite_extend",
-		Messages:  []agentgateway.Message{{Role: "user", Content: prompt}},
-		MaxTokens: 2000,
-		Timeout:   150 * time.Second,
-	})
-	if err != nil {
-		return "", false
-	}
-	out := strings.TrimSpace(result.Text)
-	if utf8.RuneCountInString(out) <= utf8.RuneCountInString(script) {
-		return "", false
-	}
-	return out, true
 }
 
 // rewriteRefreshChance 是槽位满时每次播放换掉一条旧版本的概率。
@@ -651,34 +680,6 @@ func (s *Server) askRewriteOpening(ctx context.Context, script string) (string, 
 		return "", false
 	}
 	return out, true
-}
-
-// scriptUsedOpenings 把这个片段已经用过的开场列成清单，交给模型避开。
-//
-// 只给开头 12 字，token 很省；比"禁止某类词"稳，模型按实际用过的写法换角度。
-func scriptUsedOpenings(pool scriptplay.Pool, voiceID string) string {
-	var lines []string
-	seen := map[string]bool{}
-	for _, v := range pool.VoiceVersions(voiceID) {
-		text := strings.TrimSpace(v.Text)
-		if text == "" {
-			continue
-		}
-		runes := []rune(text)
-		if len(runes) > 12 {
-			runes = runes[:12]
-		}
-		head := string(runes)
-		if seen[head] {
-			continue
-		}
-		seen[head] = true
-		lines = append(lines, "- "+head)
-	}
-	if len(lines) == 0 {
-		return "（还没有用过的开场，这一版自己起一个）"
-	}
-	return strings.Join(lines, "\n")
 }
 
 // scriptOpeningBlockMarker 用来判断提示词里是否已经带了开场指令。

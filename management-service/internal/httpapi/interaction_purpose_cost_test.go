@@ -34,6 +34,10 @@ func TestInteractionPurposeCostBindsActualSessionOnceForBothModels(t *testing.T)
 		}
 		cost := liveCostScope(ctx)
 		exchange := ctx.Value(exchangeScopeKey{}).(appdb.ModelExchangeScope)
+		room := agentgateway.ContextRoomModelScope(ctx)
+		if room.TenantID != 14 || room.RoomID != 29 || room.RuntimeID != 481 || !room.RequireLease {
+			t.Fatalf("%s did not require the original room allocation: %+v", stage, room)
+		}
 		if cost.TenantID != 14 || cost.RoomID != 29 || cost.PlanID != 4 || cost.SessionID != 481 || cost.RunID != "run-481" ||
 			cost.Priority != livecost.PriorityNecessary || cost.Attribution == nil || cost.Attribution.Source != "interaction" || cost.Key != "" ||
 			exchange.RunID != "run-481" || exchange.PlanID != 4 {

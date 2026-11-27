@@ -3,6 +3,8 @@ package decisionexecutor
 import (
 	"encoding/json"
 	"strings"
+
+	"livecompanion/management/internal/interactionplan"
 )
 
 // History records program-owned task identity separately from the model's
@@ -26,6 +28,11 @@ func generatedSpeechHistoryIntentJSON(item *decisionItem) string {
 		if value = strings.TrimSpace(value); value != "" {
 			metadata[key], _ = json.Marshal(value)
 		}
+	}
+	if envelope, ok := interactionplan.Decode(item.PurposeKnowledge); ok && envelope.Template != "" {
+		metadata["model_stages"], _ = json.Marshal(interactionplan.ModelStages{Answer: &interactionplan.ModelStage{Thinking: "no_model"}})
+	} else if strings.EqualFold(strings.TrimSpace(item.ExecutionMode), "verbatim") {
+		metadata["model_stages"], _ = json.Marshal(interactionplan.ModelStages{Answer: &interactionplan.ModelStage{Thinking: "no_model"}})
 	}
 	raw, err := json.Marshal(metadata)
 	if err != nil {

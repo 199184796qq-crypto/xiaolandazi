@@ -112,7 +112,7 @@ func (s *Server) liveDesignVoiceProfile(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 502, "声音设计失败："+err.Error())
 		return
 	}
-	assetID, duration, err := s.archiveGeneratedVoiceBytes(r.Context(), tenant, actor.UserID, result.PreviewAudio, "audio/wav", result.VoiceID, result.Model, "voice_design", supportRoomForMedia(r))
+	assetID, duration, err := s.archiveGeneratedVoiceBytes(r.Context(), tenant, actor.UserID, result.PreviewAudio, "audio/wav", result.VoiceID, result.Model, "voice_design", supportRoomForMedia(r), 0)
 	if err != nil {
 		writeError(w, 502, "归档设计声音失败："+err.Error())
 		return

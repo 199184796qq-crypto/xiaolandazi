@@ -579,6 +579,32 @@ CREATE TABLE IF NOT EXISTS biz_time_card_assets (
     KEY idx_biz_time_card_assets_order (source_order_id, source_order_item_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 -- +statement
+CREATE TABLE IF NOT EXISTS internal_code_sequences (
+    namespace VARCHAR(64) NOT NULL,
+    sequence_value BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    PRIMARY KEY (namespace)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS biz_time_card_sales (
+    asset_id BIGINT UNSIGNED NOT NULL,
+    product_id BIGINT UNSIGNED NOT NULL,
+    sale_no VARCHAR(72) NOT NULL,
+    buyer_user_id BIGINT UNSIGNED NULL,
+    auto_refund TINYINT(1) NOT NULL DEFAULT 0,
+    PRIMARY KEY (asset_id),
+    UNIQUE KEY uk_time_card_sale_no (sale_no),
+    KEY idx_time_card_sales_product (product_id, asset_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
+CREATE TABLE IF NOT EXISTS biz_time_card_sale_refunds (
+    asset_id BIGINT UNSIGNED NOT NULL,
+    refund_id BIGINT UNSIGNED NOT NULL,
+    amount_cents BIGINT UNSIGNED NOT NULL,
+    supervisor VARCHAR(128) NOT NULL DEFAULT '',
+    PRIMARY KEY (asset_id, refund_id),
+    KEY idx_time_card_sale_refund (refund_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+-- +statement
 CREATE TABLE IF NOT EXISTS quota_buckets (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     external_id VARCHAR(96) NOT NULL,

@@ -54,7 +54,7 @@ func loadScriptSharedTextsLocked(root string, v model.LiveAgentPlanVersion, unit
 		}
 	}
 	for _, entry := range pool.Versions {
-		if facts != "" && entry.FactsKey == facts && entry.Kind == scriptplay.KindRewrite && strings.TrimSpace(entry.Text) != "" {
+		if facts != "" && entry.FactsKey == facts && entry.Kind == scriptplay.KindRewrite && entry.SpecHash == "" && strings.TrimSpace(entry.Text) != "" {
 			key := scriptplay.Fingerprint(entry.Text)
 			index, exists := seen[key]
 			if !exists {

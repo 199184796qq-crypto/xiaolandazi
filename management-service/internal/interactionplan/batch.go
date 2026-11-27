@@ -90,6 +90,9 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 	if err := ctx.Err(); err != nil {
 		return BatchResult{}, err
 	}
+	if items[0].Kind == "engagement" {
+		return generateEngagementBatch(ctx, s, items, complete)
+	}
 	md, err := interactionpolicy.Read("interaction-v2-batch.md")
 	if err != nil {
 		return BatchResult{}, err
@@ -113,6 +116,21 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 		}
 		inputs[i].EngagementToken = ""
 	}
+	inputs, err = withMatchedWords(ctx, s, inputs)
+	if err != nil {
+		return BatchResult{}, err
+	}
+	wordPrompt := ""
+	for _, item := range inputs {
+		if item.ContextWords != nil {
+			hint, e := interactionpolicy.Read("interaction-context-words.md")
+			if e != nil {
+				return BatchResult{}, e
+			}
+			wordPrompt = "\n\n" + string(hint)
+			break
+		}
+	}
 	raw, err := json.Marshal(struct {
 		Items      []BatchItem `json:"items"`
 		Mainline   string      `json:"current_mainline,omitempty"`
@@ -128,7 +146,7 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 	// 完整P0留在程序快照中，由解析后的Validate及送播前校验使用，
 	// 不在欢迎或其它互动的正文生成请求里额外叠加。
 	req := agentgateway.Request{Stage: "interaction_purpose_resolution", ResponseFormat: agentgateway.ResponseText, MaxTokens: 900 * len(items), Timeout: 27 * time.Second, EnableThinking: false, CacheSystemPrompt: true,
-		Messages: []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + stripFormatSection(s.Prompt) + "\n\n" + stripFormatSection(string(md)) + "\n\n" + contract}, {Role: "user", Content: string(raw)}}}
+		Messages: []agentgateway.Message{{Role: "system", Content: "本场冻结的方案提示词：\n" + stripFormatSection(s.Prompt) + "\n\n" + stripFormatSection(string(md)) + "\n\n" + contract + wordPrompt}, {Role: "user", Content: string(raw)}}}
 	response, err := complete(ctx, req)
 	if err != nil {
 		return BatchResult{}, err
@@ -137,6 +155,51 @@ func GenerateBatch(ctx context.Context, s Snapshot, items []BatchItem, complete 
 		return BatchResult{}, err
 	}
 	parsed := parseBatch(s, items, response.Text, response.FinishReason)
+	logParseDiagnostics(ctx, s.Scope, parsed)
+	return parsed, nil
+}
+
+func generateEngagementBatch(ctx context.Context, s Snapshot, items []BatchItem, complete Complete) (BatchResult, error) {
+	type announcement struct {
+		ID     string `json:"item_id"`
+		Result string `json:"result"`
+		Count  int    `json:"event_count"`
+	}
+	announcements := make([]announcement, 0, len(items))
+	for _, item := range items {
+		if item.Kind != "engagement" || strings.TrimSpace(item.Text) == "" || item.EventCount < 1 {
+			return BatchResult{}, errors.New("口令播报缺少统计结果")
+		}
+		announcements = append(announcements, announcement{ID: item.ID, Result: item.Text, Count: item.EventCount})
+	}
+	raw, err := json.Marshal(announcements)
+	if err != nil {
+		return BatchResult{}, err
+	}
+	contract := planprompt.BatchInteractionOutputContract
+	if len(items) == 1 {
+		contract = planprompt.InteractionOutputContract
+	}
+	instructions := "根据程序给出的口令统计结果，每项写一句自然、简短的直播回应。保留实际人数，不追加商品事实或业务承诺，不加称呼。类型填闲聊，歧义填否，澄清句留空。直播简介、主播人设和红线用于了解语境及表达边界。"
+	response, err := complete(ctx, agentgateway.Request{
+		Stage: "interaction_engagement_announcement", ResponseFormat: agentgateway.ResponseText,
+		MaxTokens: 900 * len(items), Timeout: 27 * time.Second, CacheSystemPrompt: true,
+		Messages: []agentgateway.Message{
+			{Role: "system", Content: instructions + "\n\n" + stripFormatSection(s.Prompt) + "\n\n" + contract},
+			{Role: "user", Content: string(raw)},
+		},
+	})
+	if err != nil {
+		return BatchResult{}, err
+	}
+	if err = ctx.Err(); err != nil {
+		return BatchResult{}, err
+	}
+	inputs := append([]BatchItem(nil), items...)
+	for i := range inputs {
+		inputs[i].AllowClarify = false
+	}
+	parsed := parseBatch(s, inputs, response.Text, response.FinishReason)
 	logParseDiagnostics(ctx, s.Scope, parsed)
 	return parsed, nil
 }

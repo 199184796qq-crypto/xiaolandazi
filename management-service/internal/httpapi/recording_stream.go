@@ -325,7 +325,7 @@ func (s *Server) synthesizeRecordingStreamSegment(ctx context.Context, tenant in
 		Model: modelName, VoiceID: voiceID, Text: text, Rate: rate,
 		Instruction: recordingInstructionForVersion(version, text),
 	}
-	request = withNaturalBreathInstruction(request)
+	request = withMainlineDeliveryInstruction(request)
 	var generated ttsgateway.SynthesizeResponse
 	// Only the provider boundary is charged. Re-signing, rebuilding a cache
 	// track and retrying archive/download never create another TTS request.
@@ -437,51 +437,18 @@ func (s *Server) combineRecordingStreamBlock(ctx context.Context, tenant int64, 
 	}, nil
 }
 
-// recordingStreamInstruction picks a short, deterministic delivery direction
-// for each TTS chunk. It never changes the spoken text; it only tells the
-// cloned voice how to phrase it (questions lift, prices slow down, urgency is
-// tighter, ordinary chat keeps a relaxed pause and drawl).
-// Apply the same Mandarin direction to independently synthesized paragraphs.
-// This is a synthesis instruction, not a guarantee of deterministic accent.
-const naturalBreathInstruction = "自然换气起句，尾字说完整，收尾后短停，不要突然切断；请用标准普通话朗读，不要带方言口音。"
-
-// withNaturalBreathInstruction asks the TTS model to phrase each mainline
-// segment with a natural breath at the start and a complete final syllable.
-// It is a delivery instruction, not text: it is never spoken. Existing
-// emotion/style instructions are preserved and this is appended to them.
-func withNaturalBreathInstruction(request ttsgateway.SynthesizeRequest) ttsgateway.SynthesizeRequest {
-	base := strings.TrimSpace(request.Instruction)
-	if base == "" {
-		request.Instruction = naturalBreathInstruction
+func withMainlineDeliveryInstruction(request ttsgateway.SynthesizeRequest) ttsgateway.SynthesizeRequest {
+	if ttsgateway.ProviderForModel(request.Model) == ttsgateway.ProviderQwen {
+		request.Instruction = ""
 		return request
 	}
-	request.Instruction = base + "；" + naturalBreathInstruction
+	request.Instruction = ttsgateway.NaturalBreathInstruction(request.Instruction)
 	return request
 }
 
 func recordingInstructionForVersion(version model.LiveAgentPlanVersion, text string) string {
-	if version.VoiceIdentity.EmotionEnabled == nil || !*version.VoiceIdentity.EmotionEnabled {
-		return ""
-	}
-	return recordingStreamInstruction(text)
-}
-
-func recordingStreamInstruction(text string) string {
-	trimmed := strings.TrimSpace(text)
-	switch {
-	case trimmed == "":
-		return "像真人直播自然说话，允许停顿和拖音，不要播音腔。"
-	case strings.ContainsAny(trimmed, "？?"):
-		return "像真人直播随口一问，句尾自然上扬，问完停半拍。"
-	case strings.ContainsAny(trimmed, "！!") || containsAnyText(trimmed, "赶紧", "抓紧", "最后", "抢", "限时"):
-		return "像真人直播提醒，重点词稍重，语速略快，句尾收住。"
-	case containsAnyText(trimmed, "元", "块", "价", "优惠", "券", "套餐"):
-		return "像真人直播报价，数字清楚，前后各停半拍，别像播报。"
-	case containsAnyText(trimmed, "欢迎", "来了", "进来", "朋友"):
-		return "像真人打招呼，亲切放松，尾音别太用力。"
-	default:
-		return "像真人直播聊天，逗号处停半拍，允许轻轻拖音，不要播音腔。"
-	}
+	emotion := version.VoiceIdentity.EmotionEnabled
+	return ttsgateway.LiveDeliveryStyle(text, emotion != nil && *emotion)
 }
 
 func containsAnyText(text string, values ...string) bool {

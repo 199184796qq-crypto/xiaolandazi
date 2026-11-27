@@ -35,6 +35,10 @@ type modelWelcomeStrategy struct {
 
 // Respond 调模型生成欢迎回应（欢迎 + 活动钩子一次出）。
 // 无福利、模型失败、或 worker 未就绪时，降级到 welcomeStrategy（纯程序欢迎）。
+//
+// 注意：真实场次里欢迎在生成前已由 isInteractionV2 分流到 V2 链路
+// （提前生成正文 → 后置加称呼 → TTS），本方法只在非 V2 或手动路径生效。
+// 欢迎正文的校验因此挂在 generateInteractionV2 上，见 welcomeBodyForBroadcast。
 func (m modelWelcomeStrategy) Respond(ctx context.Context, session model.LiveRuntimeSession, item decisionItem) string {
 	if m.worker == nil || m.worker.agent == nil {
 		return (welcomeStrategy{}).Respond(ctx, session, item)
@@ -42,6 +46,64 @@ func (m modelWelcomeStrategy) Respond(ctx context.Context, session model.LiveRun
 	text := m.worker.generateWelcomeText(ctx, session, item)
 	if strings.TrimSpace(text) == "" {
 		return (welcomeStrategy{}).Respond(ctx, session, item)
+	}
+	return text
+}
+
+// isWelcomeMission 判断本次是否欢迎。
+func isWelcomeMission(kind string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(kind)), "welcome")
+}
+
+// IsWelcomeKind is shared by the upstream body preparer and the executor.
+func IsWelcomeKind(kind string) bool { return isWelcomeMission(kind) }
+
+// welcomeFallbackBody 是欢迎正文不合格时的口播兜底。它不含称呼，
+// 后置阶段仍会按本场称呼计划加在句首，因此结构与其他正文一致。
+const welcomeFallbackBody = "欢迎来到直播间，新来的朋友可以先看看今天的主推。"
+
+// welcomeBodyForBroadcast 是欢迎正文进入播出链路前的最后一道处理。
+//
+// 真实场次里欢迎走 V2：先由上游提前生成 body（契约里的「话术」），再做后置称呼、
+// TTS、PCM。因此校验必须挂在这里，而不是挂在 modelWelcomeStrategy 上。
+// 不合格时返回兜底句，保证"有欢迎"，不触发房间级错误退避。
+func welcomeBodyForBroadcast(kind, body string) string {
+	if !isWelcomeMission(kind) {
+		return body
+	}
+	if cleaned := sanitizeWelcomeBody(body); cleaned != "" {
+		return cleaned
+	}
+	return welcomeFallbackBody
+}
+
+// sanitizeWelcomeBody 只保留可直接口播的正文，挡掉两类已知劣化：
+//  1. 把"先判断再回答"的分析写进正文；
+//  2. 正文自带称呼，后续拼接会出现"老乡们，欢迎…老乡们"。
+func sanitizeWelcomeBody(body string) string {
+	text := strings.TrimSpace(body)
+	if text == "" {
+		return ""
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		for _, prefix := range []string{"判断：", "建议：", "意图：", "类型：", "歧义：", "澄清句：", "话术：", "话术要求："} {
+			if strings.HasPrefix(line, prefix) {
+				return ""
+			}
+		}
+		break
+	}
+	for _, greeting := range []string{"老乡们", "朋友们", "家人们", "各位", "大家"} {
+		if strings.HasPrefix(text, greeting) {
+			return ""
+		}
+	}
+	if n := len([]rune(text)); n > 100 {
+		return ""
 	}
 	return text
 }
@@ -653,10 +715,16 @@ func (w *Worker) benefitSetRedis(ctx context.Context, tenantID, planID int64, be
 // 在「删除/修改方案或房间」时调用，让福利重新识别，避免用旧数据。
 // 幂等：key 不存在时 Del 返回 0 也不报错。
 func (w *Worker) InvalidateBenefitCache(ctx context.Context, tenantID, planID int64) {
-	if w == nil || w.benefitRedis == nil {
+	if w == nil {
 		return
 	}
-	_ = w.benefitRedis.Del(ctx, benefitCacheKey(tenantID, planID)).Err()
+	if w.benefitRedis != nil {
+		_ = w.benefitRedis.Del(ctx, benefitCacheKey(tenantID, planID)).Err()
+	}
+	// Keep the new welcome benefit pool hot: plan/fact/benefit saves call this
+	// hook, so a changed semantic library is visible to the next welcome without
+	// a process restart. Failure keeps the previous pool.
+	w.WarmWelcomeBenefitPool(ctx, tenantID, planID)
 }
 
 // welcomeSafeFacts 直接读方案的正式事实快照 SafeFacts（探针 benefit-probe 已验证路径）。

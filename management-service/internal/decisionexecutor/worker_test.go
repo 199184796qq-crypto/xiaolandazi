@@ -242,6 +242,11 @@ type fakeStore struct {
 	scripts          []model.LiveAgentPlanScript
 	publishedVersion *model.LiveAgentPlanVersion
 	addressingPrefs  model.RoomAddressingPreferences
+	interactionRate  float64
+}
+
+func (f *fakeStore) RoomInteractionSpeechRate(context.Context, int64, int64) (float64, error) {
+	return f.interactionRate, nil
 }
 
 func (f *fakeStore) RecordGeneratedSpeechHistory(context.Context, model.GeneratedSpeechHistoryInput) error {
@@ -507,8 +512,9 @@ func TestReadyVoiceUsesSavedPlanClone(t *testing.T) {
 	}
 }
 
-func TestProcessRoomUsesPublishedVersionVoiceIdentity(t *testing.T) {
+func TestProcessRoomUsesPublishedVoiceWithRoomInteractionRate(t *testing.T) {
 	store := readyVoiceStore()
+	store.interactionRate = 1.28
 	legacyEmotionEnabled := true
 	store.publishedVersion = &model.LiveAgentPlanVersion{
 		ID:              44,
@@ -543,14 +549,14 @@ func TestProcessRoomUsesPublishedVersionVoiceIdentity(t *testing.T) {
 	if tts.last.Model != "published-model-3" {
 		t.Fatalf("model=%q want published model", tts.last.Model)
 	}
-	if tts.last.Rate != 1.15 {
-		t.Fatalf("rate=%v want 1.15", tts.last.Rate)
+	if tts.last.Rate != 1.28 {
+		t.Fatalf("rate=%v want 1.28", tts.last.Rate)
 	}
 	if tts.last.Provider != ttsgateway.ProviderQwen {
 		t.Fatalf("provider=%q want %q", tts.last.Provider, ttsgateway.ProviderQwen)
 	}
-	if strings.TrimSpace(tts.last.Instruction) == "" {
-		t.Fatal("enabled emotion flag should produce a delivery instruction")
+	if tts.last.Instruction != "" {
+		t.Fatalf("Qwen interaction instruction = %q, want provider default even with voice emotion enabled", tts.last.Instruction)
 	}
 }
 
@@ -580,11 +586,11 @@ func TestProcessRoomGeneratesTTSAndDispatches(t *testing.T) {
 		t.Fatalf("audio_url=%v", got)
 	}
 	if tts.last.Instruction != "" {
-		t.Fatalf("unconfigured room enabled emotion instructions: %q", tts.last.Instruction)
+		t.Fatalf("unconfigured Qwen interaction should use provider default: %q", tts.last.Instruction)
 	}
 }
 
-func TestProcessRoomUsesSameInterruptStrategyForModelTTSAndCore(t *testing.T) {
+func TestProcessRoomKeepsInterruptStrategyForCoreWithDefaultTTSDelivery(t *testing.T) {
 	core := &fakeCore{strategies: map[string]coreStrategySelection{
 		"interrupt": {Category: "interrupt", Key: "read_comment_softly", Name: "小声读一次弹幕"},
 		"resume":    {Category: "resume", Key: "DIRECT", Name: "直接恢复"},
@@ -601,7 +607,7 @@ func TestProcessRoomUsesSameInterruptStrategyForModelTTSAndCore(t *testing.T) {
 		t.Fatalf("dynamic room reply must not call backend/core addressing strategy, calls=%d", core.strategyCalls["addressing"])
 	}
 	if tts.last.Instruction != "" {
-		t.Fatalf("disabled emotion still received interrupt delivery style: %q", tts.last.Instruction)
+		t.Fatalf("interrupt strategy should not set a Qwen TTS instruction: %q", tts.last.Instruction)
 	}
 	if got := strings.TrimSpace(fmt.Sprint(core.dispatch["interrupt_strategy"])); got != "read_comment_softly" {
 		t.Fatalf("core interrupt_strategy=%q", got)
@@ -671,8 +677,8 @@ func TestProcessRoomBuildsSpeechMissionBlackboard(t *testing.T) {
 	if mission.Mainline.SwitchAtMS != 1234 {
 		t.Fatalf("actual switch point=%d want 1234", mission.Mainline.SwitchAtMS)
 	}
-	if tts.last.Instruction != "" {
-		t.Fatalf("disabled emotion still produced human style instructions: %q", tts.last.Instruction)
+	if tts.last.Instruction != "" || mission.TTS.Instruction != "" {
+		t.Fatalf("Qwen delivery should use provider default: request=%q mission=%q", tts.last.Instruction, mission.TTS.Instruction)
 	}
 	if len(mission.Trace) < 8 {
 		t.Fatalf("mission trace too short: %d", len(mission.Trace))

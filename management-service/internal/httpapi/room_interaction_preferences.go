@@ -64,6 +64,22 @@ func (s *Server) roomInteractionPreferences(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if r.Method == http.MethodPatch {
+		var input struct {
+			Rate float64 `json:"interaction_speech_rate"`
+		}
+		if err := readJSON(w, r, &input); err != nil || !model.ValidInteractionSpeechRate(input.Rate) {
+			writeError(w, http.StatusBadRequest, model.InteractionSpeechRateError)
+			return
+		}
+		if err := s.store.SaveRoomInteractionSpeechRate(r.Context(), tenantID, roomID, actor.UserID, input.Rate); err != nil {
+			writeError(w, http.StatusInternalServerError, "保存互动语速失败")
+			return
+		}
+		writeJSON(w, http.StatusOK, input)
+		return
+	}
+
 	var input model.RoomInteractionPreferencesInput
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "互动偏好格式错误")

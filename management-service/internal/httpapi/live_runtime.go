@@ -559,39 +559,87 @@ func (s *Server) liveRuntimePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		PlanID int64 `json:"plan_id"`
+		PlanID         *int64 `json:"plan_id"`
+		ExpectedPlanID int64  `json:"expected_plan_id"`
 	}
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "方案参数格式错误")
 		return
 	}
-	if input.PlanID <= 0 {
-		writeError(w, http.StatusBadRequest, "plan_id 必须大于 0")
+	if input.PlanID == nil || *input.PlanID < 0 || (*input.PlanID == 0 && input.ExpectedPlanID <= 0) {
+		writeError(w, http.StatusBadRequest, "方案编号无效，取消选择时需要提供当前方案编号")
 		return
 	}
 	if _, err := s.getCoreRoomState(r.Context(), tenantID, roomID); err != nil {
 		writeError(w, http.StatusNotFound, "直播间不存在或不属于当前客户")
 		return
 	}
-	plan, err := s.store.SelectLiveAgentPlanForRoom(r.Context(), tenantID, input.PlanID, roomID, actor.UserID)
-	if errors.Is(err, appdb.ErrLiveAgentPlanNotFound) {
-		writeError(w, http.StatusConflict, "这个方案还没有绑定到当前直播间，请先绑定后再切换使用")
+	change := appdb.LiveAgentRoomPlanChange{PlanID: *input.PlanID, ActorID: actor.UserID}
+	if change.PlanID == 0 {
+		change.Clear = true
+		change.PlanID = input.ExpectedPlanID
+	}
+	state, ok := s.changeLiveRuntimeRoomPlan(w, r, tenantID, roomID, change)
+	if !ok {
 		return
 	}
-	if errors.Is(err, appdb.ErrLiveAgentPlanNotPublished) {
-		writeError(w, http.StatusConflict, "这个方案还没有发布到当前直播间，请先发布后再切换使用")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "切换智能体直播方案失败")
-		return
-	}
-	state, err := s.setCoreAgentPlan(r.Context(), tenantID, roomID, plan.ID, plan.Name)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "同步智能体直播方案到核心运行态失败")
+	if change.Clear {
+		s.liveRuntimeStatus(w, r)
 		return
 	}
 	writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Server) changeLiveRuntimeRoomPlan(w http.ResponseWriter, r *http.Request, tenantID, roomID int64, change appdb.LiveAgentRoomPlanChange) (coreAgentRuntimeState, bool) {
+	// Serialize selection and Core sync for customer and staff requests to the same room.
+	lock := &s.roomPlanLocks[uint64(roomID)%uint64(len(s.roomPlanLocks))]
+	lock.Lock()
+	defer lock.Unlock()
+
+	state, err := s.getCoreAgentState(r.Context(), tenantID, roomID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "无法读取智能体真实运行状态")
+		return state, false
+	}
+	blocked := "请先在直播工作台暂停助播，再更改当前方案"
+	switch state.State {
+	case "idle", "stopped", "paused":
+	default:
+		writeError(w, http.StatusConflict, blocked)
+		return state, false
+	}
+
+	name, err := s.store.ChangeLiveAgentRoomPlan(r.Context(), tenantID, roomID, change)
+	switch {
+	case errors.Is(err, appdb.ErrLiveSupportRequestAccess):
+		writeError(w, http.StatusForbidden, "客户未授权在当前直播间使用此方案，或已撤销授权")
+	case errors.Is(err, appdb.ErrLiveAgentPlanInUse):
+		writeError(w, http.StatusConflict, blocked)
+	case errors.Is(err, appdb.ErrLiveAgentPlanSelectionChanged):
+		writeError(w, http.StatusConflict, "当前方案已变化，请重新打开列表")
+	case errors.Is(err, appdb.ErrLiveAgentPlanNotPublished):
+		writeError(w, http.StatusConflict, "此方案还没有已保存的版本，请先保存方案")
+	case errors.Is(err, appdb.ErrLiveAgentPlanNotFound):
+		writeError(w, http.StatusConflict, "方案不存在或已停用")
+	case errors.Is(err, sql.ErrNoRows):
+		writeError(w, http.StatusNotFound, "直播间不存在或已删除")
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "修改直播间方案失败")
+	default:
+		planID := change.PlanID
+		if change.Clear {
+			planID = 0
+		}
+		if state.PlanID != planID || state.PlanName != name {
+			state, err = s.setCoreAgentPlan(r.Context(), tenantID, roomID, planID, name)
+			if err != nil {
+				writeError(w, http.StatusBadGateway, "方案已保存，直播间状态同步失败，请稍后刷新")
+				return state, false
+			}
+		}
+		return state, true
+	}
+	return state, false
 }
 
 func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
@@ -668,6 +716,17 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "读取智能体直播方案失败")
 			return
 		}
+		if agentRuntime.State != "working" {
+			draft, err := s.store.GetLiveAgentPlanEditDraft(r.Context(), tenantID, selectedPlan.ID)
+			if err != nil {
+				writeError(w, http.StatusServiceUnavailable, "暂时无法检查方案的开播条件，请稍后重试")
+				return
+			}
+			if err := draft.CheckStart(); err != nil {
+				writeError(w, http.StatusConflict, err.Error())
+				return
+			}
+		}
 		published, versionErr := s.store.GetPublishedLiveAgentPlanVersionForRoom(r.Context(), tenantID, roomID)
 		if errors.Is(versionErr, appdb.ErrLiveAgentPlanVersionNotFound) {
 			writeError(w, http.StatusConflict, "当前直播间还没有已保存的智能体方案，请先在直播策略中保存方案")
@@ -743,6 +802,10 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var anchorVersion []model.LiveAgentPlanVersion
+	if publishedPlanVersion != nil {
+		anchorVersion = append(anchorVersion, *publishedPlanVersion)
+	}
 	session, err := s.store.StartLiveRuntimeSession(
 		r.Context(),
 		tenantID,
@@ -751,11 +814,14 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 		runtimeDeviceID,
 		s.executionRealm,
 		time.Now().UTC(),
+		anchorVersion...,
 	)
 	if err != nil {
 		switch {
 		case errors.Is(err, appdb.ErrLiveRuntimeAlreadyRunning):
 			writeError(w, http.StatusConflict, "当前直播间AI已经在工作")
+		case errors.Is(err, appdb.ErrLiveAgentPlanNotReady):
+			writeError(w, http.StatusConflict, err.Error())
 		case errors.Is(err, appdb.ErrModelPoolFull):
 			writeError(w, http.StatusConflict, err.Error())
 		case errors.Is(err, appdb.ErrLiveQuotaExhausted):
@@ -772,6 +838,11 @@ func (s *Server) liveRuntimeStart(w http.ResponseWriter, r *http.Request) {
 
 	if _, freezeErr := interactionplan.Freeze(r.Context(), s.store, session); freezeErr != nil {
 		log.Printf("interaction v2 snapshot unavailable tenant=%d room=%d session=%d error=%v", tenantID, roomID, session.ID, freezeErr)
+	}
+	// A live start is a natural boundary: scan the semantic library once and
+	// publish the current welcome benefit pool before any welcome is prepared.
+	if publishedPlanVersion != nil {
+		s.invalidateBenefit(tenantID, publishedPlanVersion.PlanID)
 	}
 
 	if effectivePolicy, policyErr := policy.LoadGeneration(); policyErr != nil {
@@ -949,6 +1020,13 @@ func (s *Server) liveRuntimeResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if hasProgram {
+		if _, planErr := s.store.GetLiveAgentPlanForRoom(r.Context(), tenantID, roomID); errors.Is(planErr, appdb.ErrLiveAgentPlanNotFound) {
+			writeError(w, http.StatusConflict, "当前直播间未选择直播方案，请选择方案后重新开始AI助播")
+			return
+		} else if planErr != nil {
+			writeError(w, http.StatusInternalServerError, "读取智能体直播方案失败")
+			return
+		}
 		baseline, err = s.resumeCoreRequest(r.Context(), tenantID, roomID, http.MethodGet, "", nil)
 		if err != nil || !baseline.validSession(existing.ID) {
 			writeError(w, http.StatusConflict, "无法确认本场原播放位置，请重新检查直播状态")
@@ -1464,6 +1542,13 @@ func (s *Server) requestCorePublishedPlanProgramStart(
 ) error {
 	if version.ID <= 0 || version.VersionNo <= 0 || version.RoomID != roomID {
 		return errors.New("published live agent plan version is invalid")
+	}
+	mode, err := readScriptMainlineMode(scriptMainlineModePath(recordingCacheMediaRoot(), tenantID, roomID))
+	if err != nil {
+		return err
+	}
+	if mode == scriptMainlineHuman && !usesScriptFirstParagraphs(version) {
+		return errors.New("当前方案不支持真人话术主线，请选择支持的方案或手动切回 AI 话术")
 	}
 	if err := s.validateLiveContentVersion(ctx, tenantID, roomID, version); err != nil {
 		return err

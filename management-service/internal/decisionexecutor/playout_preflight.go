@@ -16,17 +16,16 @@ import (
 
 // This endpoint is deliberately fail-closed. A missing/malformed Core response
 // cannot authorize a new paid model/TTS operation.
-func (w *Worker) playoutPreflight(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, text, stage string, rates ...float64) (bool, error) {
-	rate := 1.0
-	if len(rates) > 0 {
-		rate = rates[0]
-	}
+func (w *Worker) playoutPreflight(ctx context.Context, session model.LiveRuntimeSession, item decisionItem, text, stage string, rate float64, retain func()) (bool, error) {
 	until := item.ExpiresAt
 	if !item.CompletionUntil.IsZero() {
 		until = item.CompletionUntil
 	}
 	if item.AudioPrepared && !item.PreparedUntil.IsZero() {
 		until = item.PreparedUntil
+	}
+	if !item.AnswerDeferredUntil.IsZero() && (until.IsZero() || !item.AudioPrepared || item.AnswerDeferredUntil.Before(until)) {
+		until = item.AnswerDeferredUntil
 	}
 	if isTimeReport(item) && !item.TimeReportValidUntil.IsZero() && item.TimeReportValidUntil.Before(until) {
 		until = item.TimeReportValidUntil
@@ -65,7 +64,12 @@ func (w *Worker) playoutPreflight(ctx context.Context, session model.LiveRuntime
 	}
 	releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := w.release(releaseCtx, session, item.ID, "preflight:"+reason, strconv.Itoa(result.RetryAfterMS)); err != nil {
+	reasons := []string{"preflight:" + reason, strconv.Itoa(result.RetryAfterMS)}
+	if retain != nil {
+		retain()
+		reasons = append(reasons, "answer_ready")
+	}
+	if err := w.release(releaseCtx, session, item.ID, reasons...); err != nil {
 		return false, err
 	}
 	if reason == "welcome_tts_time_insufficient" || reason == "welcome_names_deadline_missing" {
@@ -77,11 +81,18 @@ func (w *Worker) playoutPreflight(ctx context.Context, session model.LiveRuntime
 	return true, nil
 }
 
-// A budget/cut change between model and TTS must not buy the same body again.
-// This bounded disposable draft retains its original deadline and full content
-// identity. Reports use their existing timestamp-aware draft cache instead.
+// Keep the text under the identity from the original claim, even when generation
+// added an envelope. Core supplies the authoritative deadline on the next claim.
 func (w *Worker) savePreflightDraft(session model.LiveRuntimeSession, item decisionItem, text, scope, memory string) {
-	if isTimeReport(item) || strings.TrimSpace(text) == "" || item.ExpiresAt.IsZero() || !w.now().Before(item.ExpiresAt) {
+	expiresAt := item.AnswerDeferredUntil
+	if expiresAt.IsZero() {
+		// Bound local retention while waiting for Core to return the actual deadline.
+		expiresAt = w.now().Add(35 * time.Second)
+	}
+	if isTimeReport(item) && !item.TimeReportValidUntil.IsZero() && item.TimeReportValidUntil.Before(expiresAt) {
+		expiresAt = item.TimeReportValidUntil
+	}
+	if strings.TrimSpace(text) == "" || !w.now().Before(expiresAt) {
 		return
 	}
 	w.mu.Lock()
@@ -104,12 +115,9 @@ func (w *Worker) savePreflightDraft(session model.LiveRuntimeSession, item decis
 		}
 		delete(w.preflightDrafts, oldest)
 	}
-	w.preflightDrafts[preparationKey(session, item)] = preparedInteraction{Item: item, Text: text, Scope: scope, Memory: memory, ExpiresAt: item.ExpiresAt}
+	w.preflightDrafts[preparationKey(session, item)] = preparedInteraction{Item: item, Text: text, Scope: scope, Memory: memory, ExpiresAt: expiresAt}
 }
 func (w *Worker) preflightDraft(session model.LiveRuntimeSession, item *decisionItem, scope, memory string) (string, bool) {
-	if isTimeReport(*item) {
-		return "", false
-	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	key := preparationKey(session, *item)
@@ -118,8 +126,6 @@ func (w *Worker) preflightDraft(session model.LiveRuntimeSession, item *decision
 	if !ok || !w.now().Before(v.ExpiresAt) || v.Scope != scope || v.Memory != memory {
 		return "", false
 	}
-	current, resume, segment := item.CurrentMainline, item.ResumeMainline, item.ResumeSegmentID
-	*item = v.Item
-	item.CurrentMainline, item.ResumeMainline, item.ResumeSegmentID = current, resume, segment
+	restoreClaimPreparation(item, v.Item)
 	return v.Text, true
 }

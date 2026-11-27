@@ -10,6 +10,7 @@ import (
 	"livecompanion/management/internal/agentgateway"
 	"livecompanion/management/internal/interactionplan"
 	"livecompanion/management/internal/interactionpolicy"
+	"livecompanion/management/internal/model"
 	"livecompanion/management/internal/policy"
 )
 
@@ -111,6 +112,41 @@ func TestBatchHTTPPartialResultOnlyFailsAffectedPerson(t *testing.T) {
 	}
 }
 
+func TestMixedQuestionsKeepAnswerFlowAndOriginalTaskOrder(t *testing.T) {
+	inputs := httpBatchFixture(4)
+	inputs[0].Kind, inputs[2].Kind = "like", "guide"
+	inputs[1].EngagementToken = "room activity token"
+	inputs[3].Kind = "dialogue"
+	items, err := batchInputsV2("mixed-batch", inputs, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkGroup := func(group []interactionV2Input, items []interactionplan.BatchItem, first, second int) {
+		t.Helper()
+		if len(group) != 2 || len(items) != 2 || group[0].Task != inputs[first].Task || group[1].Task != inputs[second].Task || items[0].ID != "U01" || items[1].ID != "U02" {
+			t.Fatalf("wrong group or identifiers: %+v, %+v", group, items)
+		}
+	}
+	results, _, err := prepareQuestionAndBehaviorResults(inputs, items,
+		func(group []interactionV2Input, items []interactionplan.BatchItem) ([]interactionBatchResultV2, []string, error) {
+			checkGroup(group, items, 1, 3)
+			return []interactionBatchResultV2{{Task: group[0].Task}, {Task: group[1].Task}}, nil, nil
+		},
+		func(group []interactionV2Input, items []interactionplan.BatchItem) ([]interactionBatchResultV2, []string, error) {
+			checkGroup(group, items, 0, 2)
+			return nil, nil, fmt.Errorf("behavior generation failed")
+		})
+	if err != nil || len(results) != len(inputs) {
+		t.Fatal(results, err)
+	}
+	for i, result := range results {
+		wantError := i == 0 || i == 2
+		if result.Task != inputs[i].Task || (result.Error != "") != wantError {
+			t.Fatalf("result %d was routed incorrectly: %+v", i, result)
+		}
+	}
+}
+
 func TestBatchModelOutputCapCannotSilentlyClipPeople(t *testing.T) {
 	for _, tc := range []struct {
 		n, cap, want int
@@ -120,5 +156,62 @@ func TestBatchModelOutputCapCannotSilentlyClipPeople(t *testing.T) {
 		if (err != nil) != tc.fail {
 			t.Fatal(tc, err)
 		}
+	}
+}
+
+func TestPreparedWelcomeUsesWriterAndKeepsMixedBatchOrder(t *testing.T) {
+	in := httpBatchFixture(3)
+	in[0].Kind, in[2].Kind = "welcome_named", "welcome_batch"
+	items, err := batchInputsV2("batch", in, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := httpBatchSnapshot(t)
+	written := []string{}
+	otherCalls := 0
+	got, _, err := preparedWelcomeResultsV2(context.Background(), snapshot, model.LiveRuntimeSession{TenantID: 14, RoomID: 29, ID: 567}, in, items,
+		func(ctx context.Context, session model.LiveRuntimeSession, task, kind string, frozen interactionplan.Snapshot) (string, error) {
+			if ctx.Value(welcomeTaskKey{}) != task || session.ID != 567 || frozen.Fingerprint != snapshot.Fingerprint {
+				t.Fatal("welcome task lost its frozen identity")
+			}
+			written = append(written, task+":"+kind)
+			return "今天介绍一款南充特产。", nil
+		},
+		func(other []interactionV2Input, batch []interactionplan.BatchItem) ([]interactionBatchResultV2, []string, error) {
+			otherCalls++
+			if len(other) != 1 || other[0].Task != in[1].Task || len(batch) != 1 || batch[0].Kind != "semantic" {
+				t.Fatal("welcome entered generic question batch", other, batch)
+			}
+			return []interactionBatchResultV2{{Task: other[0].Task, Revision: other[0].Revision, Envelope: interactionplan.Envelope{Body: "次日上午发货。"}}}, nil, nil
+		})
+	if err != nil || otherCalls != 1 || len(written) != 2 || len(got) != 3 {
+		t.Fatal(err, otherCalls, written, got)
+	}
+	for _, i := range []int{0, 2} {
+		if got[i].Error != "" || got[i].Envelope.Body != "今天介绍一款南充特产。" ||
+			got[i].Envelope.Intent.Type != "欢迎" || got[i].Envelope.Task != in[i].Task ||
+			got[i].Envelope.Epoch != in[i].Epoch || got[i].Envelope.Fingerprint != snapshot.Fingerprint {
+			t.Fatal("prepared welcome did not use writer envelope", got[i])
+		}
+	}
+	if got[1].Envelope.Body != "次日上午发货。" {
+		t.Fatal("non-welcome batch result moved", got[1])
+	}
+}
+
+func TestPreparedWelcomeWriterFailureNeverFallsBackToGeneric(t *testing.T) {
+	in := httpBatchFixture(1)
+	in[0].Kind = "welcome_named"
+	items, _ := batchInputsV2("batch", in, time.Now())
+	got, _, err := preparedWelcomeResultsV2(context.Background(), httpBatchSnapshot(t), model.LiveRuntimeSession{TenantID: 14, RoomID: 29, ID: 567}, in, items,
+		func(context.Context, model.LiveRuntimeSession, string, string, interactionplan.Snapshot) (string, error) {
+			return "", fmt.Errorf("语义库没有可用的无条件素材")
+		},
+		func([]interactionV2Input, []interactionplan.BatchItem) ([]interactionBatchResultV2, []string, error) {
+			t.Fatal("writer failure re-entered generic model")
+			return nil, nil, nil
+		})
+	if err != nil || len(got) != 1 || got[0].Error == "" || got[0].Envelope.Body != "" {
+		t.Fatal(got, err)
 	}
 }

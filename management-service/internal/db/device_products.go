@@ -542,6 +542,9 @@ func (s *Store) ListCustomerDeviceOffers(ctx context.Context, tenantID int64) ([
 		}
 		item.MembershipDiscountBPS = membershipDiscountBPS
 		item.SalePriceCents = item.BaseSalePriceCents * uint64(membershipDiscountBPS) / 10000
+		if item.SalePriceCents == 0 && item.BaseSalePriceCents > 0 && membershipDiscountBPS > 0 {
+			item.SalePriceCents = 1
+		}
 		item.DiscountBPS = 10000
 		if item.OriginalPriceCents > 0 {
 			item.DiscountBPS = uint32(item.SalePriceCents * 10000 / item.OriginalPriceCents)
@@ -553,8 +556,9 @@ func (s *Store) ListCustomerDeviceOffers(ctx context.Context, tenantID int64) ([
 
 func (s *Store) CustomerDeviceDiscountBPS(ctx context.Context, tenantID int64) (uint32, error) {
 	var discount uint32
+	var reduction sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT v.default_device_discount_bps
+		SELECT v.default_device_discount_bps,`+membershipDeviceReductionSQL+`
 		FROM biz_memberships m
 		INNER JOIN catalog_membership_plan_versions v ON v.id=m.plan_version_id
 		WHERE m.tenant_id=? AND m.status='active'
@@ -562,12 +566,12 @@ func (s *Store) CustomerDeviceDiscountBPS(ctx context.Context, tenantID int64) (
 		  AND m.cycle_end_at > CURRENT_TIMESTAMP(3)
 		ORDER BY m.cycle_end_at DESC, m.id DESC
 		LIMIT 1
-	`, tenantID).Scan(&discount)
+	`, tenantID).Scan(&discount, &reduction)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 10000, nil
 	}
 	if err != nil {
 		return 0, err
 	}
-	return normalizeMembershipDiscountBPS(discount), nil
+	return membershipPaidBPS(discount, reduction), nil
 }

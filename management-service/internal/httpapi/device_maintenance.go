@@ -112,7 +112,11 @@ func (s *Server) maintenanceInternal(w http.ResponseWriter, r *http.Request, wit
 		writeError(w, 400, err.Error())
 		return
 	}
-	if err := input.DeviceProfile.Validate(); err != nil {
+	validate := input.DeviceProfile.ValidateFirmware
+	if withDiagnostics {
+		validate = input.DeviceProfile.Validate
+	}
+	if err := validate(); err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
@@ -139,9 +143,13 @@ func (s *Server) maintenanceInternal(w http.ResponseWriter, r *http.Request, wit
 		}
 		response["diagnostics"] = map[string]any{"upload_url": state.base + "/api/v1/device-diagnostics/upload", "token": token, "owner_epoch": identity.OwnerEpoch, "expires_at": now.Add(deviceops.GrantTTL).Unix(), "max_batch_bytes": deviceops.MaxBatchBytes, "max_batch_events": deviceops.MaxBatchEvents}
 	}
-	// A broken/absent catalog must never prevent connection or log recovery.
-	if offer, err := state.firmwareOffer(identity, input.DeviceProfile, now); err == nil && offer != nil {
-		response["firmware"] = offer
+	// Only the boot-time check offers upgrades. A diagnostics refresh on a
+	// connected device must never trigger an unexpected reboot.
+	if !withDiagnostics {
+		// An unavailable catalog must not prevent the device from starting.
+		if offer, err := state.firmwareOffer(identity, input.DeviceProfile, now); err == nil && offer != nil {
+			response["firmware"] = offer
+		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 200, response)
@@ -161,6 +169,7 @@ func (st *deviceMaintenanceState) firmwareOffer(identity deviceops.Identity, pro
 	if _, err := deviceops.ValidateFirmware(st.root, *entry); err != nil {
 		return nil, err
 	}
+	profile.BootID = ""
 	token, err := st.signer.Issue(deviceops.Grant{Purpose: deviceops.PurposeFirmware, TenantID: identity.TenantID, DeviceID: identity.DeviceID, OwnerEpoch: identity.OwnerEpoch, ArtifactSHA256: entry.SHA256, Profile: &profile}, now)
 	if err != nil {
 		return nil, err

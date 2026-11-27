@@ -14,6 +14,14 @@ import (
 // DeleteRoomEverywhere clears process-local execution on every Core replica.
 // Failover-to-one-node is insufficient: another replica may still be playing.
 func (c *Client) DeleteRoomEverywhere(ctx context.Context, tenantID, roomID int64) error {
+	return c.deleteRoomPathEverywhere(ctx, tenantID, fmt.Sprintf("/internal/v1/rooms/%d", roomID))
+}
+
+func (c *Client) PurgeCustomerRoomRecordings(ctx context.Context, tenantID, roomID int64) error {
+	return c.deleteRoomPathEverywhere(ctx, tenantID, fmt.Sprintf("/internal/v1/rooms/%d/customer-recordings", roomID))
+}
+
+func (c *Client) deleteRoomPathEverywhere(ctx context.Context, tenantID int64, path string) error {
 	query := url.Values{"tenant_id": {strconv.FormatInt(tenantID, 10)}}
 	failures := make(chan error, len(c.baseURLs))
 	var workers sync.WaitGroup
@@ -21,7 +29,7 @@ func (c *Client) DeleteRoomEverywhere(ctx context.Context, tenantID, roomID int6
 		workers.Add(1)
 		go func(baseURL string) {
 			defer workers.Done()
-			resp, err := c.doAt(ctx, baseURL, http.MethodDelete, fmt.Sprintf("/internal/v1/rooms/%d", roomID), query, nil)
+			resp, err := c.doAt(ctx, baseURL, http.MethodDelete, path, query, nil)
 			if err != nil {
 				failures <- err
 				return

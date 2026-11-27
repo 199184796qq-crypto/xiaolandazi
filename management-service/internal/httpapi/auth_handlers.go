@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"livecompanion/management/internal/auth"
+	"livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
 
@@ -48,6 +49,14 @@ func (s *Server) authCaptcha(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
+	s.authLoginInScope(w, r, db.AccountAny)
+}
+
+func (s *Server) customerAuthLogin(w http.ResponseWriter, r *http.Request) {
+	s.authLoginInScope(w, r, db.AccountCustomer)
+}
+
+func (s *Server) authLoginInScope(w http.ResponseWriter, r *http.Request, scope db.AccountScope) {
 	var input loginRequest
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
@@ -78,6 +87,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 			Identifier: identifier,
 			Credential: credential,
 			Captcha:    input.Captcha,
+			Scope:      scope,
 		},
 	)
 	if err != nil {
@@ -87,7 +97,11 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, auth.ErrRateLimited):
 			writeError(w, http.StatusTooManyRequests, "登录尝试过多，请 15 分钟后再试")
 		case errors.Is(err, auth.ErrInvalidCredentials):
-			writeError(w, http.StatusUnauthorized, "账号或密码错误")
+			if method == string(auth.LoginMethodPassword) {
+				writeError(w, http.StatusUnauthorized, "账号、手机号或密码错误")
+			} else {
+				writeError(w, http.StatusUnauthorized, "账号或密码错误")
+			}
 		case errors.Is(err, auth.ErrInvalidPhone):
 			writeError(w, http.StatusBadRequest, "请输入正确的手机号码")
 		case errors.Is(err, auth.ErrPhoneNotRegistered):
@@ -105,15 +119,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if actor.IsPlatformAdmin() {
-		if err := s.audit.Record(r.Context(), model.AdminAuditLog{
-			ActorUserID:   actor.UserID,
-			ActorUsername: actor.Username,
-			Action:        "admin.login",
-			HTTPMethod:    r.Method,
-			Path:          r.URL.Path,
-			ClientIP:      requestClientIP(r),
-			Result:        "http_200",
-		}); err != nil {
+		if err := s.recordPlatformLogin(r, actor); err != nil {
 			_ = s.auth.Logout(r.Context(), w, r)
 			writeError(
 				w,
@@ -133,13 +139,33 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
+func (s *Server) recordPlatformLogin(r *http.Request, actor model.Actor) error {
+	return s.audit.Record(r.Context(), model.AdminAuditLog{
+		ActorUserID:   actor.UserID,
+		ActorUsername: actor.Username,
+		Action:        "admin.login",
+		HTTPMethod:    r.Method,
+		Path:          r.URL.Path,
+		ClientIP:      requestClientIP(r),
+		Result:        "http_200",
+	})
+}
+
 func (s *Server) authSendSMSLoginCode(w http.ResponseWriter, r *http.Request) {
+	s.authSendSMSLoginCodeInScope(w, r, db.AccountAny)
+}
+
+func (s *Server) customerAuthSendSMSLoginCode(w http.ResponseWriter, r *http.Request) {
+	s.authSendSMSLoginCodeInScope(w, r, db.AccountCustomer)
+}
+
+func (s *Server) authSendSMSLoginCodeInScope(w http.ResponseWriter, r *http.Request, scope db.AccountScope) {
 	var input smsLoginCodeRequest
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	result, err := s.auth.SendSMSLoginCode(r.Context(), r, input.Phone)
+	result, err := s.auth.SendSMSLoginCode(r.Context(), r, input.Phone, scope)
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrInvalidPhone):
@@ -156,6 +182,33 @@ func (s *Server) authSendSMSLoginCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) authRegistrationPhone(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var input struct {
+		Phone      string `json:"phone"`
+		InviteCode string `json:"invite_code"`
+	}
+	if err := readJSONWithLimit(w, r, &input, 512); err != nil || len(input.Phone) > 32 || len(input.InviteCode) > 32 {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	available, err := s.auth.CheckRegistrationPhone(r.Context(), r, input.Phone, input.InviteCode)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]bool{"available": available})
+	case errors.Is(err, auth.ErrInvalidPhone):
+		writeError(w, http.StatusBadRequest, "请输入正确的中国大陆手机号码")
+	case errors.Is(err, auth.ErrInvalidInviteCode):
+		writeError(w, http.StatusNotFound, "邀请码无效、已停用或已过期")
+	case errors.Is(err, auth.ErrCaptchaInvalid):
+		writeError(w, http.StatusForbidden, "请刷新图形验证码后重试")
+	case errors.Is(err, auth.ErrRateLimited):
+		writeError(w, http.StatusTooManyRequests, "查询过于频繁，请稍后重试")
+	default:
+		writeError(w, http.StatusInternalServerError, "暂时无法检查手机号")
+	}
 }
 
 func (s *Server) authRegister(w http.ResponseWriter, r *http.Request) {
@@ -246,14 +299,21 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	wechatAppID := ""
+	if s.wechatLogin != nil {
+		wechatAppID = s.wechatLogin.AppID()
+	}
 	if err := s.auth.ChangePassword(
 		r.Context(),
 		w,
 		r,
 		input.CurrentPassword,
 		input.NewPassword,
+		wechatAppID,
 	); err != nil {
 		switch {
+		case errors.Is(err, db.ErrWechatPasswordLoginRequired):
+			writeError(w, http.StatusForbidden, "此账号已绑定微信，请使用原绑定微信登录后再修改密码")
 		case errors.Is(err, auth.ErrCurrentPassword):
 			writeError(w, http.StatusBadRequest, "当前密码错误")
 		case errors.Is(err, auth.ErrWeakPassword):

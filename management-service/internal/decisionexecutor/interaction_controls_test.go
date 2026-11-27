@@ -82,3 +82,26 @@ func TestControlsReadFailureBlocksPaidAndManualRemainsIndependent(t *testing.T) 
 		stop()
 	}
 }
+
+func TestHistoricalAutomaticToggleDoesNotPruneManualQuickDraftOrAudio(t *testing.T) {
+	w, store, _, _, _, session := preparedTestWorker()
+	now := time.Now()
+	w.now = func() time.Time { return now }
+	w.store = &controlTestStore{preparedTestStore: store, controls: model.RoomInteractionControls{
+		Switches: map[string]bool{"semantic": true}, DisabledAt: map[string]uint64{"semantic": 17}, Revision: 18,
+	}}
+	manual := decisionItem{ID: "manual", Sources: []string{"manual"}, ManualAction: "quick", MissionKind: "reply_question"}
+	auto := decisionItem{ID: "auto", MissionKind: "reply_question", ControlsRevision: 16}
+	for _, item := range []decisionItem{manual, auto} {
+		w.savePreflightDraft(session, item, "保留的答稿", "scope", "memory")
+		w.savePreparedInteraction(session, item, "保留的答稿", "https://audio.invalid/reply.wav", "scope", "memory", "voice", now.Add(30*time.Second))
+	}
+	now = now.Add(7 * time.Second)
+	w.prunePreparedInteractions([]model.LiveRuntimeSession{session})
+	w.dropPreparedControl(session, "semantic")
+	draft, ok := w.preflightDraft(session, &manual, "scope", "memory")
+	audio, ready := w.takePreparedInteraction(session, manual, "scope", "memory")
+	if !ok || !ready || draft != audio.Text || len(w.preflightDrafts) != 0 || len(w.prepared) != 0 {
+		t.Fatal("wrong draft/audio retained after automatic control cleanup", ok, ready)
+	}
+}

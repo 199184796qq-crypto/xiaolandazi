@@ -2,14 +2,57 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"livecompanion/management/internal/agentgateway"
-	appdb "livecompanion/management/internal/db"
 	"log"
 	"time"
+
+	"github.com/redis/go-redis/v9"
+
+	"livecompanion/management/internal/agentgateway"
+	appdb "livecompanion/management/internal/db"
 )
 
 type exchangeScopeKey struct{}
+
+// modelExchangeRedis 让每次模型池调用的请求与返回都留一份到 Redis，24 小时可查。
+var modelExchangeRedis *redis.Client
+
+// SetModelExchangeRedis 注入 Redis 客户端；nil 时只保留数据库交换记录。
+func (s *Server) SetModelExchangeRedis(client *redis.Client) {
+	if client == nil {
+		return
+	}
+	modelExchangeRedis = client
+	log.Printf("model exchange cache backend: redis")
+}
+
+// cacheModelExchange 异步写一条交换缓存，失败只记日志，不影响调用链。
+func cacheModelExchange(ctx context.Context, id int64, part string, payload any) {
+	if modelExchangeRedis == nil || id <= 0 {
+		return
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	key := fmt.Sprintf("modelexchange:v1:%d:%s", id, part)
+	write := func() {
+		c, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer cancel()
+		if err := modelExchangeRedis.Set(c, key, string(raw), 24*time.Hour).Err(); err != nil {
+			log.Printf("model exchange cache write failed id=%d part=%s: %v", id, part, err)
+		}
+	}
+	go write()
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
 
 func withExchangeScope(ctx context.Context, scope appdb.ModelExchangeScope) context.Context {
 	if scope.TenantID > 0 && scope.RoomID > 0 {
@@ -33,6 +76,7 @@ func (s *Server) beginModelExchange(ctx context.Context, stage, profile string, 
 	if err != nil {
 		return 0, fmt.Errorf("模型请求日志保存失败，未发送：%w", err)
 	}
+	cacheModelExchange(ctx, id, "req", map[string]any{"stage": stage, "profile": profile, "request": request})
 	if err := s.beginLiveModelCost(ctx, id, stage, profile, request); err != nil {
 		persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
@@ -48,6 +92,7 @@ func (s *Server) finishModelExchange(ctx context.Context, id int64, response any
 		return callErr
 	}
 	s.finishLiveModelCost(ctx, id, response, in, out, callErr)
+	cacheModelExchange(ctx, id, "resp", map[string]any{"text": text, "input": in, "output": out, "call_error": errorText(callErr), "response": response})
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	var input, output, cached *int64

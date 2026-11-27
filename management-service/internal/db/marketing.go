@@ -263,7 +263,7 @@ func marketingCampaignHasTarget(campaign model.MarketingCampaign, targetType str
 }
 
 func marketingCampaignWindowActive(campaign model.MarketingCampaign, now time.Time) bool {
-	if campaign.Status != "active" {
+	if campaign.Status != "active" || (campaign.Stock != nil && campaign.Stock.Remaining == 0) {
 		return false
 	}
 	if campaign.StartsAt != "" {
@@ -293,6 +293,9 @@ func (s *Store) ListMarketingCampaigns(
 	now := time.Now().UTC()
 	items := make([]model.MarketingCampaign, 0, len(all))
 	for _, campaign := range all {
+		if campaign.Status == "archived" {
+			continue
+		}
 		if targetType != "" {
 			if !marketingCampaignHasTarget(campaign, targetType, targetID) {
 				continue

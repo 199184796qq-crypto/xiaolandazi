@@ -29,8 +29,13 @@ type volcengineScriptUnit struct {
 	// Key 是音频缓存身份：文本一变就要重合成，所以它是文本哈希。
 	Key string
 	// Pool 是版本池身份：按话术条目 ID 生成，改文案不会丢已生成的版本。
-	Pool string
-	Dir  string
+	Pool              string
+	HumanKey          string
+	Dir               string
+	SpecPrompt        string
+	SpecPromptEnabled bool
+	SpecPromptAt      string
+	SpecFactsKey      string
 }
 
 // poolID 返回版本池用的键：有条目 ID 就用条目 ID，否则退回文本哈希。
@@ -42,13 +47,16 @@ func (u volcengineScriptUnit) poolID() string {
 }
 
 type volcenginePendingTrack struct {
-	Unit      int                   `json:"unit"`
-	Audio     volcengineCachedAudio `json:"audio"`
-	ID        string                `json:"id"`
-	Advance   bool                  `json:"advance"`
-	NextBlock int                   `json:"next_block,omitempty"`
+	Unit        int                   `json:"unit"`
+	Audio       volcengineCachedAudio `json:"audio"`
+	ID          string                `json:"id"`
+	Advance     bool                  `json:"advance"`
+	NextBlock   int                   `json:"next_block,omitempty"`
+	HumanChoice string                `json:"human_choice,omitempty"`
+	HumanTitle  string                `json:"human_title,omitempty"`
 }
 type volcengineScriptCursor struct {
+	ManualJump           *scriptManualStage
 	GroupedOrder         bool                            `json:"grouped_order,omitempty"`
 	RewriteSnapshot      *scriptRewriteSnapshot          `json:"rewrite_snapshot,omitempty"`
 	Delivered            []scriptDeliveredTrack          `json:"delivered,omitempty"`
@@ -72,6 +80,7 @@ type volcengineScriptCursor struct {
 	SilenceBlocks        int                             `json:"silence_blocks,omitempty"`
 	SilenceAssetID       int64                           `json:"silence_asset_id,omitempty"`
 	PendingSilence       *coreclient.ProgramRefreshTrack `json:"pending_silence,omitempty"`
+	LastHumanChoice      string                          `json:"last_human_choice,omitempty"`
 }
 
 func usesVolcengineParagraphs(v model.LiveAgentPlanVersion) bool {
@@ -112,7 +121,17 @@ func validVolcengineCursor(c volcengineScriptCursor, version int64, signature st
 		}
 		seen[x] = true
 	}
-	return c.Pending == nil || (c.Pending.Unit >= 0 && c.Pending.Unit < n && c.Pending.Audio.AssetID > 0 && c.Pending.ID != "" && c.Pending.NextBlock >= 0 && c.Pending.NextBlock <= max(1, len(c.Pending.Audio.Blocks)))
+	pending := c.Pending
+	if pending == nil {
+		return true
+	}
+	validUnit := pending.Unit >= 0 && pending.Unit < n
+	if pending.HumanChoice != "" {
+		validUnit = pending.Unit == -1 && scriptStandaloneChoice(pending.HumanChoice) &&
+			pending.Audio.HumanVoice && !pending.Advance && len(pending.Audio.Blocks) == 0
+	}
+	return validUnit && pending.Audio.AssetID > 0 && pending.ID != "" && pending.NextBlock >= 0 &&
+		pending.NextBlock <= max(1, len(pending.Audio.Blocks))
 }
 func volcengineSupplyDue(snapshot coreclient.ProgramRefreshSnapshot, leadMS int64) bool {
 	return snapshot.WaitingForContent || snapshot.BufferedMainlineMS < leadMS
@@ -260,6 +279,8 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		cursor.RewriteSnapshot = &frozen
 	}
 	v = withScriptRewriteSnapshot(v, *cursor.RewriteSnapshot)
+	refreshPieceFacts := s.scriptPieceFactRefresh(tenant, v.PlanID, units)
+	units = refreshPieceFacts(ctx, units)
 	if err = beginScriptRoomPolicy(recordingCacheMediaRoot(), tenant, room, v.PlanID, session); err != nil {
 		return err
 	}
@@ -268,6 +289,7 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		return err
 	}
 	// Only entries matching this exact paragraph/voice/rate namespace qualify.
+	modePath := scriptMainlineModePath(recordingCacheMediaRoot(), tenant, room)
 	known := map[int]volcengineCachedAudio{}
 	for i, unit := range units {
 		if cache, e := loadVolcengineParagraphCache(filepath.Join(unit.Dir, "cache.json"), unit.Key); e == nil {
@@ -303,6 +325,12 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		if cursor.ProgramID == "" && p.Running && p.Task.SessionID != fmt.Sprintf("volcengine-long-%d", session) {
 			return p, anchorcycle.ErrStale
 		}
+		units = refreshPieceFacts(c, units)
+		for index, audio := range known {
+			if audio.SpecHash != "" && audio.SpecHash != scriptPieceVersionHash(units[index]) {
+				delete(known, index)
+			}
+		}
 		if e = s.confirmScriptPlayback(ctx, tenant, room, session, v, units, &cursor, p, save); e != nil {
 			return p, e
 		}
@@ -320,12 +348,12 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			return e
 		}
 		blocks := pending.Audio.Blocks
+		text := pending.Audio.Text
+		if strings.TrimSpace(text) == "" && pending.Unit >= 0 {
+			text = units[pending.Unit].Text
+		}
 		if len(blocks) == 0 {
-			blockText := units[pending.Unit].Text
-			if strings.TrimSpace(pending.Audio.Text) != "" {
-				blockText = pending.Audio.Text
-			}
-			blocks = []scriptFirstCachedBlock{{AssetID: pending.Audio.AssetID, DurationMS: pending.Audio.DurationMS, Text: blockText, Timeline: pending.Audio.Timeline}}
+			blocks = []scriptFirstCachedBlock{{AssetID: pending.Audio.AssetID, DurationMS: pending.Audio.DurationMS, Text: text, Timeline: pending.Audio.Timeline}}
 		}
 		if err := publishScriptFirstBlocks(c, pending, blocks, func(c context.Context, blockIndex int, block scriptFirstCachedBlock) error {
 			if e := checkOwner(c); e != nil {
@@ -367,7 +395,14 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			if e != nil {
 				return e
 			}
-			track := coreclient.ProgramRefreshTrack{ID: id, Label: "话术主线整段", Text: block.Text, AudioURL: url, DurationMS: int(block.DurationMS), AllowConsecutiveRepeat: true,
+			label := "话术主线整段"
+			if pending.Audio.HumanVoice {
+				label = "真人声音"
+			}
+			if pending.HumanTitle != "" {
+				label = pending.HumanTitle
+			}
+			track := coreclient.ProgramRefreshTrack{ID: id, Label: label, Text: block.Text, AudioURL: url, DurationMS: int(block.DurationMS), AllowConsecutiveRepeat: true,
 				UntimedTranscript: pending.Audio.UntimedTranscript,
 				Timeline:          recordingStreamTimeline(block.Timeline), SafePoints: recordingStreamSafePoints(volcengineSemanticSafePoints(block.Timeline))}
 			e = s.store.DispatchVoiceAsset(c, tenant, block.AssetID, session, id, func() (string, error) {
@@ -400,16 +435,35 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 				for _, previous := range blocks[:blockIndex] {
 					offset += previous.DurationMS
 				}
-				policyText := pending.Audio.Text
-				if policyText == "" {
-					policyText = units[pending.Unit].Text
-				}
-				cursor.Delivered = append(cursor.Delivered, scriptDeliveredTrack{PolicyText: policyText, PolicyDurationMS: pending.Audio.DurationMS, PolicyOffsetMS: offset, Unit: pending.Unit, TrackID: id, InstanceID: pending.ID, AssetID: pending.Audio.AssetID, VoiceID: pending.Audio.VoiceID, Model: cursor.ActiveModel, Batch: cursor.VoiceBatch, TotalBlocks: len(blocks), Block: block})
+				cursor.Delivered = append(cursor.Delivered, scriptDeliveredTrack{
+					PieceID:          pending.HumanChoice,
+					HumanVoice:       pending.Audio.HumanVoice,
+					HumanSource:      pending.Audio.HumanSource,
+					PolicyText:       text,
+					PolicyDurationMS: pending.Audio.DurationMS,
+					PolicyOffsetMS:   offset,
+					Unit:             pending.Unit,
+					TrackID:          id,
+					InstanceID:       pending.ID,
+					AssetID:          pending.Audio.AssetID,
+					VoiceID:          pending.Audio.VoiceID,
+					Model:            cursor.ActiveModel,
+					Batch:            cursor.VoiceBatch,
+					TotalBlocks:      len(blocks),
+					Block:            block,
+				})
 			}
-			s.archiveTTSCacheReplay(c, tenant, room, session, cursor.ProgramID, track)
+			if !pending.Audio.HumanVoice {
+				s.archiveTTSCacheReplay(c, tenant, room, session, cursor.ProgramID, track)
+			}
 			return nil
 		}, save); err != nil {
 			return err
+		}
+		if pending.HumanChoice != "" {
+			cursor.LastHumanChoice = scriptHumanChoiceKey(pending.HumanChoice)
+			cursor.Pending = nil
+			return save()
 		}
 		if pending.Advance {
 			cursor.Position++
@@ -432,6 +486,10 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		return save()
 	}
 	queue := func(c context.Context, index int, audio volcengineCachedAudio, advance bool) error {
+		mode, e := readScriptMainlineMode(modePath)
+		if e != nil || mode == scriptMainlineHuman {
+			return e
+		}
 		cursor.Sequence++
 		cursor.SilenceBlocks = 0
 		cursor.Pending = &volcenginePendingTrack{Unit: index, Audio: audio, ID: fmt.Sprintf("long-%d-%d", session, cursor.Sequence), Advance: advance}
@@ -444,6 +502,45 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		}
 		return publish(c)
 	}
+	var handleManual func(context.Context, coreclient.ProgramRefreshSnapshot) (bool, error)
+	var nextAutoPrepare, nextAutoPick time.Time
+	autoPath := scriptManualPath(tenant, room, session)
+	handleHumanAuto := func(c context.Context, p coreclient.ProgramRefreshSnapshot) (bool, error) {
+		mode, e := readScriptMainlineMode(modePath)
+		if e != nil || mode != scriptMainlineHuman {
+			return false, e
+		}
+		if time.Now().Before(nextAutoPick) || p.PendingJobID != "" || p.Running &&
+			(!volcengineSupplyDue(p, volcengineSupplyThresholdMS) || (!p.WaitingForContent && len(p.FutureWindow) > 0)) {
+			return true, nil
+		}
+		state, e := readScriptManualState(autoPath)
+		if e != nil {
+			return true, e
+		}
+		choice, audio := s.pickAutomaticHuman(c, tenant, v.PlanID, session, cursor.LastHumanChoice, rng, &nextAutoPrepare, !scriptManualActive(state.Current))
+		if audio.AssetID == 0 {
+			nextAutoPick = time.Now().Add(2 * time.Second)
+			return true, c.Err()
+		}
+		mode, e = readScriptMainlineMode(modePath)
+		if e != nil || mode != scriptMainlineHuman {
+			return false, e
+		}
+		cursor.Sequence++
+		cursor.SilenceBlocks = 0
+		cursor.Pending = &volcenginePendingTrack{Unit: -1, ID: fmt.Sprintf("long-%d-%d", session, cursor.Sequence),
+			Audio: audio, HumanChoice: choice.ID, HumanTitle: choice.Title}
+		if e = save(); e != nil {
+			return true, e
+		}
+		if e = publish(c); errors.Is(e, voiceasset.ErrCleared) {
+			cursor.Pending = nil
+			e = save()
+		}
+		return true, e
+	}
+	var manualRevision uint64
 	keepPlaying := func(c context.Context) error {
 		p, e := snapshot(c)
 		if errors.Is(e, errVolcengineLivePaused) {
@@ -454,6 +551,19 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		}
 		if cursor.Pending != nil {
 			return publish(c)
+		}
+		if handleManual != nil && cursor.PendingSilence == nil {
+			if handled, err := handleManual(c, p); handled || err != nil {
+				return err
+			}
+		}
+		if cursor.PendingSilence == nil {
+			if handled, err := handleHumanAuto(c, p); handled || err != nil {
+				if handled {
+					manualRevision++
+				}
+				return err
+			}
 		}
 		pad, fallback := scriptFirstSilenceDue(p, cursor.SilenceBlocks)
 		if cursor.PendingSilence != nil || (cursor.ProgramID != "" && pad) {
@@ -502,6 +612,18 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 		cursor.VoiceBatch++
 	}
 	activeV := scriptVersionForVoice(v, recordingScriptVoice{Identity: &initialIdentity, VoiceID: initialIdentity.VoiceID, Model: initialIdentity.Model})
+	handleManual = func(c context.Context, p coreclient.ProgramRefreshSnapshot) (bool, error) {
+		before := cursor.ManualJump
+		handled, err := s.processScriptManual(c, tenant, room, session, activeV, units, &cursor, p, save)
+		if cursor.ManualJump != before {
+			manualRevision++
+		}
+		if err != nil {
+			return handled, err
+		}
+		// Use the producer's lifetime, not the context for the current lookahead.
+		return handled, s.tickScriptManualGeneration(ctx, tenant, room, session, activeV, units, p, cursor.VoiceBatch)
+	}
 	cursor.ActiveVoice, cursor.ActiveModel = initialIdentity.VoiceID, initialIdentity.Model
 	for i, audio := range known {
 		if audio.VoiceID != initialIdentity.VoiceID {
@@ -557,6 +679,35 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			}
 			continue
 		}
+		p, e := snapshot(ctx)
+		if errors.Is(e, errVolcengineLivePaused) {
+			if err = waitLiveProducer(ctx); err != nil {
+				return err
+			}
+			continue
+		}
+		if e != nil {
+			return e
+		}
+		if handled, manualErr := handleManual(ctx, p); manualErr != nil {
+			return manualErr
+		} else if handled {
+			continue
+		}
+		if handled, autoErr := handleHumanAuto(ctx, p); autoErr != nil {
+			return autoErr
+		} else if handled {
+			if err = waitLiveProducer(ctx); err != nil {
+				return err
+			}
+			continue
+		}
+		if len(units) == 0 {
+			if err = waitLiveProducer(ctx); err != nil {
+				return err
+			}
+			continue
+		}
 		if cursor.Position == len(units) {
 			cursor.Round++
 			cursor.Position = 0
@@ -571,18 +722,7 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 				return err
 			}
 		}
-		p, e := snapshot(ctx)
-		if errors.Is(e, errVolcengineLivePaused) {
-			if err = waitLiveProducer(ctx); err != nil {
-				return err
-			}
-			continue
-		}
-		if e != nil {
-			return e
-		}
-		// Tick while audio is buffered too: waiting for the next append lead must
-		// not stop gradual replenishment. Pending host switches keep the old voice.
+		// Tick while audio is buffered too. Pending host switches keep the old voice.
 		if state, e := s.store.RuntimeVoiceBatch(ctx, tenant, room, session, v.ID); e == nil && state.Pending == nil && voicebatch.Same(activeV.VoiceIdentity, state.Active) {
 			s.tickScriptPoolPolicy(ctx, tenant, room, activeV, units)
 		}
@@ -602,7 +742,22 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			}
 			continue
 		}
-		index := cursor.Order[cursor.Position]
+		index := nextIndex
+		occurrence := fmt.Sprintf("auto/%d/%d", cursor.Round, cursor.Position)
+		if audio, human := s.pickScriptHumanVoice(ctx, tenant, room, session, v, units[index], occurrence); human {
+			retryAttempt = 0
+			if err = queue(ctx, index, audio, true); err != nil {
+				if errors.Is(err, voiceasset.ErrCleared) {
+					cursor.Pending = nil
+					if err = save(); err != nil {
+						return err
+					}
+					continue
+				}
+				return err
+			}
+			continue
+		}
 		// A whole host batch stays on one voice. Switch only at a complete
 		// paragraph boundary, after full-pool coverage / two hours / a live command.
 		state, batchErr := s.store.RuntimeVoiceBatch(ctx, tenant, room, session, v.ID)
@@ -644,14 +799,15 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			continue
 		}
 
+		lookaheadRevision := manualRevision
 		if !fromPool {
 			audio, e = awaitVolcengineParagraph(work, 500*time.Millisecond, func(c context.Context) (volcengineCachedAudio, error) {
-				return s.ensureScriptFirstParagraph(c, tenant, room, session, generationVersion, voiceUnit, allowSynthesis)
+				return s.ensureRoomScriptLookahead(c, tenant, room, session, generationVersion, voiceUnit, allowSynthesis)
 			}, keepPlaying)
 		} else if !s.scriptAudioAvailable(work, tenant, audio.AssetID) {
 			// Recover the selected version's exact spoken text, not its original
 			// sample. Keep its kind/facts/play history when replacing lost media.
-			old := audio.AssetID
+			old, specHash := audio.AssetID, audio.SpecHash
 			spoken := voiceUnit
 			if strings.TrimSpace(audio.Text) != "" {
 				spoken.Text = audio.Text
@@ -659,14 +815,29 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			spoken.Key = scriptFirstParagraphKey(generationVersion, spoken.Text)
 			spoken.Dir = filepath.Join(filepath.Dir(voiceUnit.Dir), spoken.Key)
 			audio, e = awaitVolcengineParagraph(work, 500*time.Millisecond, func(c context.Context) (volcengineCachedAudio, error) {
-				return s.ensureScriptFirstParagraph(c, tenant, room, session, generationVersion, spoken, allowSynthesis)
+				return s.ensureRoomScriptLookahead(c, tenant, room, session, generationVersion, spoken, allowSynthesis)
 			}, keepPlaying)
 			if e == nil {
 				audio.Text = spoken.Text
+				audio.SpecHash = specHash
 				e = replaceScriptPoolAudio(recordingCacheMediaRoot(), generationVersion, voiceUnit, old, audio)
 			}
 		}
 		done()
+		if manualRevision != lookaheadRevision {
+			// The old lookahead may finish and leave paid audio in cache, but
+			// the manual replacement owns the continuation in this room.
+			continue
+		}
+		if errors.Is(e, errRoomScriptGenerationBusy) {
+			if err = keepPlaying(ctx); err != nil {
+				return err
+			}
+			if err = waitLiveProducer(ctx); err != nil {
+				return err
+			}
+			continue
+		}
 		if e != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -689,6 +860,9 @@ func (s *Server) runVolcengineScriptProducer(ctx context.Context, tenant, room, 
 			continue
 		}
 		retryAttempt = 0
+		if audio.SpecHash != "" && audio.SpecHash != scriptPieceVersionHash(units[index]) {
+			continue // A fact refresh during synthesis invalidated the selected version.
+		}
 		if !voicebatch.Same(activeV.VoiceIdentity, generationVersion.VoiceIdentity) {
 			identity := generationVersion.VoiceIdentity
 			if e := s.validatePlanVoiceIdentity(ctx, tenant, &identity); e != nil {

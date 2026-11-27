@@ -60,14 +60,19 @@ func TestRecordingStreamOwnerAllowsUserAudioOnlyForStreamMode(t *testing.T) {
 	}
 }
 
-func TestWithNaturalBreathInstruction(t *testing.T) {
-	plain := withNaturalBreathInstruction(ttsgateway.SynthesizeRequest{Text: "八个月这个时间刚刚好。"})
-	if !strings.Contains(plain.Instruction, "自然换气起句") || !strings.Contains(plain.Instruction, "尾字说完整") {
-		t.Fatalf("plain instruction = %q", plain.Instruction)
+func TestMainlineDeliveryInstruction(t *testing.T) {
+	request := ttsgateway.SynthesizeRequest{
+		Model: "qwen-audio-3.1-tts-flash", VoiceID: "clone", Text: "八个月这个时间刚刚好。",
+		Rate: 1.08, Instruction: "像真人直播聊天。",
 	}
-	styled := withNaturalBreathInstruction(ttsgateway.SynthesizeRequest{Text: "八个月这个时间刚刚好。", Instruction: "像真人直播聊天。"})
-	if !strings.Contains(styled.Instruction, "像真人直播聊天") || !strings.Contains(styled.Instruction, "自然换气起句") {
-		t.Fatalf("styled instruction = %q", styled.Instruction)
+	got := withMainlineDeliveryInstruction(request)
+	if got.Instruction != "" || got.Text != request.Text || got.VoiceID != request.VoiceID || got.Rate != request.Rate {
+		t.Fatalf("Qwen mainline request = %+v", got)
+	}
+	request.Model = ttsgateway.CosyVoicePlus
+	got = withMainlineDeliveryInstruction(request)
+	if !strings.Contains(got.Instruction, "像真人直播聊天") || !strings.Contains(got.Instruction, "自然换气起句") {
+		t.Fatalf("CosyVoice mainline instruction = %q", got.Instruction)
 	}
 }
 
@@ -83,7 +88,7 @@ func TestRecordingStreamInstructionBranches(t *testing.T) {
 		{"咱们慢慢说，这个菜挺实在", "聊天"},
 	}
 	for _, tc := range cases {
-		got := recordingStreamInstruction(tc.text)
+		got := ttsgateway.LiveDeliveryStyle(tc.text, true)
 		if !strings.Contains(got, tc.want) || len([]rune(got)) > 50 {
 			t.Fatalf("text=%q instruction=%q", tc.text, got)
 		}

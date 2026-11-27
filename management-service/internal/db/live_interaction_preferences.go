@@ -9,6 +9,21 @@ import (
 	"livecompanion/management/internal/model"
 )
 
+func (s *Store) migrateRoomInteractionSpeechRate(ctx context.Context) error {
+	var scale int
+	err := s.db.QueryRowContext(ctx, `SELECT NUMERIC_SCALE FROM information_schema.columns
+		WHERE table_schema=DATABASE() AND table_name='live_room_interaction_preferences' AND column_name='interaction_speech_rate'`).Scan(&scale)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, err = s.db.ExecContext(ctx, `ALTER TABLE live_room_interaction_preferences ADD COLUMN interaction_speech_rate DECIMAL(3,2) NOT NULL DEFAULT 1.00`)
+		return err
+	}
+	if err != nil || scale == 2 {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `ALTER TABLE live_room_interaction_preferences MODIFY COLUMN interaction_speech_rate DECIMAL(3,2) NOT NULL DEFAULT 1.00`)
+	return err
+}
+
 func defaultRoomInteractionPreferences(tenantID, roomID int64) model.RoomInteractionPreferences {
 	return model.RoomInteractionPreferences{
 		TenantID:             tenantID,
@@ -20,6 +35,7 @@ func defaultRoomInteractionPreferences(tenantID, roomID int64) model.RoomInterac
 		ChatPreference:       50,
 		ConversionPreference: 50,
 		AutoHeat:             true,
+		SpeechRate:           model.DefaultInteractionSpeechRate,
 	}
 }
 
@@ -50,7 +66,7 @@ func (s *Store) GetRoomInteractionPreferences(ctx context.Context, tenantID, roo
 	err := s.db.QueryRowContext(ctx, `
 		SELECT overall_interaction, question_preference, welcome_preference,
 		       engagement_preference, chat_preference, conversion_preference,
-		       auto_heat, updated_by_user_id, updated_at
+		       auto_heat, interaction_speech_rate, updated_by_user_id, updated_at
 		FROM live_room_interaction_preferences
 		WHERE tenant_id=? AND room_id=?
 	`, tenantID, roomID).Scan(
@@ -61,6 +77,7 @@ func (s *Store) GetRoomInteractionPreferences(ctx context.Context, tenantID, roo
 		&item.ChatPreference,
 		&item.ConversionPreference,
 		&item.AutoHeat,
+		&item.SpeechRate,
 		&updatedBy,
 		&updatedAt,
 	)
@@ -82,6 +99,38 @@ func (s *Store) GetRoomInteractionPreferences(ctx context.Context, tenantID, roo
 	schedule, scheduleErr := s.GetRoomInteractionSchedule(ctx, tenantID, roomID)
 	item.Schedule = &schedule
 	return s.withRoomInteractionControls(ctx, item, scheduleErr)
+}
+
+func (s *Store) RoomInteractionSpeechRate(ctx context.Context, tenantID, roomID int64) (float64, error) {
+	var rate float64
+	err := s.db.QueryRowContext(ctx, `SELECT interaction_speech_rate FROM live_room_interaction_preferences
+		WHERE tenant_id=? AND room_id=?`, tenantID, roomID).Scan(&rate)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.DefaultInteractionSpeechRate, nil
+	}
+	return rate, err
+}
+
+func (s *Store) SaveRoomInteractionSpeechRate(ctx context.Context, tenantID, roomID, userID int64, rate float64) error {
+	if !model.ValidInteractionSpeechRate(rate) {
+		return errors.New(model.InteractionSpeechRateError)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var owned int64
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM core_rooms WHERE tenant_id=? AND id=? FOR UPDATE`, tenantID, roomID).Scan(&owned); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO live_room_interaction_preferences
+		(tenant_id, room_id, updated_by_user_id, interaction_speech_rate) VALUES (?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE interaction_speech_rate=VALUES(interaction_speech_rate),
+		updated_by_user_id=VALUES(updated_by_user_id), updated_at=CURRENT_TIMESTAMP(3)`, tenantID, roomID, userID, rate); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) UpsertRoomInteractionPreferences(

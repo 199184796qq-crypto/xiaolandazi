@@ -5,12 +5,222 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"livecompanion/management/internal/model"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"livecompanion/management/internal/model"
 )
+
+func TestDeviceWalletPaymentMySQL(t *testing.T) {
+	s := salesIsolatedMySQL(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	exec := func(query string, args ...any) sql.Result {
+		t.Helper()
+		result, err := s.db.ExecContext(ctx, query, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	assertCount := func(want int64, query string, args ...any) {
+		t.Helper()
+		var got int64
+		if err := s.db.QueryRowContext(ctx, query, args...).Scan(&got); err != nil || got != want {
+			t.Fatalf("%s: got %d, want %d, error %v", query, got, want, err)
+		}
+	}
+	for _, schema := range []string{commercialSchema, inventorySchema, beneficiaryWalletSchema} {
+		for _, query := range strings.Split(strings.ReplaceAll(schema, "\r\n", "\n"), "\n-- +statement\n") {
+			if strings.TrimSpace(query) != "" {
+				exec(query)
+			}
+		}
+	}
+	exec(`INSERT INTO mgmt_tenants(id,code,name) VALUES(10,'device-test','设备测试')`)
+	exec(`INSERT INTO mgmt_users(id,tenant_id,username) VALUES(110,10,'device-buyer')`)
+	exec(`INSERT INTO fin_wallet_accounts(tenant_id,account_type,currency,balance_cents) VALUES(10,'cash','CNY',500)`)
+	exec(`INSERT INTO catalog_device_products(id,code,sku_code,name,sales_stock,status) VALUES(77,'box','BOX','直播终端',1,'active')`)
+	exec(`INSERT INTO catalog_device_versions(product_id,version_no,lifecycle_status,list_price_cents,sale_price_cents,participates_referral,participates_sales_commission,participates_agent_settlement) VALUES(77,1,'published',1200,1000,0,0,0)`)
+	exec(`INSERT INTO inv_warehouses(id,code,name,status) VALUES(1,'HQ','测试仓','active')`)
+	exec(`INSERT INTO inv_devices(sn,sku_code,custody_warehouse_id,lifecycle_status,quality_status) VALUES('BOX77','BOX',1,'IN_STOCK','qualified')`)
+	input := model.CreateCustomerShopOrderInput{
+		ProductType: "device", ProductID: 77, Quantity: 1, IdempotencyKey: "device-checkout",
+		RecipientName: "测试", RecipientPhone: "13800138000", Province: "四川省", City: "南充市", District: "顺庆区", Address: "模拟地址",
+	}
+	order, err := s.CreateCustomerShopOrder(ctx, 10, 110, input)
+	if err != nil || order.Status != "pending" || order.PayableAmountCents != 1000 || order.Shipping == nil {
+		t.Fatal(order, err)
+	}
+	assertCount(1, `SELECT COUNT(*) FROM biz_order_devices WHERE order_id=? AND status='payment_hold'`, order.ID)
+	assertCount(0, `SELECT sales_stock FROM catalog_device_products WHERE id=77`)
+	pay := func() (model.CustomerShopOrder, error) {
+		return s.WalletPayCustomerShopOrder(ctx, 10, 110, order.ID, "")
+	}
+	if _, err := pay(); !errors.Is(err, ErrInsufficientWalletBalance) {
+		t.Fatalf("expected insufficient wallet balance, got %v", err)
+	}
+	assertCount(500, `SELECT balance_cents FROM fin_wallet_accounts WHERE tenant_id=10`)
+	exec(`UPDATE fin_wallet_accounts SET balance_cents=2000 WHERE tenant_id=10`)
+	exec(`UPDATE biz_order_devices SET hold_expires_at=CURRENT_TIMESTAMP(3)-INTERVAL 1 MINUTE WHERE order_id=?`, order.ID)
+	if _, err := pay(); !errors.Is(err, ErrShopOrderExpired) {
+		t.Fatalf("expected expired stock hold, got %v", err)
+	}
+	assertCount(0, `SELECT COUNT(*) FROM fin_payment_transactions WHERE order_id=?`, order.ID)
+	assertCount(1, `SELECT COUNT(*) FROM biz_orders WHERE id=? AND status='cancelled'`, order.ID)
+	assertCount(1, `SELECT sales_stock FROM catalog_device_products WHERE id=77`)
+	input.IdempotencyKey = "device-checkout-after-expiry"
+	order, err = s.CreateCustomerShopOrder(ctx, 10, 110, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payments sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		payments.Add(1)
+		go func() {
+			defer payments.Done()
+			paid, err := pay()
+			if err == nil && (paid.PaymentStatus != "paid" || len(paid.Shipments) != 1 || paid.Shipments[0].Status != "ready_to_ship") {
+				err = fmt.Errorf("unexpected payment and shipment state: %+v", paid)
+			}
+			errs <- err
+		}()
+	}
+	payments.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertCount(1000, `SELECT balance_cents FROM fin_wallet_accounts WHERE tenant_id=10`)
+	assertCount(1, `SELECT COUNT(*) FROM fin_wallet_ledger WHERE business_id=? AND business_type='device_purchase'`, order.ID)
+	assertCount(1, `SELECT COUNT(*) FROM inv_shipments WHERE business_id=? AND status='ready_to_ship' AND tracking_no=''`, order.ID)
+	assertCount(0, `SELECT sales_stock FROM catalog_device_products WHERE id=77`)
+
+	refund, err := exec(`INSERT INTO fin_refund_orders(refund_no,tenant_id,source_type,source_id,refund_amount_cents,refund_method,status,idempotency_key) VALUES('BOX-REF',10,'order',?,1000,'wallet_balance','pending_approval','box-refund')`, order.ID).LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyRefund := func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := applyOrderRefundTx(ctx, tx, 10, refund, "BOX-REF", order.ID, 1000, 110, "测试退货", "wallet_balance"); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if err := applyRefund(); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyRefund(); !errors.Is(err, ErrShopOrderFullyRefunded) {
+		t.Fatalf("expected a completed refund to block a second credit, got %v", err)
+	}
+	assertCount(2000, `SELECT balance_cents FROM fin_wallet_accounts WHERE tenant_id=10`)
+	assertCount(1, `SELECT COUNT(*) FROM fin_wallet_ledger WHERE business_id=? AND business_type='device_refund'`, refund)
+
+	terms := WorkspaceMembershipInput{
+		Name: "验证会员", PriceCents: 89900, IncludedSeconds: 360000,
+		TimeCardReduction: 1000, DeviceReduction: 2000,
+	}
+	if err := s.SaveWorkspaceMembership(ctx, 110, 0, terms); err != nil {
+		t.Fatal(err)
+	}
+	plans, err := s.ListCommercialMembershipPlans(ctx)
+	if err != nil || len(plans) != 1 || plans[0].Status != "inactive" || !strings.HasPrefix(plans[0].Code, "aimem") ||
+		!strings.HasSuffix(plans[0].Code, "000001") || plans[0].ActiveVersion.DefaultDeviceDiscountBPS != 8000 {
+		t.Fatalf("membership creation: %+v %v", plans, err)
+	}
+	plan := plans[0]
+	listed, err := s.SetCommercialMembershipStatus(ctx, 110, plan.ID, "active")
+	if err != nil || listed.Status != "active" {
+		t.Fatal(listed, err)
+	}
+	offers, err := s.ListCustomerMembershipOffers(ctx)
+	if err != nil || len(offers) != 1 || offers[0].DeviceDiscountBPS != 8000 {
+		t.Fatal(offers, err)
+	}
+	exec(`INSERT INTO biz_memberships (tenant_id,plan_id,plan_version_id,cycle_start_at,cycle_end_at)
+		VALUES (10,?,?,CURRENT_TIMESTAMP(3)-INTERVAL 1 DAY,CURRENT_TIMESTAMP(3)+INTERVAL 1 DAY)`, plan.ID, plan.ActiveVersion.ID)
+	exec(`INSERT INTO catalog_device_products(id,code,sku_code,name,sales_stock,status) VALUES(78,'box2','BOX2','会员直播终端',2,'active')`)
+	exec(`INSERT INTO catalog_device_versions(product_id,version_no,lifecycle_status,list_price_cents,sale_price_cents) VALUES(78,1,'published',1000,1000)`)
+	exec(`INSERT INTO inv_devices(sn,sku_code,custody_warehouse_id,lifecycle_status,quality_status) VALUES
+		('BOX78A','BOX2',1,'IN_STOCK','qualified'),('BOX78B','BOX2',1,'IN_STOCK','qualified')`)
+	input.ProductID, input.IdempotencyKey = 78, "membership-device-checkout"
+	device, err := s.CreateCustomerShopOrder(ctx, 10, 110, input)
+	if err != nil || device.PayableAmountCents != 800 {
+		t.Fatal(device, err)
+	}
+	if err := s.SaveWorkspaceTimeCard(ctx, 110, 0, model.CommercialTimeCardInput{
+		Name: "试验时长卡", PriceCents: 10000, DurationSeconds: 36000, ValidityDays: 7, ActivationDeadlineDays: 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cards, err := s.ListWorkspaceTimeCards(ctx, time.Time{}, time.Time{})
+	if err != nil || len(cards) != 1 {
+		t.Fatal(cards, err)
+	}
+	if _, err := s.SetCommercialTimeCardStatus(ctx, 110, cards[0].ID, "active"); err != nil {
+		t.Fatal(err)
+	}
+	cardInput := model.CreateCustomerShopOrderInput{ProductType: "time_card", ProductID: cards[0].ID, Quantity: 1, IdempotencyKey: "membership-card-checkout"}
+	cardOrder, err := s.CreateCustomerShopOrder(ctx, 10, 110, cardInput)
+	if err != nil || cardOrder.PayableAmountCents != 9000 {
+		t.Fatal(cardOrder, err)
+	}
+	terms.DeviceReduction, terms.TimeCardReduction = 10000, 9500
+	if err := s.SaveWorkspaceMembership(ctx, 110, plan.ID, terms); err != nil {
+		t.Fatal(err)
+	}
+	current, err := s.GetCommercialMembershipPlan(ctx, plan.ID)
+	if err != nil || current.Status != "active" || current.Code != plan.Code || current.ActiveVersion.ID == plan.ActiveVersion.ID ||
+		current.ActiveVersion.DefaultDeviceDiscountBPS != 0 || current.ActiveVersion.DefaultTimeCardDiscountBPS != 500 {
+		t.Fatalf("membership edit: %+v %v", current, err)
+	}
+	oldRate, err := s.CustomerTimeCardDiscountBPS(ctx, 10)
+	if err != nil || oldRate != 9000 {
+		t.Fatal(oldRate, err)
+	}
+	exec(`UPDATE biz_memberships SET plan_version_id=? WHERE tenant_id=10`, current.ActiveVersion.ID)
+	input.IdempotencyKey = "fully-discounted-device"
+	freeDevice, err := s.CreateCustomerShopOrder(ctx, 10, 110, input)
+	if err != nil || freeDevice.PayableAmountCents != 0 {
+		t.Fatal(freeDevice, err)
+	}
+	paid, err := s.WalletPayCustomerShopOrder(ctx, 10, 110, freeDevice.ID, "")
+	if err != nil || paid.PaymentStatus != "paid" || paid.PaidAmountCents != 0 {
+		t.Fatal(paid, err)
+	}
+	cardInput.IdempotencyKey = "deep-membership-card-discount"
+	cardOrder, err = s.CreateCustomerShopOrder(ctx, 10, 110, cardInput)
+	if err != nil || cardOrder.PayableAmountCents != 500 {
+		t.Fatal(cardOrder, err)
+	}
+	unlisted, err := s.SetCommercialMembershipStatus(ctx, 110, plan.ID, "inactive")
+	if err != nil || unlisted.Status != "inactive" {
+		t.Fatal(unlisted, err)
+	}
+	offers, err = s.ListCustomerMembershipOffers(ctx)
+	if err != nil || len(offers) != 0 {
+		t.Fatal(offers, err)
+	}
+	archived, err := s.SetCommercialMembershipStatus(ctx, 110, plan.ID, "archived")
+	if err != nil || archived.Status != "archived" {
+		t.Fatal(archived, err)
+	}
+	if err := s.SaveWorkspaceMembership(ctx, 110, plan.ID, terms); !errors.Is(err, ErrMembershipArchived) {
+		t.Fatal(err)
+	}
+	if _, err := s.SetCommercialMembershipStatus(ctx, 110, plan.ID, "active"); !errors.Is(err, ErrMembershipArchived) {
+		t.Fatal(err)
+	}
+}
 
 func TestCommerceClosedLoopMySQL(t *testing.T) {
 	s := salesIsolatedMySQL(t)
@@ -113,10 +323,10 @@ func TestCommerceClosedLoopMySQL(t *testing.T) {
 	if e = s.PublishCommerceRewardRule(ctx, 900, id); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = s.WalletPayCustomerTimeCardOrder(ctx, 10, 110, order.ID, "paid"); e != nil {
+	if _, e = s.WalletPayCustomerShopOrder(ctx, 10, 110, order.ID, "paid"); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = s.WalletPayCustomerTimeCardOrder(ctx, 10, 110, order.ID, "paid-again"); e != nil {
+	if _, e = s.WalletPayCustomerShopOrder(ctx, 10, 110, order.ID, "paid-again"); e != nil {
 		t.Fatal(e)
 	}
 	if n := scalar(`SELECT COUNT(*) FROM inc_earnings WHERE source_order_id=?`, order.ID); n != 2 {

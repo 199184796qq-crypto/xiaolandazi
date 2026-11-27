@@ -25,13 +25,16 @@ type speechAnalysisStatusResponse struct {
 	Configured          bool                      `json:"configured"`
 	ConfigurationReason string                    `json:"configuration_reason,omitempty"`
 	Task                *model.SpeechAnalysisTask `json:"task,omitempty"`
+	ExpiresAt           *time.Time                `json:"expires_at,omitempty"`
 }
 
 type speechAnalysisCaptureSnapshot struct {
 	Recording *struct {
-		ID        string    `json:"id"`
-		Status    string    `json:"status"`
-		StartedAt time.Time `json:"started_at"`
+		ID            string    `json:"id"`
+		Status        string    `json:"status"`
+		StartedAt     time.Time `json:"started_at"`
+		ArchiveStatus string    `json:"archive_status"`
+		ExpiresAt     time.Time `json:"expires_at"`
 	} `json:"recording,omitempty"`
 }
 
@@ -68,7 +71,29 @@ const (
 	speechAnalysisResultPrefix    = "live-analysis"
 	speechAnalysisTempAudioPrefix = "live-analysis-temp-audio"
 	speechAnalysisAudioMaxAge     = 12 * time.Hour
+	speechAnalysisRetention       = 24 * time.Hour
 )
+
+func speechAnalysisExpiresAt(task model.SpeechAnalysisTask) time.Time {
+	if task.FinishedAt != nil && !task.FinishedAt.IsZero() {
+		return task.FinishedAt.Add(speechAnalysisRetention)
+	}
+	return task.CreatedAt.Add(speechAnalysisRetention)
+}
+
+func (response *speechAnalysisStatusResponse) setTask(task model.SpeechAnalysisTask, now time.Time) {
+	expiresAt := speechAnalysisExpiresAt(task)
+	if now.Before(expiresAt) {
+		response.Task = &task
+		response.ExpiresAt = &expiresAt
+	}
+}
+
+func speechAnalysisTaskResponse(task model.SpeechAnalysisTask) speechAnalysisStatusResponse {
+	response := speechAnalysisStatusResponse{Configured: true}
+	response.setTask(task, time.Now())
+	return response
+}
 
 func (s *Server) roomSpeechAnalysisStatus(w http.ResponseWriter, r *http.Request) {
 	tenantID, roomID, ok := s.roomCaptureScope(w, r)
@@ -82,11 +107,12 @@ func (s *Server) roomSpeechAnalysisStatus(w http.ResponseWriter, r *http.Request
 	}
 	task, err := s.store.GetLatestSpeechAnalysisTask(r.Context(), tenantID, roomID)
 	if err == nil {
-		response.Task = &task
+		response.setTask(task, time.Now())
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "读取智能话术分析状态失败")
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -118,17 +144,23 @@ func (s *Server) roomSpeechAnalysisStart(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusConflict, "请先完成声音录制并生成完整 WAV")
 		return
 	}
+	if captureSnapshot.Recording.ArchiveStatus == "expired" ||
+		(!captureSnapshot.Recording.ExpiresAt.IsZero() && !time.Now().Before(captureSnapshot.Recording.ExpiresAt)) {
+		writeError(w, http.StatusGone, "录音已过期，请重新录制或导入录音")
+		return
+	}
 	recordingID := strings.TrimSpace(captureSnapshot.Recording.ID)
 	if recordingID == "" {
 		writeError(w, http.StatusConflict, "当前录音缺少录制编号，请重新录制")
 		return
 	}
 
-	if existing, err := s.store.LatestSpeechAnalysisForRecording(r.Context(), tenantID, roomID, recordingID); err == nil {
+	if existing, err := s.store.LatestSpeechAnalysisForRecording(r.Context(), tenantID, roomID, recordingID); err == nil &&
+		time.Now().Before(speechAnalysisExpiresAt(existing)) {
 		switch existing.Status {
 		case model.SpeechAnalysisQueued, model.SpeechAnalysisUploading, model.SpeechAnalysisASR,
 			model.SpeechAnalysisAnalyzing, model.SpeechAnalysisRendering, model.SpeechAnalysisReady:
-			writeJSON(w, http.StatusOK, speechAnalysisStatusResponse{Configured: true, Task: &existing})
+			writeJSON(w, http.StatusOK, speechAnalysisTaskResponse(existing))
 			return
 		}
 	}
@@ -149,7 +181,7 @@ func (s *Server) roomSpeechAnalysisStart(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	go s.runSpeechAnalysisTask(task, roomInfo)
-	writeJSON(w, http.StatusAccepted, speechAnalysisStatusResponse{Configured: true, Task: &task})
+	writeJSON(w, http.StatusAccepted, speechAnalysisTaskResponse(task))
 }
 
 func (s *Server) roomSpeechAnalysisUpload(w http.ResponseWriter, r *http.Request) {
@@ -233,7 +265,20 @@ func (s *Server) roomSpeechAnalysisUpload(w http.ResponseWriter, r *http.Request
 	}
 
 	go s.runSpeechAnalysisTask(task, roomInfo)
-	writeJSON(w, http.StatusAccepted, speechAnalysisStatusResponse{Configured: true, Task: &task})
+	writeJSON(w, http.StatusAccepted, speechAnalysisTaskResponse(task))
+}
+
+func speechAnalysisResultAvailable(w http.ResponseWriter, r *http.Request, task model.SpeechAnalysisTask) bool {
+	w.Header().Set("Cache-Control", "no-store")
+	if !time.Now().Before(speechAnalysisExpiresAt(task)) {
+		writeError(w, http.StatusGone, "话术分析结果已过期")
+		return false
+	}
+	if expected := r.URL.Query().Get("task_id"); expected != "" && expected != strconv.FormatInt(task.ID, 10) {
+		writeError(w, http.StatusNotFound, "话术分析结果已更新")
+		return false
+	}
+	return true
 }
 
 func (s *Server) roomSpeechAnalysisTranscript(w http.ResponseWriter, r *http.Request) {
@@ -248,6 +293,9 @@ func (s *Server) roomSpeechAnalysisTranscript(w http.ResponseWriter, r *http.Req
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "读取文字稿失败")
+		return
+	}
+	if !speechAnalysisResultAvailable(w, r, task) {
 		return
 	}
 	if strings.TrimSpace(task.TranscriptObjectKey) == "" {
@@ -289,6 +337,9 @@ func (s *Server) roomSpeechAnalysisReport(w http.ResponseWriter, r *http.Request
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "读取话术分析报告失败")
+		return
+	}
+	if !speechAnalysisResultAvailable(w, r, task) {
 		return
 	}
 	if task.Status != model.SpeechAnalysisReady || strings.TrimSpace(task.ReportObjectKey) == "" {
@@ -381,6 +432,19 @@ func (s *Server) loadSpeechAnalysisRoom(ctx context.Context, tenantID, roomID in
 	return room
 }
 
+func speechAnalysisRecordingPrefix(task model.SpeechAnalysisTask) string {
+	return path.Join(
+		speechAnalysisResultPrefix,
+		fmt.Sprintf("tenant-%d", task.TenantID),
+		fmt.Sprintf("room-%d", task.RoomID),
+		safeSpeechAnalysisObjectPart(task.RecordingID),
+	)
+}
+
+func speechAnalysisTaskPrefix(task model.SpeechAnalysisTask) string {
+	return path.Join(speechAnalysisRecordingPrefix(task), fmt.Sprintf("task-%d", task.ID))
+}
+
 func (s *Server) runSpeechAnalysisTask(task model.SpeechAnalysisTask, roomInfo speechAnalysisRoom) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
 	defer cancel()
@@ -401,12 +465,7 @@ func (s *Server) runSpeechAnalysisTask(task model.SpeechAnalysisTask, roomInfo s
 		fail(errors.New(reason))
 		return
 	}
-	prefix := path.Join(
-		speechAnalysisResultPrefix,
-		fmt.Sprintf("tenant-%d", task.TenantID),
-		fmt.Sprintf("room-%d", task.RoomID),
-		safeSpeechAnalysisObjectPart(task.RecordingID),
-	)
+	prefix := speechAnalysisTaskPrefix(task)
 	if strings.TrimSpace(task.AudioObjectKey) == "" {
 		task.Status = model.SpeechAnalysisUploading
 		task.Stage = "上传录音"
@@ -660,8 +719,51 @@ func (s *Server) RunSpeechAnalysisAudioCleanup(ctx context.Context) {
 			return
 		case <-ticker.C:
 			cleanup()
+			if s.leader == nil || s.leader.IsLeader() {
+				s.cleanupSpeechAnalysisResults(ctx, ossStore)
+			}
 		}
 	}
+}
+
+func (s *Server) cleanupSpeechAnalysisResults(ctx context.Context, ossStore assetstorage.Store) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	cutoff := time.Now().UTC().Add(-speechAnalysisRetention)
+	var afterID int64
+	for ctx.Err() == nil {
+		tasks, err := s.store.ListExpiredSpeechAnalysisResults(ctx, cutoff, afterID)
+		if err != nil {
+			log.Printf("list expired speech analysis results: %v", err)
+			return
+		}
+		if len(tasks) == 0 {
+			return
+		}
+		for _, task := range tasks {
+			afterID = task.ID
+			transcript := deleteExpiredSpeechAnalysisObject(ctx, ossStore, task, task.TranscriptObjectKey, "transcript.txt")
+			report := deleteExpiredSpeechAnalysisObject(ctx, ossStore, task, task.ReportObjectKey, "analysis.md")
+			if transcript == "" && report == "" {
+				continue
+			}
+			if err := s.store.ClearSpeechAnalysisResultKeys(ctx, task, transcript, report); err != nil {
+				log.Printf("clear expired speech analysis result keys task=%d: %v", task.ID, err)
+			}
+		}
+	}
+}
+
+func deleteExpiredSpeechAnalysisObject(ctx context.Context, ossStore assetstorage.Store, task model.SpeechAnalysisTask, key, name string) string {
+	if key == "" || task.ID <= 0 || task.TenantID <= 0 || task.RoomID <= 0 ||
+		(key != path.Join(speechAnalysisTaskPrefix(task), name) && key != path.Join(speechAnalysisRecordingPrefix(task), name)) {
+		return ""
+	}
+	if err := ossStore.Delete(ctx, key); err != nil {
+		log.Printf("cleanup expired speech analysis result task=%d object=%q: %v", task.ID, key, err)
+		return ""
+	}
+	return key
 }
 
 func (s *Server) uploadSpeechAnalysisRecording(

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type QwenConfig struct {
@@ -64,6 +65,9 @@ func (p *qwenProvider) SynthesizeURL(ctx context.Context, request SynthesizeRequ
 	}
 	if strings.TrimSpace(request.Model) == "" || strings.TrimSpace(request.VoiceID) == "" || strings.TrimSpace(request.Text) == "" {
 		return SynthesizeResponse{}, notSent(errors.New("model, voice_id and text are required"))
+	}
+	if request.Model == "qwen3-tts-flash" && utf8.RuneCountInString(request.Text) > QwenFlashMaxInputRunes {
+		return SynthesizeResponse{}, notSent(errors.New("阿里云 Qwen3-TTS-Flash 单次合成最多 600 字符"))
 	}
 	payload := map[string]any{
 		"model": request.Model,

@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -412,17 +413,17 @@ func (s *Store) CreateCustomerShopOrder(
 	if err := tx.QueryRowContext(ctx, `
 		SELECT p.name, v.id, v.version_no, v.price_cents,
 		       v.duration_seconds, v.validity_days,
-		       v.activation_mode, v.activation_deadline_days
+		       v.activation_mode, COALESCE(NULLIF(v.activation_deadline_days,0),20)
 		FROM catalog_time_card_products p
 		INNER JOIN catalog_time_card_versions v ON v.product_id=p.id
-		WHERE p.id=? AND p.status='active'
+		WHERE p.id=? AND (p.status='active' OR (p.status='internal' AND ? > 0))
 		  AND v.lifecycle_status='published'
 		  AND (v.effective_from IS NULL OR v.effective_from <= CURRENT_TIMESTAMP(3))
 		  AND (v.effective_to IS NULL OR v.effective_to > CURRENT_TIMESTAMP(3))
 		ORDER BY v.version_no DESC
 		LIMIT 1
 		FOR UPDATE
-	`, input.ProductID).Scan(
+	`, input.ProductID, input.MarketingCampaignID).Scan(
 		&productName,
 		&productVersionID,
 		&versionNo,
@@ -436,10 +437,11 @@ func (s *Store) CreateCustomerShopOrder(
 	}
 
 	membershipDiscountBPS := uint32(10000)
+	var membershipCardReduction sql.NullInt64
 	var membershipID sql.NullInt64
 	var membershipPlanVersionID sql.NullInt64
 	err = tx.QueryRowContext(ctx, `
-		SELECT m.id, m.plan_version_id, v.default_time_card_discount_bps
+		SELECT m.id, m.plan_version_id, v.default_time_card_discount_bps,`+membershipCardReductionSQL+`
 		FROM biz_memberships m
 		INNER JOIN catalog_membership_plan_versions v ON v.id=m.plan_version_id
 		WHERE m.tenant_id=? AND m.status='active'
@@ -451,6 +453,7 @@ func (s *Store) CreateCustomerShopOrder(
 		&membershipID,
 		&membershipPlanVersionID,
 		&membershipDiscountBPS,
+		&membershipCardReduction,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		membershipDiscountBPS = 10000
@@ -459,7 +462,7 @@ func (s *Store) CreateCustomerShopOrder(
 	} else if err != nil {
 		return model.CustomerShopOrder{}, err
 	}
-	membershipDiscountBPS = normalizeMembershipDiscountBPS(membershipDiscountBPS)
+	membershipDiscountBPS = membershipPaidBPS(membershipDiscountBPS, membershipCardReduction)
 
 	discountBPS := membershipDiscountBPS
 	marketingCampaignID := int64(0)
@@ -554,7 +557,10 @@ func (s *Store) CreateCustomerShopOrder(
 				'discount_bps', ?,
 				'quantity', ?,
 				'marketing_campaign_id', ?,
-				'marketing_campaign_name', ?
+				'marketing_campaign_name', ?,
+				'buyer_user_id', ?,
+				'membership_name', (SELECT p.name FROM catalog_membership_plan_versions v
+				    JOIN catalog_membership_plans p ON p.id=v.plan_id WHERE v.id=?)
 			),
 			JSON_OBJECT(
 				'sales_assignment_id', ?,
@@ -587,6 +593,8 @@ func (s *Store) CreateCustomerShopOrder(
 		input.Quantity,
 		marketingCampaignID,
 		marketingCampaignName,
+		userID,
+		nullableInt64Value(membershipPlanVersionID),
 		nullableInt64Value(relations.SalesAssignmentID),
 		nullableInt64Value(relations.SalesStaffID),
 		nullableInt64Value(relations.AgentRelationID),
@@ -702,15 +710,13 @@ func (s *Store) createMembershipCustomerShopOrder(
 		quarterDiscountBPS        uint32
 		annualDiscountBPS         uint32
 		includedSeconds           uint64
-		allowAutoRenew            bool
 	)
 	if err := tx.QueryRowContext(ctx, `
 		SELECT p.name, v.id, v.version_no, v.price_cents,
 		       v.recurring_month_discount_bps,
 		       v.recurring_quarter_discount_bps,
 		       v.annual_discount_bps,
-		       v.included_seconds,
-		       v.allow_auto_renew
+		       v.included_seconds
 		FROM catalog_membership_plans p
 		INNER JOIN catalog_membership_plan_versions v ON v.plan_id=p.id
 		WHERE p.id=? AND p.status='active'
@@ -729,14 +735,13 @@ func (s *Store) createMembershipCustomerShopOrder(
 		&quarterDiscountBPS,
 		&annualDiscountBPS,
 		&includedSeconds,
-		&allowAutoRenew,
 	); err != nil {
 		return model.CustomerShopOrder{}, err
 	}
 
 	months := uint32(1)
 	discountBPS := uint32(10000)
-	autoRenew := false
+	const autoRenew = false
 	cycleKey := strings.TrimSpace(input.MembershipCycle)
 	marketingCampaignID := int64(0)
 	marketingCampaignName := ""
@@ -780,7 +785,6 @@ func (s *Store) createMembershipCustomerShopOrder(
 		}
 		months *= itemQuantity
 		discountBPS = campaignItem.DiscountBPS
-		autoRenew = allowAutoRenew && campaignItem.PricingMode == "package"
 		marketingCampaignID = matched.ID
 		marketingCampaignName = matched.Name
 		selectedMarketingCampaign = *matched
@@ -792,17 +796,14 @@ func (s *Store) createMembershipCustomerShopOrder(
 			cycleKey = "single_month"
 		case "recurring_month":
 			discountBPS = recurringMonthDiscountBPS
-			autoRenew = allowAutoRenew
 		case "quarter":
 			months = 3
 			discountBPS = quarterDiscountBPS
-			autoRenew = allowAutoRenew
 		case "half_year":
 			months = 6
 		case "annual":
 			months = 12
 			discountBPS = annualDiscountBPS
-			autoRenew = allowAutoRenew
 		default:
 			return model.CustomerShopOrder{}, ErrUnsupportedShopProduct
 		}
@@ -1001,7 +1002,7 @@ func (s *Store) createMembershipCustomerShopOrder(
 	return s.GetCustomerShopOrder(ctx, tenantID, orderID)
 }
 
-func (s *Store) WalletPayCustomerTimeCardOrder(
+func (s *Store) WalletPayCustomerShopOrder(
 	ctx context.Context,
 	tenantID int64,
 	userID int64,
@@ -1033,10 +1034,10 @@ func (s *Store) WalletPayCustomerTimeCardOrder(
 		_ = tx.Rollback()
 		return s.GetCustomerShopOrder(ctx, tenantID, orderID)
 	}
-	if status == "cancelled" {
+	if status != "pending" {
 		return model.CustomerShopOrder{}, ErrShopOrderCancelled
 	}
-	if orderType != "time_card" {
+	if orderType != "time_card" && orderType != "device" {
 		return model.CustomerShopOrder{}, ErrUnsupportedShopProduct
 	}
 	if currency != "CNY" {
@@ -1046,20 +1047,38 @@ func (s *Store) WalletPayCustomerTimeCardOrder(
 		return model.CustomerShopOrder{}, err
 	}
 
-	idempotencyKey = strings.TrimSpace(idempotencyKey)
-	if idempotencyKey == "" {
-		idempotencyKey = fmt.Sprintf("wallet-time-card-%d", orderID)
-	}
-	var existingLedgerID int64
-	err = tx.QueryRowContext(ctx, `
-		SELECT id FROM fin_wallet_ledger WHERE idempotency_key=? LIMIT 1
-	`, idempotencyKey).Scan(&existingLedgerID)
-	if err == nil {
-		_ = tx.Rollback()
-		return s.GetCustomerShopOrder(ctx, tenantID, orderID)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return model.CustomerShopOrder{}, err
+	ledgerID := fmt.Sprintf("wallet-%s-%d", strings.ReplaceAll(orderType, "_", "-"), orderID)
+	ledgerBusiness, ledgerReason := "time_card_purchase", "钱包余额购买时长卡 · "+orderNo
+	if orderType == "device" {
+		expired, err := cancelExpiredDeviceOrderTx(ctx, tx, tenantID, userID, orderID)
+		if err != nil {
+			return model.CustomerShopOrder{}, err
+		}
+		if expired {
+			if err := tx.Commit(); err != nil {
+				return model.CustomerShopOrder{}, err
+			}
+			return model.CustomerShopOrder{}, ErrShopOrderExpired
+		}
+		// The locked order and committed payment status make retries idempotent.
+		idempotencyKey = ledgerID + "-" + rand.Text()
+		ledgerBusiness, ledgerReason = "device_purchase", "钱包余额购买直播终端 · "+orderNo
+	} else {
+		idempotencyKey = strings.TrimSpace(idempotencyKey)
+		if idempotencyKey == "" {
+			idempotencyKey = ledgerID
+		}
+		var existingLedgerID int64
+		err = tx.QueryRowContext(ctx, `
+			SELECT id FROM fin_wallet_ledger WHERE idempotency_key=? LIMIT 1
+		`, idempotencyKey).Scan(&existingLedgerID)
+		if err == nil {
+			_ = tx.Rollback()
+			return s.GetCustomerShopOrder(ctx, tenantID, orderID)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return model.CustomerShopOrder{}, err
+		}
 	}
 
 	walletID, walletBalance, err := lockWalletAccountTx(ctx, tx, tenantID, "cash")
@@ -1092,11 +1111,10 @@ func (s *Store) WalletPayCustomerTimeCardOrder(
 				amount_cents, balance_before_cents, balance_after_cents,
 				business_type, business_id, order_no, operator_user_id,
 				reason, idempotency_key, occurred_at
-			) VALUES (?, ?, ?, 'out', ?, ?, ?, 'time_card_purchase', ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, 'out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
-			fmt.Sprintf("wallet-time-card-%d", orderID), tenantID, walletID,
-			payableAmount, walletBalance, walletAfter, orderID, orderNo, userID,
-			"钱包余额购买时长卡 · "+orderNo, idempotencyKey, time.Now().UTC(),
+			ledgerID, tenantID, walletID, payableAmount, walletBalance, walletAfter,
+			ledgerBusiness, orderID, orderNo, userID, ledgerReason, idempotencyKey, time.Now().UTC(),
 		); err != nil {
 			return model.CustomerShopOrder{}, err
 		}
@@ -1104,6 +1122,9 @@ func (s *Store) WalletPayCustomerTimeCardOrder(
 
 	now := time.Now().UTC()
 	paymentNo := fmt.Sprintf("PAY-WALLET-%d", now.UnixNano())
+	if orderType == "device" {
+		paymentNo = fmt.Sprintf("PAY-WALLET-DEV-%d", orderID)
+	}
 	externalTradeNo := fmt.Sprintf("WALLET-%d", orderID)
 	paymentIdempotency := "payment-" + idempotencyKey
 	if _, err := tx.ExecContext(ctx, `
@@ -1127,7 +1148,12 @@ func (s *Store) WalletPayCustomerTimeCardOrder(
 	`, payableAmount, orderID, tenantID); err != nil {
 		return model.CustomerShopOrder{}, err
 	}
-	if err := fulfillTimeCardOrderTx(ctx, tx, tenantID, userID, orderID, orderNo); err != nil {
+	if orderType == "device" {
+		err = fulfillDeviceOrderTx(ctx, tx, tenantID, userID, orderID, orderNo, false)
+	} else {
+		err = fulfillTimeCardOrderTx(ctx, tx, tenantID, userID, orderID, orderNo)
+	}
+	if err != nil {
 		return model.CustomerShopOrder{}, err
 	}
 	if err := consumeMarketingCampaignOrderTx(ctx, tx, orderID); err != nil {
@@ -1188,37 +1214,11 @@ func (s *Store) SandboxPayCustomerShopOrder(
 		return model.CustomerShopOrder{}, err
 	}
 	if orderType == "device" {
-		var expiredHoldCount int
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*)
-			FROM biz_order_devices
-			WHERE order_id=?
-			  AND status='payment_hold'
-			  AND hold_expires_at IS NOT NULL
-			  AND hold_expires_at<=CURRENT_TIMESTAMP(3)
-		`, orderID).Scan(&expiredHoldCount); err != nil {
+		expired, err := cancelExpiredDeviceOrderTx(ctx, tx, tenantID, userID, orderID)
+		if err != nil {
 			return model.CustomerShopOrder{}, err
 		}
-		if expiredHoldCount > 0 {
-			if _, err := releaseDeviceOrderHoldTx(
-				ctx,
-				tx,
-				userID,
-				orderID,
-				"设备订单支付超时，释放待支付锁库",
-			); err != nil {
-				return model.CustomerShopOrder{}, err
-			}
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE biz_orders
-				SET status='cancelled', cancelled_at=CURRENT_TIMESTAMP(3)
-				WHERE id=? AND tenant_id=? AND status='pending'
-			`, orderID, tenantID); err != nil {
-				return model.CustomerShopOrder{}, err
-			}
-			if err := releaseMarketingCampaignOrderTx(ctx, tx, orderID, "expired"); err != nil {
-				return model.CustomerShopOrder{}, err
-			}
+		if expired {
 			if err := tx.Commit(); err != nil {
 				return model.CustomerShopOrder{}, err
 			}
@@ -1437,18 +1437,16 @@ func fulfillMembershipOrderTx(
 		}
 	}
 
-	var allowAutoRenew bool
 	var monthlyIncludedSeconds uint64
 	if err := tx.QueryRowContext(ctx, `
-		SELECT allow_auto_renew, included_seconds
+		SELECT included_seconds
 		FROM catalog_membership_plan_versions
 		WHERE id=? AND plan_id=?
 		LIMIT 1
-	`, planVersionID, planID).Scan(&allowAutoRenew, &monthlyIncludedSeconds); err != nil {
+	`, planVersionID, planID).Scan(&monthlyIncludedSeconds); err != nil {
 		return err
 	}
-	// JSAPI is a one-off payment, not a WeChat recurring debit agreement.
-	autoRenew := allowAutoRenew && cycle != "single_month" && paymentChannel != "wechat" && paymentChannel != "marketing_free"
+	const autoRenew = false
 
 	// DATETIME(3) rounds sub-millisecond input. Use its exact precision for both
 	// the stored effective_at and the immediate quota query, otherwise a rounded
@@ -1692,7 +1690,6 @@ func fulfillTimeCardOrderTx(
 	orderID int64,
 	orderNo string,
 ) error {
-	_ = userID
 	var (
 		orderItemID            int64
 		productID              int64
@@ -1703,18 +1700,20 @@ func fulfillTimeCardOrderTx(
 		validityDays           uint32
 		activationMode         string
 		activationDeadlineDays uint32
+		buyerID                int64
 	)
 	if err := tx.QueryRowContext(ctx, `
-		SELECT id, product_id, product_version_id, product_name_snapshot,
+		SELECT i.id, product_id, product_version_id, product_name_snapshot,
 		       quantity, COALESCE(duration_seconds_snapshot, 0),
 		       COALESCE(validity_days_snapshot, 0),
 		       COALESCE(NULLIF(activation_mode_snapshot, ''), 'first_use'),
-		       COALESCE(activation_deadline_days_snapshot, 0)
-		FROM biz_order_items
-		WHERE order_id=? AND product_type='time_card'
-		ORDER BY id ASC
+		       COALESCE(activation_deadline_days_snapshot, 0),
+		       COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(o.pricing_snapshot_json,'$.buyer_user_id')) AS UNSIGNED), ?)
+		FROM biz_order_items i JOIN biz_orders o ON o.id=i.order_id
+		WHERE i.order_id=? AND i.product_type='time_card'
+		ORDER BY i.id ASC
 		LIMIT 1
-	`, orderID).Scan(
+	`, userID, orderID).Scan(
 		&orderItemID,
 		&productID,
 		&productVersionID,
@@ -1724,6 +1723,7 @@ func fulfillTimeCardOrderTx(
 		&validityDays,
 		&activationMode,
 		&activationDeadlineDays,
+		&buyerID,
 	); err != nil {
 		return err
 	}
@@ -1739,7 +1739,7 @@ func fulfillTimeCardOrderTx(
 	}
 	for sequence := uint32(1); sequence <= quantity; sequence++ {
 		assetNo := fmt.Sprintf("TC-%d-%03d", orderID, sequence)
-		if _, err := tx.ExecContext(ctx, `
+		result, err := tx.ExecContext(ctx, `
 			INSERT INTO biz_time_card_assets (
 				asset_no, tenant_id, source_order_id, source_order_item_id,
 				asset_sequence, product_id, product_version_id, product_name_snapshot,
@@ -1761,7 +1761,15 @@ func fulfillTimeCardOrderTx(
 			activationMode,
 			activationDeadline,
 			validityDays,
-		); err != nil {
+		)
+		if err != nil {
+			return err
+		}
+		assetID, err := result.LastInsertId()
+		if err != nil {
+			return err
+		}
+		if err := recordTimeCardSaleTx(ctx, tx, productID, assetID, buyerID, activationDeadlineDays > 0); err != nil {
 			return err
 		}
 	}
@@ -2157,34 +2165,29 @@ func (s *Store) CancelCustomerShopOrder(
 		return model.CustomerShopOrder{}, err
 	}
 
-	if orderType == "device" {
-		if _, err := releaseDeviceOrderHoldTx(
-			ctx,
-			tx,
-			0,
-			orderID,
-			"用户取消未支付设备订单，释放锁库",
-		); err != nil {
-			return model.CustomerShopOrder{}, err
-		}
-	}
-
-	if err := releaseMarketingCampaignOrderTx(ctx, tx, orderID, "cancelled"); err != nil {
+	if err := cancelUnpaidShopOrderTx(ctx, tx, orderID, orderType, 0, "用户取消未支付设备订单，释放锁库"); err != nil {
 		return model.CustomerShopOrder{}, err
 	}
-
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE biz_orders
-		SET status='cancelled', cancelled_at=CURRENT_TIMESTAMP(3)
-		WHERE id=? AND tenant_id=?
-	`, orderID, tenantID); err != nil {
-		return model.CustomerShopOrder{}, err
-	}
-
 	if err := tx.Commit(); err != nil {
 		return model.CustomerShopOrder{}, err
 	}
 	return s.GetCustomerShopOrder(ctx, tenantID, orderID)
+}
+
+// The caller locks the order and verifies its payment state before cancellation.
+func cancelUnpaidShopOrderTx(ctx context.Context, tx *sql.Tx, orderID int64, orderType string, actorID int64, reason string) error {
+	if orderType == "device" {
+		if _, err := releaseDeviceOrderHoldTx(ctx, tx, actorID, orderID, reason); err != nil {
+			return err
+		}
+	}
+	if err := releaseMarketingCampaignOrderTx(ctx, tx, orderID, "cancelled"); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+		UPDATE biz_orders SET status='cancelled', cancelled_at=CURRENT_TIMESTAMP(3) WHERE id=?
+	`, orderID)
+	return err
 }
 
 type orderRelationSnapshot struct {
@@ -2402,6 +2405,28 @@ func holdPendingDeviceOrderStockTx(
 		}
 	}
 	return nil
+}
+
+// The caller holds the pending order lock and commits the cancellation if expired.
+func cancelExpiredDeviceOrderTx(ctx context.Context, tx *sql.Tx, tenantID, userID, orderID int64) (bool, error) {
+	var expired bool
+	err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM biz_order_devices WHERE order_id=?
+		  AND status='payment_hold' AND hold_expires_at<=CURRENT_TIMESTAMP(3))
+	`, orderID).Scan(&expired)
+	if err != nil || !expired {
+		return false, err
+	}
+	if _, err := releaseDeviceOrderHoldTx(ctx, tx, userID, orderID, "设备订单支付超时，释放待支付锁库"); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE biz_orders SET status='cancelled', cancelled_at=CURRENT_TIMESTAMP(3)
+		WHERE id=? AND tenant_id=? AND status='pending'
+	`, orderID, tenantID); err != nil {
+		return false, err
+	}
+	return true, releaseMarketingCampaignOrderTx(ctx, tx, orderID, "expired")
 }
 
 func releaseDeviceOrderHoldTx(
@@ -2747,8 +2772,9 @@ func (s *Store) createDeviceCustomerShopOrder(
 	var membershipID sql.NullInt64
 	var membershipPlanVersionID sql.NullInt64
 	membershipDeviceDiscountBPS := uint32(10000)
+	var membershipDeviceReduction sql.NullInt64
 	err = tx.QueryRowContext(ctx, `
-		SELECT m.id, m.plan_version_id, v.default_device_discount_bps
+		SELECT m.id, m.plan_version_id, v.default_device_discount_bps,`+membershipDeviceReductionSQL+`
 		FROM biz_memberships m
 		INNER JOIN catalog_membership_plan_versions v ON v.id=m.plan_version_id
 		WHERE m.tenant_id=? AND m.status='active'
@@ -2756,7 +2782,7 @@ func (s *Store) createDeviceCustomerShopOrder(
 		  AND m.cycle_end_at > CURRENT_TIMESTAMP(3)
 		ORDER BY m.cycle_end_at DESC, m.id DESC
 		LIMIT 1
-	`, tenantID).Scan(&membershipID, &membershipPlanVersionID, &membershipDeviceDiscountBPS)
+	`, tenantID).Scan(&membershipID, &membershipPlanVersionID, &membershipDeviceDiscountBPS, &membershipDeviceReduction)
 	if errors.Is(err, sql.ErrNoRows) {
 		membershipID = sql.NullInt64{}
 		membershipPlanVersionID = sql.NullInt64{}
@@ -2764,7 +2790,7 @@ func (s *Store) createDeviceCustomerShopOrder(
 	} else if err != nil {
 		return model.CustomerShopOrder{}, err
 	}
-	membershipDeviceDiscountBPS = normalizeMembershipDiscountBPS(membershipDeviceDiscountBPS)
+	membershipDeviceDiscountBPS = membershipPaidBPS(membershipDeviceDiscountBPS, membershipDeviceReduction)
 
 	relations, err := loadOrderRelationSnapshotTx(ctx, tx, tenantID)
 	if err != nil {
@@ -2772,11 +2798,11 @@ func (s *Store) createDeviceCustomerShopOrder(
 	}
 
 	memberPrice := salePrice * uint64(membershipDeviceDiscountBPS) / 10000
-	if memberPrice == 0 && salePrice > 0 {
+	if memberPrice == 0 && salePrice > 0 && membershipDeviceDiscountBPS > 0 {
 		memberPrice = 1
 	}
 	discountBPS := uint32(memberPrice * 10000 / listPrice)
-	if discountBPS == 0 {
+	if discountBPS == 0 && memberPrice > 0 {
 		discountBPS = 1
 	}
 	quantity := uint64(input.Quantity)
@@ -2799,13 +2825,9 @@ func (s *Store) createDeviceCustomerShopOrder(
 	if marketingCampaignID > 0 {
 		unitListPrice = salePrice
 	}
-	orderNo := fmt.Sprintf("ORD-DEV-%d", time.Now().UTC().UnixNano())
+	orderNo := "ORD-DEV-" + rand.Text()
 	if idempotencyKey == "" {
-		idempotencyKey = fmt.Sprintf(
-			"shop-device-order-%d-%d",
-			tenantID,
-			time.Now().UTC().UnixNano(),
-		)
+		idempotencyKey = "shop-device-order-" + orderNo
 	}
 
 	result, err := tx.ExecContext(ctx, `

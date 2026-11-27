@@ -34,6 +34,7 @@ type Version struct {
 	SourcePath      string
 	CreatedAt       string
 	FactsKey        string
+	SpecHash        string
 	PlayedTracks    []string
 	CompleteCount   int
 	CompletedTracks []string

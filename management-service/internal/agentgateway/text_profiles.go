@@ -125,7 +125,10 @@ func PrepareTextRequest(p SpeechModel, r Request) (Request, error) {
 		// 主线不再叠加 foundation/final-boundary 两层总约束，直接采用
 		// renderCycleTextMessages 已拼好的 system（mainline-text-task.md + 风格卡）。
 		r.TextPromptID, r.TextPromptSHA = id, hash
-		r.EnableThinking = false
+		r.EnableThinking = r.ReasoningEffort == "high" && SupportsHighReasoning(p)
+		if r.EnableThinking {
+			r.Temperature = nil
+		}
 		return r, nil
 	}
 	r.Messages = append([]Message{{Role: "system", Content: body}}, r.Messages...)

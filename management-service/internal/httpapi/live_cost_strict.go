@@ -115,6 +115,9 @@ func (s *Server) completePaidScriptModel(ctx context.Context, request agentgatew
 		if err != nil {
 			return agentgateway.Response{}, err
 		}
+		if request.UseProviderOutputLimit && id == "" {
+			return agentgateway.Response{}, errors.New("当前场次没有已配置的高思考模型，未发送")
+		}
 		// All script rewrite stages are non-mainline_text stages. An empty
 		// role therefore uses the gateway's original environment fallback.
 		if id != "" {
@@ -124,7 +127,7 @@ func (s *Server) completePaidScriptModel(ctx context.Context, request agentgatew
 			}
 			p := *profile
 			request.Provider, request.Model = "anchor:"+p.ID, p.Model
-			if request.MaxTokens <= 0 || request.MaxTokens > p.MaxTokens {
+			if !request.UseProviderOutputLimit && (request.MaxTokens <= 0 || request.MaxTokens > p.MaxTokens) {
 				request.MaxTokens = p.MaxTokens
 			}
 			limit := time.Duration(p.TimeoutMS) * time.Millisecond
@@ -132,7 +135,7 @@ func (s *Server) completePaidScriptModel(ctx context.Context, request agentgatew
 				request.Timeout = limit
 			}
 			request.Messages = append([]agentgateway.Message(nil), request.Messages...)
-			if strings.TrimSpace(p.SystemPrompt) != "" {
+			if direct, _ := ctx.Value(directScriptPromptKey{}).(bool); !direct && strings.TrimSpace(p.SystemPrompt) != "" {
 				request.Messages = append([]agentgateway.Message{{Role: "system", Content: p.SystemPrompt}}, request.Messages...)
 			}
 			call = func(c context.Context, r agentgateway.Request) (agentgateway.Response, error) {

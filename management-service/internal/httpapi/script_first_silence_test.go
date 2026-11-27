@@ -203,17 +203,19 @@ func TestSilenceWAVIsTwoSeconds(t *testing.T) {
 	}
 }
 
-func TestMandarinInstructionInvalidatesOnlyQwenParagraphCache(t *testing.T) {
+func TestMainlineDefaultDeliveryRefreshesOnlyQwenParagraphs(t *testing.T) {
 	v := model.LiveAgentPlanVersion{VoiceIdentity: model.LiveAgentVoiceIdentity{Model: "qwen-audio-3.1-tts-flash", VoiceID: "clone", Rate: 1}}
 	text := "同一个主播完整朗读这一段话术。"
-	raw, _ := json.Marshal([]any{"script-paragraph-v1", ttsgateway.ProviderForModel(v.VoiceIdentity.Model), v.VoiceIdentity.Model, v.VoiceIdentity.VoiceID, v.VoiceIdentity.Rate, text, recordingInstructionForVersion(v, text), "untimed-transcript-v1"})
+	raw, _ := json.Marshal([]any{"script-paragraph-v1", ttsgateway.ProviderQwen, v.VoiceIdentity.Model, v.VoiceIdentity.VoiceID, v.VoiceIdentity.Rate, text, "", "untimed-transcript-v2-mandarin"})
 	sum := sha256.Sum256(raw)
-	if scriptFirstParagraphKey(v, text) == hex.EncodeToString(sum[:]) {
-		t.Fatal("old accent cache still matches")
+	key := scriptFirstParagraphKey(v, text)
+	if key == hex.EncodeToString(sum[:]) {
+		t.Fatal("Qwen still reuses audio with the former delivery instruction")
 	}
-	req := withNaturalBreathInstruction(ttsgateway.SynthesizeRequest{Text: text, Instruction: "原有表达要求"})
-	if req.Text != text || !strings.Contains(req.Instruction, "原有表达要求") || !strings.Contains(req.Instruction, "请用标准普通话朗读，不要带方言口音") {
-		t.Fatal("spoken text/style/Mandarin constraint lost")
+	enabled := true
+	v.VoiceIdentity.EmotionEnabled = &enabled
+	if scriptFirstParagraphKey(v, text) != key {
+		t.Fatal("unused Qwen delivery instruction changed the cache key")
 	}
 	v.VoiceIdentity.Model = ttsgateway.VolcengineICL2
 	if scriptFirstParagraphKey(v, text) != volcengineParagraphKey(v.VoiceIdentity.VoiceID, text, v.VoiceIdentity.Rate) {

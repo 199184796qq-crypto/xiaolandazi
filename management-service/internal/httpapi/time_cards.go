@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	storedb "livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
 
@@ -47,7 +48,7 @@ func (s *Server) commercialCreateTimeCard(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	input, ok := readTimeCardInput(w, r)
+	input, ok := readTimeCardInput(w, r, false)
 	if !ok {
 		return
 	}
@@ -73,7 +74,7 @@ func (s *Server) commercialSaveTimeCardDraft(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	input, ok := readTimeCardInput(w, r)
+	input, ok := readTimeCardInput(w, r, false)
 	if !ok {
 		return
 	}
@@ -135,8 +136,8 @@ func (s *Server) commercialSetTimeCardListing(w http.ResponseWriter, r *http.Req
 		return
 	}
 	input.Status = strings.ToLower(strings.TrimSpace(input.Status))
-	if input.Status != "active" && input.Status != "inactive" {
-		writeError(w, http.StatusBadRequest, "上架状态无效")
+	if input.Status != "active" && input.Status != "inactive" && input.Status != "internal" {
+		writeError(w, http.StatusBadRequest, "销售状态无效")
 		return
 	}
 	item, err := s.store.SetCommercialTimeCardStatus(r.Context(), actor.UserID, productID, input.Status)
@@ -145,11 +146,15 @@ func (s *Server) commercialSetTimeCardListing(w http.ResponseWriter, r *http.Req
 			writeError(w, http.StatusNotFound, "时长卡不存在")
 			return
 		}
-		if strings.Contains(err.Error(), "no published version") {
-			writeError(w, http.StatusConflict, "时长卡还没有已发布版本，不能上架")
+		if errors.Is(err, storedb.ErrTimeCardUnpublished) {
+			writeError(w, http.StatusConflict, "请先保存时长卡资料，再更新销售状态")
 			return
 		}
-		writeError(w, http.StatusBadRequest, "更新时长卡上下架状态失败")
+		if errors.Is(err, storedb.ErrTimeCardArchived) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, "更新时长卡销售状态失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -213,7 +218,7 @@ func (s *Server) customerShopTimeCards(w http.ResponseWriter, r *http.Request) {
 			DurationSeconds:        version.DurationSeconds,
 			ValidityDays:           version.ValidityDays,
 			ActivationMode:         version.ActivationMode,
-			ActivationDeadlineDays: version.ActivationDeadlineDays,
+			ActivationDeadlineDays: timeCardCheckoutDeadline(version.ActivationDeadlineDays),
 			OriginalPriceCents:     version.PriceCents,
 			DiscountBPS:            discountBPS,
 			SalePriceCents:         salePrice,
@@ -227,6 +232,7 @@ func (s *Server) customerShopTimeCards(w http.ResponseWriter, r *http.Request) {
 func readTimeCardInput(
 	w http.ResponseWriter,
 	r *http.Request,
+	workspace bool,
 ) (model.CommercialTimeCardInput, bool) {
 	var input model.CommercialTimeCardInput
 	if err := readJSON(w, r, &input); err != nil {
@@ -242,8 +248,12 @@ func readTimeCardInput(
 		input.ActivationMode = "first_use"
 	}
 
-	if !timeCardCodePattern.MatchString(input.Code) {
+	if !workspace && input.Code != "" && !timeCardCodePattern.MatchString(input.Code) {
 		writeError(w, http.StatusBadRequest, "内部编码需为 2-64 位小写字母、数字、下划线或短横线")
+		return model.CommercialTimeCardInput{}, false
+	}
+	if input.Name == "" {
+		writeError(w, http.StatusBadRequest, "请输入时长卡名称")
 		return model.CommercialTimeCardInput{}, false
 	}
 	if utf8.RuneCountInString(input.Name) < 2 || utf8.RuneCountInString(input.Name) > 128 {
@@ -254,11 +264,19 @@ func readTimeCardInput(
 		writeError(w, http.StatusBadRequest, "时长卡说明最多 1024 个字符")
 		return model.CommercialTimeCardInput{}, false
 	}
+	if input.PriceCents == 0 {
+		writeError(w, http.StatusBadRequest, "价格必须大于 0 元")
+		return model.CommercialTimeCardInput{}, false
+	}
 	if input.PriceCents > 1000000000 {
 		writeError(w, http.StatusBadRequest, "时长卡价格超出允许范围")
 		return model.CommercialTimeCardInput{}, false
 	}
-	if input.DurationSeconds == 0 || input.DurationSeconds > 20*365*24*3600 {
+	if input.DurationSeconds <= 3600 {
+		writeError(w, http.StatusBadRequest, "时长必须大于 1 小时")
+		return model.CommercialTimeCardInput{}, false
+	}
+	if input.DurationSeconds > 20*365*24*3600 {
 		writeError(w, http.StatusBadRequest, "时长范围不正确")
 		return model.CommercialTimeCardInput{}, false
 	}
@@ -267,15 +285,22 @@ func readTimeCardInput(
 		return model.CommercialTimeCardInput{}, false
 	}
 	if input.ActivationMode != "first_use" {
-		writeError(w, http.StatusBadRequest, "当前时长卡仅支持首次使用激活")
+		writeError(w, http.StatusBadRequest, "当前时长卡仅支持单张手动激活")
 		return model.CommercialTimeCardInput{}, false
 	}
-	if input.ActivationDeadlineDays > 3650 {
-		writeError(w, http.StatusBadRequest, "最晚激活期限需为 0-3650 天，0 表示不限")
+	if input.ActivationDeadlineDays > 3650 || (workspace && input.ActivationDeadlineDays == 0) {
+		writeError(w, http.StatusBadRequest, "最晚激活期限需为 1-3650 天")
 		return model.CommercialTimeCardInput{}, false
 	}
 
 	return input, true
+}
+
+func timeCardCheckoutDeadline(days uint32) uint32 {
+	if days == 0 {
+		return 20
+	}
+	return days
 }
 
 func timeCardProductID(w http.ResponseWriter, r *http.Request) (int64, bool) {

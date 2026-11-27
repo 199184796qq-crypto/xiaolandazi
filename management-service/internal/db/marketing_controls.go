@@ -59,7 +59,7 @@ func saveCampaignControlsTx(ctx context.Context, tx *sql.Tx, id int64, c model.M
 	if e != nil {
 		return e
 	}
-	_, e = tx.ExecContext(ctx, `INSERT INTO mkt_campaign_controls(campaign_id,controls_json) VALUES (?,CAST(? AS JSON)) ON DUPLICATE KEY UPDATE controls_json=VALUES(controls_json)`, id, string(b))
+	_, e = tx.ExecContext(ctx, `INSERT INTO mkt_campaign_controls(campaign_id,controls_json) VALUES (?,CAST(? AS JSON)) ON DUPLICATE KEY UPDATE controls_json=JSON_MERGE_PATCH(controls_json,VALUES(controls_json))`, id, string(b))
 	return e
 }
 
@@ -71,8 +71,20 @@ func (s *Store) loadCampaignControls(ctx context.Context, items []model.Marketin
 			return e
 		}
 		if e == nil {
-			if e = json.Unmarshal([]byte(raw), &items[i].Controls); e != nil {
+			var settings struct {
+				model.MarketingCampaignControls
+				StockLimit uint32 `json:"stock_limit"`
+			}
+			if e = json.Unmarshal([]byte(raw), &settings); e != nil {
 				return e
+			}
+			items[i].Controls = settings.MarketingCampaignControls
+			if settings.StockLimit > 0 {
+				stock, err := readMarketingStock(ctx, s.db, items[i].ID, 0, settings.StockLimit, false)
+				if err != nil {
+					return err
+				}
+				items[i].Stock = &stock
 			}
 		}
 		for j := range items[i].Items {
@@ -123,11 +135,12 @@ func reserveCampaignClaimTx(ctx context.Context, tx *sql.Tx, tenantID, orderID i
 		return e
 	}
 	current := c
+	current.Stock = nil // Stock is checked with a current read when reserving the order.
 	current.Status = status
 	current.StartsAt = campaignTimeString(start)
 	current.EndsAt = campaignTimeString(end)
 	var raw string
-	e := tx.QueryRowContext(ctx, `SELECT CAST(controls_json AS CHAR) FROM mkt_campaign_controls WHERE campaign_id=?`, c.ID).Scan(&raw)
+	e := tx.QueryRowContext(ctx, `SELECT CAST(controls_json AS CHAR) FROM mkt_campaign_controls WHERE campaign_id=? FOR UPDATE`, c.ID).Scan(&raw)
 	if e != nil && !errors.Is(e, sql.ErrNoRows) {
 		return e
 	}

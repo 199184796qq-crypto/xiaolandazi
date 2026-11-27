@@ -797,23 +797,16 @@ func (s *Store) RegisterCustomerByInvite(
 	sourceType := "platform_invite"
 
 	switch inviterRole {
-	case "platform_admin":
+	case "platform_admin", "sales_staff":
+		// Platform registrations inherit the canonical direct-organization name.
 		err = tx.QueryRowContext(ctx, `
 			SELECT id, org_type, level
 			FROM mgmt_tenants
-			WHERE org_type='platform' AND status='active'
-			ORDER BY id
-			LIMIT 1
+			WHERE code='platform' AND org_type='platform' AND status='active'
 		`).Scan(&parentOrgID, &parentOrgType, &parentLevel)
-	case "sales_staff":
-		err = tx.QueryRowContext(ctx, `
-			SELECT id, org_type, level
-			FROM mgmt_tenants
-			WHERE org_type='platform' AND status='active'
-			ORDER BY id
-			LIMIT 1
-		`).Scan(&parentOrgID, &parentOrgType, &parentLevel)
-		sourceType = "sales_invite"
+		if inviterRole == "sales_staff" {
+			sourceType = "sales_invite"
+		}
 	case "agent_admin":
 		if !inviterTenantID.Valid {
 			return model.User{}, ErrInviteCodeInvalid

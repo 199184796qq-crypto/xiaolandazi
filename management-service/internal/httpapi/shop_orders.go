@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"database/sql"
+	_ "embed"
 	"errors"
 	"net/http"
 	"strconv"
@@ -11,6 +12,17 @@ import (
 	"livecompanion/management/internal/db"
 	"livecompanion/management/internal/model"
 )
+
+//go:embed shipping_regions.json
+var customerShippingRegions []byte
+
+func (s *Server) customerShopShippingRegions(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireCustomerShopActor(w, r); !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(customerShippingRegions)
+}
 
 func (s *Server) customerShopListOrders(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.requireCustomerShopActor(w, r)
@@ -153,6 +165,8 @@ func (s *Server) customerShopCreateOrder(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, "当前商品类型不支持")
 		case errors.Is(err, db.ErrInsufficientDeviceStock):
 			writeError(w, http.StatusConflict, "当前可售设备库存不足，请调整购买数量或联系管理员补充库存")
+		case errors.Is(err, db.ErrMarketingCampaignUnavailable):
+			writeError(w, http.StatusConflict, "该营销活动暂不可参与")
 		case errors.Is(err, db.ErrMarketingCampaignStockInsufficient):
 			writeError(w, http.StatusConflict, "当前活动名额或活动库存不足，请刷新活动后重试")
 		case errors.Is(err, db.ErrDeviceShippingRequired):
@@ -219,7 +233,7 @@ func (s *Server) customerShopWalletPayOrder(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusServiceUnavailable, "审计日志服务暂不可用")
 		return
 	}
-	item, err := s.store.WalletPayCustomerTimeCardOrder(
+	item, err := s.store.WalletPayCustomerShopOrder(
 		r.Context(), *actor.TenantID, actor.UserID, orderID, input.IdempotencyKey,
 	)
 	if err != nil {
@@ -235,13 +249,17 @@ func (s *Server) customerShopWalletPayOrder(w http.ResponseWriter, r *http.Reque
 				ClientIP:       requestClientIP(r),
 				Result:         "failed",
 			})
-			writeError(w, http.StatusConflict, "钱包余额不足，请先充值后再购买时长卡")
+			writeError(w, http.StatusConflict, "钱包余额不足，请先充值后再购买")
 		case errors.Is(err, db.ErrWechatPaymentInProgress):
 			writeError(w, http.StatusConflict, "微信支付正在核验，请先查询支付结果；未确认关闭前不能改用余额支付")
 		case errors.Is(err, db.ErrShopOrderCancelled):
-			writeError(w, http.StatusConflict, "订单已取消，不能继续支付")
+			writeError(w, http.StatusConflict, "当前订单不能继续支付")
+		case errors.Is(err, db.ErrShopOrderExpired):
+			writeError(w, http.StatusConflict, "订单已超过支付时限，请重新下单")
+		case errors.Is(err, db.ErrInsufficientDeviceStock):
+			writeError(w, http.StatusConflict, "直播终端库存不足，请取消订单后重新选购")
 		case errors.Is(err, db.ErrUnsupportedShopProduct):
-			writeError(w, http.StatusBadRequest, "钱包余额支付当前仅用于时长卡订单")
+			writeError(w, http.StatusBadRequest, "此商品暂不支持钱包余额支付")
 		case errors.Is(err, sql.ErrNoRows):
 			writeError(w, http.StatusNotFound, "订单不存在")
 		default:

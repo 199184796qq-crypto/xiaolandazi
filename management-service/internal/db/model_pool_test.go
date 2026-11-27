@@ -63,7 +63,7 @@ func TestModelPoolMySQLLifecycleAndConcurrentCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := func(name, key string, capacity int) ModelPoolEntryInput {
-		return ModelPoolEntryInput{AccountName: name, Profile: agentgateway.SpeechModelInput{SpeechModel: agentgateway.SpeechModel{Protocol: "openai_chat", BaseURL: "https://example.test/v1", Model: "qwen3.7-flash"}, NewAPIKey: key}, MaxRooms: capacity, Enabled: true}
+		return ModelPoolEntryInput{AccountName: name, Profile: agentgateway.SpeechModelInput{SpeechModel: agentgateway.SpeechModel{Protocol: "openai_chat", BaseURL: "https://example.test/v1", Model: "deepseek-v4-flash"}, NewAPIKey: key}, MaxRooms: capacity, Enabled: true}
 	}
 	a, err := s.SaveModelPoolEntry(ctx, input("账号A", "fixture-key-A", 2), 27)
 	if err != nil {
@@ -84,6 +84,10 @@ func TestModelPoolMySQLLifecycleAndConcurrentCapacity(t *testing.T) {
 		exec(`INSERT INTO core_rooms(id,tenant_id,name,status) VALUES(?,14,'fixture','live')`, 100+i)
 	}
 	exec(`INSERT INTO mgmt_tenants(id,name) VALUES(14,'fixture')`)
+	profile, planLease, err := s.AcquirePlanModelLease(ctx, time.Now().Add(time.Minute))
+	if err != nil || planLease == "" || profile.ID == "" {
+		t.Fatal(planLease, err)
+	}
 	var wg sync.WaitGroup
 	var snapshots sync.WaitGroup
 	snapshots.Add(4)
@@ -148,6 +152,15 @@ func TestModelPoolMySQLLifecycleAndConcurrentCapacity(t *testing.T) {
 	if counts[a.ID] != 2 || counts[b.ID] != 1 {
 		t.Fatalf("per-account capacity wrong: %+v", counts)
 	}
+	_, anotherPlanLease, err := s.AcquirePlanModelLease(ctx, time.Now().Add(time.Minute))
+	if err != nil || anotherPlanLease == "" || anotherPlanLease == planLease {
+		t.Fatal("room allocation blocked a separate plan task", err)
+	}
+	for _, id := range []string{planLease, anotherPlanLease} {
+		if err = s.ReleasePlanModelLease(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
 	chosen := leases[0]
 	repeat, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -170,7 +183,7 @@ func TestModelPoolMySQLLifecycleAndConcurrentCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if old.ID != chosen.EntryID || old.Model != "qwen3.7-flash" {
+	if old.ID != chosen.EntryID || old.Model != "deepseek-v4-flash" {
 		t.Fatal("room did not override old role profile")
 	}
 	roles, err := s.SpeechModels(scoped)
@@ -180,13 +193,27 @@ func TestModelPoolMySQLLifecycleAndConcurrentCapacity(t *testing.T) {
 	if roles.DefaultID != old.ID || roles.ReviewDefaultID != old.ID || roles.SystemDefaultID != old.ID {
 		t.Fatal("speech, review, planning split across credentials")
 	}
-	id, err := s.BeginModelExchange(scoped, ModelExchangeScope{TenantID: 14, RoomID: chosen.RoomID}, "mainline_final_content_review", "old-review", agentgateway.Request{Stage: "mainline_final_content_review"})
-	if err != nil {
-		t.Fatal(err)
+	stages := []string{"mainline_final_content_review", "interaction_single_answer", "interaction_purpose_resolution", "interaction_answerflow_intent", "interaction_answerflow_batch_intent", "interaction_answerflow_answer"}
+	gateway := agentgateway.New("qwen", "unrelated-default").WithSpeechModels(s)
+	for _, stage := range stages {
+		provider, model, err := gateway.ResolveStageModel(scoped, stage)
+		if err != nil || provider != "anchor:"+chosen.EntryID || model != old.Model {
+			t.Fatal("stage did not resolve the active room's model", stage, provider, model, err)
+		}
+		id, err := s.BeginModelExchange(scoped, ModelExchangeScope{TenantID: 14, RoomID: chosen.RoomID}, stage, "old-review", agentgateway.Request{Stage: stage})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var traceEntry, traceLease string
+		if err := s.db.QueryRowContext(ctx, `SELECT pool_entry_id,pool_lease_id FROM live_model_exchanges WHERE id=?`, id).Scan(&traceEntry, &traceLease); err != nil || traceEntry != chosen.EntryID || traceLease != chosen.LeaseID {
+			t.Fatal("request not attributed to actual allocation", stage, err)
+		}
 	}
-	var traceEntry, traceLease string
-	if err = s.db.QueryRowContext(ctx, `SELECT pool_entry_id,pool_lease_id FROM live_model_exchanges WHERE id=?`, id).Scan(&traceEntry, &traceLease); err != nil || traceEntry != chosen.EntryID || traceLease != chosen.LeaseID {
-		t.Fatal("request not attributed to actual allocation")
+	staleScope := scope
+	staleScope.RuntimeID += 100
+	staleContext := agentgateway.WithRoomModelScope(ctx, staleScope)
+	if _, _, err := gateway.ResolveStageModel(staleContext, "interaction_answerflow_answer"); !errors.Is(err, ErrModelPoolLeaseMissing) {
+		t.Fatal("late answer did not reject the replacement session's lease", err)
 	}
 	entries, err := s.ListModelPoolEntries(ctx)
 	if err != nil {

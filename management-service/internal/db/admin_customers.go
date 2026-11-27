@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	"livecompanion/management/internal/model"
 )
@@ -169,6 +168,34 @@ func (s *Store) GetAdminCustomer(
 	)
 	return item, err
 }
+
+// CanResetCustomerPassword extends the caller's existing customer scope with
+// explicit grants tied to one employee, customer account, and tenant.
+func (s *Store) CanResetCustomerPassword(
+	ctx context.Context,
+	scope model.StaffBusinessScope,
+	employeeID, userID int64,
+) (bool, error) {
+	visible, err := s.AdminCustomerVisibleToScope(ctx, scope, userID)
+	if visible || err != nil || employeeID <= 0 {
+		return visible, err
+	}
+
+	err = s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM mgmt_users u
+			JOIN staff_employees e ON e.id=? AND e.user_id=? AND e.employment_status='active'
+			JOIN sys_feature_records grant_record
+			  ON grant_record.feature_key='staff-customer-password-reset-grants'
+			 AND grant_record.record_key=CONCAT(e.id, ':', u.id, ':', u.tenant_id)
+			 AND grant_record.status='active'
+			WHERE u.id=? AND u.role='customer' AND u.tenant_id IS NOT NULL AND u.status='active'
+		)
+	`, employeeID, scope.ActorUserID, userID).Scan(&visible)
+	return visible, err
+}
+
 func (s *Store) AdminResetCustomerPassword(
 	ctx context.Context,
 	userID int64,
@@ -199,88 +226,6 @@ func (s *Store) AdminResetCustomerPassword(
 	}
 
 	if err := s.DeleteUserSessions(ctx, userID); err != nil {
-		return model.AdminCustomer{}, err
-	}
-	return customer, nil
-}
-
-func (s *Store) DeleteAdminCustomer(
-	ctx context.Context,
-	userID int64,
-) (model.AdminCustomer, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return model.AdminCustomer{}, err
-	}
-	defer tx.Rollback()
-
-	var customer model.AdminCustomer
-	err = tx.QueryRowContext(ctx, `
-		SELECT
-			u.id,
-			u.tenant_id,
-			u.username,
-			u.display_name,
-			u.phone,
-			u.status,
-			u.created_at
-		FROM mgmt_users u
-		WHERE u.id = ?
-		  AND u.role = 'customer'
-		  AND u.tenant_id IS NOT NULL
-		FOR UPDATE
-	`, userID).Scan(
-		&customer.UserID,
-		&customer.TenantID,
-		&customer.Username,
-		&customer.DisplayName,
-		&customer.Status,
-		&customer.CreatedAt,
-	)
-	if err != nil {
-		return model.AdminCustomer{}, err
-	}
-
-	if _, err := tx.ExecContext(
-		ctx,
-		"DELETE FROM mgmt_sessions WHERE user_id = ?",
-		userID,
-	); err != nil {
-		return model.AdminCustomer{}, fmt.Errorf("delete customer sessions: %w", err)
-	}
-
-	if _, err := tx.ExecContext(
-		ctx,
-		"DELETE FROM mgmt_users WHERE id = ? AND role = 'customer'",
-		userID,
-	); err != nil {
-		return model.AdminCustomer{}, fmt.Errorf("delete customer user: %w", err)
-	}
-
-	var otherUsers int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM mgmt_users
-		WHERE tenant_id = ?
-	`, customer.TenantID).Scan(&otherUsers); err != nil {
-		return model.AdminCustomer{}, err
-	}
-	if otherUsers == 0 {
-		// Only remove tenant-wide semantic memory when the tenant itself is going
-		// away. Deleting one customer login must never wipe shared company memory.
-		if _, err := tx.ExecContext(ctx, "DELETE FROM semantic_documents WHERE tenant_id = ?", customer.TenantID); err != nil {
-			return model.AdminCustomer{}, fmt.Errorf("delete customer semantic documents: %w", err)
-		}
-		if _, err := tx.ExecContext(
-			ctx,
-			"DELETE FROM mgmt_tenants WHERE id = ?",
-			customer.TenantID,
-		); err != nil {
-			return model.AdminCustomer{}, fmt.Errorf("delete customer tenant: %w", err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
 		return model.AdminCustomer{}, err
 	}
 	return customer, nil

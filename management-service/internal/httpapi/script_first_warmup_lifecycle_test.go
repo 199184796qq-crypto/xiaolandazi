@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,13 +18,15 @@ import (
 	"livecompanion/management/internal/ttsgateway"
 )
 
-func warmupFixture(t *testing.T, native bool, room int64) (model.LiveAgentPlanVersion, volcengineScriptUnit, string, []byte) {
+func warmupFixture(t *testing.T, modelName string, room int64) (model.LiveAgentPlanVersion, volcengineScriptUnit, string, []byte) {
 	t.Helper()
-	modelName := "qwen-audio-3.1-tts-flash"
-	if native {
-		modelName = ttsgateway.VolcengineICL2
-	}
+	native := modelName == ttsgateway.VolcengineICL2
 	v := model.LiveAgentPlanVersion{PlanID: 4, VoiceIdentity: model.LiveAgentVoiceIdentity{Model: modelName, VoiceID: "S_fixture", Rate: 1}, GenerationContext: map[string]any{"content_mode": "user_audio", "recording_voice_mode": recordingStreamMode}}
+	pcmRate := 24000
+	if modelName == ttsgateway.TencentPremiumModel {
+		v.VoiceIdentity.VoiceID = "101030"
+		pcmRate = 16000
+	}
 	text := strings.Repeat("首段正文。", 45)
 	key := scriptFirstParagraphKey(v, text)
 	scope, ok := recordingCacheScopeFor(14, room, v.PlanID)
@@ -40,7 +43,7 @@ func warmupFixture(t *testing.T, native bool, room int64) (model.LiveAgentPlanVe
 	if native {
 		audio = filepath.Join(source, "job.json.wav")
 	}
-	writeTestWAV(t, audio, make([]int16, 24000), 24000)
+	writeTestWAV(t, audio, make([]int16, pcmRate), pcmRate)
 	raw, err := os.ReadFile(audio)
 	if err != nil {
 		t.Fatal(err)
@@ -61,17 +64,17 @@ func warmupFixture(t *testing.T, native bool, room int64) (model.LiveAgentPlanVe
 	return v, u, source, raw
 }
 
-func TestPlanWarmupHydratesBothSupplierContractsWithoutNewPurchase(t *testing.T) {
-	for _, native := range []bool{false, true} {
-		t.Run(map[bool]string{false: "qwen", true: "volcengine"}[native], func(t *testing.T) {
+func TestPlanWarmupHydratesSupplierContractsWithoutNewPurchase(t *testing.T) {
+	for _, modelName := range []string{ttsgateway.DefaultQwenTTSModel, ttsgateway.VolcengineICL2, ttsgateway.TencentPremiumModel} {
+		t.Run(modelName, func(t *testing.T) {
 			t.Setenv("MEDIA_ROOT", t.TempDir())
-			v, u, source, want := warmupFixture(t, native, 29)
+			v, u, source, want := warmupFixture(t, modelName, 29)
 			s := &Server{}
 			if err := s.hydrateFirstParagraphFromPlan(t.Context(), 14, 29, v, u); err != nil {
 				t.Fatal(err)
 			}
 			var file string
-			if native {
+			if modelName == ttsgateway.VolcengineICL2 {
 				out, ok := ttsgateway.LoadLongTextResult(ttsgateway.SynthesizeRequest{Model: v.VoiceIdentity.Model, VoiceID: v.VoiceIdentity.VoiceID, Text: u.Text, Rate: 1, LongText: &ttsgateway.LongTextJob{StatePath: filepath.Join(u.Dir, "job.json"), SourceVoiceID: v.VoiceIdentity.VoiceID}})
 				if !ok || len(out.Subtitles) != 1 || out.Subtitles[0].End != 1 {
 					t.Fatal("native paid checkpoint/subtitles lost on relocation", out)
@@ -95,13 +98,32 @@ func TestPlanWarmupHydratesBothSupplierContractsWithoutNewPurchase(t *testing.T)
 			if err != nil || string(got) != string(want) {
 				t.Fatal("paid PCM changed during copy", err)
 			}
+			if modelName == ttsgateway.TencentPremiumModel {
+				t.Run("convert_for_playback", func(t *testing.T) {
+					if _, err := exec.LookPath(ffmpegExecutable()); err != nil {
+						t.Skip("ffmpeg required to verify Tencent WAV normalization")
+					}
+					wav, duration, err := readScriptParagraphPlaybackWAV(t.Context(), modelName, u, file)
+					if err != nil || duration != 1000 {
+						t.Fatalf("normalized Tencent duration = %d ms, err = %v", duration, err)
+					}
+					_, pcm, byteRate, err := parseGeneratedVoiceWAV(wav)
+					if err != nil || byteRate != 48000 || len(pcm) != 48000 {
+						t.Fatal("Tencent playback must be 24 kHz mono PCM", byteRate, len(pcm), err)
+					}
+					raw, err := os.ReadFile(file)
+					if err != nil || string(raw) != string(want) {
+						t.Fatal("paid Tencent WAV was changed by playback preparation", err)
+					}
+				})
+			}
 		})
 	}
 }
 
 func TestPlanWarmupPreservesExistingRoomAndIsolatesChangedVoice(t *testing.T) {
 	t.Setenv("MEDIA_ROOT", t.TempDir())
-	v, u, _, _ := warmupFixture(t, true, 29)
+	v, u, _, _ := warmupFixture(t, ttsgateway.VolcengineICL2, 29)
 	if err := os.MkdirAll(u.Dir, 0750); err != nil {
 		t.Fatal(err)
 	}
@@ -129,12 +151,12 @@ func TestPlanWarmupPreservesExistingRoomAndIsolatesChangedVoice(t *testing.T) {
 }
 
 func TestPlanWarmupUnavailableSourceFallsThroughToForegroundRecovery(t *testing.T) {
-	for _, native := range []bool{false, true} {
-		t.Run(map[bool]string{false: "qwen", true: "volcengine"}[native], func(t *testing.T) {
+	for _, modelName := range []string{ttsgateway.DefaultQwenTTSModel, ttsgateway.VolcengineICL2, ttsgateway.TencentPremiumModel} {
+		t.Run(modelName, func(t *testing.T) {
 			t.Setenv("MEDIA_ROOT", t.TempDir())
-			v, u, dir, _ := warmupFixture(t, native, 29)
+			v, u, dir, _ := warmupFixture(t, modelName, 29)
 			name := "paragraph-job.json"
-			if native {
+			if modelName == ttsgateway.VolcengineICL2 {
 				name = "job.json"
 			}
 			for _, body := range []string{"{invalid", `{"complete":false}`, `{}`} {
@@ -154,7 +176,7 @@ func TestPlanWarmupUnavailableSourceFallsThroughToForegroundRecovery(t *testing.
 
 func TestPlanWarmupConcurrentHydrationAndCancellation(t *testing.T) {
 	t.Setenv("MEDIA_ROOT", t.TempDir())
-	v, u, source, want := warmupFixture(t, false, 29)
+	v, u, source, want := warmupFixture(t, ttsgateway.DefaultQwenTTSModel, 29)
 	unlock, err := lockVolcengineParagraph(t.Context(), source)
 	if err != nil {
 		t.Fatal(err)

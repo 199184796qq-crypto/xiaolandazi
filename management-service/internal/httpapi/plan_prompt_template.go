@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"regexp"
 	"sort"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"livecompanion/management/internal/model"
+	"livecompanion/management/internal/planprompt"
 )
 
 // planPromptDefaults 是母版里那些“没有数据也能成立”的占位符兜底值。
@@ -42,7 +44,12 @@ var planFactCategoryLabels = map[string]string{
 }
 
 type planPromptRenderData struct {
-	PlanName string
+	PlanName       string
+	AnchorName     string
+	AnchorRole     string
+	Track          string
+	BizMode        string
+	IndustryFacts  string
 	Links    []model.LiveAgentPlanProductLink
 	Benefits []model.LiveAgentPlanBenefit
 	Facts    []model.LiveAgentPlanFact
@@ -95,15 +102,51 @@ func (s *Server) liveAgentPlanPromptRender(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "读取提示词母版失败，当前内容已保留")
 		return
 	}
-	data := planPromptRenderData{PlanName: plan.Name, Links: links, Benefits: benefits, Facts: facts}
+	var body struct {
+		Page string `json:"page"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	only := map[string]bool{}
+	if page := strings.TrimSpace(body.Page); page != "" {
+		only[page] = true
+	}
+	profile, _ := s.store.GetPlanBusinessProfile(ctx, tenantID, planID)
+	anchor := strings.TrimSpace(planPromptDefaults["主播名"])
+	if anchor == "" {
+		anchor = "主播"
+	}
+	data := planPromptRenderData{
+		PlanName: plan.Name, Links: links, Benefits: benefits, Facts: facts,
+		AnchorName: anchor, AnchorRole: "店主本人，店里的自己人",
+		Track: planPromptTrack(profile), BizMode: planPromptBusinessMode(profile.BizDomain),
+		IndustryFacts: planprompt.IndustryFactFields(profile.BizDomain, profile.EcommerceIndustry),
+	}
 	sections := renderPlanPromptTemplates(templates, data)
+	// 六份母版同时是生成器：每页母版填好方案数据后单独交给模型，模型返回该页正文。
+	// 失败或审核不合格的页保留母版渲染结果。
+	warnings := map[string][]string{}
+	sources := map[string]string{}
+	// 默认不调模型：母版本身就是最终提示词，程序只做占位符替换。
+	// 需要"让模型写一版"时，把平台设置 plan_prompt_draft_enabled 设为 1。
+	if enabled, _ := s.store.GetSystemSetting(ctx, "plan_prompt_draft_enabled"); strings.TrimSpace(enabled) == "1" {
+		draftSections, draftWarnings, draftSources := s.draftPlanPromptSections(ctx, plan, profile, links, benefits, facts, sections, templates.Values(), only)
+		sections = draftSections
+		warnings = draftWarnings
+		sources = draftSources
+	}
 	text := strings.Join([]string{sections["persona"], sections["facts"], sections["redlines"], sections["speech"], sections["interaction"]}, "\n\n")
 	factsDigest := renderPlanPromptFacts(data)
+	planningMD := templates.RewritePlanningMD
+	if v := strings.TrimSpace(sections["rewrite_planning_md"]); v != "" {
+		planningMD = v
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"prompt_md":           text,
 		"facts_md":            factsDigest,
 		"sections":            sections,
-		"rewrite_planning_md": templates.RewritePlanningMD,
+		"warnings":            warnings,
+		"sources":             sources,
+		"rewrite_planning_md": planningMD,
 		"master_sha256":       templates.Revision(),
 	})
 }
@@ -134,6 +177,15 @@ func renderPlanPrompt(master string, data planPromptRenderData) string {
 	}
 	if strings.TrimSpace(data.PlanName) != "" {
 		values["直播间名"] = strings.TrimSpace(data.PlanName)
+	}
+	for key, value := range map[string]string{
+		"主播名": data.AnchorName, "主播身份": data.AnchorRole,
+		"直播赛道": data.Track, "业务模式": data.BizMode,
+		"本行业事实类": data.IndustryFacts, "现有提示词": "",
+	} {
+		if strings.TrimSpace(value) != "" {
+			values[key] = value
+		}
 	}
 	for key, value := range values {
 		master = strings.ReplaceAll(master, "{{"+key+"}}", value)

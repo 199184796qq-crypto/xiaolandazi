@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,24 +29,36 @@ type Message struct {
 }
 
 type Request struct {
-	TextPromptID      string `json:"text_prompt_id,omitempty"`
-	TextPromptSHA     string `json:"text_prompt_sha256,omitempty"`
-	Stage             string
-	Provider          string
-	Model             string
-	Messages          []Message
-	MaxTokens         int
-	EnableThinking    bool
-	CacheSystemPrompt bool     `json:"cache_system_prompt,omitempty"`
-	Temperature       *float64 `json:"temperature,omitempty"`
-	ThinkingOverride  *bool    `json:"thinking_override,omitempty"`
-	ResponseFormat    ResponseFormat
+	TextPromptID  string `json:"text_prompt_id,omitempty"`
+	TextPromptSHA string `json:"text_prompt_sha256,omitempty"`
+	Stage         string
+	// StageAttempt distinguishes deliberate repeat calls within one live task.
+	StageAttempt int `json:"-"`
+	Provider     string
+	Model        string
+	Messages     []Message
+	MaxTokens    int
+	// UseProviderOutputLimit omits the token cap for supported providers.
+	UseProviderOutputLimit bool `json:"use_provider_output_limit,omitempty"`
+	EnableThinking         bool
+	CacheSystemPrompt      bool     `json:"cache_system_prompt,omitempty"`
+	Temperature            *float64 `json:"temperature,omitempty"`
+	ThinkingOverride       *bool    `json:"thinking_override,omitempty"`
+	ReasoningEffort        string   `json:"reasoning_effort,omitempty"`
+	ResponseFormat         ResponseFormat
 	// ResponseSchema optionally carries an OpenAI-style json_schema descriptor
 	// ({name, strict, schema}). When set the provider is asked for structured
 	// output; providers that reject it degrade to json_object and then to plain
 	// text, so callers must still validate the decoded result.
 	ResponseSchema []byte
 	Timeout        time.Duration
+}
+
+func (r Request) StageCostKey() string {
+	if r.StageAttempt <= 1 {
+		return r.Stage
+	}
+	return r.Stage + ":" + strconv.Itoa(r.StageAttempt)
 }
 
 type Response struct {
@@ -55,6 +68,7 @@ type Response struct {
 	Provider          string
 	Model             string
 	LatencyMS         int64
+	ThinkingMode      string `json:"-"`
 	InputTokens       int64
 	OutputTokens      int64
 	TotalTokens       int64
@@ -166,7 +180,7 @@ func (g *Gateway) Complete(ctx context.Context, request Request) (Response, erro
 	if model == "" {
 		model = g.defaultModel
 	}
-	if request.MaxTokens <= 0 {
+	if request.MaxTokens <= 0 && !request.UseProviderOutputLimit {
 		request.MaxTokens = 500
 	}
 	if request.Timeout <= 0 {

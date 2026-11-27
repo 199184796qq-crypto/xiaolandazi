@@ -10,6 +10,8 @@ import (
 	"livecompanion/management/internal/model"
 )
 
+var ErrTimeCardUnpublished = errors.New("time card has no published version")
+
 func (s *Store) ListCommercialTimeCards(ctx context.Context) ([]model.CommercialTimeCardProduct, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, code, name, description, status, sort_order, created_at, updated_at
@@ -148,10 +150,14 @@ func (s *Store) CreateCommercialTimeCard(
 	}
 	defer tx.Rollback()
 
+	code, err := newInternalCode(ctx, tx, "tc", time.Now())
+	if err != nil {
+		return model.CommercialTimeCardProduct{}, err
+	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO catalog_time_card_products (code, name, description, status, sort_order)
 		VALUES (?, ?, ?, 'draft', ?)
-	`, input.Code, input.Name, input.Description, input.SortOrder)
+	`, code, input.Name, input.Description, input.SortOrder)
 	if err != nil {
 		return model.CommercialTimeCardProduct{}, err
 	}
@@ -214,9 +220,9 @@ func (s *Store) SaveCommercialTimeCardDraft(
 
 	_, err = tx.ExecContext(ctx, `
 		UPDATE catalog_time_card_products
-		SET code=?, name=?, description=?, sort_order=?
+		SET name=?, description=?, sort_order=?
 		WHERE id=?
-	`, input.Code, input.Name, input.Description, input.SortOrder, productID)
+	`, input.Name, input.Description, input.SortOrder, productID)
 	if err != nil {
 		return model.CommercialTimeCardProduct{}, err
 	}
@@ -338,7 +344,7 @@ func (s *Store) PublishCommercialTimeCard(
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE catalog_time_card_products
-		SET status='active'
+		SET status=IF(status='internal','internal','active')
 		WHERE id=?
 	`, productID); err != nil {
 		return model.CommercialTimeCardProduct{}, err
@@ -356,7 +362,7 @@ func (s *Store) SetCommercialTimeCardStatus(
 	productID int64,
 	status string,
 ) (model.CommercialTimeCardProduct, error) {
-	if status != "active" && status != "inactive" && status != "archived" {
+	if status != "active" && status != "inactive" && status != "internal" && status != "archived" {
 		return model.CommercialTimeCardProduct{}, fmt.Errorf("invalid time card status")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -371,7 +377,10 @@ func (s *Store) SetCommercialTimeCardStatus(
 	`, productID).Scan(&name, &beforeStatus); err != nil {
 		return model.CommercialTimeCardProduct{}, err
 	}
-	if status == "active" {
+	if beforeStatus == "archived" && status == "internal" {
+		return model.CommercialTimeCardProduct{}, ErrTimeCardArchived
+	}
+	if status == "active" || status == "internal" {
 		var count int
 		if err := tx.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM catalog_time_card_versions
@@ -380,7 +389,7 @@ func (s *Store) SetCommercialTimeCardStatus(
 			return model.CommercialTimeCardProduct{}, err
 		}
 		if count == 0 {
-			return model.CommercialTimeCardProduct{}, fmt.Errorf("time card has no published version")
+			return model.CommercialTimeCardProduct{}, ErrTimeCardUnpublished
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE catalog_time_card_products SET status=? WHERE id=?`, status, productID); err != nil {
@@ -399,28 +408,61 @@ func (s *Store) SetCommercialTimeCardStatus(
 	return s.GetCommercialTimeCard(ctx, productID)
 }
 
+// ListInternalTimeCardOffers returns current terms for cards that can only
+// be offered through a campaign. Callers expose only the matching targets.
+func (s *Store) ListInternalTimeCardOffers(ctx context.Context) ([]model.CommercialTimeCardProduct, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT p.id,p.name,p.description,v.duration_seconds,v.validity_days,
+		       v.activation_mode,v.activation_deadline_days,v.price_cents
+		FROM catalog_time_card_products p
+		JOIN catalog_time_card_versions v ON v.id=(
+			SELECT cv.id FROM catalog_time_card_versions cv
+			WHERE cv.product_id=p.id AND cv.lifecycle_status='published'
+			  AND (cv.effective_from IS NULL OR cv.effective_from <= CURRENT_TIMESTAMP(3))
+			  AND (cv.effective_to IS NULL OR cv.effective_to > CURRENT_TIMESTAMP(3))
+			ORDER BY cv.version_no DESC LIMIT 1
+		)
+		WHERE p.status='internal'
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cards []model.CommercialTimeCardProduct
+	for rows.Next() {
+		var card model.CommercialTimeCardProduct
+		var terms model.CommercialTimeCardVersion
+		if err := rows.Scan(&card.ID, &card.Name, &card.Description, &terms.DurationSeconds, &terms.ValidityDays,
+			&terms.ActivationMode, &terms.ActivationDeadlineDays, &terms.PriceCents); err != nil {
+			return nil, err
+		}
+		card.ActiveVersion = &terms
+		cards = append(cards, card)
+	}
+	return cards, rows.Err()
+}
+
 func (s *Store) CustomerTimeCardDiscountBPS(ctx context.Context, tenantID int64) (uint32, error) {
 	var discount uint32
+	var reduction sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT v.default_time_card_discount_bps
+		SELECT v.default_time_card_discount_bps,`+membershipCardReductionSQL+`
 		FROM biz_memberships m
 		INNER JOIN catalog_membership_plan_versions v ON v.id=m.plan_version_id
 		WHERE m.tenant_id=? AND m.status='active'
 		  AND m.cycle_start_at <= CURRENT_TIMESTAMP(3)
 		  AND m.cycle_end_at > CURRENT_TIMESTAMP(3)
-		ORDER BY m.id DESC
+		ORDER BY m.cycle_end_at DESC,m.id DESC
 		LIMIT 1
-	`, tenantID).Scan(&discount)
+	`, tenantID).Scan(&discount, &reduction)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 10000, nil
 	}
 	if err != nil {
 		return 0, err
 	}
-	if discount == 0 || discount > 10000 {
-		return 10000, nil
-	}
-	return discount, nil
+	return membershipPaidBPS(discount, reduction), nil
 }
 
 func (s *Store) EnsureDefaultTimeCards(ctx context.Context) error {

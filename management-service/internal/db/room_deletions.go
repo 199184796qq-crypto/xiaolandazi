@@ -3,9 +3,12 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+var errRoomDeleting = errors.New("直播间已进入永久删除流程")
 
 // RoomDeletion is a durable cleanup job and minimal historical room identity.
 // It is deliberately not a restorable copy of a live room.
@@ -108,7 +111,7 @@ func lockUsableRoomTx(ctx context.Context, tx *sql.Tx, tenantID, roomID int64) e
 		return err
 	}
 	if deleting > 0 {
-		return fmt.Errorf("直播间已进入永久删除流程")
+		return errRoomDeleting
 	}
 	return nil
 }

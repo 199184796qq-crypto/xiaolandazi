@@ -19,6 +19,7 @@ import (
 
 const scriptFirstMinRunes = 200
 const scriptFirstMaxRunes = 2000
+const qwenMainlineCacheProfile = "qwen-mainline-model-default-v1"
 
 // All audio children remain in the download. Their shared untimed transcript
 // is emitted once per playback instance, not once per 60s child.
@@ -82,12 +83,17 @@ func scriptFirstParagraphKey(v model.LiveAgentPlanVersion, text string) string {
 }
 
 func scriptFirstParagraphLegacyKey(v model.LiveAgentPlanVersion, text string) string {
-	if v.VoiceIdentity.Model == ttsgateway.VolcengineICL2 {
+	provider := ttsgateway.ProviderForModel(v.VoiceIdentity.Model)
+	if provider == ttsgateway.ProviderVolcengine {
 		return volcengineParagraphKey(v.VoiceIdentity.VoiceID, text, v.VoiceIdentity.Rate)
 	}
-	// 版本令牌带 mandarin：指令加入普通话约束后，旧缓存（仍会夹带四川话）必须失效重合成，
-	// 否则已付费的飘音会一直被复用。改了指令就要同步改这个令牌。
-	raw, _ := json.Marshal([]any{"script-paragraph-v1", ttsgateway.ProviderForModel(v.VoiceIdentity.Model), v.VoiceIdentity.Model, v.VoiceIdentity.VoiceID, v.VoiceIdentity.Rate, text, recordingInstructionForVersion(v, text), "untimed-transcript-v2-mandarin"})
+	instruction := ""
+	profile := qwenMainlineCacheProfile
+	if provider != ttsgateway.ProviderQwen {
+		instruction = recordingInstructionForVersion(v, text)
+		profile = "untimed-transcript-v2-mandarin"
+	}
+	raw, _ := json.Marshal([]any{"script-paragraph-v1", provider, v.VoiceIdentity.Model, v.VoiceIdentity.VoiceID, v.VoiceIdentity.Rate, text, instruction, profile})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
@@ -97,14 +103,19 @@ func scriptFirstUnits(v model.LiveAgentPlanVersion, dir string) ([]volcengineScr
 	if hasGroupedRecordingScript(v) {
 		var units []volcengineScriptUnit
 		// 版本池按条目 ID 建键：文案改了，已生成的版本还能继续用。
-		pools := scriptFirstEntryPoolIDs(v)
+		pools, humanKeys := scriptFirstPieceIDs(v)
+		specs := scriptConfiguredPiecePrompts(v)
 		for i, text := range texts {
 			key := scriptFirstParagraphKey(v, text)
-			pool := ""
+			pool, human := "", ""
 			if i < len(pools) {
-				pool = pools[i]
+				pool, human = pools[i], humanKeys[i]
 			}
-			units = append(units, volcengineScriptUnit{Text: text, Key: key, Pool: pool, Dir: filepath.Join(dir, key)})
+			entry := specs[pool]
+			units = append(units, volcengineScriptUnit{
+				Text: text, Key: key, Pool: pool, HumanKey: human, Dir: filepath.Join(dir, key),
+				SpecPrompt: entry.SpecPrompt, SpecPromptEnabled: entry.SpecPromptEnabled, SpecPromptAt: entry.SpecPromptAt,
+			})
 		}
 		// 首条按方案保存时定下的开场锚点：优先固定标签，其次第一个标签，标签内取最短。
 		// 没有锚点（老方案）时退回"全局最短"，保持旧行为。
@@ -239,11 +250,16 @@ func scriptOpeningUnitIndex(v model.LiveAgentPlanVersion, units []volcengineScri
 // 用 entry_id（前端生成、改文案不变）而不是文本哈希，避免改一个字就把
 // 已付费生成的改写版本全部作废。没有 entry_id 的旧数据返回空，退回文本哈希。
 func scriptFirstEntryPoolIDs(v model.LiveAgentPlanVersion) []string {
+	pools, _ := scriptFirstPieceIDs(v)
+	return pools
+}
+
+func scriptFirstPieceIDs(v model.LiveAgentPlanVersion) ([]string, []string) {
 	script, ok := recordingScriptFromContext(v.GenerationContext)
 	if !ok || script.Version != 2 {
-		return nil
+		return nil, nil
 	}
-	var out []string
+	var out, human []string
 	for tabIndex, tab := range script.Tabs {
 		// entry_id 只在标签内唯一（每个标签都从 s1 开始），必须带上标签身份。
 		tabKey := strings.TrimSpace(tab.TabID)
@@ -260,14 +276,16 @@ func scriptFirstEntryPoolIDs(v model.LiveAgentPlanVersion) []string {
 				} else {
 					out = append(out, "")
 				}
+				human = append(human, scriptHumanPieceKey(tab.TabID, entry.EntryID))
 			}
 			continue
 		}
 		if strings.TrimSpace(tab.Text) != "" {
 			out = append(out, "")
+			human = append(human, "")
 		}
 	}
-	return out
+	return out, human
 }
 func scriptEntryPoolID(tab recordingScriptTab, index int, entryID string) string {
 	tabKey := strings.TrimSpace(tab.TabID)

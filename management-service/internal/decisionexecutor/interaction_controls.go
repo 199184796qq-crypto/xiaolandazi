@@ -41,6 +41,14 @@ func manualControlBypass(item decisionItem) bool {
 	}
 	return false
 }
+func invalidatedByInteractionControls(item decisionItem, controls model.RoomInteractionControls) bool {
+	if manualControlBypass(item) {
+		return false
+	}
+	kind := interactionControlKind(item)
+	return !controls.Enabled(kind) || controls.DisabledAt[kind] > item.ControlsRevision
+}
+
 func (w *Worker) readInteractionControls(ctx context.Context, session model.LiveRuntimeSession) (model.RoomInteractionControls, error) {
 	if source, ok := w.store.(roomInteractionControlStore); ok {
 		readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -73,7 +81,7 @@ func (w *Worker) watchInteractionControls(ctx context.Context, session model.Liv
 		return ctx, func() {}, err
 	}
 	kind := interactionControlKind(item)
-	if !controls.Enabled(kind) || controls.DisabledAt[kind] > item.ControlsRevision {
+	if invalidatedByInteractionControls(item, controls) {
 		w.dropPreparedControl(session, kind)
 		return ctx, func() {}, errInteractionDisabled
 	}
@@ -119,7 +127,7 @@ func (w *Worker) dropPreparedControl(session model.LiveRuntimeSession, kind stri
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for key, value := range w.prepared {
-		if key.Tenant == session.TenantID && key.Room == session.RoomID && key.Session == session.ID && interactionControlKind(value.Item) == kind {
+		if key.Tenant == session.TenantID && key.Room == session.RoomID && key.Session == session.ID && interactionControlKind(value.Item) == kind && !manualControlBypass(value.Item) {
 			delete(w.prepared, key)
 		}
 	}

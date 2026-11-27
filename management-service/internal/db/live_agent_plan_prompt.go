@@ -14,17 +14,18 @@ import (
 )
 
 type LiveAgentPlanPromptDocument struct {
-	Revision            string              `json:"revision"`
-	RuntimeHotUpdate    bool                `json:"runtime_hot_update,omitempty"`
-	Sections            planprompt.Sections `json:"sections"`
-	PromptMD            string              `json:"prompt_md"`
-	InteractionPromptMD string              `json:"interaction_prompt_md"`
-	SpeechPromptMD      string              `json:"speech_prompt_md"`
-	RewritePromptMD     string              `json:"rewrite_prompt_md"`
-	RewritePlanningMD   *string             `json:"rewrite_planning_md,omitempty"`
-	LegacyUnstructured  bool                `json:"legacy_unstructured,omitempty"`
-	LegacyPromptMD      string              `json:"legacy_prompt_md,omitempty"`
-	UpdatedAt           time.Time           `json:"updated_at,omitempty"`
+	Revision              string              `json:"revision"`
+	RuntimeHotUpdate      bool                `json:"runtime_hot_update,omitempty"`
+	Sections              planprompt.Sections `json:"sections"`
+	InteractionGuidanceMD string              `json:"interaction_guidance_md,omitempty"`
+	PromptMD              string              `json:"prompt_md"`
+	InteractionPromptMD   string              `json:"interaction_prompt_md"`
+	SpeechPromptMD        string              `json:"speech_prompt_md"`
+	RewritePromptMD       string              `json:"rewrite_prompt_md"`
+	RewritePlanningMD     *string             `json:"rewrite_planning_md,omitempty"`
+	LegacyUnstructured    bool                `json:"legacy_unstructured,omitempty"`
+	LegacyPromptMD        string              `json:"legacy_prompt_md,omitempty"`
+	UpdatedAt             time.Time           `json:"updated_at,omitempty"`
 }
 
 func (s *Store) ensureLiveAgentPlanPromptColumns(ctx context.Context) error {
@@ -67,14 +68,16 @@ func (s *Store) GetLiveAgentPlanPromptDocument(ctx context.Context, tenantID, pl
 		}
 		out.SpeechPromptMD = speech.String
 		var original struct {
-			RewritePlanningMD *string `json:"rewrite_planning_md"`
-			RuntimeHotUpdate  bool    `json:"runtime_hot_update"`
+			RewritePlanningMD     *string `json:"rewrite_planning_md"`
+			RuntimeHotUpdate      bool    `json:"runtime_hot_update"`
+			InteractionGuidanceMD string  `json:"interaction_guidance_md"`
 		}
 		if err := json.Unmarshal([]byte(sections.String), &original); err != nil {
 			return out, err
 		}
 		out.RewritePlanningMD = original.RewritePlanningMD
 		out.RuntimeHotUpdate = original.RuntimeHotUpdate
+		out.InteractionGuidanceMD = original.InteractionGuidanceMD
 	} else {
 		// No page originals exist for a legacy document. Never reverse-parse its
 		// compiled text into editable pages; expose that old text separately.
@@ -108,6 +111,44 @@ func (s *Store) SaveLiveAgentPlanPromptPlanning(ctx context.Context, tenantID, p
 	}
 	rewrite := planprompt.CompileRewritePlanning(sections, planning)
 	return s.saveLiveAgentPlanPromptSections(ctx, tenantID, planID, actorID, sections, &rewrite, &planning)
+}
+
+func (s *Store) SaveLiveAgentPlanActivePromptSections(ctx context.Context, tenantID, planID, actorID int64, active planprompt.Sections) (LiveAgentPlanPromptDocument, error) {
+	prompt := LiveAgentPlanEditPrompt{PersonaMD: active.PersonaMD, RedLinesMD: active.RedLinesMD, PersonaEditorJSON: active.PersonaEditorJSON}
+	if err := saveLiveAgentPlanActivePromptSections(ctx, s.db, tenantID, planID, actorID, prompt); err != nil {
+		return LiveAgentPlanPromptDocument{}, err
+	}
+	return s.GetLiveAgentPlanPromptDocument(ctx, tenantID, planID)
+}
+
+func saveLiveAgentPlanActivePromptSections(ctx context.Context, writer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, tenantID, planID, actorID int64, edit LiveAgentPlanEditPrompt) error {
+	if err := edit.Validate(); err != nil {
+		return err
+	}
+	sections := map[string]any{"persona_md": edit.PersonaMD, "red_lines_md": edit.RedLinesMD, "persona_editor_json": nil}
+	if edit.PersonaEditorJSON != "" {
+		sections["persona_editor_json"] = edit.PersonaEditorJSON
+	}
+	if edit.SpeechRequirementsMD != nil {
+		sections["speech_requirements_md"] = *edit.SpeechRequirementsMD
+	}
+	if edit.InteractionGuidanceMD != nil {
+		sections["interaction_guidance_md"] = *edit.InteractionGuidanceMD
+	}
+	sectionsJSON, err := json.Marshal(sections)
+	if err != nil {
+		return err
+	}
+	prompt := edit.activeSections().InteractionBackground("")
+	_, err = writer.ExecContext(ctx, `INSERT INTO live_agent_plan_prompts
+		(tenant_id,plan_id,prompt_md,sections_json,updated_by_user_id)
+		VALUES (?,?,?,?,?)
+		ON DUPLICATE KEY UPDATE sections_json=JSON_MERGE_PATCH(COALESCE(NULLIF(sections_json,''),JSON_OBJECT()),VALUES(sections_json)),
+			updated_by_user_id=VALUES(updated_by_user_id),updated_at=CURRENT_TIMESTAMP(3)`,
+		tenantID, planID, prompt, string(sectionsJSON), actorID)
+	return err
 }
 
 func (s *Store) saveLiveAgentPlanPromptSections(ctx context.Context, tenantID, planID, actorID int64, sections planprompt.Sections, rewrite, planning *string) (LiveAgentPlanPromptDocument, error) {
@@ -167,6 +208,33 @@ func (s *Store) GetLiveAgentPlanPrompt(ctx context.Context, tenantID, planID int
 		return "", time.Time{}, err
 	}
 	return prompt, updatedAt, nil
+}
+
+func (s *Store) GetLiveAgentPlanInteractionSections(ctx context.Context, tenantID, planID int64) (planprompt.Sections, error) {
+	var sections planprompt.Sections
+	if tenantID <= 0 || planID <= 0 {
+		return sections, ErrLiveAgentPlanNotFound
+	}
+	var originals sql.NullString
+	var legacy string
+	err := s.db.QueryRowContext(ctx, `SELECT sections_json, prompt_md FROM live_agent_plan_prompts WHERE tenant_id=? AND plan_id=?`, tenantID, planID).Scan(&originals, &legacy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sections, nil
+	}
+	if err != nil {
+		return sections, err
+	}
+	if strings.TrimSpace(originals.String) == "" {
+		return planprompt.LegacyInteractionBackground(legacy), nil
+	}
+	var active struct {
+		Persona  string `json:"persona_md"`
+		RedLines string `json:"red_lines_md"`
+	}
+	if err = json.Unmarshal([]byte(originals.String), &active); err != nil {
+		return sections, fmt.Errorf("decode active plan prompt sections: %w", err)
+	}
+	return planprompt.Sections{PersonaMD: active.Persona, RedLinesMD: active.RedLines}, nil
 }
 
 // SaveLiveAgentPlanPrompt upserts the plan-level prompt. It is deliberately
